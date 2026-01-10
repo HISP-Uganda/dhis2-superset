@@ -48,6 +48,7 @@ export default class DHIS2MapChartPlugin extends ChartPlugin {
     super({
       buildQuery,
       controlPanel,
+      // @ts-ignore - React 19 compatibility with FC return type
       loadChart: () => Promise.resolve(DHIS2Map),
       metadata,
       transformProps,

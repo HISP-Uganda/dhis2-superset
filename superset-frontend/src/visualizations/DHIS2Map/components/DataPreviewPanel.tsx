@@ -1,4 +1,4 @@
-import { useState, FC } from 'react';
+import React, { useState } from 'react';
 import { styled } from '@superset-ui/core';
 
 const PanelWrapper = styled.div`
@@ -98,11 +98,11 @@ interface DataPreviewPanelProps {
   onClose: () => void;
 }
 
-export const DataPreviewPanel: FC<DataPreviewPanelProps> = ({
+export function DataPreviewPanel({
   data,
   loading,
   onClose,
-}) => {
+}: DataPreviewPanelProps): React.ReactElement | null {
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
   if (!data || data.length === 0) {

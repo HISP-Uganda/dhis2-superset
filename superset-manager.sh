@@ -12,10 +12,10 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_DIR="/Users/stephocay/projects/hispuganda/superset"
+PROJECT_DIR="/Users/edwinarinda/Projects/Redux/superset"
 BACKEND_DIR="$PROJECT_DIR"
 FRONTEND_DIR="$PROJECT_DIR/superset-frontend"
-VENV_DIR="$PROJECT_DIR/.venv"
+VENV_DIR="$PROJECT_DIR/venv"
 CONFIG_PATH="$PROJECT_DIR/superset_config.py"
 LOG_DIR="$PROJECT_DIR/logs"
 LOG_FILE="$LOG_DIR/superset_backend.log"

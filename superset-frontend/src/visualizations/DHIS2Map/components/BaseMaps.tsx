@@ -67,13 +67,14 @@ interface BaseMapLayerProps {
   mapType: BaseMapType;
 }
 
-export const BaseMapLayer: React.FC<BaseMapLayerProps> = ({ mapType }) => {
+export function BaseMapLayer({ mapType }: BaseMapLayerProps): React.ReactElement | null {
   const config = BASE_MAPS[mapType];
   if (!config || !config.url) {
     return null;
   }
+  // @ts-ignore - React 19 compatibility with react-leaflet
   return <TileLayer url={config.url} />;
-};
+}
 
 /* eslint-disable theme-colors/no-literal-colors */
 const SelectorWrapper = styled.div`
@@ -141,10 +142,10 @@ interface BaseMapSelectorProps {
   onMapChange: (mapType: BaseMapType) => void;
 }
 
-export const BaseMapSelector: React.FC<BaseMapSelectorProps> = ({
+export function BaseMapSelector({
   currentMap,
   onMapChange,
-}) => {
+}: BaseMapSelectorProps): React.ReactElement {
   const [isOpen, setIsOpen] = useState(false);
 
   return (

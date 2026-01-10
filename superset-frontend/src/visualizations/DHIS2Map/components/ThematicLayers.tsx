@@ -29,6 +29,7 @@ interface ThematicLayersProps {
 const ThematicLayers: React.FC<ThematicLayersProps> = ({ layers, dataMap }) => (
   <>
     {layers.map((layer, index) => (
+      // @ts-ignore - React 19 compatibility with react-leaflet
       <GeoJSON
         key={`thematic-${index}`}
         data={layer.boundaries as any}

@@ -30,20 +30,22 @@ interface FacilityLayerProps {
   onFacilityClick?: (facility: FacilityData) => void;
 }
 
-const FacilityLayer: React.FC<FacilityLayerProps> = ({
+function FacilityLayer({
   facilities,
   dataMap,
   metric,
   colorScale,
   radiusScale,
   onFacilityClick,
-}) => (
+}: FacilityLayerProps): React.ReactElement {
+  return (
   <>
     {facilities.map(facility => {
       const value = dataMap.get(facility.id);
       if (!facility.coordinates) return null;
 
       return (
+        // @ts-ignore - React 19 compatibility with react-leaflet
         <CircleMarker
           key={facility.id}
           center={[facility.coordinates.lat, facility.coordinates.lng]}
@@ -58,6 +60,7 @@ const FacilityLayer: React.FC<FacilityLayerProps> = ({
             click: () => onFacilityClick?.(facility),
           }}
         >
+          {/* @ts-ignore - React 19 compatibility with react-leaflet */}
           <Popup>
             <strong>{facility.name}</strong>
             <br />
@@ -67,6 +70,7 @@ const FacilityLayer: React.FC<FacilityLayerProps> = ({
       );
     })}
   </>
-);
+  );
+}
 
 export default FacilityLayer;

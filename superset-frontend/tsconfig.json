@@ -1,5 +1,5 @@
 {
-  "compilerOptions": {
+   "compilerOptions": {
     /* Type Checking */
     "noImplicitAny": true,
     "noImplicitReturns": true,

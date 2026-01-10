@@ -17,9 +17,16 @@
  * under the License.
  */
 
-import { useEffect, useState, useCallback, useMemo, FC, useRef } from 'react';
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+  ReactElement,
+} from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
-import { Loading } from '@superset-ui/core/components';
+import { Spin } from 'antd';
 import { MapContainer, GeoJSON, ZoomControl, useMap } from 'react-leaflet';
 // @ts-ignore - react-leaflet types
 import L from 'leaflet';
@@ -126,7 +133,7 @@ interface MapAutoFocusProps {
   enabled: boolean;
 }
 
-const MapAutoFocus: FC<MapAutoFocusProps> = ({ boundaries, enabled }) => {
+function MapAutoFocus({ boundaries, enabled }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
   const lastFocusedIdsRef = useRef<string>('');
@@ -235,7 +242,7 @@ interface FocusButtonProps {
   boundaries: BoundaryFeature[];
 }
 
-const FocusButton: FC<FocusButtonProps> = ({ boundaries }) => {
+function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
   const map = useMap();
 
   const handleFocus = () => {
@@ -268,9 +275,9 @@ const FocusButton: FC<FocusButtonProps> = ({ boundaries }) => {
       🎯
     </button>
   );
-};
+}
 
-const DHIS2Map: FC<DHIS2MapProps> = ({
+function DHIS2Map({
   data,
   width,
   height,
@@ -310,7 +317,7 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
   datasetSql = '',
   isDHIS2Dataset = false,
   boundaryLoadMethod = 'geoFeatures',
-}) => {
+}: DHIS2MapProps): ReactElement {
   // Debug logging for props
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map] Component rendered with props:', {
@@ -1476,23 +1483,28 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
 
   return (
     <MapWrapper style={{ width, height }}>
+      {/* @ts-ignore - React 19 compatibility */}
       <MapContainer
         center={[0, 32]}
         zoom={6}
         zoomControl={false}
-        whenCreated={setMapInstance}
+        ref={(mapRef: any) => mapRef && setMapInstance(mapRef)}
       >
+        {/* @ts-ignore - React 19 compatibility */}
         <BaseMapLayer mapType={baseMapType} />
 
+        {/* @ts-ignore - React 19 compatibility */}
         <ZoomControl position="topright" />
 
         {/* Auto-focus map when boundaries load */}
+        {/* @ts-ignore - React 19 compatibility */}
         <MapAutoFocus boundaries={boundaries} enabled={!loading} />
 
         {/* Manual focus button */}
         {boundaries.length > 0 && <FocusButton boundaries={boundaries} />}
 
         {boundaries.length > 0 && (
+          /* @ts-ignore - React 19 compatibility */
           <GeoJSON
             key={`levels-${boundaryLevelsKey}-drill-${drillState.currentLevel}-${drillState.parentId}-colors-${JSON.stringify(levelBorderColors?.map(lc => lc.color))}`}
             data={{ type: 'FeatureCollection', features: boundaries } as any}
@@ -1503,9 +1515,11 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
       </MapContainer>
 
       {/* Base Map Selector */}
+      {/* @ts-ignore - React 19 compatibility */}
       <BaseMapSelector currentMap={baseMapType} onMapChange={setBaseMapType} />
 
       {enableDrill && drillState.breadcrumbs.length > 0 && (
+        /* @ts-ignore - React 19 compatibility */
         <DrillControls
           breadcrumbs={drillState.breadcrumbs}
           onDrillUp={() => handleDrillUp()}
@@ -1514,6 +1528,7 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
       )}
 
       {showLegend && (
+        /* @ts-ignore - React 19 compatibility */
         <LegendPanel
           colorScale={colorScale}
           valueRange={valueRange}
@@ -1530,7 +1545,7 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
 
       {loading && (
         <div className="map-loading-overlay">
-          <Loading />
+          <Spin size="large" />
           <span>{t('Loading boundaries...')}</span>
         </div>
       )}
@@ -1622,6 +1637,7 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
       )}
 
       {showDataPreview && (
+        /* @ts-ignore - React 19 compatibility */
         <DataPreviewPanel
           data={dhis2Data}
           loading={dhis2DataLoading}
@@ -1630,6 +1646,6 @@ const DHIS2Map: FC<DHIS2MapProps> = ({
       )}
     </MapWrapper>
   );
-};
+}
 
 export default DHIS2Map;

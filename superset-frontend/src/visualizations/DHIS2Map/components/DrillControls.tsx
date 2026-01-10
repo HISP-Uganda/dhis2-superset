@@ -70,11 +70,12 @@ const Separator = styled.span`
   margin: 0 4px;
 `;
 
-const DrillControls: React.FC<DrillControlsProps> = ({
+function DrillControls({
   breadcrumbs,
   onDrillUp,
   onBreadcrumbClick,
-}) => (
+}: DrillControlsProps): React.ReactElement {
+  return (
   <ControlsContainer>
     <BreadcrumbContainer>
       <Button
@@ -94,6 +95,7 @@ const DrillControls: React.FC<DrillControlsProps> = ({
         {t('All')}
       </BreadcrumbItem>
       {breadcrumbs.map((crumb, index) => (
+        // @ts-ignore - React 19 compatibility
         <React.Fragment key={crumb.id}>
           <Separator>›</Separator>
           <BreadcrumbItem
@@ -108,6 +110,7 @@ const DrillControls: React.FC<DrillControlsProps> = ({
       ))}
     </BreadcrumbContainer>
   </ControlsContainer>
-);
+  );
+}
 
 export default DrillControls;

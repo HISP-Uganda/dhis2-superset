@@ -1,4 +1,4 @@
-Loaded your LOCAL configuration at [/Users/stephocay/projects/hispuganda/superset/superset_config.py]
+Loaded your LOCAL configuration at [/Users/edwinarinda/Projects/Redux/superset/superset_config.py]
 2025-12-17 15:36:12,988:INFO:superset.init_public_dashboards:[Embedded Dashboard] Initialization complete. Total dashboards processed: 1
 2025-12-17 15:36:12,989:INFO:alembic.runtime.migration:Context impl SQLiteImpl.
 2025-12-17 15:36:12,989:INFO:alembic.runtime.migration:Will assume non-transactional DDL.
@@ -9,7 +9,7 @@ Loaded your LOCAL configuration at [/Users/stephocay/projects/hispuganda/superse
  * Running on http://127.0.0.1:8088
 2025-12-17 15:36:13,931:INFO:werkzeug:[33mPress CTRL+C to quit[0m
 2025-12-17 15:36:13,982:INFO:werkzeug: * Restarting with watchdog (fsevents)
-Loaded your LOCAL configuration at [/Users/stephocay/projects/hispuganda/superset/superset_config.py]
+Loaded your LOCAL configuration at [/Users/edwinarinda/Projects/Redux/superset/superset_config.py]
 2025-12-17 15:36:17,099:INFO:superset.init_public_dashboards:[Embedded Dashboard] Initialization complete. Total dashboards processed: 1
 2025-12-17 15:36:17,100:INFO:alembic.runtime.migration:Context impl SQLiteImpl.
 2025-12-17 15:36:17,101:INFO:alembic.runtime.migration:Will assume non-transactional DDL.
@@ -23,55 +23,55 @@ Loaded your LOCAL configuration at [/Users/stephocay/projects/hispuganda/superse
 2025-12-17 15:36:45,759:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:45] "GET /static/assets/spa.e0caf7f4.entry.js HTTP/1.1" 200 -
 2025-12-17 15:36:45,822:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:36:45,825:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:45] "[33mGET /ws HTTP/1.1[0m" 404 -
 2025-12-17 15:36:46,330:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:46] "GET /api/v1/database/?q=(filters:!((col:allow_file_upload,opr:upload_is_enabled,value:!t))) HTTP/1.1" 200 -
 2025-12-17 15:36:46,348:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:46] "GET /api/v1/database/?q=(filters:!((col:database_name,opr:neq,value:examples))) HTTP/1.1" 200 -
-/Users/stephocay/projects/hispuganda/superset/superset/models/sql_lab.py:537: SAWarning: Dialect sqlite+pysqlite does *not* support Decimal objects natively, and SQLAlchemy must convert from floating point - rounding errors and other issues may occur. Please consider storing Decimal numbers as strings or integers on this platform for lossless storage.
+/Users/edwinarinda/Projects/Redux/superset/superset/models/sql_lab.py:537: SAWarning: Dialect sqlite+pysqlite does *not* support Decimal objects natively, and SQLAlchemy must convert from floating point - rounding errors and other issues may occur. Please consider storing Decimal numbers as strings or integers on this platform for lossless storage.
   "latest_query": self.latest_query.to_dict() if self.latest_query else None,
 2025-12-17 15:36:46,367:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:46] "GET /api/v1/sqllab/ HTTP/1.1" 200 -
 2025-12-17 15:36:46,748:WARNING:superset.views.error_handling:SupersetErrorException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1469, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1469, in dispatch_request
     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask_appbuilder/security/decorators.py", line 109, in wraps
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask_appbuilder/security/decorators.py", line 109, in wraps
     return f(self, *args, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/views/base_api.py", line 120, in wraps
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/views/base_api.py", line 120, in wraps
     duration, response = time_function(f, self, *args, **kwargs)
                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/utils/core.py", line 1499, in time_function
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/utils/core.py", line 1499, in time_function
     response = func(*args, **kwargs)
                ^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask_appbuilder/api/__init__.py", line 202, in wraps
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask_appbuilder/api/__init__.py", line 202, in wraps
     return f(self, *args, **kwargs)
            ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/utils/log.py", line 304, in wrapper
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/utils/log.py", line 304, in wrapper
     value = f(*args, **kwargs)
             ^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/sqllab/api.py", line 340, in get_results
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/sqllab/api.py", line 340, in get_results
     result = SqlExecutionResultsCommand(key=key, rows=rows).run()
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/commands/sql_lab/results.py", line 102, in run
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/commands/sql_lab/results.py", line 102, in run
     self.validate()
-  File "/Users/stephocay/projects/hispuganda/superset/superset/commands/sql_lab/results.py", line 70, in validate
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/commands/sql_lab/results.py", line 70, in validate
     raise SupersetErrorException(
 superset.exceptions.SupersetErrorException: Data could not be retrieved from the results backend. You need to re-run the original query.
 2025-12-17 15:36:46,752:INFO:superset.db_engine_specs.dhis2_dialect:DHIS2 connection initialized: https://tests.dhis2.hispuganda.org/hmis/api
@@ -92,7 +92,7 @@ LIMIT 1001
 2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_dialect:Using parameters from SQL comments (live/current)
 2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_dialect:Query params: {'table': 'analytics', 'dx': 'JhvC7ZR9hUe;D9A0afrTYPw;wUDxFVBapIc;QHnwKs2OUZv;BWZFz9RJRPI;AuAOIfCuBUp;pRZrTLDN7Ge;gHjJrtw9vQX', 'pe': 'LAST_5_YEARS', 'ou': 'F1o6qBSx783;SUvODYOcaVf', 'ouMode': 'DESCENDANTS'}
 2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_dialect:Merged params: {'startDate': '2024-12-17', 'endDate': '2025-12-17', 'skipMeta': 'false', 'displayProperty': 'NAME', 'table': 'analytics', 'dx': 'JhvC7ZR9hUe;D9A0afrTYPw;wUDxFVBapIc;QHnwKs2OUZv;BWZFz9RJRPI;AuAOIfCuBUp;pRZrTLDN7Ge;gHjJrtw9vQX', 'pe': 'LAST_5_YEARS', 'ou': 'F1o6qBSx783;SUvODYOcaVf', 'ouMode': 'DESCENDANTS'}
-2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_cache:[DHIS2 Cache] FileSystem backend initialized: /Users/stephocay/projects/hispuganda/superset/superset_home/dhis2_cache
+2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_cache:[DHIS2 Cache] FileSystem backend initialized: /Users/edwinarinda/Projects/Redux/superset/superset_home/dhis2_cache
 2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_cache:[DHIS2 Cache] Using FileSystem backend
 2025-12-17 15:36:46,814:INFO:superset.db_engine_specs.dhis2_dialect:DHIS2 API request (cache miss): https://tests.dhis2.hispuganda.org/hmis/api/analytics?startDate=2024-12-17&endDate=2025-12-17&skipMeta=false&displayProperty=NAME&table=analytics&dx=JhvC7ZR9hUe;D9A0afrTYPw;wUDxFVBapIc;QHnwKs2OUZv;BWZFz9RJRPI;AuAOIfCuBUp;pRZrTLDN7Ge;gHjJrtw9vQX&pe=LAST_5_YEARS&ou=F1o6qBSx783;SUvODYOcaVf&ouMode=DESCENDANTS
 2025-12-17 15:36:46,927:INFO:superset.db_engine_specs.dhis2_dialect:DHIS2 connection initialized: https://tests.dhis2.hispuganda.org/hmis/api
@@ -112,18 +112,18 @@ LIMIT 1001
 2025-12-17 15:36:47,882:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:47] "POST /superset/log/?explode=events HTTP/1.1" 200 -
 2025-12-17 15:36:48,397:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:36:48,398:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:48] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -132,18 +132,18 @@ werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on 
 2025-12-17 15:36:56,462:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:56] "POST /tabstateview/3/activate HTTP/1.1" 200 -
 2025-12-17 15:36:56,555:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:36:56,556:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:36:56] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -151,18 +151,18 @@ werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on 
 2025-12-17 15:37:04,991:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:04] "GET /superset/welcome/ HTTP/1.1" 200 -
 2025-12-17 15:37:05,246:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:05,251:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:05] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -183,25 +183,25 @@ werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on 
 2025-12-17 15:37:13,983:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:13] "GET /api/v1/dataset/4 HTTP/1.1" 200 -
 2025-12-17 15:37:14,491:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1469, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1469, in dispatch_request
     return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 502, in <lambda>
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 502, in <lambda>
     view_func=lambda **kw: self_ref().send_static_file(**kw),  # type: ignore # noqa: B950
                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/superset/app.py", line 107, in send_static_file
+  File "/Users/edwinarinda/Projects/Redux/superset/superset/app.py", line 107, in send_static_file
     return super().send_static_file(filename)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/scaffold.py", line 317, in send_static_file
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/scaffold.py", line 317, in send_static_file
     return send_from_directory(
            ^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/helpers.py", line 557, in send_from_directory
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/helpers.py", line 557, in send_from_directory
     return werkzeug.utils.send_from_directory(  # type: ignore[return-value]
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/utils.py", line 575, in send_from_directory
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/utils.py", line 575, in send_from_directory
     raise NotFound()
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:14,521:INFO:superset.db_engine_specs.dhis2_dialect:DHIS2 connection initialized: https://tests.dhis2.hispuganda.org/hmis/api
@@ -245,18 +245,18 @@ LIMIT 26
 2025-12-17 15:37:28,812:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:28] "GET /static/assets/vendors.8d8abe7f.entry.js HTTP/1.1" 200 -
 2025-12-17 15:37:28,962:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:28,970:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:28] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -266,18 +266,18 @@ werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on 
 2025-12-17 15:37:30,636:INFO:superset.commands.sql_lab.execute:Triggering query_id: 78
 2025-12-17 15:37:30,643:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:30,655:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:30] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -317,36 +317,36 @@ LIMIT 1001
 2025-12-17 15:37:32,140:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:32] "GET /api/v1/query/updated_since?q=(last_updated_ms:1765975044958) HTTP/1.1" 200 -
 2025-12-17 15:37:32,752:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:32,883:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:32] "[33mGET /ws HTTP/1.1[0m" 404 -
 2025-12-17 15:37:36,076:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:36] "POST /tabstateview/ HTTP/1.1" 200 -
 2025-12-17 15:37:36,945:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:36,961:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:36] "[33mGET /ws HTTP/1.1[0m" 404 -
@@ -379,53 +379,53 @@ LIMIT 1001
 2025-12-17 15:37:44,979:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:44] "PUT /tabstateview/4 HTTP/1.1" 200 -
 2025-12-17 15:37:45,037:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:45,040:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:45] "[33mGET /ws HTTP/1.1[0m" 404 -
 2025-12-17 15:37:47,016:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:37:47,024:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:37:47] "[33mGET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1[0m" 404 -
 2025-12-17 15:40:36,894:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:40:36] "GET /api/v1/me/ HTTP/1.1" 200 -
 2025-12-17 15:40:40,931:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:40:40,935:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:40:40] "[33mGET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1[0m" 404 -
@@ -465,18 +465,18 @@ LIMIT 1001
 2025-12-17 15:42:32,155:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:42:32] "[31m[1mGET /api/v1/sqllab/results/?q=(key:'2ba0496e-d8d9-478d-8289-a48618dca9f7',rows HTTP/1.1[0m" 400 -
 2025-12-17 15:42:32,221:WARNING:superset.views.error_handling:HTTPException
 Traceback (most recent call last):
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1484, in full_dispatch_request
     rv = self.dispatch_request()
          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1458, in dispatch_request
     self.raise_routing_exception(req)
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/app.py", line 1440, in raise_routing_exception
     raise request.routing_exception  # type: ignore
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/flask/ctx.py", line 353, in match_request
     result = self.url_adapter.match(return_rule=True)  # type: ignore
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/stephocay/projects/hispuganda/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
+  File "/Users/edwinarinda/Projects/Redux/superset/.venv/lib/python3.11/site-packages/werkzeug/routing/map.py", line 629, in match
     raise NotFound() from None
 werkzeug.exceptions.NotFound: 404 Not Found: The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.
 2025-12-17 15:42:32,235:INFO:werkzeug:127.0.0.1 - - [17/Dec/2025 15:42:32] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -

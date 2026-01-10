@@ -81,12 +81,12 @@ const SpeedControl = styled.input`
   cursor: pointer;
 `;
 
-const AnimationControls: React.FC<AnimationControlsProps> = ({
+function AnimationControls({
   periods,
   onPeriodChange,
   autoPlay: initialAutoPlay = false,
   speed: initialSpeed = 1000,
-}) => {
+}: AnimationControlsProps): React.ReactElement | null {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(initialAutoPlay);
   const [speed, setSpeed] = useState(initialSpeed);

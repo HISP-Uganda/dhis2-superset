@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, useMemo, FC } from 'react';
+import React, { useState, useMemo } from 'react';
 import { styled, t } from '@superset-ui/core';
 import { formatValue } from '../utils';
 import { LevelBorderColor } from '../types';
@@ -153,7 +153,7 @@ const BorderLineBox = styled.div<{ color: string; width: number }>`
 `;
 /* eslint-enable theme-colors/no-literal-colors */
 
-const LegendPanel: FC<LegendPanelProps> = ({
+function LegendPanel({
   colorScale,
   valueRange,
   position,
@@ -167,7 +167,7 @@ const LegendPanel: FC<LegendPanelProps> = ({
   showBoundaryLegend = false,
   manualBreaks,
   manualColors,
-}) => {
+}: LegendPanelProps): React.ReactElement | null {
   const [currentMode, setCurrentMode] = useState<LegendMode>(mode);
 
   const handleModeChange = (newMode: LegendMode) => {
