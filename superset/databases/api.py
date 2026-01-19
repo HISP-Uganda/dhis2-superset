@@ -2846,6 +2846,26 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             # Use .geojson extension for native GeoJSON format
             url = f"{base_url}/organisationUnits.geojson"
 
+            # Build cache key from params
+            from superset.utils.dhis2_cache import get_dhis2_cache, get_ttl
+            cache_key_parts = [f"geojson_{database.id}"]
+            if levels_param:
+                cache_key_parts.append(f"level_{levels_param.replace(',', '_')}")
+            if parents_param:
+                cache_key_parts.append(f"parent_{parents_param.replace(',', '_')}")
+            cache_key = "_".join(cache_key_parts)
+
+            # Try cache first
+            cache = get_dhis2_cache()
+            cached_data = cache.get(cache_key)
+
+            if cached_data is not None:
+                feature_count = len(cached_data.get("features", [])) if isinstance(cached_data, dict) else 0
+                logger.info(f"[DHIS2 GeoJSON] Cache HIT: {cache_key} ({feature_count} features)")
+                return self.response(200, result=cached_data)
+
+            # Cache miss - fetch from DHIS2 API
+            logger.info(f"[DHIS2 GeoJSON] Cache MISS: {cache_key} - fetching from API")
             logger.info(f"[DHIS2 GeoJSON] Fetching GeoJSON from: {url}")
             logger.info(f"[DHIS2 GeoJSON] Params: {params}")
 
@@ -2864,6 +2884,12 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 # Should be a GeoJSON FeatureCollection
                 feature_count = len(data.get("features", [])) if isinstance(data, dict) else 0
                 logger.info(f"[DHIS2 GeoJSON] Found {feature_count} features")
+
+                # Cache the GeoJSON (6 hours TTL - geo boundaries rarely change)
+                ttl = get_ttl('geojson')
+                cache.set(cache_key, data, ttl=ttl)
+                logger.info(f"[DHIS2 GeoJSON] Cached: {cache_key} (ttl: {ttl}s)")
+
                 return self.response(200, result=data)
             elif response.status_code == 401:
                 error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}"
@@ -2876,6 +2902,195 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         except Exception as ex:
             logger.exception("Failed to fetch DHIS2 GeoJSON")
+            return self.response_500(message=str(ex))
+
+    @expose("/<int:pk>/dhis2_cache/stats/", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    def dhis2_cache_stats(self, pk: int) -> Response:
+        """Get DHIS2 cache statistics.
+        ---
+        get:
+          summary: Get DHIS2 cache performance statistics
+          parameters:
+          - in: path
+            name: pk
+            schema:
+              type: integer
+          responses:
+            200:
+              description: Cache statistics
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      total_entries:
+                        type: integer
+                      active_entries:
+                        type: integer
+                      expired_entries:
+                        type: integer
+                      size_mb:
+                        type: number
+                      max_size_mb:
+                        type: number
+                      usage_percent:
+                        type: number
+                      hits:
+                        type: integer
+                      misses:
+                        type: integer
+                      hit_rate:
+                        type: number
+                      sets:
+                        type: integer
+                      evictions:
+                        type: integer
+                      avg_hit_time_ms:
+                        type: number
+                      avg_miss_time_ms:
+                        type: number
+            401:
+              $ref: '#/components/responses/401'
+            403:
+              $ref: '#/components/responses/403'
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            from superset.utils.dhis2_cache import get_dhis2_cache
+
+            cache = get_dhis2_cache()
+            stats = cache.stats()
+
+            logger.info(f"[DHIS2 Cache] Stats requested for database {pk}: {stats}")
+
+            return self.response(200, **stats)
+
+        except Exception as ex:
+            logger.exception("Failed to get DHIS2 cache stats")
+            return self.response_500(message=str(ex))
+
+    @expose("/<int:pk>/dhis2_cache/clear/", methods=("POST",))
+    @protect()
+    @safe
+    @statsd_metrics
+    def dhis2_cache_clear(self, pk: int) -> Response:
+        """Clear DHIS2 cache.
+        ---
+        post:
+          summary: Clear DHIS2 cache (optionally by pattern)
+          parameters:
+          - in: path
+            name: pk
+            schema:
+              type: integer
+          requestBody:
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    pattern:
+                      type: string
+                      description: Optional pattern to match cache keys (e.g., "geojson_*")
+          responses:
+            200:
+              description: Cache cleared successfully
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                      cleared_count:
+                        type: integer
+            401:
+              $ref: '#/components/responses/401'
+            403:
+              $ref: '#/components/responses/403'
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            from superset.utils.dhis2_cache import get_dhis2_cache
+            from flask import request
+
+            pattern = None
+            if request.json:
+                pattern = request.json.get('pattern')
+
+            cache = get_dhis2_cache()
+            cleared_count = cache.clear(pattern=pattern)
+
+            message = f"Cleared {cleared_count} cache entries"
+            if pattern:
+                message += f" matching pattern '{pattern}'"
+
+            logger.info(f"[DHIS2 Cache] {message} for database {pk}")
+
+            return self.response(200, message=message, cleared_count=cleared_count)
+
+        except Exception as ex:
+            logger.exception("Failed to clear DHIS2 cache")
+            return self.response_500(message=str(ex))
+
+    @expose("/<int:pk>/dhis2_cache/keys/", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    def dhis2_cache_keys(self, pk: int) -> Response:
+        """Get DHIS2 cache keys.
+        ---
+        get:
+          summary: Get list of cache keys
+          parameters:
+          - in: path
+            name: pk
+            schema:
+              type: integer
+          - in: query
+            name: pattern
+            schema:
+              type: string
+            description: Optional pattern to filter keys (e.g., "geojson_*")
+          responses:
+            200:
+              description: List of cache keys
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      keys:
+                        type: array
+                        items:
+                          type: string
+                      count:
+                        type: integer
+            401:
+              $ref: '#/components/responses/401'
+            403:
+              $ref: '#/components/responses/403'
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            from superset.utils.dhis2_cache import get_dhis2_cache
+            from flask import request
+
+            pattern = request.args.get('pattern')
+
+            cache = get_dhis2_cache()
+            keys = cache.get_keys(pattern=pattern)
+
+            return self.response(200, keys=keys, count=len(keys))
+
+        except Exception as ex:
+            logger.exception("Failed to get DHIS2 cache keys")
             return self.response_500(message=str(ex))
 
     @expose("/<int:pk>/dhis2_preview/columns/", methods=("POST",))

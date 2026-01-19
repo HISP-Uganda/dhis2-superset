@@ -155,4 +155,14 @@ DHIS2_DUCKDB_ACTION_PLAN.md
 superset-frontend/src/features/home/*.backup
 superset-frontend/src/features/home/*.backup-*
 
+# DHIS2 cache files (runtime cache, not code)
+superset_home/dhis2_cache/*.cache
+superset_home/dhis2_cache/*.meta
+
+# Process ID files
+*.pid
+
+# Log files
+logs/*.log
+
 

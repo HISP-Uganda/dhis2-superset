@@ -106,7 +106,7 @@ const ContentWrapper = styled.div<{
   $mobileBreakpoint: number;
 }>`
   display: flex;
-  width: 100%;
+  flex-direction: column;
   min-height: calc(100vh - ${({ $navbarHeight }) => $navbarHeight}px);
   position: relative;
   padding-top: ${({ $navbarHeight }) => $navbarHeight}px;
@@ -115,13 +115,20 @@ const ContentWrapper = styled.div<{
   ${({ $sidebarEnabled, $sidebarWidth, $sidebarPosition }) =>
     $sidebarEnabled
       ? $sidebarPosition === 'left'
-        ? `padding-left: ${$sidebarWidth}px;`
-        : `padding-right: ${$sidebarWidth}px;`
-      : ''}
+        ? `
+          margin-left: ${$sidebarWidth}px;
+          width: calc(100% - ${$sidebarWidth}px);
+        `
+        : `
+          margin-right: ${$sidebarWidth}px;
+          width: calc(100% - ${$sidebarWidth}px);
+        `
+      : 'width: 100%;'}
 
   @media (max-width: ${({ $mobileBreakpoint }) => $mobileBreakpoint}px) {
-    padding-left: 0;
-    padding-right: 0;
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
   }
 `;
 

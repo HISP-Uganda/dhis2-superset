@@ -310,7 +310,11 @@ class DashboardDatasetSchema(Schema):
     def post_dump(self, serialized: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         if security_manager.is_guest_user():
             del serialized["owners"]
-            del serialized["database"]
+            # Keep database field but sanitize sensitive parameters
+            # This is needed for visualizations like DHIS2 Map that require database ID
+            if "database" in serialized and serialized["database"]:
+                # Remove sensitive connection parameters but keep id and other metadata
+                serialized["database"]["parameters"] = {}
         return serialized
 
 

@@ -128,20 +128,27 @@ class DatasourceRestApi(BaseSupersetApi):
         except SupersetSecurityException as ex:
             return self.response(403, message=ex.message)
 
-        from flask import request
+        from flask import request, g
         row_limit = apply_max_row_limit(app.config["FILTER_SELECT_ROW_LIMIT"])
         denormalize_column = not datasource.normalize_columns
-        
+
         # Get cascade filter parameters from query string
         cascade_parent_column = request.args.get("cascade_parent_column")
-        
+
         # Parse cascade parent value (can be comma-separated for multi-select)
         if (cascade_parent_value := request.args.get("cascade_parent_value")):
             # Try to convert to list if multiple values
             parent_values = cascade_parent_value.split(",") if "," in cascade_parent_value else cascade_parent_value
         else:
             parent_values = None
-        
+
+        # Store cascade parameters in Flask g for DHIS2 dialect to access during query execution
+        # This enables automatic hierarchy-based cascading for DHIS2 org unit filters
+        if cascade_parent_column and parent_values:
+            logger.info(f"[Cascade API] Storing cascade params in Flask g: parent_column={cascade_parent_column}, parent_value={parent_values}")
+            g.dhis2_cascade_parent_column = cascade_parent_column
+            g.dhis2_cascade_parent_value = parent_values
+
         try:
             payload = datasource.values_for_column(
                 column_name=column_name,

@@ -379,7 +379,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
         logger.info(f"[DHIS2] get_parameters_from_uri called")
 
         try:
-            parsed = urlparse(uri)
+            # Handle both string URI and URL objects (from make_url_safe)
+            uri_str = str(uri) if not isinstance(uri, str) else uri
+            parsed = urlparse(uri_str)
 
             # Extract hostname and path
             hostname = parsed.hostname

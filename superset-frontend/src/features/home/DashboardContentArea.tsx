@@ -27,8 +27,8 @@ import EmbeddingManager from './EmbeddingManager';
 
 const ContentContainer = styled.div`
   ${({ theme }) => `
-    margin-left: 280px;
-    padding: ${theme.sizeUnit * 8}px ${theme.sizeUnit * 8}px ${theme.sizeUnit * 6}px;
+    margin-left: 0;
+    padding: 0;
     background: ${theme.colorBgLayout};
     min-height: calc(100vh - 60px);
     max-width: 100%;
@@ -36,7 +36,7 @@ const ContentContainer = styled.div`
 
     @media (max-width: 768px) {
       margin-left: 0;
-      padding: ${theme.sizeUnit * 6}px ${theme.sizeUnit * 4}px ${theme.sizeUnit * 4}px;
+      padding: 0;
     }
   `}
 `;

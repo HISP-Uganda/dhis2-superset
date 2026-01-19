@@ -1908,6 +1908,253 @@ class DHIS2Connection:
             logger.exception(f"Failed to fetch org units with descendants: {e}")
             raise
 
+    def resolve_orgunit_names_to_uids(
+        self,
+        org_unit_names: list[str],
+        level: int | None = None
+    ) -> dict[str, str]:
+        """
+        Resolve organization unit display names to UIDs using DHIS2 API.
+
+        This is used when dashboard filters pass org unit names (e.g., "Ibanda District")
+        but DHIS2 API requires UIDs (e.g., "jNb63DIHuwU").
+
+        Args:
+            org_unit_names: List of org unit display names to resolve
+            level: Optional org unit level filter (1=National, 2=Region, 3=District, etc.)
+
+        Returns:
+            Dictionary mapping display name to UID: {"Ibanda District": "jNb63DIHuwU", ...}
+
+        Example:
+            >>> conn.resolve_orgunit_names_to_uids(["Ibanda District", "Mbarara City"])
+            {"Ibanda District": "jNb63DIHuwU", "Mbarara City": "QywkxFudXrC"}
+        """
+        if not org_unit_names:
+            return {}
+
+        try:
+            name_to_uid = {}
+            BATCH_SIZE = 50  # Process in batches to avoid URL length limits
+
+            logger.info(f"[DHIS2 Filter Resolution] Resolving {len(org_unit_names)} org unit names to UIDs")
+            print(f"[DHIS2 Filter Resolution] Resolving org unit names: {org_unit_names[:5]}...")
+
+            for batch_start in range(0, len(org_unit_names), BATCH_SIZE):
+                batch_names = org_unit_names[batch_start:batch_start + BATCH_SIZE]
+
+                # Try multiple resolution strategies
+                # Strategy 1: Use displayName:in filter (most efficient)
+                name_list = ",".join(batch_names)
+                url = f"{self.base_url}/organisationUnits.json"
+
+                filters = [f"displayName:in:[{name_list}]"]
+                if level is not None:
+                    filters.append(f"level:eq:{level}")
+
+                params = {
+                    "filter": filters,
+                    "fields": "id,displayName,name,level",
+                    "paging": "false"
+                }
+
+                logger.info(f"[DHIS2 Filter Resolution] Batch {batch_start}-{batch_start + len(batch_names)}, level={level}")
+
+                response = requests.get(
+                    url,
+                    params=params,
+                    auth=self.auth,
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                org_units = data.get("organisationUnits", [])
+
+                # Map display names to UIDs
+                for ou in org_units:
+                    display_name = ou.get("displayName") or ou.get("name")
+                    uid = ou.get("id")
+                    if display_name and uid:
+                        name_to_uid[display_name] = uid
+                        logger.debug(f"[DHIS2 Filter Resolution] '{display_name}' -> {uid}")
+
+                # Strategy 2: Also try exact name match (fallback for names without displayName)
+                for ou in org_units:
+                    name = ou.get("name")
+                    uid = ou.get("id")
+                    if name and uid and name not in name_to_uid:
+                        # Check if this name is in our search list
+                        if name in batch_names:
+                            name_to_uid[name] = uid
+                            logger.debug(f"[DHIS2 Filter Resolution] '{name}' -> {uid} (via name field)")
+
+            # Strategy 3: For unresolved names, try individual lookups with LIKE
+            unresolved = [n for n in org_unit_names if n not in name_to_uid]
+            if unresolved and len(unresolved) <= 10:  # Only for small number of unresolved
+                logger.info(f"[DHIS2 Filter Resolution] Trying individual lookups for {len(unresolved)} unresolved names")
+                for name in unresolved:
+                    try:
+                        params = {
+                            "filter": f"displayName:ilike:{name}",
+                            "fields": "id,displayName,name",
+                            "paging": "false"
+                        }
+                        response = requests.get(
+                            f"{self.base_url}/organisationUnits.json",
+                            params=params,
+                            auth=self.auth,
+                            headers=self.headers,
+                            timeout=self.timeout,
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        ous = data.get("organisationUnits", [])
+
+                        # Find exact match
+                        for ou in ous:
+                            if ou.get("displayName") == name or ou.get("name") == name:
+                                name_to_uid[name] = ou.get("id")
+                                logger.info(f"[DHIS2 Filter Resolution] Resolved '{name}' via LIKE search")
+                                break
+                    except Exception as e:
+                        logger.warning(f"[DHIS2 Filter Resolution] Failed individual lookup for '{name}': {e}")
+
+            # Check for unresolved names
+            final_unresolved = set(org_unit_names) - set(name_to_uid.keys())
+            if final_unresolved:
+                logger.warning(f"[DHIS2 Filter Resolution] Could not resolve {len(final_unresolved)} org unit names: {list(final_unresolved)[:10]}")
+                print(f"[DHIS2 Filter Resolution] ⚠️  Unresolved names: {list(final_unresolved)[:5]}")
+
+            logger.info(f"[DHIS2 Filter Resolution] ✅ Successfully resolved {len(name_to_uid)}/{len(org_unit_names)} org unit names")
+            print(f"[DHIS2 Filter Resolution] ✅ Resolved {len(name_to_uid)}/{len(org_unit_names)} names to UIDs")
+            if name_to_uid:
+                print(f"[DHIS2 Filter Resolution] Sample mappings: {dict(list(name_to_uid.items())[:3])}")
+
+            return name_to_uid
+
+        except Exception as e:
+            logger.exception(f"[DHIS2 Filter Resolution] Error resolving org unit names to UIDs: {e}")
+            print(f"[DHIS2 Filter Resolution] ❌ Error: {e}")
+            # Return empty dict - will use names as-is (may fail but won't crash)
+            return {}
+
+    def fetch_child_org_units(
+        self,
+        parent_names: list[str],
+        child_level: int | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch child org units for given parent org units (for cascading filters).
+
+        This enables hierarchical filtering:
+        - User selects "Bunyoro" (Region)
+        - This method fetches all Districts under Bunyoro
+        - District filter dropdown shows only Bunyoro districts
+
+        Args:
+            parent_names: List of parent org unit names (e.g., ["Bunyoro", "Western"])
+            child_level: Optional child level to fetch (3=District, 4=Sub-County, etc.)
+
+        Returns:
+            List of child org units with id, displayName, and parent info:
+            [
+                {"id": "uid1", "displayName": "Kibaale District", "parent": {"id": "...", "displayName": "Bunyoro"}},
+                {"id": "uid2", "displayName": "Hoima District", "parent": {"id": "...", "displayName": "Bunyoro"}},
+                ...
+            ]
+
+        Example:
+            >>> conn.fetch_child_org_units(["Bunyoro"], child_level=3)
+            [{"id": "abc", "displayName": "Kibaale District", "parent": {"displayName": "Bunyoro"}}, ...]
+        """
+        if not parent_names:
+            return []
+
+        # Build cache key
+        from superset.utils.dhis2_cache import get_dhis2_cache, get_ttl
+        cache_key = f"org_children_{'-'.join(sorted(parent_names))}_{child_level}"
+
+        # Try cache first
+        cache = get_dhis2_cache()
+        cached_result = cache.get(cache_key)
+
+        if cached_result is not None:
+            logger.info(f"[DHIS2 Cache] HIT: {cache_key} ({len(cached_result)} children)")
+            return cached_result
+
+        logger.info(f"[DHIS2 Cache] MISS: {cache_key} - fetching from API")
+
+        try:
+            # Step 1: Resolve parent names to UIDs
+            parent_name_to_uid = self.resolve_orgunit_names_to_uids(parent_names)
+            if not parent_name_to_uid:
+                logger.warning(f"[DHIS2 Cascade] Could not resolve parent names: {parent_names}")
+                return []
+
+            parent_uids = list(parent_name_to_uid.values())
+            logger.info(f"[DHIS2 Cascade] Fetching children for {len(parent_uids)} parent org units")
+            print(f"[DHIS2 Cascade] Parent UIDs: {parent_uids[:5]}...")
+
+            # Step 2: Fetch all child org units
+            all_children = []
+            BATCH_SIZE = 50
+
+            for batch_start in range(0, len(parent_uids), BATCH_SIZE):
+                batch_uids = parent_uids[batch_start:batch_start + BATCH_SIZE]
+                uid_list = ",".join(batch_uids)
+
+                url = f"{self.base_url}/organisationUnits.json"
+                filters = [f"parent.id:in:[{uid_list}]"]
+
+                if child_level is not None:
+                    filters.append(f"level:eq:{child_level}")
+
+                params = {
+                    "filter": filters,
+                    "fields": "id,displayName,name,level,parent[id,displayName]",
+                    "paging": "false"
+                }
+
+                logger.info(f"[DHIS2 Cascade] Fetching batch {batch_start}-{batch_start + len(batch_uids)}")
+
+                response = requests.get(
+                    url,
+                    params=params,
+                    auth=self.auth,
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+
+                data = response.json()
+                children = data.get("organisationUnits", [])
+                all_children.extend(children)
+
+                logger.info(f"[DHIS2 Cascade] Batch returned {len(children)} children")
+
+            logger.info(f"[DHIS2 Cascade] ✅ Found {len(all_children)} child org units")
+            print(f"[DHIS2 Cascade] ✅ Fetched {len(all_children)} children for cascade filter")
+
+            if all_children:
+                # Show sample for debugging
+                sample = all_children[:3]
+                sample_names = [ou.get("displayName") for ou in sample]
+                print(f"[DHIS2 Cascade] Sample children: {sample_names}")
+
+            # Cache the results
+            ttl = get_ttl('org_hierarchy')
+            cache.set(cache_key, all_children, ttl=ttl)
+            logger.info(f"[DHIS2 Cache] STORED: {cache_key} ({len(all_children)} children, ttl: {ttl}s)")
+
+            return all_children
+
+        except Exception as e:
+            logger.exception(f"[DHIS2 Cascade] Error fetching child org units: {e}")
+            print(f"[DHIS2 Cascade] ❌ Error: {e}")
+            return []
+
     def fetch_data_elements(self, de_ids: list[str]) -> list[dict[str, Any]]:
         """
         Fetch data element metadata from DHIS2.
@@ -2263,15 +2510,17 @@ class DHIS2Cursor:
         """
         Extract query parameters from SQL WHERE clause or comments OR cached params
 
-        Priority Order (highest to lowest):
-        1. SQL comments (/* DHIS2: ... */ or -- DHIS2: ...) - Always live/current
+        Priority Order (with special WHERE clause override):
+        1. SQL comments (/* DHIS2: ... */ or -- DHIS2: ...) - Base parameters
         2. Flask g.dhis2_dataset_params (same-request access)
         3. Application cache (persists across requests) - Fallback only
-        4. SELECT columns (NEW: extract user-selected dimensions from query)
-        5. WHERE clause
+        4. SELECT columns (extract user-selected dimensions from query)
+        5. WHERE clause - OVERRIDES 'ou' parameter from SQL comments/cache
+           (enables dashboard native filters to work correctly)
 
-        This ensures preview/ad-hoc queries with SQL comments always use fresh parameters,
-        while saved datasets can still use cached parameters.
+        IMPORTANT: WHERE clause org unit filters (e.g., WHERE "Region" IN ('Bunyoro'))
+        will OVERRIDE the 'ou' parameter from SQL comments, enabling dashboard filtering
+        to work correctly with name-to-UID resolution.
         """
         from urllib.parse import unquote
 
@@ -2329,67 +2578,67 @@ class DHIS2Cursor:
                     else:
                         params[key] = value
 
-        # If SQL comments provided parameters, use them (highest priority)
-        if params:
-            print(f"[DHIS2] Using parameters from SQL comments: {list(params.keys())}")
-            logger.info(f"Using parameters from SQL comments (live/current)")
-            return params
+        # Store params from SQL comments (will be used as base, but WHERE clause can override)
+        base_params_from_comments = params.copy() if params else {}
+
+        # DON'T return early - continue to check WHERE clause for org unit filters
+        # WHERE clause filters should OVERRIDE SQL comment 'ou' parameter for dashboard filtering
 
         # SECOND: Check Flask g context for parameters (same-request access)
-        try:
-            from flask import g as flask_g
-            if hasattr(flask_g, 'dhis2_dataset_params'):
-                if table_name in flask_g.dhis2_dataset_params:
-                    param_str = flask_g.dhis2_dataset_params[table_name]
-                    print(f"[DHIS2] Found params in Flask g for {table_name}: {param_str[:100]}")
-                    logger.info(f"Using stored parameters from Flask g for table: {table_name}")
-                    separator = '&' if '&' in param_str else ','
-                    for param in param_str.split(separator):
-                        if '=' in param:
-                            key, value = param.split('=', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            if key == 'dimension':
-                                params[key] = f"{params[key]};{value}" if key in params else value
-                            else:
-                                params[key] = value
-                    if params:
-                        return params
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        # Only use Flask g if we didn't find SQL comments
+        if not base_params_from_comments:
+            try:
+                from flask import g as flask_g
+                if hasattr(flask_g, 'dhis2_dataset_params'):
+                    if table_name in flask_g.dhis2_dataset_params:
+                        param_str = flask_g.dhis2_dataset_params[table_name]
+                        print(f"[DHIS2] Found params in Flask g for {table_name}: {param_str[:100]}")
+                        logger.info(f"Using stored parameters from Flask g for table: {table_name}")
+                        separator = '&' if '&' in param_str else ','
+                        for param in param_str.split(separator):
+                            if '=' in param:
+                                key, value = param.split('=', 1)
+                                key = key.strip()
+                                value = value.strip()
+                                if key == 'dimension':
+                                    params[key] = f"{params[key]};{value}" if key in params else value
+                                else:
+                                    params[key] = value
+            except ImportError:
+                pass
+            except Exception:
+                pass
 
         # THIRD: Check application cache (persists across requests) - Fallback only
-        cache_param_str = None
-        try:
-            from superset.extensions import cache_manager
-            # Try to find cached params by table name (we cache with dataset ID pattern)
-            # Search for any cache key matching this table
-            cache_keys = [f"dhis2_params_{i}_{table_name}" for i in range(1, 200)]  # Check dataset IDs 1-200
-            for cache_key in cache_keys:
-                cached = cache_manager.data_cache.get(cache_key)
-                if cached:
-                    cache_param_str = cached
-                    print(f"[DHIS2] Found params in cache for {table_name}: {cache_param_str[:100]}")
-                    logger.info(f"Using cached parameters for table: {table_name} (fallback)")
-                    break
-        except Exception as e:
-            logger.warning(f"[DHIS2] Could not check cache: {e}")
+        # Only use cache if we didn't find SQL comments or Flask g params
+        if not base_params_from_comments and not params:
+            cache_param_str = None
+            try:
+                from superset.extensions import cache_manager
+                # Try to find cached params by table name (we cache with dataset ID pattern)
+                # Search for any cache key matching this table
+                cache_keys = [f"dhis2_params_{i}_{table_name}" for i in range(1, 200)]  # Check dataset IDs 1-200
+                for cache_key in cache_keys:
+                    cached = cache_manager.data_cache.get(cache_key)
+                    if cached:
+                        cache_param_str = cached
+                        print(f"[DHIS2] Found params in cache for {table_name}: {cache_param_str[:100]}")
+                        logger.info(f"Using cached parameters for table: {table_name} (fallback)")
+                        break
+            except Exception as e:
+                logger.warning(f"[DHIS2] Could not check cache: {e}")
 
-        if cache_param_str:
-            separator = '&' if '&' in cache_param_str else ','
-            for param in cache_param_str.split(separator):
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if key == 'dimension':
-                        params[key] = f"{params[key]};{value}" if key in params else value
-                    else:
-                        params[key] = value
-            if params:
-                return params
+            if cache_param_str:
+                separator = '&' if '&' in cache_param_str else ','
+                for param in cache_param_str.split(separator):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if key == 'dimension':
+                            params[key] = f"{params[key]};{value}" if key in params else value
+                        else:
+                            params[key] = value
 
         # FOURTH: Extract from SELECT columns (respects user's dimension selection)
         # This is CRITICAL for DHIS2: users select which dimensions they want to see (e.g., OrgUnit)
@@ -2421,16 +2670,78 @@ class DHIS2Cursor:
             logger.warning(f"[DHIS2] Error extracting SELECT columns: {e}")
             print(f"[DHIS2] Error extracting SELECT columns: {e}")
 
-        # FIFTH: Extract from WHERE clause (lowest priority)
+        # FIFTH: Extract from WHERE clause
+        # This extracts org unit filters that should OVERRIDE base params from SQL comments
+        where_ou_filters = []
+        where_ou_level = None
         where_match = re.search(r'WHERE\s+(.+?)(?:ORDER BY|GROUP BY|LIMIT|$)', query, re.IGNORECASE | re.DOTALL)
         if where_match:
             conditions = where_match.group(1)
-            # Parse simple conditions: field='value' or field="value"
-            for match in re.finditer(r'(\w+)\s*=\s*[\'"]([^\'"]+)[\'"]', conditions):
-                field, value = match.groups()
-                params[field] = value
 
-        return params
+            # Define org unit hierarchy columns that need UID resolution
+            org_unit_columns = [
+                'National', 'Region', 'District', 'Sub_County', 'Sub_County_Town_Council_Div',
+                'Health_Facility', 'orgUnit', 'ou', 'OrganisationUnit'
+            ]
+            level_mapping = {
+                'National': 1,
+                'Region': 2,
+                'District': 3,
+                'Sub_County': 4,
+                'Sub_County_Town_Council_Div': 4,
+                'Health_Facility': 5
+            }
+            # Parse simple conditions: field='value' or field="value"
+            # Pattern handles both quoted ("Region") and unquoted (Region) column names
+            for match in re.finditer(r'(?:"(\w+)"|(\w+))\s*=\s*[\'"]([^\'"]+)[\'"]', conditions):
+                field = match.group(1) or match.group(2)  # Get whichever group matched
+                value = match.group(3)
+                if field in org_unit_columns:
+                    where_ou_filters.append(value)
+                    if field in level_mapping:
+                        where_ou_level = level_mapping[field]
+                    logger.info(f"[DHIS2 Filter Detection] Detected org unit filter: {field} = {value}")
+                else:
+                    if field not in params:  # Don't override existing params
+                        params[field] = value
+            # Handle IN clauses: field IN ('val1', 'val2', ...)
+            # Pattern handles both quoted ("Region") and unquoted (Region) column names
+            for match in re.finditer(r'(?:"(\w+)"|(\w+))\s+IN\s*\(([^)]+)\)', conditions, re.IGNORECASE):
+                field = match.group(1) or match.group(2)  # Get whichever group matched
+                values_str = match.group(3)
+                values = re.findall(r'[\'"]([^\'"]+)[\'"]', values_str)
+                if field in org_unit_columns:
+                    where_ou_filters.extend(values)
+                    if field in level_mapping:
+                        where_ou_level = level_mapping[field]
+                    logger.info(f"[DHIS2 Filter Detection] Detected org unit IN filter: {field} IN {values}")
+                else:
+                    if field not in params:  # Don't override existing params
+                        params[field] = ";".join(values)
+
+        # FINAL: Merge all parameter sources with correct precedence
+        # Priority: base_params_from_comments < params < WHERE clause org unit filters
+        final_params = {}
+
+        # Start with SQL comments (base params)
+        if base_params_from_comments:
+            final_params.update(base_params_from_comments)
+            print(f"[DHIS2] Base params from SQL comments: {list(base_params_from_comments.keys())}")
+            logger.info(f"Using base parameters from SQL comments")
+
+        # Override with params from Flask g/cache/SELECT
+        final_params.update(params)
+
+        # CRITICAL: If WHERE clause has org unit filters, they OVERRIDE the 'ou' parameter
+        # This enables dashboard filters to work correctly
+        if where_ou_filters:
+            final_params['ou_name_filters'] = where_ou_filters
+            if where_ou_level:
+                final_params['ou_filter_level'] = where_ou_level
+            print(f"[DHIS2] WHERE clause org unit filters will OVERRIDE base 'ou' param: {where_ou_filters[:3]}")
+            logger.info(f"WHERE clause org unit filters detected: {where_ou_filters[:5]} - will override base ou param")
+
+        return final_params
 
     def _merge_params(self, endpoint: str, query_params: dict[str, str]) -> dict[str, str]:
         """
@@ -2526,6 +2837,7 @@ class DHIS2Cursor:
         # ============================================================
         try:
             from superset.db_engine_specs.dhis2_cache import get_dhis2_cache
+            from superset.db_engine_specs.dhis2_cache import get_dhis2_cache
             cache = get_dhis2_cache()
 
             # Check cache first
@@ -2600,104 +2912,114 @@ class DHIS2Cursor:
         # Convert separate dx, pe, ou parameters to DHIS2 dimension format
         # BEFORE: {dx: 'id1;id2', pe: 'LAST_YEAR', ou: 'ouId', ouMode: 'DESCENDANTS'}
         # AFTER: {dimension: 'dx:id1;id2;pe:LAST_YEAR;ou:ouId;LEVEL-3;LEVEL-4;...'}
-        if "dimension" not in params and any(k in params for k in ["dx", "pe", "ou"]):
-            dimension_parts = []
-            
-            # Add data elements
-            if "dx" in params and params["dx"]:
+
+        # Check if we need to add dx/pe to existing dimension parameter
+        dimension_parts = []
+        existing_dimension = params.get("dimension", "")
+
+        if existing_dimension:
+            # Parse existing dimension to see what's already there
+            dimension_parts = [d.strip() for d in existing_dimension.split(";") if d.strip()]
+
+        # Add data elements if not already in dimension
+        if "dx" in params and params["dx"]:
+            has_dx = any(d.startswith("dx:") for d in dimension_parts)
+            if not has_dx:
                 dimension_parts.append(f"dx:{params['dx']}")
-            
-            # Add periods
-            if "pe" in params and params["pe"]:
-                dimension_parts.append(f"pe:{params['pe']}")
-            
-            # Add org units with LEVEL syntax when ouMode=DESCENDANTS
-            # This ensures data is returned at all descendant levels, not just aggregated
-            if "ou" in params and params["ou"]:
-                ou_value = params["ou"]
-                ou_mode = params.get("ouMode", "").upper()
-                data_level_scope = params.get("dataLevelScope", "all_levels").lower()
-
-                # When DESCENDANTS mode is used, we need to add LEVEL-X syntax
-                # to get data at each descendant level instead of just aggregated data
-                # dataLevelScope options:
-                # - all_levels (default): Data at all levels from selected to deepest
-                # - lowest_level: Data ONLY at the lowest/deepest level (leaf nodes)
-                # - children: Data at one level below selected
-                # - selected: Data only at selected org units (no LEVEL syntax)
-                if ou_mode == "DESCENDANTS" or data_level_scope in ["all_levels", "lowest_level", "children"]:
-                    try:
-                        # Fetch org unit levels to know what levels exist
-                        org_unit_level_names = self._fetch_org_unit_levels()
-                        max_level = max(org_unit_level_names.keys()) if org_unit_level_names else 6
-
-                        # Get the levels of selected org units to know starting level
-                        ou_ids = [o.strip() for o in ou_value.split(";") if o.strip() and not o.startswith("LEVEL-")]
-                        if ou_ids:
-                            # Fetch org unit details to get their levels
-                            BATCH_SIZE = 50
-                            selected_levels = []
-                            for batch_start in range(0, len(ou_ids), BATCH_SIZE):
-                                batch_ids = ou_ids[batch_start:batch_start + BATCH_SIZE]
-                                ou_filter = ",".join(batch_ids)
-                                ou_url = f"{self.connection.base_url}/organisationUnits.json?filter=id:in:[{ou_filter}]&fields=id,level&paging=false"
-                                try:
-                                    ou_resp = requests.get(
-                                        ou_url,
-                                        auth=self.connection.auth,
-                                        headers=self.connection.headers,
-                                        timeout=60,
-                                    )
-                                    if ou_resp.status_code == 200:
-                                        for ou in ou_resp.json().get("organisationUnits", []):
-                                            if ou.get("level"):
-                                                selected_levels.append(ou.get("level"))
-                                except Exception as e:
-                                    logger.warning(f"[DHIS2] Could not fetch org unit levels: {e}")
-
-                            if selected_levels:
-                                min_selected_level = min(selected_levels)
-                                level_parts = []
-
-                                if data_level_scope == "lowest_level":
-                                    # Only add the deepest/lowest level
-                                    level_parts.append(f"LEVEL-{max_level}")
-                                    logger.info(f"[DHIS2] Using lowest_level scope: LEVEL-{max_level}")
-                                    print(f"[DHIS2] Using lowest_level scope: LEVEL-{max_level}")
-                                elif data_level_scope == "children":
-                                    # Only add one level below selected
-                                    next_level = min_selected_level + 1
-                                    if next_level <= max_level:
-                                        level_parts.append(f"LEVEL-{next_level}")
-                                        logger.info(f"[DHIS2] Using children scope: LEVEL-{next_level}")
-                                        print(f"[DHIS2] Using children scope: LEVEL-{next_level}")
-                                else:
-                                    # all_levels (default with DESCENDANTS): Add all levels below selected
-                                    for level in range(min_selected_level + 1, max_level + 1):
-                                        level_parts.append(f"LEVEL-{level}")
-                                    logger.info(f"[DHIS2] Using all_levels scope: {level_parts}")
-                                    print(f"[DHIS2] Using all_levels scope: {level_parts}")
-
-                                if level_parts:
-                                    # Combine org unit IDs with LEVEL syntax
-                                    ou_value = f"{ou_value};{';'.join(level_parts)}"
-
-                        # Remove ouMode and dataLevelScope since we're using LEVEL syntax
-                        params.pop("ouMode", None)
-                        params.pop("dataLevelScope", None)
-                    except Exception as e:
-                        logger.warning(f"[DHIS2] Error building LEVEL syntax: {e}")
-                        # Fall back to using ouMode without LEVEL syntax
-
-                dimension_parts.append(f"ou:{ou_value}")
-
-            if dimension_parts:
-                params["dimension"] = ";".join(dimension_parts)
-                # Remove individual parameters - DHIS2 API doesn't recognize them
                 params.pop("dx", None)
+
+        # Add periods if not already in dimension
+        if "pe" in params and params["pe"]:
+            has_pe = any(d.startswith("pe:") for d in dimension_parts)
+            if not has_pe:
+                dimension_parts.append(f"pe:{params['pe']}")
                 params.pop("pe", None)
-                params.pop("ou", None)
-                logger.info(f"Converted dx/pe/ou to dimension parameter: {params['dimension']}")
+
+        # Handle org units (only if dimension doesn't already have ou:)
+        has_ou_dimension = any(d.startswith("ou:") for d in dimension_parts)
+        if not has_ou_dimension and "ou" in params and params["ou"]:
+            ou_value = params["ou"]
+            ou_mode = params.get("ouMode", "").upper()
+            data_level_scope = params.get("dataLevelScope", "all_levels").lower()
+
+            # When DESCENDANTS mode is used, we need to add LEVEL-X syntax
+            # to get data at each descendant level instead of just aggregated data
+            # dataLevelScope options:
+            # - all_levels (default): Data at all levels from selected to deepest
+            # - lowest_level: Data ONLY at the lowest/deepest level (leaf nodes)
+            # - children: Data at one level below selected
+            # - selected: Data only at selected org units (no LEVEL syntax)
+            if ou_mode == "DESCENDANTS" or data_level_scope in ["all_levels", "lowest_level", "children"]:
+                try:
+                    # Fetch org unit levels to know what levels exist
+                    org_unit_level_names = self._fetch_org_unit_levels()
+                    max_level = max(org_unit_level_names.keys()) if org_unit_level_names else 6
+
+                    # Get the levels of selected org units to know starting level
+                    ou_ids = [o.strip() for o in ou_value.split(";") if o.strip() and not o.startswith("LEVEL-")]
+                    if ou_ids:
+                        # Fetch org unit details to get their levels
+                        BATCH_SIZE = 50
+                        selected_levels = []
+                        for batch_start in range(0, len(ou_ids), BATCH_SIZE):
+                            batch_ids = ou_ids[batch_start:batch_start + BATCH_SIZE]
+                            ou_filter = ",".join(batch_ids)
+                            ou_url = f"{self.connection.base_url}/organisationUnits.json?filter=id:in:[{ou_filter}]&fields=id,level&paging=false"
+                            try:
+                                ou_resp = requests.get(
+                                    ou_url,
+                                    auth=self.connection.auth,
+                                    headers=self.connection.headers,
+                                    timeout=60,
+                                )
+                                if ou_resp.status_code == 200:
+                                    for ou in ou_resp.json().get("organisationUnits", []):
+                                        if ou.get("level"):
+                                            selected_levels.append(ou.get("level"))
+                            except Exception as e:
+                                logger.warning(f"[DHIS2] Could not fetch org unit levels: {e}")
+
+                        if selected_levels:
+                            min_selected_level = min(selected_levels)
+                            level_parts = []
+
+                            if data_level_scope == "lowest_level":
+                                # Only add the deepest/lowest level
+                                level_parts.append(f"LEVEL-{max_level}")
+                                logger.info(f"[DHIS2] Using lowest_level scope: LEVEL-{max_level}")
+                                print(f"[DHIS2] Using lowest_level scope: LEVEL-{max_level}")
+                            elif data_level_scope == "children":
+                                # Only add one level below selected
+                                next_level = min_selected_level + 1
+                                if next_level <= max_level:
+                                    level_parts.append(f"LEVEL-{next_level}")
+                                    logger.info(f"[DHIS2] Using children scope: LEVEL-{next_level}")
+                                    print(f"[DHIS2] Using children scope: LEVEL-{next_level}")
+                            else:
+                                # all_levels (default with DESCENDANTS): Add all levels below selected
+                                for level in range(min_selected_level + 1, max_level + 1):
+                                    level_parts.append(f"LEVEL-{level}")
+                                logger.info(f"[DHIS2] Using all_levels scope: {level_parts}")
+                                print(f"[DHIS2] Using all_levels scope: {level_parts}")
+
+                            if level_parts:
+                                # Combine org unit IDs with LEVEL syntax
+                                ou_value = f"{ou_value};{';'.join(level_parts)}"
+
+                    # Remove ouMode and dataLevelScope since we're using LEVEL syntax
+                    params.pop("ouMode", None)
+                    params.pop("dataLevelScope", None)
+                except Exception as e:
+                    logger.warning(f"[DHIS2] Error building LEVEL syntax: {e}")
+                    # Fall back to using ouMode without LEVEL syntax
+
+            dimension_parts.append(f"ou:{ou_value}")
+            params.pop("ou", None)
+
+        # Update params with the final dimension string
+        if dimension_parts:
+            params["dimension"] = ";".join(dimension_parts)
+            logger.info(f"Final dimension parameter: {params['dimension']}")
 
         # Handle dimension parameter specially - DHIS2 requires multiple dimension parameters
         # Format: dimension=dx:id1;id2;id3;pe:LAST_YEAR;ou:OrgUnit
@@ -3222,6 +3544,129 @@ class DHIS2Cursor:
         query_params = self._extract_query_params(query)
         print(f"[DHIS2] Query params: {query_params}")
         logger.info(f"Query params: {query_params}")
+
+        # NEW: Handle cascading filter requests
+        # Check if Flask g object contains cascade parent parameters (set by datasource API)
+        try:
+            from flask import g as flask_g
+
+            # Check if cascade parameters were stored in Flask g by the datasource API
+            cascade_parent_column = getattr(flask_g, 'dhis2_cascade_parent_column', None)
+            cascade_parent_value = getattr(flask_g, 'dhis2_cascade_parent_value', None)
+
+            if cascade_parent_column and cascade_parent_value:
+                logger.info(f"[DHIS2 Cascade] Detected cascade request: parent_column={cascade_parent_column}, parent_value={cascade_parent_value}")
+                print(f"[DHIS2 Cascade] 🔗 Cascade filter detected: {cascade_parent_column} = {cascade_parent_value}")
+
+                # Parse parent values (may be list or comma-separated string)
+                if isinstance(cascade_parent_value, list):
+                    parent_values = cascade_parent_value
+                else:
+                    parent_values = [v.strip() for v in str(cascade_parent_value).split(',') if v.strip()]
+
+                # Determine child level from query context
+                # Look for column name in SELECT to infer level
+                child_level = None
+                if 'District' in query or 'district' in query.lower():
+                    child_level = 3  # District level
+                elif 'Sub_County' in query or 'subcounty' in query.lower() or 'Sub_County_Town_Council_Div' in query:
+                    child_level = 4  # Sub-County level
+                elif 'Health_Facility' in query or 'facility' in query.lower():
+                    child_level = 5  # Health Facility level
+
+                # Fetch child org units based on parent selection
+                child_org_units = self.connection.fetch_child_org_units(parent_values, child_level)
+
+                if child_org_units:
+                    # Override the query to return child org units directly
+                    # This bypasses the normal analytics query and returns hierarchy data
+                    logger.info(f"[DHIS2 Cascade] Returning {len(child_org_units)} filtered options")
+                    print(f"[DHIS2 Cascade] ✅ Returning {len(child_org_units)} cascade options")
+
+                    # Store results directly - format as (displayName,) tuples for Superset
+                    self._rows = [(ou.get('displayName'),) for ou in child_org_units]
+                    self.rowcount = len(self._rows)
+
+                    # Clear cascade parameters from Flask g
+                    if hasattr(flask_g, 'dhis2_cascade_parent_column'):
+                        delattr(flask_g, 'dhis2_cascade_parent_column')
+                    if hasattr(flask_g, 'dhis2_cascade_parent_value'):
+                        delattr(flask_g, 'dhis2_cascade_parent_value')
+
+                    return
+
+        except Exception as e:
+            # Cascade filtering is optional - if it fails, continue with normal query
+            logger.debug(f"[DHIS2 Cascade] Not a cascade request or cascade failed: {e}")
+
+        # NEW: Resolve org unit name filters to UIDs before API call
+        # This handles dashboard native filters that pass display names instead of UIDs
+        if 'ou_name_filters' in query_params and query_params['ou_name_filters']:
+            ou_names = query_params['ou_name_filters']
+            ou_level = query_params.get('ou_filter_level')
+
+            logger.info(f"[DHIS2 Filter Resolution] Detected {len(ou_names)} org unit name filters: {ou_names[:5]}")
+            print(f"[DHIS2 Filter Resolution] 🔍 Resolving {len(ou_names)} org unit names to UIDs...")
+
+            # Resolve names to UIDs using DHIS2 API
+            name_to_uid = self.connection.resolve_orgunit_names_to_uids(ou_names, ou_level)
+
+            if name_to_uid:
+                # Convert names to UIDs
+                resolved_uids = []
+                for name in ou_names:
+                    uid = name_to_uid.get(name)
+                    if uid:
+                        resolved_uids.append(uid)
+                    else:
+                        logger.warning(f"[DHIS2 Filter Resolution] Could not resolve '{name}', will try using name as-is")
+                        resolved_uids.append(name)  # Fallback to name
+
+                # Build ou dimension parameter
+                ou_param = ";".join(resolved_uids)
+
+                # Update the dimension parameter with resolved UIDs
+                if 'dimension' in query_params:
+                    # Parse existing dimensions
+                    existing_dims = query_params['dimension'].split(';')
+                    # Remove any existing ou dimension
+                    existing_dims = [d for d in existing_dims if not d.startswith('ou:')]
+                    # Add new ou dimension with UIDs
+                    query_params['dimension'] = ';'.join(existing_dims + [f"ou:{ou_param}"])
+                    logger.info(f"[DHIS2 Filter Resolution] Updated existing dimension parameter with ou UIDs")
+                else:
+                    # Add as new dimension
+                    query_params['dimension'] = f"ou:{ou_param}"
+                    logger.info(f"[DHIS2 Filter Resolution] Added new dimension parameter: ou:{ou_param}")
+
+                # CRITICAL: Remove the old 'ou' parameter to avoid conflicts
+                # When dimension=ou: is set, the standalone 'ou' parameter should not be used
+                if 'ou' in query_params:
+                    old_ou = query_params['ou']
+                    del query_params['ou']
+                    logger.info(f"[DHIS2 Filter Resolution] Removed old 'ou' parameter (was: {old_ou}) to avoid conflict with dimension=ou:")
+                    print(f"[DHIS2 Filter Resolution] Removed old 'ou' param (was: {old_ou[:50]}...)")
+
+                # Also remove ouMode when using explicit dimension=ou: (DHIS2 API rule)
+                if 'ouMode' in query_params:
+                    old_ouMode = query_params['ouMode']
+                    del query_params['ouMode']
+                    logger.info(f"[DHIS2 Filter Resolution] Removed 'ouMode' parameter (was: {old_ouMode}) - not needed with dimension=ou:")
+
+                logger.info(f"[DHIS2 Filter Resolution] ✅ Resolved {len(name_to_uid)}/{len(ou_names)} names to UIDs")
+                print(f"[DHIS2 Filter Resolution] ✅ Resolved UIDs: {resolved_uids[:3]}{'...' if len(resolved_uids) > 3 else ''}")
+
+                # Show sample mappings for debugging
+                sample_mappings = dict(list(name_to_uid.items())[:3])
+                print(f"[DHIS2 Filter Resolution] 📋 Sample mappings: {sample_mappings}")
+            else:
+                logger.warning(f"[DHIS2 Filter Resolution] ⚠️  Could not resolve any org unit names to UIDs")
+                print(f"[DHIS2 Filter Resolution] ⚠️  No names could be resolved - filters may not work")
+
+            # Remove the temporary filter tracking params
+            del query_params['ou_name_filters']
+            if 'ou_filter_level' in query_params:
+                del query_params['ou_filter_level']
 
         # Merge all parameter sources
         api_params = self._merge_params(endpoint, query_params)

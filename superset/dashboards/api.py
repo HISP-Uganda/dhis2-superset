@@ -1659,6 +1659,10 @@ class DashboardRestApi(BaseSupersetModelRestApi):
             500:
               $ref: '#/components/responses/500'
         """
+        # Fix: Force load embedded relationship from database
+        from superset.extensions import db
+        db.session.refresh(dashboard)
+
         if not dashboard.embedded:
             return self.response(404)
         embedded: EmbeddedDashboard = dashboard.embedded[0]

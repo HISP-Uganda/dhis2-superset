@@ -602,6 +602,9 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             self.init_core_api()
             self.init_extensions()
 
+        # Start DHIS2 background preloader for cache warming
+        self.start_dhis2_preloader()
+
     def check_secret_key(self) -> None:
         def log_default_secret_key_warning() -> None:
             top_banner = 80 * "-" + "\n" + 36 * " " + "WARNING\n" + 80 * "-"
@@ -935,6 +938,20 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
     def enable_profiling(self) -> None:
         if self.config["PROFILING"]:
             profiling.init_app(self.superset_app)
+
+    def start_dhis2_preloader(self) -> None:
+        """Start DHIS2 background preloader for cache warming."""
+        try:
+            from superset.utils.dhis2_preloader import start_dhis2_preloader
+
+            # Get refresh interval from config (default 6 hours)
+            refresh_interval = self.config.get("DHIS2_CACHE_REFRESH_INTERVAL", 21600)
+
+            logger.info(f"[DHIS2 Preloader] Starting background cache preloader (refresh every {refresh_interval}s)")
+            start_dhis2_preloader(refresh_interval=refresh_interval)
+
+        except Exception as e:
+            logger.warning(f"[DHIS2 Preloader] Failed to start preloader: {e}")
 
 
 class SupersetIndexView(IndexView):
