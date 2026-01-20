@@ -76,6 +76,31 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     raw_boundary_levels: JSON.stringify((formData as any)?.boundary_levels),
   });
 
+  // eslint-disable-next-line no-console
+  console.log('[DHIS2Map transformProps] 🎨 STYLE PROPS:', {
+    color_scheme: (formData as any)?.color_scheme,
+    colorScheme: (formData as any)?.colorScheme,
+    linear_color_scheme: (formData as any)?.linear_color_scheme,
+    linearColorScheme: (formData as any)?.linearColorScheme,
+    use_linear_color_scheme: (formData as any)?.use_linear_color_scheme,
+    useLinearColorScheme: (formData as any)?.useLinearColorScheme,
+    opacity: (formData as any)?.opacity,
+    stroke_color: (formData as any)?.stroke_color,
+    strokeColor: (formData as any)?.strokeColor,
+    stroke_width: (formData as any)?.stroke_width,
+    strokeWidth: (formData as any)?.strokeWidth,
+    auto_theme_borders: (formData as any)?.auto_theme_borders,
+    autoThemeBorders: (formData as any)?.autoThemeBorders,
+    show_legend: (formData as any)?.show_legend,
+    showLegend: (formData as any)?.showLegend,
+    legend_position: (formData as any)?.legend_position,
+    legendPosition: (formData as any)?.legendPosition,
+    legend_classes: (formData as any)?.legend_classes,
+    legendClasses: (formData as any)?.legendClasses,
+  });
+
+  const formDataAny = formData as any;
+
   const {
     metric,
     org_unit_column,
@@ -83,37 +108,49 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     boundary_levels,
     boundary_level,
     enable_drill,
-    color_scheme,
-    linear_color_scheme,
-    use_linear_color_scheme,
-    opacity,
-    stroke_color,
-    stroke_width,
-    auto_theme_borders,
-    level_border_colors,
-    show_all_boundaries,
-    show_labels,
-    label_type,
-    label_font_size,
-    show_legend,
-    legend_position,
-    legend_classes,
-    legend_type,
-    legend_min,
-    legend_max,
-    manual_breaks,
-    manual_colors,
-    legend_reverse_colors,
-    legend_no_data_color,
     tooltip_columns,
-    // Custom level colors
-    level_1_color,
-    level_2_color,
-    level_3_color,
-    level_4_color,
-    level_5_color,
-    level_6_color,
   } = formData as QueryFormData;
+
+  // Extract style props with camelCase fallback (formData is camelCase, controls are snake_case)
+  const color_scheme = formDataAny?.colorScheme || formDataAny?.color_scheme;
+  const linear_color_scheme =
+    formDataAny?.linearColorScheme || formDataAny?.linear_color_scheme;
+  const use_linear_color_scheme =
+    formDataAny?.useLinearColorScheme ?? formDataAny?.use_linear_color_scheme;
+  const opacity = formDataAny?.opacity;
+  const stroke_color = formDataAny?.strokeColor || formDataAny?.stroke_color;
+  const stroke_width = formDataAny?.strokeWidth ?? formDataAny?.stroke_width;
+  const auto_theme_borders =
+    formDataAny?.autoThemeBorders ?? formDataAny?.auto_theme_borders;
+  const level_border_colors =
+    formDataAny?.levelBorderColors || formDataAny?.level_border_colors;
+  const show_all_boundaries =
+    formDataAny?.showAllBoundaries ?? formDataAny?.show_all_boundaries;
+  const show_labels = formDataAny?.showLabels ?? formDataAny?.show_labels;
+  const label_type = formDataAny?.labelType || formDataAny?.label_type;
+  const label_font_size =
+    formDataAny?.labelFontSize ?? formDataAny?.label_font_size;
+  const show_legend = formDataAny?.showLegend ?? formDataAny?.show_legend;
+  const legend_position =
+    formDataAny?.legendPosition || formDataAny?.legend_position;
+  const legend_classes =
+    formDataAny?.legendClasses ?? formDataAny?.legend_classes;
+  const legend_type = formDataAny?.legendType || formDataAny?.legend_type;
+  const legend_min = formDataAny?.legendMin ?? formDataAny?.legend_min;
+  const legend_max = formDataAny?.legendMax ?? formDataAny?.legend_max;
+  const manual_breaks = formDataAny?.manualBreaks || formDataAny?.manual_breaks;
+  const manual_colors = formDataAny?.manualColors || formDataAny?.manual_colors;
+  const legend_reverse_colors =
+    formDataAny?.legendReverseColors ?? formDataAny?.legend_reverse_colors;
+  const legend_no_data_color =
+    formDataAny?.legendNoDataColor || formDataAny?.legend_no_data_color;
+  // Custom level colors
+  const level_1_color = formDataAny?.level1Color || formDataAny?.level_1_color;
+  const level_2_color = formDataAny?.level2Color || formDataAny?.level_2_color;
+  const level_3_color = formDataAny?.level3Color || formDataAny?.level_3_color;
+  const level_4_color = formDataAny?.level4Color || formDataAny?.level_4_color;
+  const level_5_color = formDataAny?.level5Color || formDataAny?.level_5_color;
+  const level_6_color = formDataAny?.level6Color || formDataAny?.level_6_color;
 
   const data = queriesData[0]?.data || [];
 
