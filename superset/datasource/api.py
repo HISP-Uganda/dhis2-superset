@@ -144,10 +144,14 @@ class DatasourceRestApi(BaseSupersetApi):
 
         # Store cascade parameters in Flask g for DHIS2 dialect to access during query execution
         # This enables automatic hierarchy-based cascading for DHIS2 org unit filters
+        print(f"[Cascade API] 🔍 REQUEST: column={column_name}, parent_column={cascade_parent_column}, parent_values={parent_values}")
         if cascade_parent_column and parent_values:
             logger.info(f"[Cascade API] Storing cascade params in Flask g: parent_column={cascade_parent_column}, parent_value={parent_values}")
+            print(f"[Cascade API] ✅ CASCADE ENABLED: parent={cascade_parent_column}, values={parent_values}")
             g.dhis2_cascade_parent_column = cascade_parent_column
             g.dhis2_cascade_parent_value = parent_values
+        else:
+            print(f"[Cascade API] ❌ NO CASCADE: parent_column={cascade_parent_column}, parent_values={parent_values}")
 
         try:
             payload = datasource.values_for_column(
