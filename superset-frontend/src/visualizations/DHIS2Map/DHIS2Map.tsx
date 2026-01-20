@@ -407,6 +407,9 @@ function DHIS2Map({
     dataLength: data?.length,
     isDHIS2Dataset,
     hasDatasetSql: !!datasetSql,
+    levelBorderColors,
+    strokeColor,
+    strokeWidth,
   });
 
   const [boundaries, setBoundaries] = useState<BoundaryFeature[]>([]);
@@ -1546,6 +1549,18 @@ function DHIS2Map({
 
   const getFeatureStyle = useCallback(
     (feature: BoundaryFeature) => {
+      // Debug: Log that we're styling (only for first feature to avoid spam)
+      if (feature.id === boundaries[0]?.id) {
+        // eslint-disable-next-line no-console
+        console.log('[DHIS2Map] ⚡ getFeatureStyle called for first boundary:', {
+          featureName: feature.properties.name,
+          hasLevelBorderColors: !!levelBorderColors,
+          levelBorderColorsLength: levelBorderColors?.length,
+          autoThemeBorders,
+          strokeColor,
+        });
+      }
+
       const value = getFeatureValue(feature);
       const noDataColorRgb = `rgba(${legendNoDataColor.r},${legendNoDataColor.g},${legendNoDataColor.b},${legendNoDataColor.a})`;
 
@@ -1570,9 +1585,27 @@ function DHIS2Map({
       // Auto-theme borders: derive border color from fill color (darker shade)
       if (autoThemeBorders && value !== undefined) {
         borderColor = darkenColor(fillColor, 0.4);
+        // eslint-disable-next-line no-console
+        console.log('[DHIS2Map] Using autoThemeBorders for', feature.properties.name);
       } else if (levelBorderColors && levelBorderColors.length > 0) {
-        const level = feature.properties.level || 1;
+        // Convert level to number (API returns string like '3')
+        const rawLevel = feature.properties.level;
+        const level = typeof rawLevel === 'string' ? parseInt(rawLevel, 10) : (rawLevel || 1);
         const levelColor = levelBorderColors.find(l => l.level === level);
+
+        // Debug: Log for first feature only to avoid spam
+        if (feature.id === displayBoundaries[0]?.id) {
+          // eslint-disable-next-line no-console
+          console.log('[DHIS2Map] Border styling for first feature:', {
+            featureName: feature.properties.name,
+            rawLevel,
+            parsedLevel: level,
+            levelBorderColors,
+            foundLevelColor: levelColor,
+            willApplyColor: levelColor ? 'YES' : 'NO - using default strokeColor',
+          });
+        }
+
         if (levelColor) {
           borderColor = `rgba(${levelColor.color.r},${levelColor.color.g},${levelColor.color.b},${levelColor.color.a})`;
         }

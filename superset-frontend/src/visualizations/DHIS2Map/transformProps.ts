@@ -77,26 +77,29 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   });
 
   // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] 🎨 STYLE PROPS:', {
-    color_scheme: (formData as any)?.color_scheme,
+  console.log('[DHIS2Map transformProps] 🎨 STYLE PROPS (from formData):', {
     colorScheme: (formData as any)?.colorScheme,
-    linear_color_scheme: (formData as any)?.linear_color_scheme,
     linearColorScheme: (formData as any)?.linearColorScheme,
-    use_linear_color_scheme: (formData as any)?.use_linear_color_scheme,
     useLinearColorScheme: (formData as any)?.useLinearColorScheme,
     opacity: (formData as any)?.opacity,
-    stroke_color: (formData as any)?.stroke_color,
     strokeColor: (formData as any)?.strokeColor,
-    stroke_width: (formData as any)?.stroke_width,
     strokeWidth: (formData as any)?.strokeWidth,
-    auto_theme_borders: (formData as any)?.auto_theme_borders,
     autoThemeBorders: (formData as any)?.autoThemeBorders,
-    show_legend: (formData as any)?.show_legend,
     showLegend: (formData as any)?.showLegend,
-    legend_position: (formData as any)?.legend_position,
+    showLabels: (formData as any)?.showLabels,
+    show_labels: (formData as any)?.show_labels,
     legendPosition: (formData as any)?.legendPosition,
-    legend_classes: (formData as any)?.legend_classes,
     legendClasses: (formData as any)?.legendClasses,
+  });
+
+  // eslint-disable-next-line no-console
+  console.log('[DHIS2Map transformProps] 🎨 LEVEL COLORS (from formData):', {
+    level_1_color: (formData as any)?.level_1_color,
+    level1Color: (formData as any)?.level1Color,
+    level_2_color: (formData as any)?.level_2_color,
+    level2Color: (formData as any)?.level2Color,
+    level_3_color: (formData as any)?.level_3_color,
+    level3Color: (formData as any)?.level3Color,
   });
 
   const formDataAny = formData as any;
@@ -144,13 +147,36 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     formDataAny?.legendReverseColors ?? formDataAny?.legend_reverse_colors;
   const legend_no_data_color =
     formDataAny?.legendNoDataColor || formDataAny?.legend_no_data_color;
-  // Custom level colors
+  // Custom level colors - check both camelCase and snake_case
   const level_1_color = formDataAny?.level1Color || formDataAny?.level_1_color;
   const level_2_color = formDataAny?.level2Color || formDataAny?.level_2_color;
   const level_3_color = formDataAny?.level3Color || formDataAny?.level_3_color;
   const level_4_color = formDataAny?.level4Color || formDataAny?.level_4_color;
   const level_5_color = formDataAny?.level5Color || formDataAny?.level_5_color;
   const level_6_color = formDataAny?.level6Color || formDataAny?.level_6_color;
+
+  // eslint-disable-next-line no-console
+  console.log('[DHIS2Map transformProps] ✅ EXTRACTED STYLE VALUES (will be used):', {
+    colorScheme: color_scheme,
+    linearColorScheme: linear_color_scheme,
+    useLinearColorScheme: use_linear_color_scheme,
+    opacity,
+    strokeColor: stroke_color,
+    strokeWidth: stroke_width,
+    autoThemeBorders: auto_theme_borders,
+    showLegend: show_legend,
+    legendPosition: legend_position,
+    legendClasses: legend_classes,
+    showLabels: show_labels,
+    levelColors: {
+      level_1: level_1_color,
+      level_2: level_2_color,
+      level_3: level_3_color,
+      level_4: level_4_color,
+      level_5: level_5_color,
+      level_6: level_6_color,
+    },
+  });
 
   const data = queriesData[0]?.data || [];
 
@@ -468,12 +494,23 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     number,
     { r: number; g: number; b: number; a: number }
   > = {};
+
+  // eslint-disable-next-line no-console
+  console.log('[DHIS2Map transformProps] 🔧 Building customLevelColors map...', {
+    level_1_color,
+    level_2_color,
+    level_3_color,
+  });
+
   if (level_1_color) customLevelColors[1] = level_1_color;
   if (level_2_color) customLevelColors[2] = level_2_color;
   if (level_3_color) customLevelColors[3] = level_3_color;
   if (level_4_color) customLevelColors[4] = level_4_color;
   if (level_5_color) customLevelColors[5] = level_5_color;
   if (level_6_color) customLevelColors[6] = level_6_color;
+
+  // eslint-disable-next-line no-console
+  console.log('[DHIS2Map transformProps] 🔧 customLevelColors map built:', customLevelColors);
 
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] Level color controls:', {
@@ -496,14 +533,20 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     level_border_colors.length > 0
   ) {
     levelBorderColors = level_border_colors;
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map transformProps] Using level_border_colors from formData');
   } else if (Object.keys(customLevelColors).length > 0) {
     // Use custom colors from control panel
     levelBorderColors = generateLevelBorderColors(
       selectedLevels,
       customLevelColors,
     );
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map transformProps] Generated levelBorderColors from customLevelColors:', levelBorderColors);
   } else {
     levelBorderColors = generateLevelBorderColors(selectedLevels);
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map transformProps] Generated levelBorderColors with defaults:', levelBorderColors);
   }
 
   // Debug logging
@@ -556,6 +599,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   console.log('[DHIS2Map transformProps] FINAL PROPS:', {
     databaseId,
     boundaryLevels: selectedLevels,
+    levelBorderColors,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
     isDHIS2Dataset,
