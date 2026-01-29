@@ -63,6 +63,7 @@ import { useDatasetDrillInfo } from 'src/hooks/apiResources/datasets';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
 import { useCrossFiltersScopingModal } from '../nativeFilters/FilterBar/CrossFilters/ScopingModal/useCrossFiltersScopingModal';
 import { ViewResultsModalTrigger } from './ViewResultsModalTrigger';
+import { isEmbedded } from 'src/dashboard/util/isEmbedded';
 
 const RefreshTooltip = styled.div`
   ${({ theme }) => css`
@@ -177,6 +178,10 @@ const SliceHeaderControls = (
     getChartMetadataRegistry()
       .get(props.slice.viz_type)
       ?.behaviors?.includes(Behavior.InteractiveChart);
+  const dashboardUserId = useSelector<RootState, string>(
+    ({ dashboardInfo }) => dashboardInfo.userId,
+  );
+  const isPublicView = !dashboardUserId || isEmbedded();
   const canExplore = props.supersetCanExplore;
   const { canDrillToDetail, canViewQuery, canViewTable } = usePermissions();
 
@@ -205,6 +210,20 @@ const SliceHeaderControls = (
     key: Key;
     domEvent: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>;
   }) => {
+    if (
+      isPublicView &&
+      [
+        MenuKeys.ExploreChart,
+        MenuKeys.ViewQuery,
+        MenuKeys.ViewResults,
+        MenuKeys.DrillToDetail,
+        MenuKeys.Share,
+      ].includes(key as MenuKeys)
+    ) {
+      setIsDropdownVisible(false);
+      return;
+    }
+
     switch (key) {
       case MenuKeys.ForceRefresh:
         refreshChart();
@@ -349,7 +368,7 @@ const SliceHeaderControls = (
 
   // @z-index-below-dashboard-header (100) - 1 = 99 for !isFullSize and 101 for isFullSize
   const dropdownOverlayStyle = {
-    zIndex: isFullSize ? 101 : 99,
+    zIndex: isFullSize ? 2000 : 1100,
     animationDuration: '0s',
   };
 
@@ -386,7 +405,7 @@ const SliceHeaderControls = (
     });
   }
 
-  if (canExplore) {
+  if (!isPublicView && canExplore) {
     newMenuItems.push({
       key: MenuKeys.ExploreChart,
       label: (
@@ -409,7 +428,7 @@ const SliceHeaderControls = (
     newMenuItems.push({ type: 'divider' });
   }
 
-  if (canExplore || canViewQuery) {
+  if (!isPublicView && (canExplore || canViewQuery)) {
     newMenuItems.push({
       key: MenuKeys.ViewQuery,
       label: (
@@ -428,7 +447,7 @@ const SliceHeaderControls = (
     });
   }
 
-  if (canExplore || canViewTable) {
+  if (!isPublicView && (canExplore || canViewTable)) {
     newMenuItems.push({
       key: MenuKeys.ViewResults,
       label: (
@@ -475,7 +494,11 @@ const SliceHeaderControls = (
     title: t('Share'),
   });
 
-  if (isFeatureEnabled(FeatureFlag.DrillToDetail) && canDrillToDetail) {
+  if (
+    !isPublicView &&
+    isFeatureEnabled(FeatureFlag.DrillToDetail) &&
+    canDrillToDetail
+  ) {
     newMenuItems.push(...drillDetailMenuItems);
   }
 
@@ -483,7 +506,7 @@ const SliceHeaderControls = (
     newMenuItems.push({ type: 'divider' });
   }
 
-  if (supersetCanShare) {
+  if (!isPublicView && supersetCanShare) {
     newMenuItems.push(shareMenuItems);
   }
 

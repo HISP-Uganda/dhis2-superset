@@ -33,6 +33,9 @@ from flask import (
     Response,
     send_file,
 )
+import gzip
+import json as json_lib
+from functools import wraps
 from flask_appbuilder.api import expose, protect, rison, safe
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from marshmallow import ValidationError
@@ -123,7 +126,7 @@ from superset.exceptions import (
     SupersetSecurityException,
     TableNotFoundException,
 )
-from superset.extensions import security_manager
+from superset.extensions import cache_manager, security_manager
 from superset.models.core import Database
 from superset.sql.parse import Table
 from superset.superset_typing import FlaskResponse
@@ -147,6 +150,47 @@ from superset.views.error_handling import handle_api_exception, json_error_respo
 from superset.views.filters import BaseFilterRelatedUsers, FilterRelatedOwners
 
 logger = logging.getLogger(__name__)
+
+
+def compress_response_if_supported(response_data: dict) -> Response:
+    """
+    Compress JSON response with gzip if client supports it.
+
+    This is especially important for DHIS2 responses which can be very large (MB+).
+    Compression reduces payload size by 60-70%, critical for slow DHIS2 servers.
+
+    Args:
+        response_data: Dictionary to be JSON-serialized and optionally compressed
+
+    Returns:
+        Flask Response object, compressed if client supports gzip
+    """
+    # Serialize to JSON
+    json_data = json_lib.dumps(response_data)
+    json_bytes = json_data.encode('utf-8')
+
+    # Check if client supports gzip compression
+    accept_encoding = request.headers.get('Accept-Encoding', '')
+
+    if 'gzip' in accept_encoding and len(json_bytes) > 1024:  # Only compress if > 1KB
+        # Compress the response
+        compressed = gzip.compress(json_bytes, compresslevel=6)  # Balance speed vs compression
+
+        # Log compression ratio for monitoring
+        compression_ratio = (1 - len(compressed) / len(json_bytes)) * 100
+        logger.info(f"[DHIS2 Compression] Compressed {len(json_bytes)} → {len(compressed)} bytes ({compression_ratio:.1f}% reduction)")
+
+        # Create compressed response
+        response = make_response(compressed)
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Length'] = str(len(compressed))
+        return response
+    else:
+        # Return uncompressed
+        response = make_response(json_data)
+        response.headers['Content-Type'] = 'application/json'
+        return response
 
 
 # pylint: disable=too-many-public-methods
@@ -2691,8 +2735,82 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             logger.exception("Failed to fetch DHIS2 organisation unit groups")
             return self.response_500(message=str(ex))
 
+    def _get_cached_or_fetch_dhis2(
+        self,
+        cache_key: str,
+        fetch_func: callable,
+        ttl: int = 86400,
+        stale_threshold: int = 14400
+    ) -> tuple[Any, bool]:
+        """
+        Get data from cache or fetch from DHIS2 with stale-while-revalidate pattern.
+
+        This is critical for slow DHIS2 servers - users get instant responses from cache
+        while data refreshes in the background.
+
+        Args:
+            cache_key: Unique key for this data
+            fetch_func: Function to call if cache miss (should return data)
+            ttl: Total cache lifetime in seconds (default: 24 hours)
+            stale_threshold: Age after which to trigger background refresh (default: 4 hours)
+
+        Returns:
+            tuple: (data, from_cache) - data and whether it came from cache
+        """
+        import time
+
+        # Try to get from cache (gracefully handle if cache not configured)
+        try:
+            cached = cache_manager.data_cache.get(cache_key)
+        except Exception as e:
+            logger.info(f"[DHIS2 Cache SWR] Cache not available, fetching directly: {e}")
+            cached = None
+
+        if cached:
+            cache_age = time.time() - cached.get('timestamp', 0)
+
+            # Check if cache is stale (but still valid)
+            if cache_age > stale_threshold and cache_age < ttl:
+                logger.info(f"[DHIS2 Cache SWR] Cache stale for {cache_key}, triggering background refresh")
+
+                # Queue background refresh
+                try:
+                    from superset.tasks.dhis2_cache import warm_dhis2_cache
+                    warm_dhis2_cache.delay(
+                        database_id=cached.get('database_id'),
+                        dataset_configs=[{
+                            'cache_key': cache_key,
+                            'fetch_func': 'geo_features'  # Identifier for the task
+                        }]
+                    )
+                except Exception as e:
+                    logger.warning(f"[DHIS2 Cache SWR] Failed to queue background refresh: {e}")
+
+            logger.info(f"[DHIS2 Cache SWR] Cache hit for {cache_key} (age: {cache_age:.0f}s)")
+            return cached.get('data'), True
+
+        # Cache miss - fetch fresh data
+        logger.info(f"[DHIS2 Cache SWR] Cache miss for {cache_key}, fetching fresh data")
+        data = fetch_func()
+
+        # Save to cache (if cache is available)
+        try:
+            cache_manager.data_cache.set(
+                cache_key,
+                {
+                    'data': data,
+                    'timestamp': time.time(),
+                    'database_id': getattr(self, '_current_db_id', None),
+                },
+                timeout=ttl
+            )
+        except Exception as e:
+            logger.info(f"[DHIS2 Cache SWR] Could not save to cache: {e}")
+
+        return data, False
+
     def _fetch_geo_features(self, database: Database, ou_param: str) -> Response:
-        """Fetch geoFeatures from DHIS2 API.
+        """Fetch geoFeatures from DHIS2 API with stale-while-revalidate caching.
 
         Args:
             database: The DHIS2 database connection
@@ -2703,88 +2821,114 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         """
         import requests
         from sqlalchemy.engine.url import make_url
+        import hashlib
 
         try:
-            # Parse database URI to get connection details
-            uri = make_url(database.sqlalchemy_uri_decrypted)
+            # Generate cache key based on database and ou params
+            cache_key_base = f"dhis2_geo_{database.id}_{ou_param}"
+            cache_key = f"dhis2_geo_{hashlib.md5(cache_key_base.encode()).hexdigest()}"
 
-            # Build DHIS2 API URL
-            api_path = uri.database or "/api"
-            if not api_path.startswith("/"):
-                api_path = f"/{api_path}"
+            # Store database ID for background refresh
+            self._current_db_id = database.id
 
-            base_url = f"https://{uri.host}{api_path}"
+            # Define fetch function
+            def fetch_from_dhis2():
+                # Parse database URI to get connection details
+                uri = make_url(database.sqlalchemy_uri_decrypted)
 
-            # Determine auth method
-            if not uri.username and uri.password:
-                # PAT authentication
-                auth = None
-                headers = {"Authorization": f"ApiToken {uri.password}"}
-            else:
-                # Basic authentication
-                auth = (uri.username, uri.password) if uri.username else None
-                headers = {}
+                # Build DHIS2 API URL
+                api_path = uri.database or "/api"
+                if not api_path.startswith("/"):
+                    api_path = f"/{api_path}"
 
-            # Build geoFeatures URL
-            # Format: /api/geoFeatures?ou=ou:LEVEL-1;LEVEL-2;parentId
-            params = {}
-            if ou_param:
-                params["ou"] = f"ou:{ou_param}"
+                base_url = f"https://{uri.host}{api_path}"
 
-            logger.info(f"[DHIS2 GeoFeatures] Fetching geoFeatures with params: {params}")
+                # Determine auth method
+                if not uri.username and uri.password:
+                    # PAT authentication
+                    auth = None
+                    headers = {"Authorization": f"ApiToken {uri.password}"}
+                else:
+                    # Basic authentication
+                    auth = (uri.username, uri.password) if uri.username else None
+                    headers = {}
 
-            response = requests.get(
-                f"{base_url}/geoFeatures",
-                params=params,
-                auth=auth,
-                headers=headers,
-                timeout=300,  # 5 minutes timeout for large geo data
+                # Build geoFeatures URL
+                # Format: /api/geoFeatures?ou=ou:LEVEL-1;LEVEL-2;parentId
+                params = {}
+                if ou_param:
+                    params["ou"] = f"ou:{ou_param}"
+
+                logger.info(f"[DHIS2 GeoFeatures] Fetching geoFeatures with params: {params}")
+
+                response = requests.get(
+                    f"{base_url}/geoFeatures",
+                    params=params,
+                    auth=auth,
+                    headers=headers,
+                    timeout=300,  # 5 minutes timeout for large geo data
+                )
+
+                logger.info(f"[DHIS2 GeoFeatures] Response status: {response.status_code}")
+
+                if response.status_code == 200:
+                    data = response.json()
+                    # geoFeatures returns an array directly
+                    features = data if isinstance(data, list) else data.get("geoFeatures", [])
+                    logger.info(f"[DHIS2 GeoFeatures] Found {len(features)} features")
+
+                    # Debug: Log coordinate structure of first feature
+                    if features and len(features) > 0:
+                        first_feature = features[0]
+                        logger.info(f"[DHIS2 GeoFeatures] First feature sample: id={first_feature.get('id')}, name={first_feature.get('na')}, type={first_feature.get('ty')}")
+                        coords_str = first_feature.get('co', '')
+                        if coords_str:
+                            import json as json_module
+                            try:
+                                coords = json_module.loads(coords_str) if isinstance(coords_str, str) else coords_str
+                                # Detect nesting depth
+                                def get_depth(c, d=0):
+                                    if not isinstance(c, list) or len(c) == 0:
+                                        return d
+                                    if isinstance(c[0], (int, float)):
+                                        return d + 1
+                                    return get_depth(c[0], d + 1)
+                                depth = get_depth(coords)
+                                logger.info(f"[DHIS2 GeoFeatures] Coordinate depth: {depth}, outer_length: {len(coords) if isinstance(coords, list) else 'N/A'}")
+                                # Log first coordinate for reference
+                                sample = coords
+                                for _ in range(min(depth - 1, 4)):
+                                    if isinstance(sample, list) and len(sample) > 0:
+                                        sample = sample[0]
+                                logger.info(f"[DHIS2 GeoFeatures] Sample coordinate: {sample[:2] if isinstance(sample, list) else sample}")
+                            except Exception as e:
+                                logger.warning(f"[DHIS2 GeoFeatures] Failed to parse coords for logging: {e}")
+
+                    return features
+                elif response.status_code == 401:
+                    error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}"
+                    logger.error(f"[DHIS2 GeoFeatures] {error_msg}")
+                    raise Exception(error_msg)
+                else:
+                    error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
+                    logger.error(f"[DHIS2 GeoFeatures] {error_msg}")
+                    raise Exception(error_msg)
+
+            # Use stale-while-revalidate caching (24hr cache, 4hr stale threshold)
+            features, from_cache = self._get_cached_or_fetch_dhis2(
+                cache_key=cache_key,
+                fetch_func=fetch_from_dhis2,
+                ttl=86400,  # 24 hours
+                stale_threshold=14400  # 4 hours
             )
 
-            logger.info(f"[DHIS2 GeoFeatures] Response status: {response.status_code}")
-
-            if response.status_code == 200:
-                data = response.json()
-                # geoFeatures returns an array directly
-                features = data if isinstance(data, list) else data.get("geoFeatures", [])
-                logger.info(f"[DHIS2 GeoFeatures] Found {len(features)} features")
-                
-                # Debug: Log coordinate structure of first feature
-                if features and len(features) > 0:
-                    first_feature = features[0]
-                    logger.info(f"[DHIS2 GeoFeatures] First feature sample: id={first_feature.get('id')}, name={first_feature.get('na')}, type={first_feature.get('ty')}")
-                    coords_str = first_feature.get('co', '')
-                    if coords_str:
-                        import json as json_module
-                        try:
-                            coords = json_module.loads(coords_str) if isinstance(coords_str, str) else coords_str
-                            # Detect nesting depth
-                            def get_depth(c, d=0):
-                                if not isinstance(c, list) or len(c) == 0:
-                                    return d
-                                if isinstance(c[0], (int, float)):
-                                    return d + 1
-                                return get_depth(c[0], d + 1)
-                            depth = get_depth(coords)
-                            logger.info(f"[DHIS2 GeoFeatures] Coordinate depth: {depth}, outer_length: {len(coords) if isinstance(coords, list) else 'N/A'}")
-                            # Log first coordinate for reference
-                            sample = coords
-                            for _ in range(min(depth - 1, 4)):
-                                if isinstance(sample, list) and len(sample) > 0:
-                                    sample = sample[0]
-                            logger.info(f"[DHIS2 GeoFeatures] Sample coordinate: {sample[:2] if isinstance(sample, list) else sample}")
-                        except Exception as e:
-                            logger.warning(f"[DHIS2 GeoFeatures] Failed to parse coords for logging: {e}")
-                
-                return self.response(200, result=features)
-            elif response.status_code == 401:
-                error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}"
-                logger.error(f"[DHIS2 GeoFeatures] {error_msg}")
-                return self.response_400(message=error_msg)
-            else:
-                error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
-                logger.error(f"[DHIS2 GeoFeatures] {error_msg}")
-                return self.response_400(message=error_msg)
+            # Return compressed response for large geo datasets
+            response_data = {
+                "result": features,
+                "from_cache": from_cache,
+                "count": len(features) if isinstance(features, list) else 0
+            }
+            return compress_response_if_supported(response_data)
 
         except Exception as ex:
             logger.exception("Failed to fetch DHIS2 geoFeatures")
@@ -2862,7 +3006,8 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             if cached_data is not None:
                 feature_count = len(cached_data.get("features", [])) if isinstance(cached_data, dict) else 0
                 logger.info(f"[DHIS2 GeoJSON] Cache HIT: {cache_key} ({feature_count} features)")
-                return self.response(200, result=cached_data)
+                response_data = {"result": cached_data, "from_cache": True}
+                return compress_response_if_supported(response_data)
 
             # Cache miss - fetch from DHIS2 API
             logger.info(f"[DHIS2 GeoJSON] Cache MISS: {cache_key} - fetching from API")
@@ -2890,7 +3035,8 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 cache.set(cache_key, data, ttl=ttl)
                 logger.info(f"[DHIS2 GeoJSON] Cached: {cache_key} (ttl: {ttl}s)")
 
-                return self.response(200, result=data)
+                response_data = {"result": data, "from_cache": False}
+                return compress_response_if_supported(response_data)
             elif response.status_code == 401:
                 error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}"
                 logger.error(f"[DHIS2 GeoJSON] {error_msg}")

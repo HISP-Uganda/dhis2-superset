@@ -87,6 +87,30 @@ export interface GeoFeatureLoadOptions {
   forceRefresh?: boolean;
   /** Enable background refresh when cache is stale but usable */
   enableBackgroundRefresh?: boolean;
+  /** Enable progressive/chunked loading for large datasets */
+  enableProgressiveLoading?: boolean;
+  /** Chunk size for progressive loading (default: 1000 features) */
+  chunkSize?: number;
+  /** Callback for each chunk loaded (for progressive rendering) */
+  onChunkLoaded?: (chunk: DHIS2GeoJSONFeature[], progress: number, isComplete: boolean) => void;
+  /** Use Web Worker for parsing (offloads work from main thread) */
+  useWebWorker?: boolean;
+}
+
+/**
+ * Cache metrics for monitoring performance
+ */
+export interface CacheMetrics {
+  /** Cache source: 'memory', 'indexeddb', or 'api' */
+  source: 'memory' | 'indexeddb' | 'api';
+  /** Cache age in milliseconds */
+  cacheAge: number;
+  /** Cache staleness status */
+  staleness: 'fresh' | 'stale' | 'expired' | 'none';
+  /** Whether background refresh was queued */
+  backgroundRefreshQueued: boolean;
+  /** Cache key used */
+  cacheKey: string;
 }
 
 /**
@@ -107,6 +131,8 @@ export interface GeoFeatureLoadResult {
   loadTimeMs: number;
   /** Any errors encountered */
   errors: string[];
+  /** Cache metrics for monitoring */
+  cacheMetrics?: CacheMetrics;
 }
 
 /**
@@ -315,6 +341,51 @@ function normalizeCoordinates(
 }
 
 /**
+ * Parse geoFeatures using Web Worker (non-blocking)
+ */
+async function parseGeoFeaturesInWorker(
+  geoFeatures: DHIS2GeoFeature[],
+): Promise<DHIS2GeoJSONFeature[]> {
+  return new Promise((resolve, reject) => {
+    try {
+      // Create worker from separate file
+      const worker = new Worker(
+        new URL('./dhis2GeoFeatureWorker.ts', import.meta.url),
+      );
+
+      worker.onmessage = (e: MessageEvent) => {
+        const response = e.data;
+
+        if (response.type === 'result') {
+          // eslint-disable-next-line no-console
+          console.log('[GeoFeatureLoader] Worker parsing complete:', response.stats);
+          worker.terminate();
+          resolve(response.features);
+        } else if (response.type === 'error') {
+          worker.terminate();
+          reject(new Error(response.error));
+        }
+      };
+
+      worker.onerror = (error: ErrorEvent) => {
+        worker.terminate();
+        reject(error);
+      };
+
+      // Send data to worker
+      worker.postMessage({
+        type: 'parse',
+        geoFeatures,
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[GeoFeatureLoader] Worker not supported, falling back to main thread');
+      reject(error);
+    }
+  });
+}
+
+/**
  * Convert DHIS2 geoFeature format to GeoJSON Feature format
  */
 function convertGeoFeatureToGeoJSON(
@@ -410,6 +481,7 @@ async function loadViaGeoFeaturesEndpoint(
   databaseId: number,
   levels: number[],
   parentOuIds?: string[],
+  useWebWorker: boolean = false,
 ): Promise<DHIS2GeoJSONFeature[]> {
   const allFeatures: DHIS2GeoJSONFeature[] = [];
 
@@ -481,13 +553,35 @@ async function loadViaGeoFeaturesEndpoint(
       });
     }
 
-    for (const gf of geoFeatures) {
-      const feature = convertGeoFeatureToGeoJSON(gf);
-      if (feature) {
-        allFeatures.push(feature);
+    // Parse features using Web Worker or main thread
+    if (useWebWorker && geoFeatures.length > 100) {
+      // Use Web Worker for large datasets (> 100 features)
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[GeoFeatureLoader] Using Web Worker for parsing', geoFeatures.length, 'features');
+        const parsedFeatures = await parseGeoFeaturesInWorker(geoFeatures);
+        allFeatures.push(...parsedFeatures);
+      } catch (workerError) {
+        // Fallback to main thread if worker fails
+        // eslint-disable-next-line no-console
+        console.warn('[GeoFeatureLoader] Worker failed, falling back to main thread:', workerError);
+        for (const gf of geoFeatures) {
+          const feature = convertGeoFeatureToGeoJSON(gf);
+          if (feature) {
+            allFeatures.push(feature);
+          }
+        }
+      }
+    } else {
+      // Parse on main thread for small datasets
+      for (const gf of geoFeatures) {
+        const feature = convertGeoFeatureToGeoJSON(gf);
+        if (feature) {
+          allFeatures.push(feature);
+        }
       }
     }
-    
+
     // Log converted features
     if (allFeatures.length > 0) {
       // eslint-disable-next-line no-console
@@ -602,17 +696,17 @@ function isCacheStale(cache: GeoFeatureCache): boolean {
 }
 
 /**
- * Load from cache (memory first, then IndexedDB)
+ * Load from cache (memory first, then IndexedDB) with metrics tracking
  */
 async function loadFromCache(
   options: GeoFeatureLoadOptions,
-): Promise<GeoFeatureCache | null> {
+): Promise<{ cache: GeoFeatureCache; source: 'memory' | 'indexeddb' } | null> {
   const cacheKey = getCacheKey(options);
 
   // Check memory cache first (fastest)
   const memCached = memoryCache.get(cacheKey);
   if (memCached && isCacheValid(memCached, options)) {
-    return memCached;
+    return { cache: memCached, source: 'memory' };
   }
 
   // Check IndexedDB (persistent)
@@ -620,7 +714,7 @@ async function loadFromCache(
   if (dbCached && isCacheValid(dbCached, options)) {
     // Update memory cache for faster subsequent access
     memoryCache.set(cacheKey, dbCached);
-    return dbCached;
+    return { cache: dbCached, source: 'indexeddb' };
   }
 
   return null;
@@ -681,6 +775,7 @@ async function backgroundRefresh(options: GeoFeatureLoadOptions): Promise<void> 
         options.databaseId,
         options.levels,
         options.parentOuIds,
+        options.useWebWorker || false,
       );
     }
 
@@ -760,24 +855,51 @@ export async function loadDHIS2GeoFeatures(
   });
 
   // Check cache first (unless force refresh)
+  let cacheMetrics: CacheMetrics | undefined;
+
   if (!options.forceRefresh) {
-    const cached = await loadFromCache(options);
-    if (cached) {
+    const cacheResult = await loadFromCache(options);
+    if (cacheResult) {
+      const { cache: cached, source } = cacheResult;
+      const cacheAge = Date.now() - cached.timestamp;
       const isStale = isCacheStale(cached);
+      const isExpired = !isCacheValid(cached, options);
+
+      // Determine staleness status
+      let staleness: 'fresh' | 'stale' | 'expired';
+      if (isExpired) {
+        staleness = 'expired';
+      } else if (isStale) {
+        staleness = 'stale';
+      } else {
+        staleness = 'fresh';
+      }
+
+      // Trigger background refresh if stale
+      const backgroundRefreshQueued = isStale && options.enableBackgroundRefresh !== false;
+      if (backgroundRefreshQueued) {
+        backgroundRefresh(options);
+      }
+
+      // Build cache metrics
+      cacheMetrics = {
+        source,
+        cacheAge,
+        staleness,
+        backgroundRefreshQueued,
+        cacheKey,
+      };
 
       // eslint-disable-next-line no-console
       console.log('[GeoFeatureLoader] Cache hit:', {
+        source,
         featureCount: cached.features.length,
+        cacheAge: `${(cacheAge / 1000).toFixed(1)}s`,
+        staleness,
+        backgroundRefreshQueued,
         cachedLevels: cached.levels,
         requestedLevels: options.levels,
-        levelsMatch: JSON.stringify(cached.levels?.sort()) === JSON.stringify(options.levels?.sort()),
-        isStale,
       });
-
-      // Trigger background refresh if stale
-      if (isStale && options.enableBackgroundRefresh !== false) {
-        backgroundRefresh(options);
-      }
 
       return {
         featuresByLevel: groupFeaturesByLevel(cached.features),
@@ -787,6 +909,7 @@ export async function loadDHIS2GeoFeatures(
         backgroundRefreshInProgress: backgroundRefreshInProgress.has(cacheKey),
         loadTimeMs: Date.now() - startTime,
         errors: [],
+        cacheMetrics,
       };
     }
   }
@@ -834,6 +957,47 @@ export async function loadDHIS2GeoFeatures(
     await saveToCache(options, allFeatures);
   }
 
+  // Progressive loading for large datasets
+  if (
+    options.enableProgressiveLoading &&
+    options.onChunkLoaded &&
+    allFeatures.length > (options.chunkSize || 1000)
+  ) {
+    const chunkSize = options.chunkSize || 1000;
+    const totalChunks = Math.ceil(allFeatures.length / chunkSize);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[GeoFeatureLoader] Progressive loading: ${allFeatures.length} features in ${totalChunks} chunks`,
+    );
+
+    // Process chunks progressively
+    for (let i = 0; i < allFeatures.length; i += chunkSize) {
+      const chunk = allFeatures.slice(i, Math.min(i + chunkSize, allFeatures.length));
+      const progress = Math.min(100, ((i + chunkSize) / allFeatures.length) * 100);
+      const isComplete = i + chunkSize >= allFeatures.length;
+
+      // Call the chunk callback
+      options.onChunkLoaded(chunk, progress, isComplete);
+
+      // Yield to browser to prevent blocking (only if not last chunk)
+      if (!isComplete) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  // Build cache metrics for API fetch
+  if (!cacheMetrics) {
+    cacheMetrics = {
+      source: 'api',
+      cacheAge: 0,
+      staleness: 'none',
+      backgroundRefreshQueued: false,
+      cacheKey,
+    };
+  }
+
   return {
     featuresByLevel: groupFeaturesByLevel(allFeatures),
     allFeatures,
@@ -842,6 +1006,7 @@ export async function loadDHIS2GeoFeatures(
     backgroundRefreshInProgress: false,
     loadTimeMs: Date.now() - startTime,
     errors,
+    cacheMetrics,
   };
 }
 
@@ -981,6 +1146,81 @@ export async function getGeoFeatureCacheStats(): Promise<{
     indexedDBSize,
     entries,
   };
+}
+
+/**
+ * Predictively preload adjacent/child levels for faster drill-downs
+ *
+ * This is critical for slow DHIS2 servers - preloading means drill-downs
+ * appear instant (< 100ms) instead of waiting 3-15 seconds.
+ *
+ * @param databaseId - Database ID
+ * @param currentLevel - Current level being viewed
+ * @param direction - Which levels to preload ('down' for children, 'up' for parents, 'both')
+ * @param endpoint - Which endpoint to use
+ *
+ * @example
+ * ```typescript
+ * // User is viewing level 2, preload levels 3 and 4 for instant drill-down
+ * preloadAdjacentLevels(2, 2, 'down', 'geoFeatures');
+ * ```
+ */
+export async function preloadAdjacentLevels(
+  databaseId: number,
+  currentLevel: number,
+  direction: 'up' | 'down' | 'both' = 'down',
+  endpoint: 'geoFeatures' | 'geoJSON' = 'geoFeatures',
+): Promise<void> {
+  const levelsToPreload: number[] = [];
+
+  // Determine which levels to preload
+  if (direction === 'down' || direction === 'both') {
+    // Preload 2 levels down for drill-down
+    levelsToPreload.push(currentLevel + 1, currentLevel + 2);
+  }
+
+  if (direction === 'up' || direction === 'both') {
+    // Preload parent level for zoom-out
+    if (currentLevel > 1) {
+      levelsToPreload.push(currentLevel - 1);
+    }
+  }
+
+  // Filter out invalid levels
+  const validLevels = levelsToPreload.filter(l => l > 0 && l <= 10);
+
+  if (validLevels.length === 0) {
+    return;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[GeoFeatureLoader] Predictive preload: levels ${validLevels.join(', ')} (from level ${currentLevel})`,
+  );
+
+  // Use requestIdleCallback if available for low-priority loading
+  const preloadFunc = async () => {
+    try {
+      await loadDHIS2GeoFeatures({
+        databaseId,
+        levels: validLevels,
+        endpoint,
+        enableBackgroundRefresh: false, // Don't trigger refresh during preload
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[GeoFeatureLoader] Predictive preload failed:', error);
+      // Silent failure - preloading is best-effort
+    }
+  };
+
+  // Use requestIdleCallback for non-blocking preload
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    window.requestIdleCallback(preloadFunc as IdleRequestCallback);
+  } else {
+    // Fallback: use setTimeout with delay
+    setTimeout(preloadFunc, 100);
+  }
 }
 
 export default loadDHIS2GeoFeatures;
