@@ -2365,6 +2365,8 @@ class DHIS2Connection:
         include_children: bool = False,
         ou_dimension: str | None = None,
         ou_mode: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> dict[str, Any]:
         """
         Fetch analytics data from DHIS2.
@@ -2397,6 +2399,19 @@ class DHIS2Connection:
             # ouMode options: SELECTED (default), CHILDREN, DESCENDANTS, ALL
             effective_ou_mode = ou_mode.upper() if ou_mode else ("DESCENDANTS" if include_children else None)
 
+            # Use DHIS2 paging to avoid fetching all rows for preview
+            paging = bool(limit and limit > 0)
+            page_size = limit if paging else None
+            page = (
+                int(offset / limit) + 1
+                if paging and offset is not None and limit
+                else 1
+            )
+
+            paging_params = "&paging=false"
+            if paging:
+                paging_params = f"&paging=true&pageSize={page_size}&page={page}"
+
             if effective_ou_mode:
                 params = (
                     f"dimension=dx:{dx_param}"
@@ -2404,7 +2419,7 @@ class DHIS2Connection:
                     f"&dimension=ou:{ou_param}"
                     f"&ouMode={effective_ou_mode}"
                     f"&tableLayout=true"
-                    f"&paging=false"
+                    f"{paging_params}"
                 )
                 logger.info(f"[Analytics API] Using ouMode={effective_ou_mode}")
             else:
@@ -2413,7 +2428,7 @@ class DHIS2Connection:
                     f"&dimension=pe:{pe_param}"
                     f"&dimension=ou:{ou_param}"
                     f"&tableLayout=true"
-                    f"&paging=false"
+                    f"{paging_params}"
                 )
 
             logger.info(f"[Analytics API] Fetching from {url} with de_ids={de_ids}, period_ids={period_ids}, ou_ids={ou_ids}, ou_mode={effective_ou_mode}")

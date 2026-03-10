@@ -78,6 +78,7 @@ export const DHIS2AuthenticationFields = ({
   changeMethods,
   validationErrors,
   getValidation,
+  clearValidationErrors,
   db,
   isValidating,
 }: FieldPropTypes) => {
@@ -98,6 +99,9 @@ export const DHIS2AuthenticationFields = ({
   );
 
   const handleAuthTypeChange = (value: string) => {
+    if (clearValidationErrors) {
+      clearValidationErrors();
+    }
     // Update authentication type
     if (changeMethods?.onParametersChange) {
       changeMethods.onParametersChange({
@@ -142,6 +146,13 @@ export const DHIS2AuthenticationFields = ({
     }
   };
 
+  const handleParamChange = (event: any) => {
+    if (clearValidationErrors) {
+      clearValidationErrors();
+    }
+    changeMethods?.onParametersChange?.(event);
+  };
+
   return (
     <>
       {/* Host Field - Always visible */}
@@ -159,7 +170,7 @@ export const DHIS2AuthenticationFields = ({
         errorMessage={validationErrors?.host}
         placeholder={t('https://play.dhis2.org/40.2.2')}
         label={t('DHIS2 Server URL')}
-        onChange={changeMethods?.onParametersChange}
+        onChange={handleParamChange}
         helpText={t(
           'Examples: https://play.dhis2.org/40.2.2 or https://dhis2.hispuganda.org/hmis',
         )}
@@ -198,7 +209,7 @@ export const DHIS2AuthenticationFields = ({
             errorMessage={validationErrors?.username}
             placeholder={t('admin')}
             label={t('Username')}
-            onChange={changeMethods?.onParametersChange}
+            onChange={handleParamChange}
             helpText={t('Enter your DHIS2 username')}
           />
 
@@ -215,7 +226,7 @@ export const DHIS2AuthenticationFields = ({
             errorMessage={validationErrors?.password}
             placeholder={t('district')}
             label={t('Password')}
-            onChange={changeMethods?.onParametersChange}
+            onChange={handleParamChange}
             helpText={t('Enter your DHIS2 password')}
           />
         </>
@@ -237,8 +248,8 @@ export const DHIS2AuthenticationFields = ({
           validationMethods={{ onBlur: getValidation }}
           errorMessage={validationErrors?.access_token}
           placeholder={t('d2pat_xxxxxxxxxxxxxxxxxxxxx')}
-          label={t('Personal Access Token')}
-          onChange={changeMethods?.onParametersChange}
+        label={t('Personal Access Token')}
+        onChange={handleParamChange}
           helpText={t(
             'Generate a token in DHIS2: User Settings → Personal Access Tokens',
           )}

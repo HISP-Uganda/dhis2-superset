@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { styled, useTheme } from '@superset-ui/core';
+import { useEffect, useMemo, useState } from 'react';
+import { styled, SupersetClient, useTheme } from '@superset-ui/core';
 import {
   Card,
   Row,
@@ -194,6 +194,50 @@ export default function WizardStepSave({
   const isScopeApplied =
     wizardState.dataLevelScope &&
     wizardState.dataLevelScope !== 'selected';
+  const [expandedOrgUnitCount, setExpandedOrgUnitCount] = useState<number | null>(
+    null,
+  );
+  const [expandedCountLoading, setExpandedCountLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const databaseId = dataset?.db?.id;
+
+    if (!isScopeApplied || !databaseId || orgUnitCount === 0) {
+      setExpandedOrgUnitCount(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setExpandedCountLoading(true);
+    SupersetClient.post({
+      endpoint: `/api/v1/database/${databaseId}/dhis2_expanded_org_units/`,
+      jsonPayload: {
+        org_units: wizardState.orgUnits,
+        include_children: true,
+      },
+    })
+      .then(({ json }) => {
+        if (!cancelled) {
+          setExpandedOrgUnitCount(json?.count ?? null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExpandedOrgUnitCount(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setExpandedCountLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataset?.db?.id, isScopeApplied, orgUnitCount, wizardState.orgUnits]);
 
   const getPeriodType = (periodId: string) => {
     const periodKey = periodId.split('|')[0];
@@ -323,7 +367,7 @@ export default function WizardStepSave({
             <Statistic
               title={
                 isScopeApplied
-                  ? 'Organization Units (scope applied)'
+                  ? 'Organization Units (selected)'
                   : 'Organization Units'
               }
               value={orgUnitCount}
@@ -336,7 +380,13 @@ export default function WizardStepSave({
               }
               valueStyle={{ color: theme.colorWarning }}
               suffix={
-                isScopeApplied ? `(${orgUnitCount} selected)` : ''
+                isScopeApplied
+                  ? expandedCountLoading
+                    ? '(calculating scope…)'
+                    : expandedOrgUnitCount !== null
+                      ? `(${expandedOrgUnitCount} with scope)`
+                      : '(scope applied)'
+                  : ''
               }
             />
           </Card>

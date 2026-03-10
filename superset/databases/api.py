@@ -4377,6 +4377,8 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                             ou_ids=ou_ids,
                             include_children=False,
                             ou_dimension=ou_dimension,
+                            limit=limit,
+                            offset=offset,
                         )
 
                         logger.info(f"[DHIS2 Data Preview] Received data_values type: {type(data_values)}")
@@ -4730,6 +4732,8 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                             include_children=False,
                             ou_dimension=ou_dimension,
                             ou_mode=ou_mode,  # Pass DESCENDANTS, CHILDREN, etc.
+                            limit=limit,
+                            offset=0,
                         )
 
                         if data_values and isinstance(data_values, dict):
