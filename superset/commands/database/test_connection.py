@@ -24,6 +24,7 @@ from superset import is_feature_enabled
 from superset.commands.base import BaseCommand
 from superset.commands.database.exceptions import (
     DatabaseSecurityUnsafeError,
+    DatabaseTestConnectionFailedError,
     DatabaseTestConnectionDriverError,
     DatabaseTestConnectionUnexpectedError,
 )
@@ -35,6 +36,8 @@ from superset.commands.database.utils import ping
 from superset.daos.database import DatabaseDAO, SSHTunnelDAO
 from superset.databases.ssh_tunnel.models import SSHTunnel
 from superset.databases.utils import make_url_safe
+from superset.db_engine_specs.dhis2 import DHIS2EngineSpec
+from superset.db_engine_specs import get_engine_spec
 from superset.errors import ErrorLevel, SupersetErrorType
 from superset.exceptions import (
     OAuth2RedirectError,
@@ -93,6 +96,16 @@ class TestConnectionDatabaseCommand(BaseCommand):
         self,
     ) -> None:  # pylint: disable=too-many-statements,too-many-branches
         self.validate()
+        if DHIS2EngineSpec.is_shell_sqlalchemy_uri(self._uri):
+            return
+        engine = self._properties.get("engine")
+        driver = self._properties.get("driver")
+        if engine:
+            engine_spec = get_engine_spec(engine, driver)
+            if hasattr(engine_spec, "is_configured_connection_shell") and engine_spec.is_configured_connection_shell(  # type: ignore[attr-defined]
+                self._properties.get("parameters")
+            ):
+                return
         ex_str = ""
         ssh_tunnel = self._properties.get("ssh_tunnel")
 
@@ -134,33 +147,46 @@ class TestConnectionDatabaseCommand(BaseCommand):
                 engine=database.db_engine_spec.__name__,
             )
 
-            with database.get_sqla_engine(override_ssh_tunnel=ssh_tunnel) as engine:
-                try:
-                    alive = ping(engine)
-                except SupersetTimeoutException as ex:
-                    raise SupersetTimeoutException(
-                        error_type=SupersetErrorType.CONNECTION_DATABASE_TIMEOUT,
-                        message=(
-                            "Please check your connection details and database settings, "  # noqa: E501
-                            "and ensure that your database is accepting connections, "
-                            "then try connecting again."
-                        ),
-                        level=ErrorLevel.ERROR,
-                        extra={"sqlalchemy_uri": database.sqlalchemy_uri},
-                    ) from ex
-                except Exception as ex:  # pylint: disable=broad-except
-                    # If the connection failed because OAuth2 is needed, start the flow.
-                    if (
-                        database.is_oauth2_enabled()
-                        and database.db_engine_spec.needs_oauth2(ex)
-                    ):
-                        database.start_oauth2_dance()
+            try:
+                if self._uri.startswith("dhis2://"):
+                    alive = bool(database.db_engine_spec.test_connection(database))
+                else:
+                    with database.get_sqla_engine(
+                        override_ssh_tunnel=ssh_tunnel
+                    ) as engine:
+                        alive = ping(engine)
+            except SupersetTimeoutException as ex:
+                raise SupersetTimeoutException(
+                    error_type=SupersetErrorType.CONNECTION_DATABASE_TIMEOUT,
+                    message=(
+                        "Please check your connection details and database settings, "  # noqa: E501
+                        "and ensure that your database is accepting connections, "
+                        "then try connecting again."
+                    ),
+                    level=ErrorLevel.ERROR,
+                    extra={"sqlalchemy_uri": database.sqlalchemy_uri},
+                ) from ex
+            except Exception as ex:  # pylint: disable=broad-except
+                # If the connection failed because OAuth2 is needed, start the flow.
+                if (
+                    database.is_oauth2_enabled()
+                    and database.db_engine_spec.needs_oauth2(ex)
+                ):
+                    database.start_oauth2_dance()
 
-                    alive = False
-                    # So we stop losing the original message if any
-                    ex_str = str(ex)
+                alive = False
+                # So we stop losing the original message if any
+                ex_str = str(ex)
 
             if not alive:
+                if ex_str:
+                    raise DatabaseTestConnectionFailedError(
+                        database.db_engine_spec.extract_errors(
+                            Exception(ex_str),
+                            self._context,
+                            database_name=database.unique_name,
+                        )
+                    )
                 raise DBAPIError(ex_str or None, None, None)
 
             # Log succesful connection test with engine
@@ -193,6 +219,8 @@ class TestConnectionDatabaseCommand(BaseCommand):
                 ex, self._context, database_name=database.unique_name
             )
             raise SupersetErrorsException(errors, status=400) from ex
+        except DatabaseTestConnectionFailedError:
+            raise
         except OAuth2RedirectError:
             raise
         except SupersetSecurityException as ex:

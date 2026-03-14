@@ -17,10 +17,14 @@
  * under the License.
  */
 import { useState, useEffect } from 'react';
-import { styled, css } from '@superset-ui/core';
+import { styled } from '@superset-ui/core';
 import { debounce } from 'lodash';
 import { getUrlParam } from 'src/utils/urlUtils';
-import { MainNav, MenuMode } from '@superset-ui/core/components/Menu';
+import {
+  MainNav,
+  MenuMode,
+  type MenuItem,
+} from '@superset-ui/core/components/Menu';
 import { Tooltip, Grid, Row, Col } from '@superset-ui/core/components';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Icons } from '@superset-ui/core/components/Icons';
@@ -143,6 +147,55 @@ const StyledHeader = styled.header`
             }
           }
         }
+
+        .ant-menu-submenu {
+          padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 4}px;
+          display: flex;
+          align-items: center;
+          height: 100%;
+          margin: 0;
+
+          .ant-menu-title-content {
+            color: rgba(255, 255, 255, 0.95);
+            font-weight: 500;
+          }
+
+          &:hover .ant-menu-title-content,
+          &.ant-menu-submenu-active .ant-menu-title-content,
+          &.ant-menu-submenu-open .ant-menu-title-content,
+          &.ant-menu-submenu-selected .ant-menu-title-content {
+            color: #ffffff;
+          }
+
+          .ant-menu-submenu-title {
+            display: flex;
+            flex-direction: row-reverse;
+
+            &:after {
+              content: '';
+              position: absolute;
+              bottom: -3px;
+              left: 50%;
+              width: 0;
+              height: 3px;
+              opacity: 0;
+              transform: translateX(-50%);
+              transition: all ${theme.motionDurationMid};
+            }
+          }
+
+          &.ant-menu-submenu-open .ant-menu-submenu-title:after,
+          &.ant-menu-submenu-active .ant-menu-submenu-title:after {
+            opacity: 1;
+            width: calc(100% - 1px);
+          }
+
+          [data-icon='caret-down'] {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: ${theme.fontSizeXS}px;
+            margin-left: ${theme.sizeUnit}px;
+          }
+        }
       }
 
       @media (max-width: 767px) {
@@ -157,38 +210,6 @@ const StyledHeader = styled.header`
           display: none;
         }
       }
-  `}
-`;
-const { SubMenu } = MainNav;
-
-const StyledSubMenu = styled(SubMenu)`
-  ${({ theme }) => css`
-    [data-icon='caret-down'] {
-      color: rgba(255, 255, 255, 0.8);
-      font-size: ${theme.fontSizeXS}px;
-      margin-left: ${theme.sizeUnit}px;
-    }
-    &.ant-menu-submenu {
-      padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 4}px;
-      display: flex;
-      align-items: center;
-      height: 100%;
-
-      .ant-menu-title-content {
-        color: rgba(255, 255, 255, 0.95);
-        font-weight: 500;
-      }
-
-      &:hover .ant-menu-title-content {
-        color: #ffffff;
-      }
-
-      &.ant-menu-submenu-active {
-        .ant-menu-title-content {
-          color: #ffffff;
-        }
-      }
-    }
   `}
 `;
 const { useBreakpoint } = Grid;
@@ -225,6 +246,8 @@ export function Menu({
     Dashboard = '/dashboard',
     Chart = '/chart',
     Datasets = '/tablemodelview',
+    SqlLab = '/sqllab',
+    DHIS2 = '/superset/dhis2',
   }
 
   const defaultTabSelection: string[] = [];
@@ -242,6 +265,9 @@ export function Menu({
       case path.startsWith(Paths.Chart) || path.startsWith(Paths.Explore):
         setActiveTabs(['Charts']);
         break;
+      case path.startsWith(Paths.DHIS2) || path.startsWith(Paths.SqlLab):
+        setActiveTabs(['Data']);
+        break;
       case path.startsWith(Paths.Datasets):
         setActiveTabs(['Datasets']);
         break;
@@ -253,72 +279,82 @@ export function Menu({
   const standalone = getUrlParam(URL_PARAMS.standalone);
   if (standalone || uiConfig.hideNav) return <></>;
 
-  const renderSubMenu = ({
+  const renderMenuItem = ({
     label,
     childs,
     url,
     index,
     isFrontendRoute,
-  }: MenuObjectProps) => {
+  }: MenuObjectProps): MenuItem => {
     if (url && isFrontendRoute) {
-      return (
-        <MainNav.Item key={label} role="presentation">
+      return {
+        key: label,
+        label: (
           <NavLink role="button" to={url} activeClassName="is-active">
             {label}
           </NavLink>
-        </MainNav.Item>
-      );
+        ),
+      };
     }
     if (url) {
-      return (
-        <MainNav.Item key={label}>
-          <Typography.Link href={url}>{label}</Typography.Link>
-        </MainNav.Item>
-      );
+      return {
+        key: label,
+        label: <Typography.Link href={url}>{label}</Typography.Link>,
+      };
     }
-    return (
-      <StyledSubMenu
-        key={index}
-        title={label}
-        icon={
-          showMenu === 'inline' ? (
-            <></>
-          ) : (
-            <Icons.CaretDownOutlined iconSize="xs" />
-          )
-        }
-      >
-        {childs?.map((child: MenuObjectChildProps | string, index1: number) => {
-          if (typeof child === 'string' && child === '-' && label !== 'Data') {
-            return <MainNav.Divider key={`$${index1}`} />;
+    return {
+      key: String(index ?? label),
+      label,
+      icon:
+        showMenu === 'inline' ? undefined : (
+          <Icons.CaretDownOutlined iconSize="xs" />
+        ),
+      children: childs
+        ?.map((child: MenuObjectChildProps | string, index1: number) => {
+          if (typeof child === 'string' && child === '-') {
+            return { type: 'divider' as const };
           }
           if (typeof child !== 'string') {
-            return (
-              <MainNav.Item key={`${child.label}`}>
-                {child.isFrontendRoute ? (
-                  <NavLink
-                    to={child.url || ''}
-                    exact
-                    activeClassName="is-active"
-                  >
-                    {child.label}
-                  </NavLink>
-                ) : (
-                  <Typography.Link href={child.url}>
-                    {child.label}
-                  </Typography.Link>
-                )}
-              </MainNav.Item>
-            );
+            return {
+              key: `${label}-${child.label}-${index1}`,
+              label: child.isFrontendRoute ? (
+                <NavLink to={child.url || ''} exact activeClassName="is-active">
+                  {child.label}
+                </NavLink>
+              ) : (
+                <Typography.Link href={child.url}>{child.label}</Typography.Link>
+              ),
+            };
           }
           return null;
-        })}
-      </StyledSubMenu>
-    );
+        })
+        .filter(
+          (item): item is NonNullable<typeof item> => item !== null,
+        ),
+    };
   };
   const renderBrand = () =>
     // Hide logo - only show text title
     null;
+  const mainNavItems = menu.map((item, index) => {
+    const props = {
+      index,
+      ...item,
+      isFrontendRoute: isFrontendRoute(item.url),
+      childs: item.childs?.map(c => {
+        if (typeof c === 'string') {
+          return c;
+        }
+
+        return {
+          ...c,
+          isFrontendRoute: isFrontendRoute(c.url),
+        };
+      }),
+    };
+
+    return renderMenuItem(props);
+  });
   return (
     <StyledHeader className="top" id="main-menu" role="navigation">
       <Row>
@@ -342,27 +378,8 @@ export function Menu({
             className="main-nav"
             selectedKeys={activeTabs}
             disabledOverflow
-          >
-            {menu.map((item, index) => {
-              const props = {
-                index,
-                ...item,
-                isFrontendRoute: isFrontendRoute(item.url),
-                childs: item.childs?.map(c => {
-                  if (typeof c === 'string') {
-                    return c;
-                  }
-
-                  return {
-                    ...c,
-                    isFrontendRoute: isFrontendRoute(c.url),
-                  };
-                }),
-              };
-
-              return renderSubMenu(props);
-            })}
-          </MainNav>
+            items={mainNavItems}
+          />
         </Col>
         <Col md={8} xs={24}>
           <RightMenu
@@ -380,6 +397,34 @@ export function Menu({
 
 // transform the menu data to reorganize components
 export default function MenuWrapper({ data, ...rest }: MenuProps) {
+  const dataWorkspaceChildren: MenuObjectChildProps[] = [
+    {
+      name: 'DHIS2',
+      label: 'DHIS2',
+      url: '/superset/dhis2/instances/',
+    },
+    {
+      name: 'Data Workspace',
+      label: 'Data Workspace',
+      url: '/superset/dhis2/local-data/',
+    },
+    {
+      name: 'Local Metadata',
+      label: 'Local Metadata',
+      url: '/superset/dhis2/local-metadata/',
+    },
+    {
+      name: 'Sync History',
+      label: 'Sync History',
+      url: '/superset/dhis2/sync-history/',
+    },
+    {
+      name: 'SQL',
+      label: 'SQL',
+      url: '/sqllab/',
+    },
+  ];
+
   const newMenuData = {
     ...data,
     brand: {
@@ -390,14 +435,72 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
 
   // Menu items that should go into settings dropdown
   const settingsMenus = {
-    Data: true,
     Security: true,
     Manage: true,
   };
 
+  const isDataMenu = (item: MenuObjectProps) =>
+    item.name === 'Data' || item.label === 'Data';
+
+  const isSqlMenu = (item: MenuObjectProps) =>
+    item.url?.startsWith('/sqllab') ||
+    item.name === 'SQL' ||
+    item.label === 'SQL' ||
+    item.name === 'SQL Lab' ||
+    item.label === 'SQL Lab';
+
+  const isDHIS2Menu = (item: MenuObjectProps) =>
+    item.url?.startsWith('/superset/dhis2/') ||
+    item.name === 'DHIS2' ||
+    item.label === 'DHIS2' ||
+    item.name === 'DHIS2 Federation' ||
+    item.label === 'DHIS2 Federation' ||
+    item.childs?.some(
+      child =>
+        typeof child !== 'string' &&
+        child.url?.startsWith('/superset/dhis2/'),
+    );
+
+  const dedupeChildren = (children: (MenuObjectChildProps | string)[]) =>
+    children.filter((child, index, array) => {
+      if (typeof child === 'string') {
+        const previous = array[index - 1];
+        const next = array[index + 1];
+        if (child !== '-') {
+          return true;
+        }
+        return previous !== '-' && next !== undefined;
+      }
+
+      return (
+        array.findIndex(entry => {
+          if (typeof entry === 'string') {
+            return false;
+          }
+          return (
+            entry.label === child.label &&
+            (entry.url || '') === (child.url || '')
+          );
+        }) === index
+      );
+    });
+
+  const toDataChild = (item: MenuObjectChildProps): MenuObjectChildProps => ({
+    ...item,
+    name:
+      item.name === 'SQL Lab' || item.label === 'SQL Lab'
+        ? 'SQL'
+        : item.name,
+    label:
+      item.label === 'SQL Lab'
+        ? 'SQL'
+        : item.label,
+  });
+
   // Cycle through menu.menu to build out cleanedMenu and settings
   const cleanedMenu: MenuObjectProps[] = [];
   const settings: MenuObjectProps[] = [];
+  const movedDataChildren: MenuObjectChildProps[] = [];
   newMenuData.menu.forEach((item: any) => {
     if (!item) {
       return;
@@ -421,15 +524,116 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
       newItem.childs = children;
     }
 
+    if (isSqlMenu(newItem)) {
+      movedDataChildren.push(
+        toDataChild({
+          name: newItem.name,
+          label: newItem.label,
+          url: newItem.url,
+        }),
+      );
+      return;
+    }
+
+    if (isDHIS2Menu(newItem) && !isDataMenu(newItem)) {
+      if (newItem.url) {
+        movedDataChildren.push({
+          name: 'DHIS2',
+          label: 'DHIS2',
+          url: newItem.url,
+        });
+      }
+      if (newItem.childs) {
+        newItem.childs.forEach((child: MenuObjectChildProps | string) => {
+          if (
+            typeof child !== 'string' &&
+            child.url?.startsWith('/superset/dhis2/')
+          ) {
+            movedDataChildren.push(child);
+          }
+        });
+      }
+      return;
+    }
+
+    const normalizedItem =
+      isDataMenu(item)
+        ? {
+            ...newItem,
+            childs: dedupeChildren([
+              ...dataWorkspaceChildren,
+              '-',
+              ...(newItem.childs || []),
+            ]),
+          }
+        : newItem;
+
     if (!settingsMenus.hasOwnProperty(item.name)) {
-      cleanedMenu.push(newItem);
+      cleanedMenu.push(normalizedItem);
     } else {
-      settings.push(newItem);
+      settings.push(normalizedItem);
     }
   });
 
-  newMenuData.menu = cleanedMenu;
-  newMenuData.settings = settings;
+  settings.forEach(item => {
+    if (!isDHIS2Menu(item)) {
+      return;
+    }
+
+    if (item.url) {
+      movedDataChildren.push({
+        name: 'DHIS2',
+        label: 'DHIS2',
+        url: item.url,
+      });
+    }
+    item.childs?.forEach(child => {
+      if (
+        typeof child !== 'string' &&
+        child.url?.startsWith('/superset/dhis2/')
+      ) {
+        movedDataChildren.push(child);
+      }
+    });
+  });
+
+  const filteredSettings = settings.filter(item => !isDHIS2Menu(item));
+  const existingDataMenu = cleanedMenu.find(isDataMenu);
+  const cleanedMenuWithoutData = cleanedMenu.filter(item => !isDataMenu(item));
+
+  const normalizedDataMenu = existingDataMenu || {
+    name: 'Data',
+    label: 'Data',
+    childs: [],
+  };
+  normalizedDataMenu.childs = dedupeChildren([
+    ...dataWorkspaceChildren,
+    '-',
+    ...movedDataChildren.map(toDataChild),
+    ...(normalizedDataMenu.childs || []),
+  ]);
+
+  const datasetsIndex = cleanedMenuWithoutData.findIndex(
+    item => item.name === 'Datasets' || item.label === 'Datasets',
+  );
+  const sqlIndex = cleanedMenuWithoutData.findIndex(isSqlMenu);
+  const sourcesIndex = cleanedMenuWithoutData.findIndex(
+    item => item.name === 'Sources' || item.label === 'Sources',
+  );
+
+  const insertIndex =
+    datasetsIndex >= 0
+      ? datasetsIndex + 1
+      : sqlIndex >= 0
+        ? sqlIndex
+        : sourcesIndex >= 0
+          ? sourcesIndex + 1
+          : cleanedMenuWithoutData.length;
+
+  cleanedMenuWithoutData.splice(insertIndex, 0, normalizedDataMenu);
+
+  newMenuData.menu = cleanedMenuWithoutData;
+  newMenuData.settings = filteredSettings;
 
   return <Menu data={newMenuData} {...rest} />;
 }

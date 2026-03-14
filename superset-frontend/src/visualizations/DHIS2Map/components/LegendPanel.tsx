@@ -20,7 +20,7 @@
 import React, { useState, useMemo } from 'react';
 import { styled, t } from '@superset-ui/core';
 import { formatValue } from '../utils';
-import { LevelBorderColor } from '../types';
+import { DHIS2LegendDefinition, LevelBorderColor } from '../types';
 
 export type LegendMode = 'compact' | 'detailed' | 'hidden';
 export type LegendPosition =
@@ -28,17 +28,6 @@ export type LegendPosition =
   | 'topright'
   | 'bottomleft'
   | 'bottomright';
-
-// Level names for display
-const LEVEL_NAMES: Record<number, string> = {
-  1: 'National',
-  2: 'Region',
-  3: 'District',
-  4: 'Sub-county',
-  5: 'Parish',
-  6: 'Village/Facility',
-  7: 'Level 7',
-};
 
 interface LegendPanelProps {
   colorScale: (value: number) => string;
@@ -51,9 +40,11 @@ interface LegendPanelProps {
   backgroundColor?: string;
   noDataColor?: { r: number; g: number; b: number; a: number };
   levelBorderColors?: LevelBorderColor[];
+  levelLabels?: Record<number, string>;
   showBoundaryLegend?: boolean;
   manualBreaks?: number[];
   manualColors?: string[];
+  stagedLegendDefinition?: DHIS2LegendDefinition;
 }
 
 /* eslint-disable theme-colors/no-literal-colors */
@@ -65,18 +56,19 @@ const LegendContainer = styled.div<{
   position: absolute;
   ${({ position }) => {
     const [vertical, horizontal] = [
-      position.includes('top') ? 'top: 10px' : 'bottom: 30px',
-      position.includes('left') ? 'left: 10px' : 'right: 10px',
+      position.includes('top') ? 'top: 12px' : 'bottom: 18px',
+      position.includes('left') ? 'left: 12px' : 'right: 12px',
     ];
     return `${vertical}; ${horizontal};`;
   }}
   background: ${({ backgroundColor }) => backgroundColor};
-  padding: ${({ isCompact }) => (isCompact ? '6px 8px' : '10px')};
+  padding: ${({ isCompact }) => (isCompact ? '4px 6px' : '6px 8px')};
   border-radius: 4px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
   z-index: 1000;
-  min-width: 120px;
-  max-height: ${({ isCompact }) => (isCompact ? '40px' : '400px')};
+  min-width: ${({ isCompact }) => (isCompact ? '88px' : '112px')};
+  max-width: ${({ isCompact }) => (isCompact ? '160px' : '190px')};
+  max-height: ${({ isCompact }) => (isCompact ? '34px' : '240px')};
   overflow-y: auto;
   opacity: 0.95;
   backdrop-filter: blur(2px);
@@ -86,27 +78,32 @@ const LegendHeader = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 `;
 
 const LegendTitle = styled.div`
   font-weight: 600;
-  margin-bottom: 8px;
-  font-size: 12px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  line-height: 1.2;
+  max-width: 132px;
+  word-break: break-word;
 `;
 
 const LegendItem = styled.div`
   display: flex;
   align-items: center;
-  margin: 4px 0;
-  font-size: 11px;
+  margin: 2px 0;
+  font-size: 9px;
+  line-height: 1.2;
 `;
 
 const ColorBox = styled.div<{ color: string }>`
-  width: 20px;
-  height: 14px;
+  width: 14px;
+  min-width: 14px;
+  height: 10px;
   background: ${({ color }) => color};
-  margin-right: 8px;
+  margin-right: 6px;
   border: 1px solid rgba(0, 0, 0, 0.2);
   border-radius: 2px;
 `;
@@ -115,9 +112,9 @@ const ModeButton = styled.button`
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 10px;
   color: #666;
-  padding: 2px 4px;
+  padding: 0 2px;
 
   &:hover {
     color: #000;
@@ -127,27 +124,29 @@ const ModeButton = styled.button`
 const CompactLegend = styled.div`
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 10px;
+  gap: 6px;
+  font-size: 9px;
+  line-height: 1.1;
 `;
 
 const LegendDivider = styled.hr`
   border: none;
   border-top: 1px solid rgba(0, 0, 0, 0.1);
-  margin: 8px 0;
+  margin: 6px 0;
 `;
 
 const BoundaryLegendTitle = styled.div`
   font-weight: 600;
-  font-size: 11px;
-  margin-bottom: 4px;
+  font-size: 9px;
+  margin-bottom: 3px;
   color: #666;
 `;
 
 const BorderLineBox = styled.div<{ color: string; width: number }>`
-  width: 20px;
+  width: 14px;
+  min-width: 14px;
   background: ${({ color }) => color};
-  margin-right: 8px;
+  margin-right: 6px;
   border-radius: 1px;
   height: ${({ width }) => Math.max(width * 2, 2)}px;
 `;
@@ -164,9 +163,11 @@ function LegendPanel({
   backgroundColor = 'rgba(255, 255, 255, 0.95)',
   noDataColor = { r: 204, g: 204, b: 204, a: 1 },
   levelBorderColors = [],
+  levelLabels = {},
   showBoundaryLegend = false,
   manualBreaks,
   manualColors,
+  stagedLegendDefinition,
 }: LegendPanelProps): React.ReactElement | null {
   const [currentMode, setCurrentMode] = useState<LegendMode>(mode);
 
@@ -177,6 +178,15 @@ function LegendPanel({
 
   // Calculate breaks - use manual breaks if provided, otherwise auto-calculate
   const breaks = useMemo(() => {
+    if (stagedLegendDefinition?.items?.length) {
+      const boundaries = stagedLegendDefinition.items.flatMap(item =>
+        [item.startValue, item.endValue].filter(
+          (value): value is number =>
+            typeof value === 'number' && Number.isFinite(value),
+        ),
+      );
+      return Array.from(new Set(boundaries)).sort((a, b) => a - b);
+    }
     if (manualBreaks && manualBreaks.length > 1) {
       // For manual breaks, sort them and return all break points
       return [...manualBreaks].sort((a, b) => a - b);
@@ -187,11 +197,11 @@ function LegendPanel({
       { length: classes + 1 },
       (_, i) => valueRange.min + step * i,
     );
-  }, [manualBreaks, valueRange, classes]);
+  }, [classes, manualBreaks, stagedLegendDefinition, valueRange]);
 
   // Helper to get level name
   const getLevelName = (level: number): string =>
-    LEVEL_NAMES[level] || `Level ${level}`;
+    levelLabels[level] || `Level ${level}`;
 
   if (currentMode === 'compact') {
     return (
@@ -233,21 +243,42 @@ function LegendPanel({
           </ModeButton>
         </div>
       </LegendHeader>
-      {breaks.slice(0, -1).map((breakValue, index) => {
-        const nextValue = breaks[index + 1];
-        // Use the midpoint of the interval to get the color
-        const midValue = (breakValue + nextValue) / 2;
-        // For manual colors, use the index directly if available
+      {(stagedLegendDefinition?.items?.length
+        ? stagedLegendDefinition.items.map((item, index) => ({
+            item,
+            index,
+            breakValue: undefined as number | undefined,
+          }))
+        : breaks.slice(0, -1).map((breakValue, index) => ({
+            item: undefined,
+            index,
+            breakValue,
+          }))
+      ).map(({ item, index, breakValue }) => {
+        const startValue = item?.startValue ?? breakValue ?? breaks[index];
+        const endValue = item?.endValue ?? breaks[index + 1];
+        const midValue =
+          typeof startValue === 'number' && typeof endValue === 'number'
+            ? (startValue + endValue) / 2
+            : typeof startValue === 'number'
+              ? startValue
+              : 0;
         const displayColor =
-          manualColors && manualColors[index]
+          item?.color ||
+          (manualColors && manualColors[index]
             ? manualColors[index]
-            : colorScale(midValue);
+            : colorScale(midValue));
+        const formattedRange =
+          typeof startValue === 'number' && typeof endValue === 'number'
+            ? `${formatValue(startValue)} - ${formatValue(endValue)}`
+            : item?.label || t('Legend item');
+        const label = item?.label
+          ? `${item.label}: ${formattedRange}`
+          : formattedRange;
         return (
-          <LegendItem key={index}>
+          <LegendItem key={item?.id || `${index}-${displayColor}`}>
             <ColorBox color={displayColor} />
-            <span>
-              {formatValue(breakValue)} - {formatValue(nextValue)}
-            </span>
+            <span>{label}</span>
           </LegendItem>
         );
       })}

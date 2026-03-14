@@ -50,6 +50,31 @@ jest.mock('../../components/Legend', () => ({ categories, position }: any) => (
 ));
 
 const mockProps = {
+  datasource: {
+    columns: [
+      {
+        column_name: 'population',
+        extra: {
+          dhis2_legend: {
+            items: [
+              {
+                label: 'Low',
+                startValue: 0,
+                endValue: 150000,
+                color: '#111111',
+              },
+              {
+                label: 'High',
+                startValue: 150001,
+                endValue: 300000,
+                color: '#222222',
+              },
+            ],
+          },
+        },
+      },
+    ],
+  },
   formData: {
     // Required QueryFormData properties
     datasource: 'test_datasource',
@@ -217,6 +242,26 @@ describe('DeckGLPolygon bucket generation logic', () => {
     // Should fall back to getBuckets for unsupported color schemes
     expect(mockGetBuckets).toHaveBeenCalled();
     expect(mockGetColorBreakpointsBuckets).not.toHaveBeenCalled();
+  });
+
+  it('should use staged DHIS2 legend categories when selected', () => {
+    const propsWithStagedLegend = {
+      ...mockProps,
+      formData: {
+        ...mockProps.formData,
+        color_scheme_type: COLOR_SCHEME_TYPES.dhis2_staged_legend,
+      },
+    };
+
+    const { container } = renderWithTheme(<DeckGLPolygon {...propsWithStagedLegend} />);
+
+    expect(mockGetBuckets).not.toHaveBeenCalled();
+    expect(mockGetColorBreakpointsBuckets).not.toHaveBeenCalled();
+
+    const legendElement = container.querySelector('[data-testid="legend"]');
+    const categoriesAttr = legendElement?.getAttribute('data-categories');
+    const categoriesData = JSON.parse(categoriesAttr || '{}');
+    expect(Object.keys(categoriesData)).toEqual(['Low', 'High']);
   });
 });
 

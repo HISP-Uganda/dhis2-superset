@@ -265,6 +265,29 @@ test('searches for a table name', async () => {
   });
 });
 
+test('renders staged-source status when staging capabilities are present', async () => {
+  render(
+    <LeftPanel
+      setDataset={mockFun}
+      dataset={{
+        ...exampleDataset[0],
+        staging_supported: true,
+        staging_source_type: 'sql_database',
+        staging_builder_mode: 'sql_table',
+        staging_requires_instance_selection: false,
+        staging_background_refresh_forced: true,
+      }}
+    />,
+    { useRedux: true },
+  );
+
+  expect(await screen.findByText(/Staged analytics available/i)).toBeVisible();
+  expect(screen.getByText(/Source type: SQL database/i)).toBeVisible();
+  expect(
+    screen.getByText(/Background refresh is enforced for staged datasets/i),
+  ).toBeVisible();
+});
+
 test('renders a warning icon when a table name has a preexisting dataset', async () => {
   render(
     <LeftPanel

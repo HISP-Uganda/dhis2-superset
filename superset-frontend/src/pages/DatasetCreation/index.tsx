@@ -16,180 +16,40 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useReducer, Reducer, useEffect, useState } from 'react';
-import { useParams, useHistory } from 'react-router-dom';
-import useDatasetsList from 'src/features/datasets/hooks/useDatasetLists';
+import { useEffect, useState, type Dispatch } from 'react';
+import { useParams } from 'react-router-dom';
+
 import Header from 'src/features/datasets/AddDataset/Header';
 import EditPage from 'src/features/datasets/AddDataset/EditDataset';
-import DatasetPanel from 'src/features/datasets/AddDataset/DatasetPanel';
-import LeftPanel from 'src/features/datasets/AddDataset/LeftPanel';
-import Footer from 'src/features/datasets/AddDataset/Footer';
-import DHIS2DatasetWizard from 'src/features/datasets/AddDataset/DHIS2DatasetWizard';
-import {
-  DatasetActionType,
-  DatasetObject,
-  DSReducerActionType,
-} from 'src/features/datasets/AddDataset/types';
+import BranchingDatasetWizard from 'src/features/datasets/AddDataset/BranchingDatasetWizard';
+import type { DSReducerActionType } from 'src/features/datasets/AddDataset/types';
 import DatasetLayout from 'src/features/datasets/DatasetLayout';
 
-type Schema = {
-  schema: string;
-};
+const PRESET_EDIT_TITLE = 'Dataset';
+const NOOP_SET_DATASET = (() => undefined) as Dispatch<DSReducerActionType>;
 
-export function datasetReducer(
-  state: DatasetObject | null,
-  action: DSReducerActionType,
-): Partial<DatasetObject> | Schema | null {
-  const trimmedState = {
-    ...(state || {}),
-  };
-
-  switch (action.type) {
-    case DatasetActionType.SelectDatabase:
-      return {
-        ...trimmedState,
-        ...action.payload,
-        catalog: null,
-        schema: null,
-        table_name: null,
-      };
-    case DatasetActionType.SelectCatalog:
-      return {
-        ...trimmedState,
-        [action.payload.name]: action.payload.value,
-        schema: null,
-        table_name: null,
-      };
-    case DatasetActionType.SelectSchema:
-      return {
-        ...trimmedState,
-        [action.payload.name]: action.payload.value,
-        table_name: null,
-      };
-    case DatasetActionType.SelectTable:
-      return {
-        ...trimmedState,
-        [action.payload.name]: action.payload.value,
-      };
-    case DatasetActionType.ChangeDataset:
-      return {
-        ...trimmedState,
-        [action.payload.name]: action.payload.value,
-      };
-    case DatasetActionType.SetDHIS2Parameters:
-      return {
-        ...trimmedState,
-        dhis2_parameters: action.payload.parameters,
-      };
-    case DatasetActionType.SetDHIS2Columns:
-      return {
-        ...trimmedState,
-        dhis2_columns: action.payload.columns,
-      };
-    default:
-      return null;
-  }
-}
-
-const prevUrl =
-  '/tablemodelview/list/?pageIndex=0&sortColumn=changed_on_delta_humanized&sortOrder=desc';
-
-export default function AddDataset() {
-  const history = useHistory();
-  const [dataset, setDataset] = useReducer<
-    Reducer<Partial<DatasetObject> | null, DSReducerActionType>
-  >(datasetReducer, null);
-  const [hasColumns, setHasColumns] = useState(false);
-  const [editPageIsVisible, setEditPageIsVisible] = useState(false);
-  const [isDHIS2Database, setIsDHIS2Database] = useState(false);
-
-  const { datasets, datasetNames } = useDatasetsList(
-    dataset?.db,
-    dataset?.schema,
-  );
-
+export default function DatasetCreationPage() {
   const { datasetId: id } = useParams<{ datasetId: string }>();
+  const [editPageIsVisible, setEditPageIsVisible] = useState(false);
 
   useEffect(() => {
-    if (!Number.isNaN(parseInt(id, 10))) {
-      setEditPageIsVisible(true);
-    }
+    setEditPageIsVisible(!Number.isNaN(parseInt(id, 10)));
   }, [id]);
 
-  useEffect(() => {
-    if (dataset?.db?.backend) {
-      setIsDHIS2Database(dataset.db.backend === 'dhis2');
-    }
-  }, [dataset?.db?.backend]);
-
-  const HeaderComponent = () => (
-    <Header setDataset={setDataset} title={dataset?.table_name} />
-  );
-
-  const LeftPanelComponent = () => (
-    <LeftPanel
-      setDataset={setDataset}
-      dataset={dataset}
-      datasetNames={datasetNames}
-    />
-  );
-
-  const EditPageComponent = () => <EditPage id={id} />;
-
-  const DatasetPanelComponent = () => (
-    <DatasetPanel
-      tableName={dataset?.table_name}
-      dbId={dataset?.db?.id}
-      catalog={dataset?.catalog}
-      schema={dataset?.schema}
-      setHasColumns={setHasColumns}
-      datasets={datasets}
-      dhis2Columns={dataset?.dhis2_columns}
-    />
-  );
-
-  const FooterComponent = () => (
-    <Footer
-      url={prevUrl}
-      datasetObject={dataset}
-      hasColumns={hasColumns}
-      datasets={datasetNames}
-    />
-  );
-
-  const onWizardSaveSuccess = () => {
-    history.push(prevUrl);
-  };
-
-  if (
-    isDHIS2Database &&
-    !editPageIsVisible &&
-    dataset?.db?.id &&
-    dataset?.table_name
-  ) {
-    const filteredDatasets = (datasetNames || []).filter(
-      (name): name is string => typeof name === 'string',
-    );
-    return (
-      <DHIS2DatasetWizard
-        dataset={dataset}
-        setDataset={setDataset}
-        hasColumns={hasColumns}
-        setHasColumns={setHasColumns}
-        datasets={filteredDatasets}
-        onSaveSuccess={onWizardSaveSuccess}
-      />
-    );
+  if (!editPageIsVisible) {
+    return <BranchingDatasetWizard />;
   }
 
   return (
     <DatasetLayout
-      header={HeaderComponent()}
-      leftPanel={editPageIsVisible ? null : LeftPanelComponent()}
-      datasetPanel={
-        editPageIsVisible ? EditPageComponent() : DatasetPanelComponent()
+      datasetPanel={<EditPage id={id} />}
+      header={
+        <Header
+          editing
+          setDataset={NOOP_SET_DATASET}
+          title={PRESET_EDIT_TITLE}
+        />
       }
-      footer={FooterComponent()}
     />
   );
 }

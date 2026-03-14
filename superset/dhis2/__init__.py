@@ -21,5 +21,13 @@ This module provides DHIS2-specific functionality for Superset:
 - Cache management API
 - Cache warming tasks
 - DHIS2 data adapter utilities
+- Multi-instance registry and staged-dataset models (Milestone 1)
 """
 
+from superset.dhis2.models import (  # noqa: F401
+    DHIS2DatasetVariable,
+    DHIS2Instance,
+    DHIS2StagedDataset,
+    DHIS2SyncJob,
+)
+from superset.dhis2 import instance_service  # noqa: F401

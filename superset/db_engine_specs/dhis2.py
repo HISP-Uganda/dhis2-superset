@@ -21,6 +21,7 @@ Allows connecting to DHIS2 instances via API with dynamic parameter support
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import requests
@@ -231,6 +232,51 @@ class DHIS2EngineSpec(BaseEngineSpec):
         "access_token",
         "$.auth_params.access_token",
     ])
+    _dbapi_wrapper_patterns = (
+        re.compile(r"^\(builtins\.[^)]+\)\s+None\s*", re.IGNORECASE | re.MULTILINE),
+        re.compile(r"^\[SQL:\s*(.*?)\]\s*$", re.IGNORECASE | re.MULTILINE | re.DOTALL),
+        re.compile(
+            r"^\(Background on this error at:.*?\)\s*$",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    )
+
+    @classmethod
+    def is_configured_connection_shell(
+        cls,
+        parameters: dict[str, Any] | None,
+    ) -> bool:
+        """
+        Return ``True`` when the payload represents a logical DHIS2 database shell.
+
+        In the multi-instance model the Superset ``Database`` acts as a logical
+        container, while the actual DHIS2 endpoints and credentials live in child
+        configured-connection records. In that mode the top-level DHIS2 database may
+        intentionally omit ``host`` and credentials.
+        """
+        normalized = cls._extract_connection_settings(parameters or {})
+        return (
+            not normalized["host"]
+            and not normalized["username"]
+            and not normalized["password"]
+            and not normalized["access_token"]
+        )
+
+    @classmethod
+    def is_shell_sqlalchemy_uri(cls, uri: str | None) -> bool:
+        """Return ``True`` when the URI represents a logical DHIS2 shell only."""
+        return (uri or "").strip().lower() == "dhis2://"
+
+    @classmethod
+    def _extract_error_message(cls, ex: Exception) -> str:
+        raw_message = super()._extract_error_message(ex)
+        cleaned = raw_message.strip()
+        for pattern in cls._dbapi_wrapper_patterns:
+            cleaned = pattern.sub(
+                lambda match: match.group(1) if match.lastindex else "",
+                cleaned,
+            ).strip()
+        return cleaned or raw_message
 
     @classmethod
     def get_dbapi(cls):
@@ -297,14 +343,20 @@ class DHIS2EngineSpec(BaseEngineSpec):
 
         logger.info(f"[DHIS2] build_sqlalchemy_uri called with parameters: {list(parameters.keys())}")
 
+        normalized = cls._extract_connection_settings(parameters)
+
         # Extract parameters
-        host = parameters.get("host", "")
-        auth_type = parameters.get("authentication_type", "basic")
-        username = parameters.get("username", "")
-        password = parameters.get("password", "")
-        access_token = parameters.get("access_token", "")
+        host = normalized["host"]
+        auth_type = normalized["authentication_type"]
+        username = normalized["username"]
+        password = normalized["password"]
+        access_token = normalized["access_token"]
 
         logger.info(f"[DHIS2] host={host}, auth_type={auth_type}, has_username={bool(username)}, has_password={bool(password)}, has_token={bool(access_token)}")
+
+        if cls.is_configured_connection_shell(parameters):
+            logger.info("[DHIS2] Building logical database shell URI for configured child connections")
+            return "dhis2://"
 
         if not host:
             logger.error("[DHIS2] No host provided in parameters")
@@ -318,6 +370,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
 
             parsed = urlparse(host)
             hostname = parsed.hostname
+            netloc = hostname
+            if parsed.port:
+                netloc = f"{hostname}:{parsed.port}"
             path = parsed.path or ""
 
             if not hostname:
@@ -346,9 +401,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
 
             # Build URI
             credentials_part = f"{credentials}@" if credentials else ""
-            uri = f"dhis2://{credentials_part}{hostname}{path}"
+            uri = f"dhis2://{credentials_part}{netloc}{path}"
 
-            logger.info(f"[DHIS2] Built URI: dhis2://{credentials_part[:10]}...@{hostname}{path}")
+            logger.info(f"[DHIS2] Built URI: dhis2://{credentials_part[:10]}...@{netloc}{path}")
             return uri
 
         except Exception as e:
@@ -385,6 +440,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
 
             # Extract hostname and path
             hostname = parsed.hostname
+            netloc = hostname
+            if parsed.port:
+                netloc = f"{hostname}:{parsed.port}"
             path = parsed.path or "/api"
 
             # Remove /api suffix from path for display
@@ -392,7 +450,7 @@ class DHIS2EngineSpec(BaseEngineSpec):
                 path = path[:-4]
 
             # Build host URL
-            host = f"https://{hostname}{path}" if hostname else ""
+            host = f"https://{netloc}{path}" if netloc else ""
 
             # Extract credentials
             username = unquote_plus(parsed.username) if parsed.username else ""
@@ -548,27 +606,28 @@ class DHIS2EngineSpec(BaseEngineSpec):
         }
 
     @classmethod
-    def test_connection(
-        cls,
-        parameters: Dict[str, Any],
-        encrypted_extra: Optional[Dict[str, str]] = None,
-    ) -> None:
-        """
-        Test DHIS2 connection before saving
+    def _extract_connection_settings(cls, payload: Dict[str, Any]) -> Dict[str, str]:
+        """Normalize legacy and current DHIS2 configuration keys."""
 
-        This method is called when user clicks "Test Connection" button
+        raw_parameters = payload.get("parameters")
+        config = raw_parameters if isinstance(raw_parameters, dict) else payload
 
-        Args:
-            parameters: Connection parameters from the UI
-            encrypted_extra: Encrypted parameters
+        return {
+            "host": str(config.get("host") or config.get("server") or "").strip(),
+            "authentication_type": str(
+                config.get("authentication_type") or config.get("auth_method") or "basic"
+            ).strip()
+            or "basic",
+            "username": str(config.get("username") or "").strip(),
+            "password": str(config.get("password") or ""),
+            "access_token": str(config.get("access_token") or ""),
+        }
 
-        Raises:
-            Exception: If connection fails with descriptive error message
-        """
+    @classmethod
+    def _build_request_target(cls, host_url: str) -> tuple[str, str]:
+        """Return ``(netloc, base_url)`` for a DHIS2 API endpoint."""
         from urllib.parse import urlparse
 
-        # Extract connection parameters
-        host_url = parameters.get("host", "").strip()
         if not host_url:
             raise ValueError("DHIS2 URL is required")
 
@@ -579,6 +638,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
         parsed_url = urlparse(host_url)
         hostname = parsed_url.hostname
         path = parsed_url.path or ""
+        netloc = hostname
+        if parsed_url.port:
+            netloc = f"{hostname}:{parsed_url.port}"
 
         # Build API URL
         if not path.endswith("/api"):
@@ -589,26 +651,34 @@ class DHIS2EngineSpec(BaseEngineSpec):
             else:
                 path = "/api"
 
-        base_url = f"https://{hostname}{path}"
+        if not netloc:
+            raise ValueError("Invalid DHIS2 server URL")
 
-        # Get authentication
-        auth_type = parameters.get("authentication_type", "basic")
+        base_url = f"{parsed_url.scheme or 'https'}://{netloc}{path}"
+        return netloc, base_url
+
+    @classmethod
+    def _build_auth(cls, config: Dict[str, str]) -> tuple[tuple[str, str] | None, Dict[str, str]]:
+        """Translate normalized settings into ``requests`` auth and headers."""
+        auth_type = config.get("authentication_type", "basic")
 
         if auth_type == "pat":
             # PAT authentication
-            token = parameters.get("access_token", "")
+            token = config.get("access_token", "")
             if not token:
                 raise ValueError("Personal Access Token is required for PAT authentication")
-            auth = None
-            headers = {"Authorization": f"ApiToken {token}"}
-        else:
-            # Basic authentication
-            username = parameters.get("username", "")
-            password = parameters.get("password", "")
-            if not username or not password:
-                raise ValueError("Username and password are required for Basic authentication")
-            auth = (username, password)
-            headers = {}
+            return None, {"Authorization": f"ApiToken {token}"}
+
+        username = config.get("username", "")
+        password = config.get("password", "")
+        if not username or not password:
+            raise ValueError("Username and password are required for Basic authentication")
+        return (username, password), {}
+
+    @classmethod
+    def _probe_connection(cls, base_url: str, config: Dict[str, str]) -> bool:
+        """Call ``/api/me`` and validate the response."""
+        auth, headers = cls._build_auth(config)
 
         # Test connection by calling /api/me endpoint
         try:
@@ -628,7 +698,10 @@ class DHIS2EngineSpec(BaseEngineSpec):
             elif response.status_code == 404:
                 raise ValueError(f"DHIS2 API not found at {base_url}. Please check the URL.")
             elif response.status_code >= 400:
-                raise ValueError(f"DHIS2 API returned error {response.status_code}: {response.text[:200]}")
+                reason = response.reason or response.text[:200]
+                raise ValueError(
+                    f"DHIS2 API returned HTTP {response.status_code}: {reason}"
+                )
 
             response.raise_for_status()
 
@@ -639,11 +712,14 @@ class DHIS2EngineSpec(BaseEngineSpec):
 
             # Success!
             logger.info(f"DHIS2 connection test successful: {data.get('displayName', 'User authenticated')}")
+            return True
 
         except requests.exceptions.ConnectionError as e:
             raise ValueError(f"Cannot connect to {base_url}. Please check the URL and network connection.") from e
         except requests.exceptions.Timeout:
-            raise ValueError(f"Connection to {base_url} timed out. The server may be slow or unreachable.")
+            raise ValueError(
+                f"Connection to {base_url} timed out. The server may be slow or unreachable."
+            )
         except requests.exceptions.RequestException as e:
             raise ValueError(f"Connection test failed: {str(e)}") from e
 
@@ -692,24 +768,28 @@ class DHIS2EngineSpec(BaseEngineSpec):
         Validate connection parameters before saving - supports multiple auth methods
         """
         errors: list[SupersetError] = []
+        config = cls._extract_connection_settings(parameters)
+
+        if cls.is_configured_connection_shell(parameters):
+            return errors
 
         # Server is always required
-        if not parameters.get("server"):
+        if not config.get("host"):
             errors.append(
                 SupersetError(
-                    message=__("Server is required"),
+                    message=__("DHIS2 server URL is required"),
                     error_type=SupersetErrorType.CONNECTION_MISSING_PARAMETERS_ERROR,
                     level=ErrorLevel.ERROR,
-                    extra={"missing": ["server"]},
+                    extra={"missing": ["host"]},
                 )
             )
 
         # Validate auth-specific parameters
-        auth_method = parameters.get("auth_method", "basic")
+        auth_method = config.get("authentication_type", "basic")
 
         if auth_method == "basic":
             # Basic auth requires username and password
-            if not parameters.get("username"):
+            if not config.get("username"):
                 errors.append(
                     SupersetError(
                         message=__("Username is required for basic authentication"),
@@ -718,7 +798,7 @@ class DHIS2EngineSpec(BaseEngineSpec):
                         extra={"missing": ["username"]},
                     )
                 )
-            if not parameters.get("password"):
+            if not config.get("password"):
                 errors.append(
                     SupersetError(
                         message=__("Password is required for basic authentication"),
@@ -729,7 +809,7 @@ class DHIS2EngineSpec(BaseEngineSpec):
                 )
         elif auth_method == "pat":
             # PAT requires access token
-            if not parameters.get("access_token"):
+            if not config.get("access_token"):
                 errors.append(
                     SupersetError(
                         message=__("Access token is required for PAT authentication"),
@@ -742,7 +822,11 @@ class DHIS2EngineSpec(BaseEngineSpec):
         return errors
 
     @classmethod
-    def test_connection(cls, database: Database) -> None:
+    def test_connection(
+        cls,
+        database: Database,
+        ssh_tunnel: Any | None = None,
+    ) -> bool:
         """
         Test DHIS2 connection by calling /api/me endpoint
         Supports both basic auth and PAT authentication
@@ -752,49 +836,24 @@ class DHIS2EngineSpec(BaseEngineSpec):
         """
         try:
             parsed = cls.parse_uri(database.sqlalchemy_uri_decrypted)
-            base_url = f"https://{parsed['host']}{parsed['path']}"
+            netloc = parsed["host"]
+            if parsed.get("port") and parsed["port"] != 443:
+                netloc = f"{netloc}:{parsed['port']}"
+            base_url = f"https://{netloc}{parsed['path']}"
 
             # Determine auth method based on credentials
             username = parsed.get("username", "")
             password = parsed.get("password", "")
 
-            if not username and password:
-                # PAT auth - send token as Bearer or in Authorization header
-                auth = None
-                headers = {"Authorization": f"ApiToken {password}"}
-            else:
-                # Basic auth
-                auth = (username, password)
-                headers = {}
-
-            # Test connection with /api/me endpoint
-            response = requests.get(
-                f"{base_url}/me",
-                auth=auth,
-                headers=headers,
-                timeout=10,
-            )
-
-            if response.status_code == 200:
-                user_data = response.json()
-                logger.info(f"DHIS2 connection successful - User: {user_data.get('username', 'unknown')}")
-                # Connection successful - return normally
-                return
-            elif response.status_code == 401:
-                raise Exception("Invalid credentials - check username/password or access token")
-            else:
-                raise Exception(f"Connection failed: HTTP {response.status_code}")
-
-        except requests.exceptions.Timeout:
-            raise Exception("Connection timeout - server not responding")
-        except requests.exceptions.ConnectionError as e:
-            raise Exception(f"Cannot connect to {base_url} - check server URL: {e}")
+            config = {
+                "authentication_type": "pat" if not username and password else "basic",
+                "username": username or "",
+                "password": password or "",
+                "access_token": password or "",
+            }
+            return cls._probe_connection(base_url, config)
         except Exception as e:
-            # Re-raise with clearer message
-            error_msg = str(e)
-            if "Invalid credentials" in error_msg or "Connection" in error_msg or "HTTP" in error_msg:
-                raise
-            raise Exception(f"Connection test failed: {error_msg}")
+            raise Exception(f"Connection test failed: {e}") from e
 
     @classmethod
     def get_schema_names(cls, database: Database) -> list[str]:
@@ -1048,4 +1107,3 @@ class DHIS2EngineSpec(BaseEngineSpec):
             sql = sql.replace("SELECT", "SELECT\n  ").replace("FROM", "\nFROM").replace("LIMIT", "\nLIMIT")
 
         return sql
-

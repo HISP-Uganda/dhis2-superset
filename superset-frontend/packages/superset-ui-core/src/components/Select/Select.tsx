@@ -46,6 +46,10 @@ import {
   hasOption,
   isLabeledValue,
   isObject,
+  normalizeOptions,
+  normalizeSelectValue,
+  denormalizeOption,
+  denormalizeSelectValue,
   mapOptions,
   mapValues,
   sortComparatorWithSearchHelper,
@@ -162,17 +166,27 @@ const Select = forwardRef(
     // Prevent maxTagCount change during click events to avoid click target disappearing
     const [stableMaxTagCount, setStableMaxTagCount] = useState(maxTagCount);
     const isOpeningRef = useRef(false);
+    const openTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+      null,
+    );
 
     useEffect(() => {
+      if (openTransitionTimeoutRef.current) {
+        clearTimeout(openTransitionTimeoutRef.current);
+        openTransitionTimeoutRef.current = null;
+      }
+
       if (oneLine) {
         if (isDropdownVisible && !isOpeningRef.current) {
           // Mark that we're in the opening process
           isOpeningRef.current = true;
-          // Use requestAnimationFrame to ensure DOM has settled after the click
-          requestAnimationFrame(() => {
+          // Defer the collapse to the next task so rc-select can finish its
+          // current render cycle before we change the visible tag count.
+          openTransitionTimeoutRef.current = setTimeout(() => {
             setStableMaxTagCount(0);
             isOpeningRef.current = false;
-          });
+            openTransitionTimeoutRef.current = null;
+          }, 0);
           return;
         }
         if (!isDropdownVisible) {
@@ -183,6 +197,12 @@ const Select = forwardRef(
         return;
       }
       setStableMaxTagCount(maxTagCount);
+      return () => {
+        if (openTransitionTimeoutRef.current) {
+          clearTimeout(openTransitionTimeoutRef.current);
+          openTransitionTimeoutRef.current = null;
+        }
+      };
     }, [maxTagCount, isDropdownVisible, oneLine]);
 
     const mappedMode = isSingleMode ? undefined : 'multiple';
@@ -246,6 +266,14 @@ const Select = forwardRef(
       () => visibleOptions.filter(option => !option.disabled),
       [visibleOptions],
     );
+    const normalizedVisibleOptions = useMemo(
+      () => normalizeOptions(visibleOptions),
+      [visibleOptions],
+    );
+    const normalizedSelectValue = useMemo(
+      () => normalizeSelectValue(selectValue),
+      [selectValue],
+    );
 
     const selectAllEligible = useMemo(
       () =>
@@ -302,28 +330,31 @@ const Select = forwardRef(
     }, [visibleOptions, selectValue]);
 
     const handleOnSelect: SelectProps['onSelect'] = (selectedItem, option) => {
+      const normalizedSelectedItem = denormalizeSelectValue(selectedItem);
+      const normalizedOption = denormalizeOption(option);
+
       if (isSingleMode) {
         // on select is fired in single value mode if the same value is selected
         const valueChanged = !utilsIsEqual(
-          selectedItem,
+          normalizedSelectedItem,
           selectValue as RawValue | AntdLabeledValue,
           'value',
         );
-        setSelectValue(selectedItem);
+        setSelectValue(normalizedSelectedItem);
         if (valueChanged) {
           fireOnChange();
         }
       } else {
         setSelectValue(previousState => {
           const array = ensureIsArray(previousState);
-          const value = getValue(selectedItem);
+          const value = getValue(normalizedSelectedItem);
           if (!hasOption(value, array)) {
-            const result = [...array, selectedItem];
+            const result = [...array, normalizedSelectedItem];
             if (
               result.length === selectAllEligible.length &&
               selectAllEnabled
             ) {
-              return isLabeledValue(selectedItem)
+              return isLabeledValue(normalizedSelectedItem)
                 ? ([...result] as AntdLabeledValue[])
                 : ([...result] as (string | number)[]);
             }
@@ -333,7 +364,7 @@ const Select = forwardRef(
         });
         fireOnChange();
       }
-      onSelect?.(selectedItem, option);
+      onSelect?.(normalizedSelectedItem, normalizedOption);
     };
 
     const clear = () => {
@@ -362,23 +393,26 @@ const Select = forwardRef(
     };
 
     const handleOnDeselect: SelectProps['onDeselect'] = (value, option) => {
+      const normalizedValue = denormalizeSelectValue(value);
+      const normalizedOption = denormalizeOption(option);
+
       if (Array.isArray(selectValue)) {
         const array = (selectValue as AntdLabeledValue[]).filter(
-          element => getValue(element) !== getValue(value),
+          element => getValue(element) !== getValue(normalizedValue),
         );
         setSelectValue(array);
 
         // removes new option
-        if (option.isNewOption) {
+        if (normalizedOption.isNewOption) {
           const updatedOptions = fullSelectOptions.filter(
-            option => getValue(option.value) !== getValue(value),
+            option => getValue(option.value) !== getValue(normalizedValue),
           );
           setSelectOptions(updatedOptions);
           setVisibleOptions(updatedOptions);
         }
       }
       fireOnChange();
-      onDeselect?.(value, option);
+      onDeselect?.(normalizedValue, normalizedOption);
     };
 
     const handleFilterOption = (search: string, option: AntdLabeledValue) =>
@@ -769,7 +803,7 @@ const Select = forwardRef(
           onClear={handleClear}
           placeholder={placeholder}
           tokenSeparators={tokenSeparators}
-          value={selectValue}
+          value={normalizedSelectValue}
           virtual={
             virtual !== undefined
               ? virtual
@@ -787,7 +821,7 @@ const Select = forwardRef(
               <StyledCheckOutlined iconSize="m" aria-label="check" />
             )
           }
-          options={visibleOptions}
+          options={normalizedVisibleOptions}
           optionRender={option => <Space>{option.label || option.value}</Space>}
           oneLine={oneLine}
           css={props.css}

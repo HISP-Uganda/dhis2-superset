@@ -23,7 +23,7 @@ import {
   Menu,
   Flex,
 } from '@superset-ui/core/components';
-import { t, useTheme, SupersetClient } from '@superset-ui/core';
+import { t, useTheme } from '@superset-ui/core';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { useSingleViewResource } from 'src/views/CRUD/hooks';
 import { logEvent } from 'src/logger/actions';
@@ -37,6 +37,7 @@ import {
 } from 'src/logger/LogUtils';
 import { DatasetObject } from '../types';
 import { parseSourceTable } from '../DHIS2ParameterBuilder';
+import refreshDatasetMetadata from '../refreshDatasetMetadata';
 
 interface FooterProps {
   url: string;
@@ -97,9 +98,7 @@ function Footer({
     try {
       // Trigger background dataset load via refresh endpoint
       // This will load the dataset data without blocking the UI
-      await SupersetClient.post({
-        endpoint: `/api/v1/dataset/${datasetId}/refresh`,
-      });
+      await refreshDatasetMetadata(datasetId);
       console.log(
         '[Background Load] Dataset refresh initiated for ID:',
         datasetId,
@@ -160,7 +159,7 @@ function Footer({
           triggerBackgroundDatasetLoad(datasetId);
 
           if (createChart) {
-            history.push(`/chart/add/?dataset=${datasetObject.table_name}`);
+            history.push(`/chart/add/?dataset=${datasetId}`);
           } else {
             history.push('/tablemodelview/list/');
           }

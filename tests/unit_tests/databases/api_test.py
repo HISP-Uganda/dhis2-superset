@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import ANY, Mock
 from uuid import UUID
@@ -2431,3 +2432,868 @@ def test_schemas_with_oauth2(
             }
         ]
     }
+
+
+def test_dhis2_metadata_federated_aggregates_configured_connections(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    instance_one = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={"Authorization": "Basic abc"},
+    )
+    instance_two = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={"Authorization": "ApiToken xyz"},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[instance_one, instance_two],
+    )
+
+    response_one = Mock(status_code=200, text="OK")
+    response_one.json.return_value = {
+        "dataElements": [{"id": "de1", "displayName": "ANC Visits"}]
+    }
+    response_two = Mock(status_code=200, text="OK")
+    response_two.json.return_value = {
+        "dataElements": [{"id": "de2", "displayName": "Malaria Cases"}]
+    }
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+    requests_get.side_effect = [response_one, response_two]
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/?type=dataElements&federated=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    assert response.json["instance_results"] == [
+        {
+            "count": 1,
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+        },
+        {
+            "count": 1,
+            "id": 102,
+            "name": "Non Routine DHIS2",
+            "status": "success",
+        },
+    ]
+    assert response.json["result"] == [
+        {
+            "displayName": "ANC Visits",
+            "id": "de1",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+        },
+        {
+            "displayName": "Malaria Cases",
+            "id": "de2",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 102,
+            "source_instance_name": "Non Routine DHIS2",
+        },
+    ]
+
+
+def test_dhis2_metadata_federated_returns_partial_results(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    healthy_instance = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    failing_instance = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[healthy_instance, failing_instance],
+    )
+
+    success_response = Mock(status_code=200, text="OK")
+    success_response.json.return_value = {
+        "dataElements": [{"id": "de1", "displayName": "ANC Visits"}]
+    }
+    failure_response = Mock(
+        status_code=503,
+        text="Gateway timeout",
+    )
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+    requests_get.side_effect = [success_response, failure_response]
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/?type=dataElements&federated=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "partial"
+    assert response.json["message"] == (
+        "Some configured DHIS2 connections could not be loaded."
+    )
+    assert response.json["result"] == [
+        {
+            "displayName": "ANC Visits",
+            "id": "de1",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+        }
+    ]
+    assert response.json["instance_results"] == [
+        {
+            "count": 1,
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+        },
+        {
+            "count": 0,
+            "error": "DHIS2 API error: 503 Gateway timeout",
+            "id": 102,
+            "name": "Non Routine DHIS2",
+            "status": "failed",
+        },
+    ]
+
+
+def test_dhis2_org_unit_levels_federated_aggregates_configured_connections(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    instance_one = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    instance_two = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[instance_one, instance_two],
+    )
+
+    response_one = Mock(status_code=200, text="OK")
+    response_one.json.return_value = {
+        "organisationUnitLevels": [
+            {"level": 1, "displayName": "National"},
+            {"level": 2, "displayName": "Region"},
+        ]
+    }
+    response_two = Mock(status_code=200, text="OK")
+    response_two.json.return_value = {
+        "organisationUnitLevels": [
+            {"level": 2, "displayName": "Region"},
+            {"level": 3, "displayName": "District"},
+        ]
+    }
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+    requests_get.side_effect = [response_one, response_two]
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/?type=organisationUnitLevels"
+        "&federated=true&instance_ids=101&instance_ids=102"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    assert response.json["result"] == [
+        {"displayName": "National", "level": 1},
+        {"displayName": "Region", "level": 2},
+        {"displayName": "District", "level": 3},
+    ]
+    assert response.json["instance_results"] == [
+        {
+            "count": 2,
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+        },
+        {
+            "count": 2,
+            "id": 102,
+            "name": "Non Routine DHIS2",
+            "status": "success",
+        },
+    ]
+
+
+def test_dhis2_org_unit_groups_federated_returns_partial_results(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    healthy_instance = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    failing_instance = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[healthy_instance, failing_instance],
+    )
+
+    success_response = Mock(status_code=200, text="OK")
+    success_response.json.return_value = {
+        "organisationUnitGroups": [
+            {
+                "id": "oug1",
+                "displayName": "Referral facilities",
+                "organisationUnits": [
+                    {"id": "ou1", "displayName": "Mulago"},
+                ],
+            }
+        ]
+    }
+    failure_response = Mock(status_code=503, text="Gateway timeout")
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+    requests_get.side_effect = [success_response, failure_response]
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/?type=organisationUnitGroups&federated=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "partial"
+    assert response.json["message"] == (
+        "Some configured DHIS2 connections could not be loaded."
+    )
+    assert response.json["result"] == [
+        {
+            "displayName": "Referral facilities",
+            "id": "oug1",
+            "organisationUnits": [
+                {"displayName": "Mulago", "id": "ou1"},
+            ],
+        }
+    ]
+    assert response.json["instance_results"] == [
+        {
+            "count": 1,
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+        },
+        {
+            "count": 0,
+            "error": "DHIS2 API error: 503 Gateway timeout",
+            "id": 102,
+            "name": "Non Routine DHIS2",
+            "status": "failed",
+        },
+    ]
+
+
+def test_dhis2_metadata_returns_cached_payload_without_fetching_source(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        return_value={
+            "result": [{"id": "de_cached", "displayName": "Cached ANC Visits"}],
+            "cached": True,
+            "cache_refreshed_at": "2026-03-13T09:00:00",
+        },
+    )
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+
+    response = client.get("/api/v1/database/9/dhis2_metadata/?type=dataElements")
+
+    assert response.status_code == 200
+    assert response.json["result"] == [
+        {"id": "de_cached", "displayName": "Cached ANC Visits"}
+    ]
+    assert response.json["cached"] is True
+    requests_get.assert_not_called()
+
+
+def test_dhis2_metadata_staged_reads_from_local_snapshots_without_live_fetch(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    instance_one = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    instance_two = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[instance_one, instance_two],
+    )
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=[
+            {
+                "status": "success",
+                "result": [
+                    {
+                        "id": "de1",
+                        "displayName": "ANC Visits",
+                        "domainType": "AGGREGATE",
+                        "valueType": "NUMBER",
+                        "aggregationType": "SUM",
+                    }
+                ],
+            },
+            {
+                "status": "success",
+                "result": [
+                    {
+                        "id": "de2",
+                        "displayName": "Malaria Cases",
+                        "domainType": "AGGREGATE",
+                        "valueType": "INTEGER",
+                        "aggregationType": "SUM",
+                    }
+                ],
+            },
+        ],
+    )
+    schedule_refresh = mocker.patch(
+        "superset.dhis2.metadata_staging_service.schedule_database_metadata_refresh"
+    )
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/"
+        "?type=dataElements&federated=true&staged=true&instance_ids=101&instance_ids=102"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    assert response.json["result"] == [
+        {
+            "aggregationType": "SUM",
+            "displayName": "ANC Visits",
+            "domainType": "AGGREGATE",
+            "id": "de1",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+            "valueType": "NUMBER",
+        },
+        {
+            "aggregationType": "SUM",
+            "displayName": "Malaria Cases",
+            "domainType": "AGGREGATE",
+            "id": "de2",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 102,
+            "source_instance_name": "Non Routine DHIS2",
+            "valueType": "INTEGER",
+        },
+    ]
+    schedule_refresh.assert_not_called()
+    requests_get.assert_not_called()
+
+
+def test_dhis2_metadata_staged_returns_pending_when_snapshot_is_missing(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    instance_one = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[instance_one],
+    )
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        return_value=None,
+    )
+    schedule_refresh = mocker.patch(
+        "superset.dhis2.metadata_staging_service.schedule_database_metadata_refresh"
+    )
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/"
+        "?type=dataElements&federated=true&staged=true&instance_ids=101"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "pending"
+    assert response.json["result"] == []
+    assert "prepared in local staging" in response.json["message"]
+    assert response.json["instance_results"] == [
+        {
+            "count": 0,
+            "error": "Metadata snapshot not ready yet.",
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "pending",
+        }
+    ]
+    schedule_refresh.assert_called_once()
+    requests_get.assert_not_called()
+
+
+def test_dhis2_metadata_staged_forwards_advanced_filters_and_pagination(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+    staged_payload = mocker.patch(
+        "superset.dhis2.metadata_staging_service.get_staged_metadata_payload",
+        return_value={
+            "status": "success",
+            "result": [],
+            "instance_results": [],
+            "message": None,
+            "staged": True,
+            "pagination": {
+                "page": 2,
+                "page_size": 50,
+                "total": 0,
+                "total_pages": 1,
+                "has_next": False,
+                "has_previous": True,
+            },
+        },
+    )
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/"
+        "?type=indicators&federated=true&staged=true&instance_ids=101"
+        "&groupId=grp_1&groupSetId=gs_1&indicatorTypeId=ity_1"
+        "&valueType=PERCENTAGE&page=2&page_size=50"
+    )
+
+    assert response.status_code == 200
+    staged_payload.assert_called_once_with(
+        database=database,
+        metadata_type="indicators",
+        instance_id=None,
+        requested_instance_ids=[101],
+        federated=True,
+        table_name=None,
+        search_term="",
+        level=None,
+        parent_ids=[],
+        domain_type=None,
+        value_type="PERCENTAGE",
+        aggregation_type=None,
+        form_type=None,
+        program_id=None,
+        program_stage_id=None,
+        indicator_type_id="ity_1",
+        analytics_type=None,
+        group_id="grp_1",
+        group_set_id="gs_1",
+        group_search="",
+        org_unit_source_mode="federated",
+        page=2,
+        page_size=50,
+    )
+    assert response.json["pagination"]["page"] == 2
+
+
+def test_dhis2_org_units_primary_instance_scope_uses_only_primary_connection(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+
+    class _Instance(SimpleNamespace):
+        def get_auth_headers(self) -> dict[str, str]:
+            return self.headers
+
+    primary_instance = _Instance(
+        id=101,
+        database_id=9,
+        name="National eHMIS DHIS2",
+        url="https://national.example.org",
+        headers={},
+    )
+    secondary_instance = _Instance(
+        id=102,
+        database_id=9,
+        name="Non Routine DHIS2",
+        url="https://non-routine.example.org",
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
+        return_value=[primary_instance, secondary_instance],
+    )
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        return_value=None,
+    )
+    cache_store = mocker.patch(
+        "superset.staging.metadata_cache_service.set_cached_metadata_payload",
+        side_effect=lambda *_args, **_kwargs: {
+            "result": [
+                {
+                    "id": "OU_1",
+                    "displayName": "Uganda",
+                    "source_instance_id": 101,
+                    "source_instance_name": "National eHMIS DHIS2",
+                    "source_database_id": 9,
+                    "source_database_name": "Malaria Repository Multiple Sources",
+                }
+            ],
+            "status": "success",
+            "instance_results": [
+                {
+                    "id": 101,
+                    "name": "National eHMIS DHIS2",
+                    "status": "success",
+                    "count": 1,
+                }
+            ],
+            "cached": False,
+            "cache_refreshed_at": "2026-03-13T10:00:00",
+        },
+    )
+
+    response_payload = Mock(status_code=200, text="OK")
+    response_payload.json.return_value = {
+        "organisationUnits": [{"id": "OU_1", "displayName": "Uganda"}]
+    }
+    requests_get = mocker.patch("superset.databases.api.requests.get")
+    requests_get.return_value = response_payload
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/"
+        "?type=organisationUnits&instance_ids=101&instance_ids=102"
+        "&org_unit_source_mode=primary&primary_instance_id=101"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    assert response.json["instance_results"] == [
+        {
+            "count": 1,
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+        }
+    ]
+    assert response.json["result"] == [
+        {
+            "displayName": "Uganda",
+            "id": "OU_1",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+        }
+    ]
+    assert requests_get.call_count == 1
+    cache_store.assert_called_once()
+
+
+def test_dhis2_geojson_staged_uses_local_boundary_snapshots(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+    get_staged_geo_payload = mocker.patch(
+        "superset.dhis2.metadata_staging_service.get_staged_geo_payload",
+        return_value={
+            "status": "success",
+            "result": {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "id": "OU_1",
+                        "geometry": {"type": "Polygon", "coordinates": [[[32.5, 0.3]]]},
+                        "properties": {"id": "OU_1", "name": "Kampala", "level": 2},
+                    }
+                ],
+            },
+            "instance_results": [
+                {
+                    "id": 101,
+                    "name": "National eHMIS DHIS2",
+                    "status": "success",
+                    "count": 1,
+                }
+            ],
+            "staged": True,
+            "count": 1,
+        },
+    )
+
+    response = client.get(
+        "/api/v1/database/9/dhis2_metadata/"
+        "?type=geoJSON&levels=2&parents=ROOT&staged=true&federated=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "success"
+    assert response.json["result"]["features"][0]["id"] == "OU_1"
+    get_staged_geo_payload.assert_called_once_with(
+        database=database,
+        metadata_type="geoJSON",
+        instance_id=None,
+        requested_instance_ids=[],
+        federated=True,
+        levels=["2"],
+        parent_ids=["ROOT"],
+        allow_live_fallback=True,
+    )
+
+
+def test_resolve_dhis2_database_from_chart_context_prefers_source_database(
+    mocker: MockerFixture,
+) -> None:
+    from superset.databases.api import DatabaseRestApi
+
+    serving_database = SimpleNamespace(id=3, backend="sqlite")
+    source_database = SimpleNamespace(id=9, backend="dhis2")
+    chart = SimpleNamespace(
+        datasource=SimpleNamespace(
+            extra=json.dumps({"dhis2_source_database_id": 9}),
+            database=serving_database,
+        )
+    )
+    find_by_id = mocker.patch(
+        "superset.databases.api.DatabaseDAO.find_by_id",
+        return_value=source_database,
+    )
+
+    resolved_database = DatabaseRestApi._resolve_dhis2_database_from_chart_context(
+        database=serving_database,
+        chart=chart,
+    )
+
+    assert resolved_database is source_database
+    find_by_id.assert_called_once_with(9)
+
+
+def test_resolve_dhis2_instance_ids_from_chart_context_prefers_source_instances(
+    mocker: MockerFixture,
+) -> None:
+    from superset.databases.api import DatabaseRestApi
+
+    chart = SimpleNamespace(
+        datasource=SimpleNamespace(
+            extra=json.dumps(
+                {
+                    "dhis2_source_instance_ids": [101, "102", 101, "bad"],
+                    "configured_connection_ids": [999],
+                }
+            ),
+        )
+    )
+
+    resolved_instance_ids = (
+        DatabaseRestApi._resolve_dhis2_instance_ids_from_chart_context(chart)
+    )
+
+    assert resolved_instance_ids == [101, 102]
+
+
+def test_dhis2_metadata_resolves_source_context_for_staged_local_chart(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    from superset.databases.api import DatabaseRestApi
+
+    serving_database = SimpleNamespace(id=3, backend="sqlite")
+    source_database = SimpleNamespace(
+        id=9,
+        backend="dhis2",
+        database_name="Malaria Repository Multiple Sources",
+    )
+    chart = SimpleNamespace(
+        datasource=SimpleNamespace(
+            extra=json.dumps(
+                {
+                    "dhis2_source_database_id": 9,
+                    "dhis2_source_instance_ids": [101, 102],
+                }
+            ),
+            database=serving_database,
+        )
+    )
+    mocker.patch(
+        "superset.databases.api.DatabaseDAO.find_by_id",
+        side_effect=[serving_database, source_database],
+    )
+    mocker.patch.object(
+        DatabaseRestApi,
+        "_resolve_authenticated_dhis2_chart",
+        return_value=chart,
+    )
+    get_staged_geo_payload = mocker.patch(
+        "superset.dhis2.metadata_staging_service.get_staged_geo_payload",
+        return_value={
+            "status": "success",
+            "result": {"type": "FeatureCollection", "features": []},
+            "instance_results": [],
+            "staged": True,
+            "count": 0,
+        },
+    )
+
+    response = client.get(
+        "/api/v1/database/3/dhis2_metadata/"
+        "?type=geoJSON&levels=3&parents=&staged=true&slice_id=2"
+    )
+
+    assert response.status_code == 200
+    get_staged_geo_payload.assert_called_once_with(
+        database=source_database,
+        metadata_type="geoJSON",
+        instance_id=None,
+        requested_instance_ids=[101, 102],
+        federated=False,
+        levels=["3"],
+        parent_ids=[],
+        allow_live_fallback=True,
+    )

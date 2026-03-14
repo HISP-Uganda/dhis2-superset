@@ -20,10 +20,12 @@ from __future__ import annotations
 import builtins
 import dataclasses
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Hashable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Callable, cast, Optional, Union
 
 import pandas as pd
@@ -254,13 +256,19 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
         """Unique id across datasource types"""
         return f"{self.id}__{self.type}"
 
+    def get_queryable_columns(self) -> list[TableColumn]:
+        return list(self.columns)
+
     @property
     def column_names(self) -> list[str]:
-        return sorted([c.column_name for c in self.columns], key=lambda x: x or "")
+        return sorted(
+            [c.column_name for c in self.get_queryable_columns()],
+            key=lambda x: x or "",
+        )
 
     @property
     def columns_types(self) -> dict[str, str]:
-        return {c.column_name: c.type for c in self.columns}
+        return {c.column_name: c.type for c in self.get_queryable_columns()}
 
     @property
     def main_dttm_col(self) -> str:
@@ -287,7 +295,9 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
 
     @property
     def filterable_column_names(self) -> list[str]:
-        return sorted([c.column_name for c in self.columns if c.filterable])
+        return sorted(
+            [c.column_name for c in self.get_queryable_columns() if c.filterable]
+        )
 
     @property
     def dttm_cols(self) -> list[str]:
@@ -355,7 +365,7 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
             if o.metric_name not in verb_map:
                 verb_map[o.metric_name] = o.verbose_name or o.metric_name
 
-        for o in self.columns:
+        for o in self.get_queryable_columns():
             if o.column_name not in verb_map:
                 verb_map[o.column_name] = o.verbose_name or o.column_name
 
@@ -527,7 +537,7 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
     def get_column(self, column_name: str | None) -> TableColumn | None:
         if not column_name:
             return None
-        for col in self.columns:
+        for col in self.get_queryable_columns():
             if col.column_name == column_name:
                 return col
         return None
@@ -1187,16 +1197,224 @@ class SqlaTable(
         return self.name
 
     @property
+    def is_dhis2_staged_local(self) -> bool:
+        extra = self.extra_dict
+        if extra.get("dhis2_staged_local"):
+            return True
+
+        sql = str(self.sql or "")
+        return bool(
+            getattr(self.database, "backend", None) == "dhis2"
+            and re.search(
+                r"select\s+\*\s+from\s+(?:dhis2_staging\.)?(?:ds|sv)_\d+_",
+                sql,
+                re.I,
+            )
+        )
+
+    def get_serving_database(self) -> Database:
+        if not self.is_dhis2_staged_local:
+            return self.database
+
+        extra = self.extra_dict
+        serving_database_id = extra.get("dhis2_serving_database_id")
+        if isinstance(serving_database_id, int) and serving_database_id != self.database_id:
+            serving_database = db.session.get(Database, serving_database_id)
+            if serving_database is not None:
+                return serving_database
+
+        try:
+            from superset.dhis2.staging_database_service import get_staging_database
+
+            serving_database = get_staging_database(always_create=True)
+            if serving_database is not None:
+                return serving_database
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Failed to resolve serving database for staged dataset id=%s",
+                self.id,
+                exc_info=True,
+            )
+
+        return self.database
+
+    def get_staged_local_serving_table_ref(
+        self,
+        ensure_exists: bool = False,
+    ) -> str | None:
+        if not self.is_dhis2_staged_local:
+            return None
+
+        extra = self.extra_dict
+        serving_table_ref = extra.get("dhis2_serving_table_ref")
+        if isinstance(serving_table_ref, str) and serving_table_ref.strip():
+            return serving_table_ref.strip()
+
+        staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+        if isinstance(staged_dataset_id, int):
+            try:
+                if ensure_exists:
+                    from superset.dhis2.staged_dataset_service import ensure_serving_table
+
+                    serving_table_ref, _ = ensure_serving_table(staged_dataset_id)
+                else:
+                    from superset.dhis2.staged_dataset_service import get_staged_dataset
+                    from superset.dhis2.staging_engine import DHIS2StagingEngine
+
+                    staged_dataset = get_staged_dataset(staged_dataset_id)
+                    if staged_dataset is not None:
+                        serving_table_ref = DHIS2StagingEngine(
+                            staged_dataset.database_id
+                        ).get_serving_sql_table_ref(staged_dataset)
+                    else:
+                        serving_table_ref = None
+
+                if isinstance(serving_table_ref, str) and serving_table_ref.strip():
+                    return serving_table_ref.strip()
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed to resolve serving table ref for staged dataset id=%s",
+                    self.id,
+                    exc_info=True,
+                )
+
+        sql = str(self.sql or "")
+        match = re.search(
+            r"select\s+\*\s+from\s+((?P<schema>(?:[a-zA-Z_][\w]*\.)?)?)ds_(?P<suffix>\d+_[a-zA-Z0-9_]+)",
+            sql,
+            re.I,
+        )
+        if match:
+            schema_prefix = match.group("schema") or ""
+            return f"{schema_prefix}sv_{match.group('suffix')}"
+
+        return None
+
+    def repair_staged_local_database_binding(self) -> None:
+        if not self.is_dhis2_staged_local:
+            return
+
+        changed = False
+        extra = self.extra_dict
+        serving_database = self.get_serving_database()
+        serving_database_id = getattr(serving_database, "id", None)
+        serving_database_name = getattr(serving_database, "database_name", None)
+
+        if isinstance(serving_database_id, int) and serving_database_id != self.database_id:
+            self.database = serving_database
+            self.database_id = serving_database_id
+            changed = True
+
+        serving_table_ref = self.get_staged_local_serving_table_ref(ensure_exists=True)
+        if serving_table_ref:
+            expected_sql = f"SELECT * FROM {serving_table_ref}"
+            if (self.sql or "").strip() != expected_sql:
+                self.sql = expected_sql
+                changed = True
+
+            if extra.get("dhis2_serving_table_ref") != serving_table_ref:
+                extra["dhis2_serving_table_ref"] = serving_table_ref
+                changed = True
+
+        if extra.get("dhis2_staged_local") is not True:
+            extra["dhis2_staged_local"] = True
+            changed = True
+        if (
+            isinstance(serving_database_id, int)
+            and extra.get("dhis2_serving_database_id") != serving_database_id
+        ):
+            extra["dhis2_serving_database_id"] = serving_database_id
+            changed = True
+        if isinstance(serving_database_name, str) and (
+            extra.get("dhis2_serving_database_name") != serving_database_name
+        ):
+            extra["dhis2_serving_database_name"] = serving_database_name
+            changed = True
+
+        if changed:
+            self.extra = json.dumps(extra)
+
+    def get_staged_local_columns_payload(self) -> list[dict[str, Any]]:
+        if not self.is_dhis2_staged_local:
+            return []
+
+        serving_columns_by_name: dict[str, dict[str, Any]] = {}
+        staged_dataset_id = self.extra_dict.get("dhis2_staged_dataset_id")
+        if isinstance(staged_dataset_id, int):
+            try:
+                from superset.dhis2.staged_dataset_service import get_serving_columns
+
+                serving_columns_by_name = {
+                    str(column.get("column_name") or "").strip(): column
+                    for column in get_serving_columns(staged_dataset_id)
+                    if str(column.get("column_name") or "").strip()
+                }
+            except Exception:  # pylint: disable=broad-except
+                logger.debug(
+                    "Unable to load staged DHIS2 serving-column metadata for dataset id=%s",
+                    staged_dataset_id,
+                    exc_info=True,
+                )
+
+        return [
+            {
+                "column_name": column["column_name"],
+                "verbose_name": column.get("verbose_name"),
+                "type": column.get("type"),
+                "type_generic": column.get("type_generic"),
+                "is_dttm": column.get("is_dttm"),
+                "description": column.get("comment"),
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                **(
+                    {"extra": serving_columns_by_name[column["column_name"]]["extra"]}
+                    if column.get("column_name") in serving_columns_by_name
+                    and serving_columns_by_name[column["column_name"]].get("extra")
+                    else {}
+                ),
+            }
+            for column in self.external_metadata()
+        ]
+
+    def get_queryable_columns(self) -> list[TableColumn]:
+        if not self.is_dhis2_staged_local:
+            return list(self.columns)
+
+        serving_database = self.get_serving_database()
+        queryable_columns: list[TableColumn] = []
+        for column in self.get_staged_local_columns_payload():
+            column_name = str(column.get("column_name") or "").strip()
+            if not column_name:
+                continue
+            queryable_columns.append(
+                TableColumn(
+                    database=serving_database,
+                    column_name=column_name,
+                    verbose_name=column.get("verbose_name"),
+                    type=column.get("type"),
+                    groupby=bool(column.get("groupby", True)),
+                    filterable=bool(column.get("filterable", True)),
+                    is_active=bool(column.get("is_active", True)),
+                    is_dttm=bool(column.get("is_dttm")),
+                    description=column.get("description"),
+                    python_date_format=column.get("python_date_format"),
+                    extra=column.get("extra"),
+                )
+            )
+        return queryable_columns
+
+    @property
     def db_extra(self) -> dict[str, Any]:
-        return self.database.get_extra()
+        return self.get_serving_database().get_extra()
 
     @property
     def db_engine_spec(self) -> __builtins__.type[BaseEngineSpec]:
-        return self.database.db_engine_spec
+        return self.get_serving_database().db_engine_spec
 
     @property
     def connection(self) -> str:
-        return str(self.database)
+        return str(self.get_serving_database())
 
     @property
     def description_markeddown(self) -> str:
@@ -1212,7 +1430,7 @@ class SqlaTable(
 
     @property
     def database_name(self) -> str:
-        return self.database.name
+        return self.get_serving_database().name
 
     @classmethod
     def get_datasource_by_name(
@@ -1283,14 +1501,14 @@ class SqlaTable(
 
     @property
     def dttm_cols(self) -> list[str]:
-        l = [c.column_name for c in self.columns if c.is_dttm]  # noqa: E741
+        l = [c.column_name for c in self.get_queryable_columns() if c.is_dttm]  # noqa: E741
         if self.main_dttm_col and self.main_dttm_col not in l:
             l.append(self.main_dttm_col)
         return l
 
     @property
     def num_cols(self) -> list[str]:
-        return [c.column_name for c in self.columns if c.is_numeric]
+        return [c.column_name for c in self.get_queryable_columns() if c.is_numeric]
 
     @property
     def any_dttm_col(self) -> str | None:
@@ -1299,7 +1517,7 @@ class SqlaTable(
 
     @property
     def html(self) -> str:
-        df = pd.DataFrame((c.column_name, c.type) for c in self.columns)
+        df = pd.DataFrame((c.column_name, c.type) for c in self.get_queryable_columns())
         df.columns = ["field", "type"]
         return df.to_html(
             index=False,
@@ -1308,14 +1526,17 @@ class SqlaTable(
 
     @property
     def sql_url(self) -> str:
-        return self.database.sql_url + "?table_name=" + str(self.table_name)
+        return self.get_serving_database().sql_url + "?table_name=" + str(
+            self.table_name
+        )
 
     def external_metadata(self) -> list[ResultSetColumnType]:
+        self.repair_staged_local_database_binding()
         # todo(yongjie): create a physical table column type in a separate PR
         if self.sql:
             return get_virtual_table_metadata(dataset=self)
         return get_physical_table_metadata(
-            database=self.database,
+            database=self.get_serving_database(),
             table=Table(self.table_name, self.schema or None, self.catalog),
             normalize_columns=self.normalize_columns,
         )
@@ -1331,7 +1552,7 @@ class SqlaTable(
     def select_star(self) -> str | None:
         # show_cols and latest_partition set to false to avoid
         # the expensive cost of inspecting the DB
-        return self.database.select_star(
+        return self.get_serving_database().select_star(
             Table(self.table_name, self.schema or None, self.catalog),
             show_cols=False,
             latest_partition=False,
@@ -1365,6 +1586,53 @@ class SqlaTable(
             data_["owners"] = self.owners_data
             data_["always_filter_main_dttm"] = self.always_filter_main_dttm
             data_["normalize_columns"] = self.normalize_columns
+            if self.is_dhis2_staged_local:
+                columns_payload = self.get_staged_local_columns_payload()
+                serving_dttm_cols = [
+                    str(column.get("column_name"))
+                    for column in columns_payload
+                    if column.get("is_dttm") and column.get("column_name")
+                ]
+                verbose_map = {"__timestamp": "Time"}
+                for metric in self.metrics:
+                    metric_name = metric.metric_name
+                    if metric_name not in verbose_map:
+                        verbose_map[metric_name] = (
+                            metric.verbose_name or metric.metric_name
+                        )
+                for column in columns_payload:
+                    column_name = str(column.get("column_name") or "")
+                    if not column_name or column_name in verbose_map:
+                        continue
+                    verbose_map[column_name] = (
+                        str(column.get("verbose_name") or "").strip() or column_name
+                    )
+
+                data_["database"] = self.get_serving_database().data
+                data_["columns"] = columns_payload
+                data_["verbose_map"] = verbose_map
+                data_["granularity_sqla"] = utils.choicify(serving_dttm_cols)
+                data_["main_dttm_col"] = (
+                    serving_dttm_cols[0] if serving_dttm_cols else None
+                )
+                data_["order_by_choices"] = [
+                    choice
+                    for column_name in [
+                        str(column.get("column_name") or "")
+                        for column in columns_payload
+                    ]
+                    if column_name
+                    for choice in (
+                        (
+                            json.dumps([column_name, True]),
+                            f"{column_name} " + __("[asc]"),
+                        ),
+                        (
+                            json.dumps([column_name, False]),
+                            f"{column_name} " + __("[desc]"),
+                        ),
+                    )
+                ]
         return data_
 
     @property
@@ -1395,13 +1663,18 @@ class SqlaTable(
             ) from ex
 
     def get_template_processor(self, **kwargs: Any) -> BaseTemplateProcessor:
-        return get_template_processor(table=self, database=self.database, **kwargs)
+        return get_template_processor(
+            table=self,
+            database=self.get_serving_database(),
+            **kwargs,
+        )
 
     def get_sqla_table(self) -> TableClause:
+        database = self.get_serving_database()
         # For databases that support cross-catalog queries (like BigQuery),
         # include the catalog in the table identifier to generate
         # project.dataset.table format
-        if self.catalog and self.database.db_engine_spec.supports_cross_catalog_queries:
+        if self.catalog and database.db_engine_spec.supports_cross_catalog_queries:
             # SQLAlchemy doesn't have built-in catalog support for TableClause,
             # so we need to construct the full identifier manually with proper quoting
             catalog_quoted = self.quote_identifier(self.catalog)
@@ -1659,11 +1932,13 @@ class SqlaTable(
 
     def query(self, query_obj: QueryObjectDict) -> QueryResult:
         qry_start_dttm = datetime.now()
+        self.repair_staged_local_database_binding()
         query_str_ext = self.get_query_str_extended(query_obj)
         sql = query_str_ext.sql
         status = QueryStatus.SUCCESS
         errors = None
         error_message = None
+        database = self.get_serving_database()
         
         logger.info(f"[COLUMN_TRACE] Query execution in connectors/sqla/models.py:")
         logger.info(f"[COLUMN_TRACE]   SQL (first 500 chars): {sql[:500]}")
@@ -1813,7 +2088,7 @@ class SqlaTable(
             return df
 
         try:
-            df = self.database.get_df(
+            df = database.get_df(
                 sql,
                 self.catalog,
                 self.schema or None,
@@ -1837,7 +2112,7 @@ class SqlaTable(
             errors = [
                 dataclasses.asdict(error)
                 for error in db_engine_spec.extract_errors(
-                    ex, database_name=self.database.unique_name
+                    ex, database_name=database.unique_name
                 )
             ]
             error_message = utils.error_msg_from_exception(ex)
@@ -1855,7 +2130,7 @@ class SqlaTable(
         )
 
     def get_sqla_table_object(self) -> Table:
-        return self.database.get_table(
+        return self.get_serving_database().get_table(
             Table(
                 self.table_name,
                 self.schema or None,
@@ -2136,6 +2411,69 @@ class SqlaTable(
         Update dataset permissions after delete
         """
         security_manager.dataset_after_delete(mapper, connection, sqla_table)
+        sqla_table.cleanup_linked_dhis2_staged_dataset(connection)
+
+    def _get_linked_dhis2_staged_dataset_id(self) -> int | None:
+        extra = self.extra_dict
+        staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+        if self.is_dhis2_staged_local and isinstance(staged_dataset_id, int):
+            return staged_dataset_id
+        return None
+
+    def cleanup_linked_dhis2_staged_dataset(self, connection: Connection) -> None:
+        staged_dataset_id = self._get_linked_dhis2_staged_dataset_id()
+        if staged_dataset_id is None:
+            return
+
+        result = connection.execute(
+            sa.text(
+                """
+                SELECT
+                    id,
+                    database_id,
+                    name,
+                    staging_table_name,
+                    generic_dataset_id
+                FROM dhis2_staged_datasets
+                WHERE id = :dataset_id
+                """
+            ),
+            {"dataset_id": staged_dataset_id},
+        )
+        staged_dataset = result.mappings().first()
+        if staged_dataset is None:
+            return
+
+        from superset.dhis2.staging_engine import DHIS2StagingEngine
+
+        staging_dataset_ref = SimpleNamespace(
+            id=staged_dataset["id"],
+            name=staged_dataset["name"],
+            staging_table_name=staged_dataset["staging_table_name"],
+        )
+        engine = DHIS2StagingEngine(int(staged_dataset["database_id"]))
+        staging_table_ref = engine.get_superset_sql_table_ref(staging_dataset_ref)
+        serving_table_ref = engine.get_serving_sql_table_ref(staging_dataset_ref)
+
+        logger.info(
+            "Cleaning up linked DHIS2 staged dataset id=%s for deleted dataset id=%s",
+            staged_dataset_id,
+            self.id,
+        )
+        connection.execute(sa.text(f"DROP TABLE IF EXISTS {staging_table_ref}"))
+        connection.execute(sa.text(f"DROP TABLE IF EXISTS {serving_table_ref}"))
+
+        generic_dataset_id = staged_dataset.get("generic_dataset_id")
+        if isinstance(generic_dataset_id, int):
+            connection.execute(
+                sa.text("DELETE FROM staged_datasets WHERE id = :dataset_id"),
+                {"dataset_id": generic_dataset_id},
+            )
+
+        connection.execute(
+            sa.text("DELETE FROM dhis2_staged_datasets WHERE id = :dataset_id"),
+            {"dataset_id": staged_dataset_id},
+        )
 
     def load_database(self: SqlaTable) -> None:
         # somehow the database attribute is not loaded on access

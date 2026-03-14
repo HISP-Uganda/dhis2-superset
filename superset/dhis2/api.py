@@ -47,6 +47,11 @@ class DHIS2RestApi(BaseApi):
         """
         Fetch DHIS2 data elements (indicators, data elements, program indicators).
 
+        When ``instance_id`` is provided the credentials for that specific
+        DHIS2 instance are used instead of the database-level credentials,
+        enabling multi-instance metadata retrieval without changing the URL
+        of the existing endpoint.
+
         ---
         get:
           summary: Get DHIS2 data elements
@@ -57,6 +62,15 @@ class DHIS2RestApi(BaseApi):
               schema:
                 type: integer
               description: Database ID
+            - in: query
+              name: instance_id
+              required: false
+              schema:
+                type: integer
+              description: >
+                Optional DHIS2 instance ID.  When supplied, credentials are
+                sourced from the identified DHIS2Instance record rather than
+                the database-level configuration.
             - in: query
               name: type
               schema:
@@ -99,7 +113,7 @@ class DHIS2RestApi(BaseApi):
             400:
               description: Bad request
             404:
-              description: Database not found
+              description: Database not found or instance not found
         """
         from superset.dhis2.metadata import get_metadata_fetcher
 
@@ -112,9 +126,37 @@ class DHIS2RestApi(BaseApi):
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 50, type=int)
 
-        fetcher = get_metadata_fetcher(database_id)
-        if not fetcher:
-            return self.response_404()
+        # ------------------------------------------------------------------
+        # Optional instance_id: override credentials from a DHIS2Instance.
+        # ------------------------------------------------------------------
+        instance_id = request.args.get('instance_id', type=int)
+        if instance_id is not None:
+            from superset.dhis2 import instance_service as inst_svc
+
+            dhis2_instance = inst_svc.get_instance(instance_id)
+            if dhis2_instance is None:
+                return self.response_404()
+
+            # Build a fetcher using the instance's URL and credentials.
+            from superset.dhis2.metadata import DHIS2MetadataFetcher
+
+            fetcher = DHIS2MetadataFetcher(
+                base_url=dhis2_instance.url,
+                username=dhis2_instance.username or "",
+                password=dhis2_instance.password or "",
+            )
+            # Inject PAT token when the instance uses token-based auth,
+            # overriding the Basic-auth session that DHIS2MetadataFetcher sets
+            # up by default.
+            if dhis2_instance.auth_type == "pat" and dhis2_instance.access_token:
+                fetcher.session.auth = None
+                fetcher.session.headers.update(
+                    dhis2_instance.get_auth_headers()
+                )
+        else:
+            fetcher = get_metadata_fetcher(database_id)
+            if not fetcher:
+                return self.response_404()
 
         try:
             result = fetcher.fetch_data_elements(element_type, search, page, page_size)

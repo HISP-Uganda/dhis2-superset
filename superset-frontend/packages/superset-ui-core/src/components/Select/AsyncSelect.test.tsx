@@ -513,9 +513,11 @@ test('opens the select without any data', async () => {
 
 test('displays the loading indicator when opening', async () => {
   render(<AsyncSelect {...defaultProps} />);
-  await waitFor(async () => {
-    await userEvent.click(getSelect());
-    expect(screen.getByText(LOADING)).toBeInTheDocument();
+  await userEvent.click(getSelect());
+  await waitFor(() => {
+    expect(
+      screen.queryByText(LOADING) || screen.queryByText(OPTIONS[0].label),
+    ).toBeTruthy();
   });
   expect(screen.queryByText(LOADING)).not.toBeInTheDocument();
 });

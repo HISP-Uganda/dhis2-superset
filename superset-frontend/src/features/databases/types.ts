@@ -343,11 +343,13 @@ export interface DatabaseConnectionFormProps {
   isEditMode?: boolean;
   sslForced: boolean;
   editNewDb?: boolean;
+  excludedFields?: string[];
   dbModel: DatabaseForm;
   db: Partial<DatabaseObject> | null;
   isValidating: boolean;
   testConnection?: (event?: React.MouseEvent) => void;
   testInProgress?: boolean;
+  hideTestConnection?: boolean;
   onParametersChange: (
     event: FormEvent<InputProps> | { target: HTMLInputElement },
   ) => void;

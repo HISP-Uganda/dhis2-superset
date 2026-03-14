@@ -174,6 +174,81 @@ def test_update_without_catalog(
     )
 
 
+def test_update_dhis2_database_queues_metadata_refresh(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 42
+    database_without_catalog.backend = "dhis2"
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    sync_db_perms_dao = mocker.patch(
+        "superset.commands.database.sync_permissions.DatabaseDAO"
+    )
+    sync_db_perms_dao.find_by_id.return_value = database_without_catalog
+    mocker.patch("superset.commands.database.update.get_username")
+    mocker.patch("superset.security_manager.get_user_by_username")
+    schedule_refresh = mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+
+    UpdateDatabaseCommand(42, {"database_name": "Updated DHIS2"}).run()
+
+    schedule_refresh.assert_called_once_with(42, reason="database_updated")
+
+
+def test_update_dhis2_shell_database_skips_live_connection_work(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 44
+    database_without_catalog.backend = "dhis2"
+    database_without_catalog.sqlalchemy_uri = "dhis2://"
+    database_without_catalog.sqlalchemy_uri_decrypted = "dhis2://"
+    database_without_catalog.get_default_catalog.side_effect = AssertionError(
+        "shell updates should not fetch catalogs"
+    )
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    sync_permissions = mocker.patch(
+        "superset.commands.database.update.SyncPermissionsCommand"
+    )
+    schedule_refresh = mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+
+    UpdateDatabaseCommand(44, {"database_name": "Updated DHIS2"}).run()
+
+    sync_permissions.assert_not_called()
+    schedule_refresh.assert_called_once_with(44, reason="database_updated")
+
+
+def test_update_non_dhis2_database_does_not_queue_metadata_refresh(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 43
+    database_without_catalog.backend = "sqlite"
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    sync_db_perms_dao = mocker.patch(
+        "superset.commands.database.sync_permissions.DatabaseDAO"
+    )
+    sync_db_perms_dao.find_by_id.return_value = database_without_catalog
+    mocker.patch("superset.commands.database.update.get_username")
+    mocker.patch("superset.security_manager.get_user_by_username")
+    schedule_refresh = mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+
+    UpdateDatabaseCommand(43, {"database_name": "Updated SQLite"}).run()
+
+    schedule_refresh.assert_not_called()
+
+
 def test_rename_with_catalog(
     mocker: MockerFixture,
     database_with_catalog: MagicMock,

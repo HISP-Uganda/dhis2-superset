@@ -659,6 +659,7 @@ export const generateDeckGLColorSchemeControls = ({
           [COLOR_SCHEME_TYPES.fixed_color, t('Fixed color')],
           [COLOR_SCHEME_TYPES.categorical_palette, t('Categorical palette')],
           [COLOR_SCHEME_TYPES.color_breakpoints, t('Color breakpoints')],
+          [COLOR_SCHEME_TYPES.dhis2_staged_legend, t('DHIS2 staged legend')],
         ],
         default: defaultSchemeType || COLOR_SCHEME_TYPES.categorical_palette,
       },

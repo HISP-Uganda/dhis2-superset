@@ -145,6 +145,8 @@ class DatasetPostSchema(Schema):
     table_name = fields.String(required=True, allow_none=False, validate=Length(1, 250))
     sql = fields.String(allow_none=True)
     owners = fields.List(fields.Integer())
+    extra = fields.String(allow_none=True)
+    is_sqllab_view = fields.Boolean(allow_none=True, dump_default=False)
     is_managed_externally = fields.Boolean(allow_none=True, dump_default=False)
     external_url = fields.String(allow_none=True)
     normalize_columns = fields.Boolean(load_default=False)

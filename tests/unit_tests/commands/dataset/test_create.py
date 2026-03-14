@@ -168,3 +168,47 @@ def test_create_dataset_physical_table_no_parse_error():
 
                     # Should not raise any parsing errors
                     command.validate()
+
+
+def test_create_dataset_reuses_existing_dhis2_staged_local_dataset():
+    mock_database = Mock(spec=Database)
+    mock_database.id = 13
+    mock_database.backend = "sqlite"
+    mock_database.get_default_catalog.return_value = None
+    mock_existing_dataset = Mock()
+
+    with patch(
+        "superset.commands.dataset.create.DatasetDAO.get_database_by_id",
+        return_value=mock_database,
+    ), patch(
+        "superset.commands.dataset.create.DatasetDAO.validate_uniqueness",
+        return_value=False,
+    ), patch(
+        "superset.commands.dataset.create.security_manager.raise_for_access",
+    ), patch(
+        "superset.commands.dataset.create.DatasetDAO.find_dhis2_staged_local_dataset",
+        return_value=mock_existing_dataset,
+    ), patch(
+        "superset.commands.dataset.create.DatasetDAO.update",
+        return_value=mock_existing_dataset,
+    ) as update_mock, patch(
+        "superset.commands.dataset.create.CreateDatasetCommand.populate_owners",
+        return_value=[],
+    ):
+        command = CreateDatasetCommand(
+            {
+                "database": 13,
+                "table_name": "ANC Coverage",
+                "sql": "SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+                "extra": (
+                    '{"dhis2_staged_local": true, '
+                    '"dhis2_staged_dataset_id": 4}'
+                ),
+            }
+        )
+
+        dataset = command.run()
+
+    assert dataset is mock_existing_dataset
+    update_mock.assert_called_once()
+    mock_existing_dataset.fetch_metadata.assert_called_once()

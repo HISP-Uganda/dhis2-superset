@@ -118,6 +118,22 @@ const LeftPanelStyle = styled.div`
         color: ${theme.colorTextSecondary};
       }
     }
+    .staging-status {
+      margin-top: ${theme.sizeUnit * 4}px;
+      padding: ${theme.sizeUnit * 4}px;
+      border-radius: ${theme.borderRadiusLG}px;
+      border: 1px solid ${theme.colorBorderSecondary};
+      background:
+        linear-gradient(135deg, ${theme.colorBgElevated}, ${theme.colorBgLayout});
+    }
+    .staging-status-title {
+      font-weight: ${theme.fontWeightStrong};
+      margin-bottom: ${theme.sizeUnit * 1.5}px;
+    }
+    .staging-status-copy {
+      color: ${theme.colorTextSecondary};
+      margin-bottom: ${theme.sizeUnit * 1}px;
+    }
 `}
 `;
 
@@ -208,8 +224,15 @@ export default function LeftPanel({
     />
   );
 
-  const isDHIS2Database = dataset?.db?.backend === 'dhis2';
+  const isDHIS2Database =
+    (dataset?.staging_source_type || dataset?.db?.backend) === 'dhis2';
   const showDHIS2QueryBuilder = isDHIS2Database && dataset?.table_name;
+  const stagedSourceLabel =
+    dataset?.staging_source_type === 'dhis2'
+      ? t('DHIS2 federation')
+      : dataset?.staging_source_type === 'sql_database'
+        ? t('SQL database')
+        : dataset?.staging_source_type;
 
   return (
     <LeftPanelStyle>
@@ -226,6 +249,33 @@ export default function LeftPanel({
         {...(dataset?.catalog && { catalog: dataset.catalog })}
         {...(dataset?.schema && { schema: dataset.schema })}
       />
+
+      {dataset?.staging_supported && dataset?.staging_source_type && (
+        <div className="staging-status">
+          <div className="staging-status-title">
+            {t('Staged analytics available')}
+          </div>
+          <div className="staging-status-copy">
+            {t('Source type: %s', stagedSourceLabel)}
+          </div>
+          <div className="staging-status-copy">
+            {dataset?.staging_requires_instance_selection
+              ? t(
+                  'This connection uses the federated DHIS2 staging flow with explicit instance lineage.',
+                )
+              : t(
+                  'This connection can use the generic local staging path for fast analytical serving.',
+                )}
+          </div>
+          {dataset?.staging_background_refresh_forced && (
+            <div className="staging-status-copy">
+              {t(
+                'Background refresh is enforced for staged datasets and cannot be disabled per dataset.',
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {showDHIS2QueryBuilder && (
         <div style={{ marginTop: 20 }}>

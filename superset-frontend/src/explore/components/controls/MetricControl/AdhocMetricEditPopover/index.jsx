@@ -322,6 +322,8 @@ export default class AdhocMetricEditPopover extends PureComponent {
       isNewMetric,
       isLabelModified,
       handleDatasetModal,
+      getCurrentTab,
+      getCurrentLabel,
       ...popoverProps
     } = this.props;
     const { adhocMetric, savedMetric } = this.state;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { styled, SupersetClient } from '@superset-ui/core';
+import { styled } from '@superset-ui/core';
 import {
   Tabs,
   Select,
@@ -406,7 +406,7 @@ export default function WizardStepPeriods({
   wizardState,
   updateState,
   errors,
-  databaseId,
+  databaseId: _databaseId,
 }: StepPeriodsProps) {
   const [relativePeriods, setRelativePeriods] = useState<Period[]>([]);
   const [fixedPeriods, setFixedPeriods] = useState<Period[]>([]);
@@ -432,79 +432,35 @@ export default function WizardStepPeriods({
   }, [relativePeriodType]);
 
   useEffect(() => {
-    fetchFixedPeriods();
-  }, [fixedPeriodType, fixedYear, databaseId]);
-
-  const fetchFixedPeriods = async () => {
-    if (!databaseId) {
-      setFixedPeriods(buildLocalFixedPeriods(fixedPeriodType, fixedYear));
-      return;
-    }
-
     setLoadingPeriods(true);
-    try {
-      console.log('[StepPeriods] Fetching fixed periods:', { fixedPeriodType, fixedYear, databaseId });
-      const response = await SupersetClient.get({
-        endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=periods&periodType=${fixedPeriodType}&year=${fixedYear}`,
-      });
-
-      const periods = response.json?.result || [];
-      console.log('[StepPeriods] Received periods:', { count: periods.length, periodType: fixedPeriodType, year: fixedYear });
-
-      if (periods.length === 0) {
-        const fallback = buildLocalFixedPeriods(fixedPeriodType, fixedYear);
-        console.warn('[StepPeriods] Empty response; using local fixed periods', {
-          fixedPeriodType,
-          fixedYear,
-          count: fallback.length,
-        });
-        setFixedPeriods(fallback);
-        return;
-      }
-
-      setFixedPeriods(periods);
-    } catch (error) {
-      console.error('[StepPeriods] Error fetching periods:', error);
-      setFixedPeriods(buildLocalFixedPeriods(fixedPeriodType, fixedYear));
-    } finally {
-      setLoadingPeriods(false);
-    }
-  };
+    setFixedPeriods(buildLocalFixedPeriods(fixedPeriodType, fixedYear));
+    setLoadingPeriods(false);
+  }, [fixedPeriodType, fixedYear]);
 
   const handlePeriodToggle = (periodId: string) => {
     const selected = new Set(wizardState.periods);
     if (selected.has(periodId)) {
       selected.delete(periodId);
-      console.log('[StepPeriods] Deselected period:', periodId);
     } else {
       selected.add(periodId);
-      console.log('[StepPeriods] Selected period:', periodId);
     }
-    const updatedPeriods = Array.from(selected);
-    console.log('[StepPeriods] Updated periods:', updatedPeriods);
-    updateState({ periods: updatedPeriods });
+    updateState({ periods: Array.from(selected) });
   };
 
   const handleSelectAll = (periods: Period[]) => {
     const selected = new Set(wizardState.periods);
     periods.forEach(p => {
       selected.add(p.id);
-      console.log('[StepPeriods] Selected all - adding:', p.id);
     });
-    const updatedPeriods = Array.from(selected);
-    console.log('[StepPeriods] Select all result:', updatedPeriods);
-    updateState({ periods: updatedPeriods });
+    updateState({ periods: Array.from(selected) });
   };
 
   const handleDeselectAll = (periods: Period[]) => {
     const selected = new Set(wizardState.periods);
     periods.forEach(p => {
       selected.delete(p.id);
-      console.log('[StepPeriods] Deselected all - removing:', p.id);
     });
-    const updatedPeriods = Array.from(selected);
-    console.log('[StepPeriods] Deselect all result:', updatedPeriods);
-    updateState({ periods: updatedPeriods });
+    updateState({ periods: Array.from(selected) });
   };
 
   const getSelectedCount = (periods: Period[]) =>

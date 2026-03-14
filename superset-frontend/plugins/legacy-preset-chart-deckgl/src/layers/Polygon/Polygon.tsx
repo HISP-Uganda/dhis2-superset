@@ -24,11 +24,16 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ContextMenuFilters,
+  Datasource,
+  formatDHIS2LegendItemLabel,
   FilterState,
   HandlerFunction,
+  getDHIS2LegendColorForValue,
+  getNormalizedDHIS2LegendItems,
   JsonObject,
   JsonValue,
   QueryFormData,
+  resolveDHIS2LegendDefinition,
   SetDataMaskHook,
   t,
 } from '@superset-ui/core';
@@ -57,12 +62,12 @@ import { TooltipProps } from '../../components/Tooltip';
 import { GetLayerType } from '../../factory';
 import { COLOR_SCHEME_TYPES } from '../../utilities/utils';
 import { DEFAULT_DECKGL_COLOR } from '../../utilities/Shared_DeckGL';
+import { hexToRGB } from '../../utils/colors';
 import {
   createTooltipContent,
   CommonTooltipRows,
 } from '../../utilities/tooltipUtils';
 import { Point } from '../../types';
-
 function getElevation(
   d: JsonObject,
   colorScaler: (d: JsonObject) => [number, number, number, number],
@@ -111,6 +116,7 @@ export const getLayer: GetLayerType<PolygonLayer> = function ({
   setDataMask,
   onContextMenu,
   onSelect,
+  datasource,
   emitCrossFilters,
 }) {
   const fd = formData as PolygonFormData;
@@ -128,10 +134,27 @@ export const getLayer: GetLayerType<PolygonLayer> = function ({
   }
 
   const colorSchemeType = fd.color_scheme_type;
+  const stagedLegendDefinition = resolveDHIS2LegendDefinition(
+    datasource,
+    fd.metric,
+  );
 
   const metricLabel = fd.metric ? fd.metric.label || fd.metric : null;
   const accessor = (d: JsonObject) => d[metricLabel];
   let baseColorScaler: (d: JsonObject) => Color;
+  const defaultColor: Color = defaultBreakpointColor
+    ? [
+        defaultBreakpointColor.r,
+        defaultBreakpointColor.g,
+        defaultBreakpointColor.b,
+        defaultBreakpointColor.a * 255,
+      ]
+    : [
+        DEFAULT_DECKGL_COLOR.r,
+        DEFAULT_DECKGL_COLOR.g,
+        DEFAULT_DECKGL_COLOR.b,
+        DEFAULT_DECKGL_COLOR.a * 255,
+      ];
 
   switch (colorSchemeType) {
     case COLOR_SCHEME_TYPES.fixed_color: {
@@ -171,6 +194,19 @@ export const getLayer: GetLayerType<PolygonLayer> = function ({
                 DEFAULT_DECKGL_COLOR.b,
                 DEFAULT_DECKGL_COLOR.a * 255,
               ];
+      };
+      break;
+    }
+    case COLOR_SCHEME_TYPES.dhis2_staged_legend: {
+      baseColorScaler = dataPoint => {
+        const rawValue = accessor(dataPoint);
+        const numericValue =
+          typeof rawValue === 'number' ? rawValue : Number(rawValue);
+        const matchedColor = getDHIS2LegendColorForValue(
+          numericValue,
+          stagedLegendDefinition,
+        );
+        return matchedColor ? (hexToRGB(matchedColor) as Color) : defaultColor;
       };
       break;
     }
@@ -239,6 +275,7 @@ export type PolygonFormData = QueryFormData & {
   opacity: number;
 };
 export type DeckGLPolygonProps = {
+  datasource?: Datasource;
   formData: PolygonFormData;
   payload: JsonObject;
   setControlValue: (control: string, value: JsonValue) => void;
@@ -338,6 +375,19 @@ const DeckGLPolygon = (props: DeckGLPolygonProps) => {
   const buckets =
     colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints
       ? getColorBreakpointsBuckets(formData.color_breakpoints)
+      : colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend
+        ? getNormalizedDHIS2LegendItems(
+            resolveDHIS2LegendDefinition(props.datasource, formData.metric),
+          ).reduce<Record<string, { color: Color; enabled: boolean }>>(
+            (result, item) => {
+              result[formatDHIS2LegendItemLabel(item)] = {
+                color: hexToRGB(item.color) as Color,
+                enabled: true,
+              };
+              return result;
+            },
+            {},
+          )
       : getBuckets(formData, payload.data.features, accessor);
 
   return (
@@ -355,6 +405,9 @@ const DeckGLPolygon = (props: DeckGLPolygonProps) => {
 
       {formData.metric !== null && (
         <Legend
+          forceCategorical={
+            colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend
+          }
           categories={buckets}
           position={formData.legend_position}
           format={formData.legend_format}

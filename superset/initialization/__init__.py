@@ -171,8 +171,16 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.datasets.metrics.api import DatasetMetricRestApi
         from superset.datasource.api import DatasourceRestApi
         from superset.dhis2.api import DHIS2RestApi, DHIS2CacheApi
+        from superset.dhis2.admin_views import (
+            DHIS2AdminView,
+            dhis2_frontend_blueprint,
+        )
         from superset.dhis2.boundaries import DHIS2BoundariesRestApi
         from superset.dhis2.data_values_api import DHIS2DataValuesRestApi
+        from superset.dhis2.diagnostics_api import DHIS2DiagnosticsApi
+        from superset.dhis2.instance_api import DHIS2InstanceApi
+        from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+        from superset.dhis2.sync_api import DHIS2SyncApi
         from superset.embedded.api import EmbeddedDashboardRestApi
         from superset.embedded.view import EmbeddedView
         from superset.explore.api import ExploreRestApi
@@ -192,6 +200,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             UserRegistrationsRestAPI,
         )
         from superset.public_page.api import PublicPageRestApi
+        from superset.staging.api import StagedSourceApi
         from superset.sqllab.api import SqlLabRestApi
         from superset.sqllab.permalink.api import SqlLabPermalinkRestApi
         from superset.tags.api import TagRestApi
@@ -244,6 +253,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.views.health import health_blueprint
 
         self.superset_app.register_blueprint(health_blueprint)
+        self.superset_app.register_blueprint(dhis2_frontend_blueprint)
 
         #
         # Setup API views
@@ -272,6 +282,10 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(DHIS2CacheApi)
         appbuilder.add_api(DHIS2BoundariesRestApi)
         appbuilder.add_api(DHIS2DataValuesRestApi)
+        appbuilder.add_api(DHIS2DiagnosticsApi)
+        appbuilder.add_api(DHIS2InstanceApi)
+        appbuilder.add_api(DHIS2StagedDatasetApi)
+        appbuilder.add_api(DHIS2SyncApi)
         appbuilder.add_api(EmbeddedDashboardRestApi)
         appbuilder.add_api(ExploreRestApi)
         appbuilder.add_api(ExploreFormDataRestApi)
@@ -282,6 +296,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(ReportExecutionLogRestApi)
         appbuilder.add_api(RLSRestApi)
         appbuilder.add_api(SavedQueryRestApi)
+        appbuilder.add_api(StagedSourceApi)
         appbuilder.add_api(TagRestApi)
         appbuilder.add_api(SqlLabRestApi)
         appbuilder.add_api(SqlLabPermalinkRestApi)
@@ -315,6 +330,47 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             icon="fa-database",
             category="Data",
             category_label=_("Data"),
+        )
+        appbuilder.add_view(
+            DHIS2AdminView,
+            "DHIS2Admin",
+            label=_("DHIS2 Instances"),
+            href=f"{app_root}/dhis2admin/list/",
+            icon="fa-server",
+            category="Settings",
+            category_label=_("Settings"),
+        )
+        appbuilder.add_link(
+            "DHIS2 Health",
+            label=_("DHIS2 Health"),
+            href=f"{app_root}/dhis2admin/health/",
+            icon="fa-heartbeat",
+            category="Settings",
+            category_label=_("Settings"),
+        )
+        appbuilder.add_link(
+            "DHIS2 Sync History",
+            label=_("DHIS2 Sync History"),
+            href=f"{app_root}/dhis2admin/sync-history/",
+            icon="fa-history",
+            category="Settings",
+            category_label=_("Settings"),
+        )
+        appbuilder.add_link(
+            "DHIS2 Local Metadata",
+            label=_("DHIS2 Local Metadata"),
+            href=f"{app_root}/dhis2admin/local-metadata/",
+            icon="fa-sitemap",
+            category="Settings",
+            category_label=_("Settings"),
+        )
+        appbuilder.add_link(
+            "DHIS2 Local Data",
+            label=_("DHIS2 Local Data"),
+            href=f"{app_root}/dhis2admin/local-data/",
+            icon="fa-database",
+            category="Settings",
+            category_label=_("Settings"),
         )
         appbuilder.add_view(
             DashboardModelView,
@@ -948,7 +1004,10 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             refresh_interval = self.config.get("DHIS2_CACHE_REFRESH_INTERVAL", 21600)
 
             logger.info(f"[DHIS2 Preloader] Starting background cache preloader (refresh every {refresh_interval}s)")
-            start_dhis2_preloader(refresh_interval=refresh_interval)
+            start_dhis2_preloader(
+                refresh_interval=refresh_interval,
+                app=self.superset_app,
+            )
 
         except Exception as e:
             logger.warning(f"[DHIS2 Preloader] Failed to start preloader: {e}")

@@ -266,7 +266,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
       try {
         // Fetch data element groups
         const deGroupsResponse = await SupersetClient.get({
-          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElementGroups`,
+          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElementGroups&staged=true`,
         });
         if (deGroupsResponse.json?.result) {
           setDataElementGroups(deGroupsResponse.json.result);
@@ -278,7 +278,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
       try {
         // Fetch indicator groups
         const indGroupsResponse = await SupersetClient.get({
-          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=indicatorGroups`,
+          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=indicatorGroups&staged=true`,
         });
         if (indGroupsResponse.json?.result) {
           setIndicatorGroups(indGroupsResponse.json.result);
@@ -298,7 +298,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElements&table=${endpoint}`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElements&table=${endpoint}&staged=true`;
         if (groupId) {
           url += `&group=${groupId}`;
         }
@@ -331,7 +331,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=indicators`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=indicators&staged=true`;
         if (groupId) {
           url += `&group=${groupId}`;
         }
@@ -364,7 +364,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=programIndicators`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=programIndicators&staged=true`;
         if (search && search.length >= 2) {
           url += `&search=${encodeURIComponent(search)}`;
         }
@@ -394,7 +394,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataSets`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=dataSets&staged=true`;
         if (search && search.length >= 2) {
           url += `&search=${encodeURIComponent(search)}`;
         }
@@ -424,7 +424,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=programs`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=programs&staged=true`;
         if (search && search.length >= 2) {
           url += `&search=${encodeURIComponent(search)}`;
         }
@@ -454,7 +454,7 @@ export const DxSelector: React.FC<DxSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=trackedEntityTypes`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=trackedEntityTypes&staged=true`;
         if (search && search.length >= 2) {
           url += `&search=${encodeURIComponent(search)}`;
         }

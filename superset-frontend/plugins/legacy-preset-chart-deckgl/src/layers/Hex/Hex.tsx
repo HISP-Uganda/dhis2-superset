@@ -21,12 +21,14 @@ import {
   CategoricalColorNamespace,
   JsonObject,
   QueryFormData,
+  resolveDHIS2LegendDefinition,
 } from '@superset-ui/core';
 
 import { COLOR_SCHEME_TYPES } from '../../utilities/utils';
 import {
   commonLayerProps,
   getAggFunc,
+  getColorForDHIS2Legend,
   getColorForBreakpoints,
   getColorRange,
 } from '../common';
@@ -38,7 +40,6 @@ import {
 } from '../../utilities/tooltipUtils';
 import TooltipRow from '../../TooltipRow';
 import { HIGHLIGHT_COLOR_ARRAY, TRANSPARENT_COLOR_ARRAY } from '../../utils';
-
 function defaultTooltipGenerator(o: JsonObject, formData: QueryFormData) {
   const metricLabel = formData.size?.label || formData.size?.value || 'Height';
 
@@ -58,6 +59,7 @@ export const getLayer: GetLayerType<HexagonLayer> = function ({
   payload,
   setTooltip,
   onContextMenu,
+  datasource,
   filterState,
   setDataMask,
   emitCrossFilters,
@@ -65,6 +67,10 @@ export const getLayer: GetLayerType<HexagonLayer> = function ({
   const fd = formData;
   const appliedScheme = fd.color_scheme;
   const colorScale = CategoricalColorNamespace.getScale(appliedScheme);
+  const stagedLegendDefinition = resolveDHIS2LegendDefinition(
+    datasource,
+    fd.size,
+  );
   let data = payload.data.features;
 
   if (fd.js_data_mutator) {
@@ -80,6 +86,7 @@ export const getLayer: GetLayerType<HexagonLayer> = function ({
     fixedColor: fd.color_picker,
     colorSchemeType,
     colorScale,
+    stagedLegendDefinition,
   });
 
   const colorBreakpoints = fd.color_breakpoints;
@@ -89,6 +96,9 @@ export const getLayer: GetLayerType<HexagonLayer> = function ({
   const colorAggFunc =
     colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints
       ? (p: number[]) => getColorForBreakpoints(aggFunc, p, colorBreakpoints)
+      : colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend
+        ? (p: number[]) =>
+            getColorForDHIS2Legend(aggFunc, p, stagedLegendDefinition)
       : aggFunc;
 
   const tooltipContent = createTooltipContent(fd, (o: JsonObject) =>
@@ -101,7 +111,9 @@ export const getLayer: GetLayerType<HexagonLayer> = function ({
     radius: fd.grid_size,
     extruded: fd.extruded,
     colorDomain:
-      colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints && colorRange
+      (colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints ||
+        colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend) &&
+      colorRange
         ? [0, colorRange.length]
         : undefined,
     colorRange,

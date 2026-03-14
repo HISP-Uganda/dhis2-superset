@@ -30,8 +30,11 @@ import {
 } from 'd3-array';
 import {
   CategoricalColorScale,
+  DHIS2LegendDefinition,
   FilterState,
   HandlerFunction,
+  getDHIS2LegendIndexForValue,
+  getNormalizedDHIS2LegendItems,
   JsonObject,
   JsonValue,
   QueryFormData,
@@ -46,7 +49,6 @@ import { getCrossFilterDataMask } from '../utils/crossFiltersDataMask';
 import { COLOR_SCHEME_TYPES, ColorSchemeType } from '../utilities/utils';
 import { hexToRGB } from '../utils/colors';
 import { DEFAULT_DECKGL_COLOR } from '../utilities/Shared_DeckGL';
-
 export function commonLayerProps({
   formData,
   setDataMask,
@@ -229,12 +231,14 @@ export const getColorRange = ({
   colorBreakpoints,
   colorScale,
   defaultBreakpointsColor,
+  stagedLegendDefinition,
 }: {
   colorSchemeType: ColorSchemeType;
   defaultBreakpointsColor: { r: number; g: number; b: number; a: number };
   fixedColor?: { r: number; g: number; b: number; a: number };
   colorBreakpoints?: ColorBreakpointType[];
   colorScale?: CategoricalColorScale | ScaleLinear<string, string>;
+  stagedLegendDefinition?: DHIS2LegendDefinition;
 }) => {
   let colorRange: Color[] | undefined;
   switch (colorSchemeType) {
@@ -273,6 +277,31 @@ export const getColorRange = ({
 
       break;
     }
+    case COLOR_SCHEME_TYPES.dhis2_staged_legend: {
+      const legendItems = getNormalizedDHIS2LegendItems(stagedLegendDefinition);
+      const fallbackColor: Color =
+        defaultBreakpointsColor
+          ? [
+              defaultBreakpointsColor.r,
+              defaultBreakpointsColor.g,
+              defaultBreakpointsColor.b,
+              defaultBreakpointsColor.a * 255,
+            ]
+          : legendItems.length
+            ? (hexToRGB(legendItems[0].color) as Color)
+            : [
+                DEFAULT_DECKGL_COLOR.r,
+                DEFAULT_DECKGL_COLOR.g,
+                DEFAULT_DECKGL_COLOR.b,
+                DEFAULT_DECKGL_COLOR.a * 255,
+              ];
+
+      colorRange = [
+        fallbackColor,
+        ...legendItems.map(item => hexToRGB(item.color) as Color),
+      ];
+      break;
+    }
     default: {
       const color = fixedColor || {
         r: DEFAULT_DECKGL_COLOR.r,
@@ -286,4 +315,18 @@ export const getColorRange = ({
   }
 
   return colorRange;
+};
+
+export const getColorForDHIS2Legend = (
+  aggFunc: (arr: number[]) => number | number[] | undefined,
+  point: number[],
+  stagedLegendDefinition?: DHIS2LegendDefinition,
+) => {
+  const aggResult = aggFunc(point);
+
+  if (aggResult === undefined || Array.isArray(aggResult)) {
+    return undefined;
+  }
+
+  return getDHIS2LegendIndexForValue(aggResult, stagedLegendDefinition);
 };

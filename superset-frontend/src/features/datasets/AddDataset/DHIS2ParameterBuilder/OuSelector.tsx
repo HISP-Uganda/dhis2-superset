@@ -516,7 +516,7 @@ export const OuSelector: React.FC<OuSelectorProps> = ({
 
       try {
         const response = await SupersetClient.get({
-          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnitLevels`,
+          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnitLevels&staged=true`,
         });
         if (response.json?.result) {
           const levels = response.json.result
@@ -544,7 +544,7 @@ export const OuSelector: React.FC<OuSelectorProps> = ({
 
       setLoading(true);
       try {
-        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits`;
+        let url = `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&staged=true`;
         if (level) {
           url += `&level=${level}`;
         }

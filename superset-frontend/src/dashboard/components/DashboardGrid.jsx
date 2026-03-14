@@ -84,7 +84,7 @@ const GridContent = styled.div`
       }
     }
 
-    & > .empty-droptarget:first-child {
+    & > .empty-droptarget:first-of-type {
       height: ${theme.sizeUnit * 4}px;
       margin-top: ${theme.sizeUnit * -4}px;
     }

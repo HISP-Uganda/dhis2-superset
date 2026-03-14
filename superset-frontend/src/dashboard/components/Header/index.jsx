@@ -19,6 +19,7 @@
 /* eslint-env browser */
 import { extendedDayjs } from '@superset-ui/core/utils/dates';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment } from 'react';
 import {
   styled,
   css,
@@ -599,19 +600,29 @@ const Header = () => {
   );
 
   const titlePanelAdditionalItems = useMemo(
-    () => [
-      !editMode && (
-        <PublishedStatus
-          dashboardId={dashboardInfo.id}
-          isPublished={isPublished}
-          savePublished={boundActionCreators.savePublished}
-          userCanEdit={userCanEdit}
-          userCanSave={userCanSaveAs}
-          visible={!editMode}
-        />
-      ),
-      !editMode && !isEmbedded && metadataBar,
-    ],
+    () => {
+      const items = [];
+
+      if (!editMode) {
+        items.push(
+          <PublishedStatus
+            key="published-status"
+            dashboardId={dashboardInfo.id}
+            isPublished={isPublished}
+            savePublished={boundActionCreators.savePublished}
+            userCanEdit={userCanEdit}
+            userCanSave={userCanSaveAs}
+            visible={!editMode}
+          />,
+        );
+      }
+
+      if (!editMode && !isEmbedded && metadataBar) {
+        items.push(<Fragment key="metadata-bar">{metadataBar}</Fragment>);
+      }
+
+      return items;
+    },
     [
       boundActionCreators.savePublished,
       dashboardInfo.id,

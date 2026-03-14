@@ -14,29 +14,45 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Background preloader for DHIS2 data to warm cache on startup."""
+"""Background preloader for scheduled DHIS2 metadata staging."""
 
+from collections import defaultdict
 import logging
 import threading
 import time
-from typing import Any, Dict, List
-import requests
+from typing import Any
+
+from flask import Flask
 
 logger = logging.getLogger(__name__)
 
 
 class DHIS2Preloader:
-    """Background task to preload DHIS2 data into cache."""
+    """Background task to stage DHIS2 metadata on startup and on schedule."""
 
-    def __init__(self, refresh_interval: int = 21600):
+    def __init__(self, refresh_interval: int = 21600, app: Flask | None = None):
         """Initialize DHIS2 preloader.
 
         Args:
             refresh_interval: Seconds between cache refresh (default 6 hours)
         """
         self._refresh_interval = refresh_interval
+        self._app = app
         self._running = False
         self._thread: threading.Thread | None = None
+        self._wake_event = threading.Event()
+        self._request_lock = threading.Lock()
+        self._requested_database_ids: set[int] = set()
+        self._requested_instance_ids: dict[int, set[int]] = defaultdict(set)
+        self._requested_metadata_types: dict[int, set[str]] = defaultdict(set)
+        self._request_reasons: dict[int, str] = {}
+
+    def configure(self, refresh_interval: int | None = None, app: Flask | None = None) -> None:
+        """Update runtime configuration for the singleton preloader."""
+        if refresh_interval is not None:
+            self._refresh_interval = refresh_interval
+        if app is not None:
+            self._app = app
 
     def start(self) -> None:
         """Start background preloader thread."""
@@ -52,34 +68,59 @@ class DHIS2Preloader:
     def stop(self) -> None:
         """Stop background preloader thread."""
         self._running = False
+        self._wake_event.set()
         if self._thread:
             self._thread.join(timeout=5)
         logger.info("[DHIS2 Preloader] Stopped")
 
+    def request_refresh(
+        self,
+        *,
+        database_id: int,
+        instance_ids: list[int] | None = None,
+        metadata_types: list[str] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Queue an immediate metadata refresh for a database."""
+        with self._request_lock:
+            self._requested_database_ids.add(database_id)
+            if instance_ids:
+                self._requested_instance_ids[database_id].update(instance_ids)
+            if metadata_types:
+                self._requested_metadata_types[database_id].update(metadata_types)
+            if reason:
+                self._request_reasons[database_id] = reason
+        self._wake_event.set()
+
     def _preload_loop(self) -> None:
         """Main preload loop - runs periodically."""
-        # Initial preload (with slight delay to ensure app is ready)
         time.sleep(5)
         self._preload_all_data()
 
-        # Periodic refresh
         while self._running:
-            time.sleep(self._refresh_interval)
-            if self._running:
-                logger.info("[DHIS2 Preloader] Starting scheduled refresh")
+            triggered = self._wake_event.wait(timeout=self._refresh_interval)
+            if not self._running:
+                break
+            if triggered:
+                self._wake_event.clear()
+                self._process_requested_refreshes()
+            else:
+                logger.info("[DHIS2 Preloader] Starting scheduled metadata refresh")
                 self._preload_all_data()
 
     def _preload_all_data(self) -> None:
-        """Preload all DHIS2 data into cache."""
+        """Refresh staged metadata for all DHIS2 databases."""
         start_time = time.time()
-        logger.info("[DHIS2 Preloader] ==================== Starting Data Preload ====================")
+        logger.info(
+            "[DHIS2 Preloader] ==================== Starting Metadata Refresh ===================="
+        )
 
         try:
-            # Ensure we have an application context before touching the DB
-            from superset import app as superset_app
+            if self._app is None:
+                logger.warning("[DHIS2 Preloader] No Flask app configured; skipping preload")
+                return
 
-            with superset_app.app_context():
-                # Get all DHIS2 databases
+            with self._app.app_context():
                 dhis2_databases = self._get_dhis2_databases()
 
                 if not dhis2_databases:
@@ -97,24 +138,56 @@ class DHIS2Preloader:
 
                 elapsed = time.time() - start_time
                 logger.info(
-                    f"[DHIS2 Preloader] ==================== Preload Complete ({elapsed:.1f}s) ===================="
-                )
-
-                # Log cache stats
-                from superset.utils.dhis2_cache import get_dhis2_cache
-
-                cache = get_dhis2_cache()
-                stats = cache.stats()
-                logger.info(
-                    f"[DHIS2 Preloader] Cache Stats: {stats['active_entries']} entries, "
-                    f"{stats['size_mb']:.1f}/{stats['max_size_mb']:.1f} MB "
-                    f"({stats['usage_percent']:.1f}% used)"
+                    f"[DHIS2 Preloader] ==================== Metadata Refresh Complete ({elapsed:.1f}s) ===================="
                 )
 
         except Exception as e:
             logger.exception(f"[DHIS2 Preloader] Fatal error during preload: {e}")
 
-    def _get_dhis2_databases(self) -> List[Dict[str, Any]]:
+    def _process_requested_refreshes(self) -> None:
+        if self._app is None:
+            logger.warning("[DHIS2 Preloader] No Flask app configured; skipping requested refresh")
+            return
+
+        with self._request_lock:
+            database_ids = list(self._requested_database_ids)
+            requested_instance_ids = {
+                database_id: sorted(instance_ids)
+                for database_id, instance_ids in self._requested_instance_ids.items()
+            }
+            requested_metadata_types = {
+                database_id: sorted(metadata_types)
+                for database_id, metadata_types in self._requested_metadata_types.items()
+            }
+            request_reasons = dict(self._request_reasons)
+            self._requested_database_ids.clear()
+            self._requested_instance_ids.clear()
+            self._requested_metadata_types.clear()
+            self._request_reasons.clear()
+
+        if not database_ids:
+            return
+
+        with self._app.app_context():
+            for database_id in database_ids:
+                try:
+                    self._preload_database(
+                        {
+                            "id": database_id,
+                            "name": f"DHIS2 database {database_id}",
+                        },
+                        instance_ids=requested_instance_ids.get(database_id),
+                        metadata_types=requested_metadata_types.get(database_id),
+                        reason=request_reasons.get(database_id) or "requested_refresh",
+                    )
+                except Exception:
+                    logger.warning(
+                        "[DHIS2 Preloader] Requested refresh failed for database id=%s",
+                        database_id,
+                        exc_info=True,
+                    )
+
+    def _get_dhis2_databases(self) -> list[dict[str, Any]]:
         """Get all DHIS2 databases from Superset.
 
         Returns:
@@ -124,17 +197,17 @@ class DHIS2Preloader:
             from superset.models.core import Database
             from superset.extensions import db
 
-            # Query for DHIS2 databases
-            databases = db.session.query(Database).filter(
-                Database.database_name.like('%dhis2%') |
-                Database.sqlalchemy_uri.like('%dhis2%')
-            ).all()
+            databases = [
+                database
+                for database in db.session.query(Database).all()
+                if database.backend == "dhis2"
+            ]
 
             return [
                 {
-                    'id': database.id,
-                    'name': database.database_name,
-                    'uri': database.sqlalchemy_uri
+                    "id": database.id,
+                    "name": database.database_name,
+                    "uri": database.sqlalchemy_uri,
                 }
                 for database in databases
             ]
@@ -143,98 +216,40 @@ class DHIS2Preloader:
             logger.error(f"[DHIS2 Preloader] Error fetching DHIS2 databases: {e}")
             return []
 
-    def _preload_database(self, db_info: Dict[str, Any]) -> None:
-        """Preload data for a single DHIS2 database.
+    def _preload_database(
+        self,
+        db_info: dict[str, Any],
+        *,
+        instance_ids: list[int] | None = None,
+        metadata_types: list[str] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Refresh staged metadata for a single DHIS2 database.
 
         Args:
             db_info: Database information dict
         """
-        db_id = db_info['id']
-        db_name = db_info['name']
+        from superset.dhis2.metadata_staging_service import (
+            get_background_metadata_types,
+            refresh_database_metadata,
+        )
 
-        logger.info(f"[DHIS2 Preloader] Preloading database: {db_name} (id={db_id})")
+        db_id = db_info["id"]
+        db_name = db_info["name"]
+        background_metadata_types = get_background_metadata_types(metadata_types)
 
-        # 1. Preload GeoJSON for common levels
-        self._preload_geojson(db_id, db_name)
-
-        # 2. Preload org unit hierarchy
-        self._preload_org_hierarchy(db_id, db_name)
-
-        logger.info(f"[DHIS2 Preloader] ✅ Completed preload for {db_name}")
-
-    def _preload_geojson(self, db_id: int, db_name: str) -> None:
-        """Preload GeoJSON data for common org unit levels.
-
-        Args:
-            db_id: Database ID
-            db_name: Database name
-        """
-        logger.info(f"[DHIS2 Preloader] Preloading GeoJSON for {db_name}...")
-
-        # Preload GeoJSON for Regions (level 2) and Districts (level 3)
-        # These are the most commonly viewed levels in dashboards
-        levels_to_preload = [2, 3]  # Region, District
-
-        for level in levels_to_preload:
-            try:
-                # Make request to GeoJSON endpoint (will cache the result)
-                from flask import Flask
-                from flask.testing import FlaskClient
-                from superset import app as superset_app
-
-                # Create test client to make internal API requests
-                with superset_app.test_request_context():
-                    # Import here to avoid circular dependency
-                    from superset.databases.api import DatabaseRestApi
-
-                    api = DatabaseRestApi()
-
-                    # Simulate GeoJSON request (this will populate cache)
-                    # We can't actually call the endpoint directly, so we'll use requests
-                    # to the local server if it's running, or skip if not available
-
-                    logger.info(f"[DHIS2 Preloader] GeoJSON level {level} will be cached on first request")
-
-            except Exception as e:
-                logger.debug(f"[DHIS2 Preloader] Could not preload GeoJSON for level {level}: {e}")
-
-    def _preload_org_hierarchy(self, db_id: int, db_name: str) -> None:
-        """Preload org unit hierarchy data.
-
-        Args:
-            db_id: Database ID
-            db_name: Database name
-        """
-        logger.info(f"[DHIS2 Preloader] Preloading org hierarchy for {db_name}...")
-
-        try:
-            # Get database connection
-            from superset.models.core import Database
-            from superset.extensions import db
-
-            database = db.session.query(Database).filter_by(id=db_id).first()
-
-            if not database:
-                logger.warning(f"[DHIS2 Preloader] Database {db_id} not found")
-                return
-
-            # Get database engine
-            engine = database.get_sqla_engine()
-
-            # Create connection and fetch org unit levels
-            with engine.connect() as conn:
-                # Get dialect instance
-                dialect = conn.connection.dbapi_connection
-
-                if hasattr(dialect, 'fetch_org_unit_levels'):
-                    # Fetch org unit levels (will be cached)
-                    levels = dialect.fetch_org_unit_levels()
-                    logger.info(f"[DHIS2 Preloader] Cached {len(levels)} org unit levels")
-
-            logger.info(f"[DHIS2 Preloader] ✅ Org hierarchy preloaded for {db_name}")
-
-        except Exception as e:
-            logger.debug(f"[DHIS2 Preloader] Could not preload org hierarchy: {e}")
+        logger.info(
+            "[DHIS2 Preloader] Refreshing staged metadata for %s (id=%s)",
+            db_name,
+            db_id,
+        )
+        refresh_database_metadata(
+            db_id,
+            instance_ids=instance_ids,
+            metadata_types=background_metadata_types,
+            reason=reason or "preloader_refresh",
+        )
+        logger.info("[DHIS2 Preloader] Completed staged metadata refresh for %s", db_name)
 
 
 # Global preloader instance
@@ -242,11 +257,15 @@ _global_preloader: DHIS2Preloader | None = None
 _preloader_lock = threading.Lock()
 
 
-def get_dhis2_preloader(refresh_interval: int = 21600) -> DHIS2Preloader:
+def get_dhis2_preloader(
+    refresh_interval: int = 21600,
+    app: Flask | None = None,
+) -> DHIS2Preloader:
     """Get or create global DHIS2 preloader instance.
 
     Args:
         refresh_interval: Seconds between cache refresh (default 6 hours)
+        app: Flask application used for background app contexts
 
     Returns:
         Global DHIS2Preloader instance
@@ -256,18 +275,31 @@ def get_dhis2_preloader(refresh_interval: int = 21600) -> DHIS2Preloader:
     if _global_preloader is None:
         with _preloader_lock:
             if _global_preloader is None:
-                _global_preloader = DHIS2Preloader(refresh_interval=refresh_interval)
+                _global_preloader = DHIS2Preloader(
+                    refresh_interval=refresh_interval,
+                    app=app,
+                )
+
+    if _global_preloader is not None:
+        _global_preloader.configure(
+            refresh_interval=refresh_interval,
+            app=app,
+        )
 
     return _global_preloader
 
 
-def start_dhis2_preloader(refresh_interval: int = 21600) -> None:
+def start_dhis2_preloader(
+    refresh_interval: int = 21600,
+    app: Flask | None = None,
+) -> None:
     """Start DHIS2 background preloader.
 
     Args:
         refresh_interval: Seconds between cache refresh (default 6 hours)
+        app: Flask application used for background app contexts
     """
-    preloader = get_dhis2_preloader(refresh_interval=refresh_interval)
+    preloader = get_dhis2_preloader(refresh_interval=refresh_interval, app=app)
     preloader.start()
 
 

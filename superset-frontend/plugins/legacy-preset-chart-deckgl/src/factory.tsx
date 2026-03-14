@@ -30,6 +30,9 @@ import {
   FilterState,
   JsonValue,
   ContextMenuFilters,
+  formatDHIS2LegendItemLabel,
+  getNormalizedDHIS2LegendItems,
+  resolveDHIS2LegendDefinition,
 } from '@superset-ui/core';
 
 import {
@@ -40,9 +43,10 @@ import CategoricalDeckGLContainer from './CategoricalDeckGLContainer';
 import fitViewport, { Viewport } from './utils/fitViewport';
 import { Point } from './types';
 import { TooltipProps } from './components/Tooltip';
+import { hexToRGB } from './utils/colors';
 import { getColorBreakpointsBuckets } from './utils';
 import Legend from './components/Legend';
-
+import { COLOR_SCHEME_TYPES } from './utilities/utils';
 type DeckGLComponentProps = {
   datasource: Datasource;
   formData: QueryFormData;
@@ -84,6 +88,30 @@ interface GetPointsType {
   (data: JsonObject[]): Point[];
 }
 
+function getLegendCategories(
+  datasource: Datasource,
+  formData: QueryFormData,
+): JsonObject {
+  if (formData.color_scheme_type === COLOR_SCHEME_TYPES.dhis2_staged_legend) {
+    const stagedLegendDefinition = resolveDHIS2LegendDefinition(
+      datasource,
+      (formData as any).metric ?? (formData as any).size,
+    );
+    const items = getNormalizedDHIS2LegendItems(stagedLegendDefinition);
+    if (items.length) {
+      return items.reduce<JsonObject>((result, item) => {
+        result[formatDHIS2LegendItemLabel(item)] = {
+          color: hexToRGB(item.color),
+          enabled: true,
+        };
+        return result;
+      }, {});
+    }
+  }
+
+  return getColorBreakpointsBuckets(formData.color_breakpoints) || [];
+}
+
 export function createDeckGLComponent(
   getLayer: GetLayerType<unknown>,
   getPoints: GetPointsType,
@@ -107,7 +135,7 @@ export function createDeckGLComponent(
       return props.viewport;
     };
     const [categories, setCategories] = useState<JsonObject>(
-      getColorBreakpointsBuckets(props.formData.color_breakpoints) || [],
+      getLegendCategories(props.datasource, props.formData),
     );
 
     const [viewport, setViewport] = useState(getAdjustedViewport());
@@ -138,6 +166,7 @@ export function createDeckGLComponent(
           setTooltip,
           setDataMask,
           onContextMenu,
+          datasource: props.datasource,
           filterState,
           emitCrossFilters,
         };
@@ -156,12 +185,13 @@ export function createDeckGLComponent(
     );
 
     useEffect(() => {
-      const categories = getColorBreakpointsBuckets(
-        props.formData.color_breakpoints,
+      const categories = getLegendCategories(
+        props.datasource,
+        props.formData,
       );
 
       setCategories(categories);
-    }, [props]);
+    }, [props.datasource, props.formData]);
 
     const [layers, setLayers] = useState(computeLayers(props));
 

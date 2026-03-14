@@ -68,6 +68,12 @@ test('Should render', () => {
   const props = createProps();
   render(<AdhocMetricEditPopover {...props} />);
   expect(screen.getByTestId('metrics-edit-popover')).toBeVisible();
+  expect(screen.getByTestId('metrics-edit-popover')).not.toHaveAttribute(
+    'getCurrentTab',
+  );
+  expect(screen.getByTestId('metrics-edit-popover')).not.toHaveAttribute(
+    'getCurrentLabel',
+  );
 });
 
 test('Should render correct elements', () => {

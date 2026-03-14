@@ -44,6 +44,13 @@ class RefreshDatasetCommand(BaseCommand):
     def run(self) -> Model:
         self.validate()
         assert self._model
+        repair_database_binding = getattr(
+            self._model,
+            "repair_staged_local_database_binding",
+            None,
+        )
+        if callable(repair_database_binding):
+            repair_database_binding()
         self._model.fetch_metadata()
         return self._model
 

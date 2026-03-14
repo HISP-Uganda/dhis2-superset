@@ -15,7 +15,16 @@ SQLLAB_ASYNC_TIME_LIMIT_SEC = int(timedelta(hours=6).total_seconds())  # Keep 6 
 # superset metadata (slices, connections, tables, dashboards, ...).
 # Note that the connection information to connect to the datasources
 # you want to explore are managed directly in the web UI
-SQLALCHEMY_DATABASE_URI = 'sqlite:////' + os.path.join(os.path.dirname(__file__), 'superset.db')
+_METADATA_DB_PATH = os.path.join(os.path.dirname(__file__), "superset.db")
+SQLALCHEMY_DATABASE_URI = (
+    f"sqlite:///{_METADATA_DB_PATH}?check_same_thread=false&timeout=60"
+)
+SQLALCHEMY_ENGINE_OPTIONS = {
+    "connect_args": {
+        "check_same_thread": False,
+        "timeout": 60,
+    },
+}
 
 # Flask-WTF flag for CSRF
 WTF_CSRF_ENABLED = True
@@ -33,8 +42,8 @@ MAPBOX_API_KEY = os.environ.get('MAPBOX_API_KEY', '')
 # Secret key for signing cookies
 SECRET_KEY = "222nevYrQia2O5NAfpkFgaD9g7loFW2gqpW6C+lh1t/mj77t8kRQpHwG"
 
-# Use webpack dev server for frontend assets during local development
-DEBUG = True
+# Keep backend startup stable by default; enable debug explicitly when needed.
+DEBUG = os.environ.get("SUPERSET_DEBUG", "0") == "1"
 WEBPACK_DEV_SERVER_URL = "http://localhost:9001"
 
 # Enable embedding dashboards (for /superset/public/)
@@ -348,6 +357,16 @@ class CeleryConfig:
             'kwargs': {
                 'database_id': 1,  # TODO: Update with your DHIS2 database ID
                 'dataset_configs': None,
+            },
+        },
+        # Check every 15 minutes which staged datasets are due for a sync and
+        # dispatch individual sync tasks for each one that has elapsed its cron
+        # schedule since the last successful sync.
+        'dhis2-sync-scheduled': {
+            'task': 'superset.tasks.dhis2_sync.sync_all_scheduled_datasets',
+            'schedule': {
+                'type': 'crontab',
+                'minute': '*/15',
             },
         },
     }

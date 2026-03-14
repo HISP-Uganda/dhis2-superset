@@ -18,6 +18,10 @@
  */
 
 import { SupersetClient } from '@superset-ui/core';
+import {
+  filterRowsAtTerminalOuLevel,
+  getOrderedOuHierarchyColumns,
+} from './ouTerminalLevel';
 
 interface DHIS2Parameters {
   dataElements: string[];
@@ -128,7 +132,7 @@ export class DHIS2DataLoader {
     const promises = ids.map(async id => {
       try {
         const response = await SupersetClient.get({
-          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${id}`,
+          endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${id}&staged=true`,
         });
         const items = response.json?.result || [];
         const item = items.find((i: any) => i.id === id);
@@ -171,7 +175,7 @@ export class DHIS2DataLoader {
           try {
             // eslint-disable-next-line no-await-in-loop
             const response = await SupersetClient.get({
-              endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${id}`,
+              endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${id}&staged=true`,
             });
             const items = response.json?.result || [];
             const item = items.find((i: any) => i.id === id);
@@ -293,6 +297,19 @@ export class DHIS2DataLoader {
     if (cachedData) {
       // eslint-disable-next-line no-console
       console.log('[DHIS2DataLoader] Returning cached data');
+      if (boundaryLevel && boundaryLevel > 0 && cachedData.rows.length > 0) {
+        const filteredRows = await this.filterRowsByHierarchyLevel(
+          databaseId,
+          cachedData.rows,
+          boundaryLevel,
+          parentId,
+        );
+        return {
+          ...cachedData,
+          rows: filteredRows,
+          total: filteredRows.length,
+        };
+      }
       return cachedData;
     }
 
@@ -467,6 +484,27 @@ export class DHIS2DataLoader {
     }
 
     try {
+      const hierarchyColumns = getOrderedOuHierarchyColumns(
+        Array.from(
+          new Set(
+            rows.flatMap(row => Object.keys(row)).filter(columnName =>
+              /^ou_level_\d+$/i.test(columnName),
+            ),
+          ),
+        ),
+      );
+      const selectedHierarchyColumn = `ou_level_${targetLevel}`;
+
+      if (hierarchyColumns.includes(selectedHierarchyColumn)) {
+        // Keep only rows where the selected OU level is the last populated
+        // hierarchy column for that record.
+        return filterRowsAtTerminalOuLevel(
+          rows,
+          hierarchyColumns,
+          selectedHierarchyColumn,
+        );
+      }
+
       // Get all unique org unit IDs from the rows
       const orgUnitIds = new Set<string>();
       rows.forEach(row => {

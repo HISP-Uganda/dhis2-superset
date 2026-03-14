@@ -24,7 +24,31 @@ import {
   getSequentialSchemeRegistry,
   getCategoricalSchemeRegistry,
 } from '@superset-ui/core';
-import { BoundaryFeature } from './types';
+import {
+  BoundaryFeature,
+  DHIS2LegendDefinition,
+  DHIS2LegendItem,
+} from './types';
+
+const ORG_UNIT_SUFFIX_PATTERNS = [
+  /\bdistrict local government\b/g,
+  /\bdistrict\b/g,
+  /\bcity council\b/g,
+  /\bmunicipal council\b/g,
+  /\bmunicipality\b/g,
+  /\bcity\b/g,
+  /\bregion\b/g,
+  /\bprovince\b/g,
+  /\bdivision\b/g,
+  /\bsub county\b/g,
+  /\bsubcounty\b/g,
+  /\btown council\b/g,
+  /\bparish\b/g,
+  /\bward\b/g,
+  /\bfacility\b/g,
+  /\bhealth facility\b/g,
+  /\bdlg\b/g,
+];
 
 function generateDefaultColors(count: number): string[] {
   const colors = [
@@ -76,6 +100,14 @@ function interpolateColors(
   return result;
 }
 
+function getCollapsedRangeColor(colorRange: string[]): string {
+  if (!colorRange.length) {
+    return '#2c7fb8';
+  }
+  const middleIndex = Math.floor(colorRange.length / 2);
+  return colorRange[middleIndex] ?? colorRange[colorRange.length - 1];
+}
+
 export interface ColorScaleOptions {
   schemeName: string;
   min: number;
@@ -87,6 +119,134 @@ export interface ColorScaleOptions {
   manualColors?: string[];
 }
 
+function hasLegendItems(
+  stagedLegendDefinition?: DHIS2LegendDefinition,
+): stagedLegendDefinition is DHIS2LegendDefinition {
+  return Boolean(stagedLegendDefinition?.items?.length);
+}
+
+function normalizeLegendItems(
+  stagedLegendDefinition?: DHIS2LegendDefinition,
+): DHIS2LegendItem[] {
+  if (!hasLegendItems(stagedLegendDefinition)) {
+    return [];
+  }
+
+  return [...stagedLegendDefinition.items]
+    .filter(
+      item =>
+        Boolean(item?.color) &&
+        (item?.startValue !== undefined ||
+          item?.endValue !== undefined ||
+          item?.label),
+    )
+    .sort((left, right) => {
+      const leftStart =
+        left.startValue === undefined || left.startValue === null
+          ? Number.NEGATIVE_INFINITY
+          : left.startValue;
+      const rightStart =
+        right.startValue === undefined || right.startValue === null
+          ? Number.NEGATIVE_INFINITY
+          : right.startValue;
+      if (leftStart !== rightStart) {
+        return leftStart - rightStart;
+      }
+
+      const leftEnd =
+        left.endValue === undefined || left.endValue === null
+          ? Number.POSITIVE_INFINITY
+          : left.endValue;
+      const rightEnd =
+        right.endValue === undefined || right.endValue === null
+          ? Number.POSITIVE_INFINITY
+          : right.endValue;
+      return leftEnd - rightEnd;
+    });
+}
+
+export function getLegendRangeFromDefinition(
+  stagedLegendDefinition?: DHIS2LegendDefinition,
+): { min: number; max: number } | undefined {
+  const legendItems = normalizeLegendItems(stagedLegendDefinition);
+  if (!legendItems.length) {
+    return undefined;
+  }
+
+  const explicitMin = stagedLegendDefinition?.min;
+  const explicitMax = stagedLegendDefinition?.max;
+  if (
+    typeof explicitMin === 'number' &&
+    Number.isFinite(explicitMin) &&
+    typeof explicitMax === 'number' &&
+    Number.isFinite(explicitMax)
+  ) {
+    return { min: explicitMin, max: explicitMax };
+  }
+
+  const min = legendItems.find(item => Number.isFinite(item.startValue as number))
+    ?.startValue;
+  const max = [...legendItems]
+    .reverse()
+    .find(item => Number.isFinite(item.endValue as number))?.endValue;
+  if (typeof min === 'number' && typeof max === 'number') {
+    return { min, max };
+  }
+  return undefined;
+}
+
+function matchesLegendItem(
+  item: DHIS2LegendItem,
+  value: number,
+  index: number,
+  legendItems: DHIS2LegendItem[],
+): boolean {
+  const hasLowerBound =
+    typeof item.startValue === 'number' && Number.isFinite(item.startValue);
+  const hasUpperBound =
+    typeof item.endValue === 'number' && Number.isFinite(item.endValue);
+  const lowerMatches = !hasLowerBound || value >= (item.startValue as number);
+  const upperMatches =
+    !hasUpperBound ||
+    value < (item.endValue as number) ||
+    (index === legendItems.length - 1 && value <= (item.endValue as number));
+  return lowerMatches && upperMatches;
+}
+
+export function getLegendColorFromDefinition(
+  value: number,
+  stagedLegendDefinition?: DHIS2LegendDefinition,
+): string | undefined {
+  const legendItems = normalizeLegendItems(stagedLegendDefinition);
+  if (!legendItems.length || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  for (let index = 0; index < legendItems.length; index += 1) {
+    if (matchesLegendItem(legendItems[index], value, index, legendItems)) {
+      return legendItems[index].color;
+    }
+  }
+
+  const firstItem = legendItems[0];
+  const lastItem = legendItems[legendItems.length - 1];
+  if (
+    typeof firstItem.startValue === 'number' &&
+    Number.isFinite(firstItem.startValue) &&
+    value < firstItem.startValue
+  ) {
+    return firstItem.color;
+  }
+  if (
+    typeof lastItem.endValue === 'number' &&
+    Number.isFinite(lastItem.endValue) &&
+    value > lastItem.endValue
+  ) {
+    return lastItem.color;
+  }
+  return legendItems[0].color;
+}
+
 export function getColorScale(
   schemeName: string,
   min: number,
@@ -96,11 +256,18 @@ export function getColorScale(
   schemeType: string = 'sequential',
   manualBreaks?: number[],
   manualColors?: string[],
+  stagedLegendDefinition?: DHIS2LegendDefinition,
 ): (value: number) => string {
   // eslint-disable-next-line no-console
   console.log(
     `[getColorScale] schemeName=${schemeName}, schemeType=${schemeType}, classes=${classes}, range=[${min}, ${max}]`,
   );
+
+  if (hasLegendItems(stagedLegendDefinition)) {
+    return (value: number): string =>
+      getLegendColorFromDefinition(value, stagedLegendDefinition) ??
+      stagedLegendDefinition.items[0].color;
+  }
 
   // If manual breaks and colors are provided, use them
   if (
@@ -251,6 +418,15 @@ export function getColorScale(
     colorRange,
   );
 
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    const collapsedColor = getCollapsedRangeColor(colorRange);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[getColorScale] Collapsed range detected. Using constant color: ${collapsedColor}`,
+    );
+    return () => collapsedColor;
+  }
+
   const scale = scaleQuantize<string>().domain([min, max]).range(colorRange);
 
   return (value: number): string => scale(value) ?? colorRange[0];
@@ -298,6 +474,43 @@ export function formatValue(value: number): string {
   return value.toFixed(0);
 }
 
+export function normalizeOrgUnitMatchKey(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[()[\]{}.,/\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function buildOrgUnitMatchKeys(value: unknown): string[] {
+  const normalized = normalizeOrgUnitMatchKey(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const keys = new Set<string>([normalized]);
+  let stripped = normalized;
+
+  ORG_UNIT_SUFFIX_PATTERNS.forEach(pattern => {
+    stripped = stripped.replace(pattern, ' ');
+  });
+  stripped = stripped.replace(/\s+/g, ' ').trim();
+
+  if (stripped && stripped !== normalized) {
+    keys.add(stripped);
+  }
+
+  if (normalized.includes('city council')) {
+    keys.add(normalized.replace(/\bcity council\b/g, 'city').trim());
+  }
+  if (normalized.includes('municipal council')) {
+    keys.add(normalized.replace(/\bmunicipal council\b/g, 'municipality').trim());
+  }
+
+  return Array.from(keys).filter(Boolean);
+}
+
 export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
   const featureCollection = {
     type: 'FeatureCollection' as const,
@@ -323,6 +536,48 @@ export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
   });
   
   return bounds;
+}
+
+export interface MapFitViewportConfig {
+  paddingTopLeft: [number, number];
+  paddingBottomRight: [number, number];
+  maxZoom: number;
+}
+
+export function getMapFitViewportConfig(
+  mapWidth: number,
+  mapHeight: number,
+): MapFitViewportConfig {
+  const safeWidth = Math.max(0, Math.round(mapWidth || 0));
+  const safeHeight = Math.max(0, Math.round(mapHeight || 0));
+  const horizontalPadding = Math.max(
+    6,
+    Math.min(20, Math.round(safeWidth * 0.015)),
+  );
+  const verticalPadding = Math.max(
+    6,
+    Math.min(16, Math.round(safeHeight * 0.015)),
+  );
+
+  const minDimension = Math.min(safeWidth, safeHeight);
+  const maxDimension = Math.max(safeWidth, safeHeight);
+
+  let maxZoom = 18;
+  if (minDimension < 280) {
+    maxZoom = 14;
+  } else if (minDimension < 420) {
+    maxZoom = 15;
+  } else if (minDimension < 700) {
+    maxZoom = 16;
+  } else if (maxDimension < 1200) {
+    maxZoom = 17;
+  }
+
+  return {
+    paddingTopLeft: [horizontalPadding, verticalPadding],
+    paddingBottomRight: [horizontalPadding, verticalPadding],
+    maxZoom,
+  };
 }
 
 /**

@@ -18,7 +18,6 @@
  */
 import { ContourLayer } from '@deck.gl/aggregation-layers';
 import { PolygonLayer } from '@deck.gl/layers';
-import { Position } from '@deck.gl/core';
 import { t } from '@superset-ui/core';
 import { commonLayerProps } from '../common';
 import sandboxedEval from '../../utils/sandbox';
@@ -30,6 +29,32 @@ import {
   CommonTooltipRows,
 } from '../../utilities/tooltipUtils';
 import { HIGHLIGHT_COLOR_ARRAY } from '../../utils';
+
+type ContourDatum = {
+  position?: number[] | null;
+  weight: number;
+};
+
+type PositionedContourDatum = ContourDatum & {
+  position: [number, number];
+};
+
+function normalizeContourPosition(
+  position?: number[] | null,
+): [number, number] | null {
+  if (!Array.isArray(position) || position.length < 2) {
+    return null;
+  }
+
+  const [longitude, latitude] = position;
+  return [longitude, latitude];
+}
+
+function isPositionedContourDatum(
+  datum: ContourDatum,
+): datum is PositionedContourDatum {
+  return normalizeContourPosition(datum.position) !== null;
+}
 
 function defaultTooltipGenerator(o: any) {
   return (
@@ -118,6 +143,19 @@ export const getLayer: GetLayerType<ContourLayer> = function ({
     data = jsFnMutatorFunction(data);
   }
 
+  const contourData: PositionedContourDatum[] = data
+    .map((datum: ContourDatum) => {
+      const position = normalizeContourPosition(datum.position);
+      if (!position) {
+        return datum;
+      }
+      return {
+        ...datum,
+        position,
+      };
+    })
+    .filter(isPositionedContourDatum);
+
   // Create wrapper for tooltip content that adds nearby points
   const tooltipContentGenerator = (o: any) => {
     // Find nearby points based on hover coordinate
@@ -161,13 +199,12 @@ export const getLayer: GetLayerType<ContourLayer> = function ({
 
   return new ContourLayer({
     id: `contourLayer-${fd.slice_id}`,
-    data,
+    data: contourData,
     contours,
     cellSize: Number(cellSize || '200'),
     aggregation: aggregation.toUpperCase(),
-    getPosition: (d: { position: number[]; weight: number }) =>
-      d.position as Position,
-    getWeight: (d: { weight: number }) => d.weight || 0,
+    getPosition: (d: PositionedContourDatum) => d.position,
+    getWeight: (d: ContourDatum) => d.weight || 0,
     ...commonLayerProps({
       formData: fd,
       setTooltip,

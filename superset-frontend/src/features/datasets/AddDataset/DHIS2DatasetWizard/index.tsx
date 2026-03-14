@@ -17,11 +17,18 @@ import {
 } from '../types';
 import { sanitizeDHIS2ColumnName } from '../DHIS2ParameterBuilder/sanitize';
 import WizardStepInfo from './steps/StepInfo';
+import WizardStepInstances from './steps/StepInstances';
 import WizardStepDataElements from './steps/StepDataElements';
+import WizardStepVariableMapping from './steps/StepVariableMapping';
 import WizardStepPeriods from './steps/StepPeriods';
 import WizardStepOrgUnits from './steps/StepOrgUnits';
 import WizardStepDataPreview from './steps/StepDataPreview';
+import WizardStepSchedule from './steps/StepSchedule';
 import WizardStepSave from './steps/StepSave';
+import type { VariableMapping } from './steps/StepVariableMapping';
+import type { ScheduleConfig } from './steps/StepSchedule';
+import buildStagedDhIS2DatasetPayload from '../buildStagedDhIS2DatasetPayload';
+import refreshDatasetMetadata from '../refreshDatasetMetadata';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -79,12 +86,37 @@ const ProgressBar = styled.div`
   `}
 `;
 
+const DEFAULT_SCHEDULE: ScheduleConfig = {
+  preset: 'daily',
+  cron: '0 5 * * *',
+  timezone: 'UTC',
+};
+
 export interface DHIS2WizardState {
   datasetName: string;
   description: string;
+  // Multi-instance
+  selectedInstanceIds: number[];
+  orgUnitSourceMode?: 'primary' | 'repository' | 'per_instance' | 'federated';
+  primaryOrgUnitInstanceId?: number | null;
+  variableMappings: VariableMapping[];
+  // Legacy / single-instance data elements list (kept for DataPreview compatibility)
   dataElements: string[];
   periods: string[];
   orgUnits: string[];
+  selectedOrgUnitDetails?: Array<{
+    id: string;
+    selectionKey?: string;
+    sourceOrgUnitId?: string;
+    displayName: string;
+    parentId?: string;
+    level?: number;
+    path?: string;
+    sourceInstanceIds?: number[];
+    sourceInstanceNames?: string[];
+    repositoryLevel?: number;
+    repositoryLevelName?: string;
+  }>;
   includeChildren: boolean;
   dataLevelScope?: 'selected' | 'children' | 'grandchildren' | 'all_levels';
   columns: Array<{
@@ -94,6 +126,8 @@ export interface DHIS2WizardState {
     is_dttm?: boolean;
   }>;
   previewData: any[];
+  // Schedule
+  scheduleConfig: ScheduleConfig;
 }
 
 interface DHIS2DatasetWizardProps {
@@ -105,6 +139,17 @@ interface DHIS2DatasetWizardProps {
   onSaveSuccess?: () => void;
 }
 
+// Step index constants — update these if you reorder steps.
+const STEP_INFO = 0;
+const STEP_INSTANCES = 1;
+const STEP_DATA_ELEMENTS = 2;
+const STEP_VARIABLE_MAPPING = 3;
+const STEP_PERIODS = 4;
+const STEP_ORG_UNITS = 5;
+const STEP_DATA_PREVIEW = 6;
+const STEP_SCHEDULE = 7;
+const STEP_SAVE = 8;
+
 const WIZARD_STEPS = [
   {
     key: 'info',
@@ -112,9 +157,19 @@ const WIZARD_STEPS = [
     description: t('Basic information'),
   },
   {
+    key: 'instances',
+    title: t('DHIS2 Instances'),
+    description: t('Select instances'),
+  },
+  {
     key: 'data_elements',
     title: t('Data Elements'),
     description: t('Select DE'),
+  },
+  {
+    key: 'variable_mapping',
+    title: t('Variable Mapping'),
+    description: t('Aliases & sources'),
   },
   { key: 'periods', title: t('Time Periods'), description: t('Select PE') },
   {
@@ -126,6 +181,11 @@ const WIZARD_STEPS = [
     key: 'data_preview',
     title: t('Data Preview'),
     description: t('Preview data'),
+  },
+  {
+    key: 'schedule',
+    title: t('Schedule'),
+    description: t('Sync schedule'),
   },
   { key: 'save', title: t('Save Dataset'), description: t('Complete setup') },
 ];
@@ -154,12 +214,18 @@ export default function DHIS2DatasetWizard({
   const [wizardState, setWizardState] = useState<DHIS2WizardState>({
     datasetName: generateUniqueDatasetName(dataset?.table_name),
     description: '',
+    selectedInstanceIds: [],
+    orgUnitSourceMode: 'repository',
+    primaryOrgUnitInstanceId: null,
+    variableMappings: [],
     dataElements: [],
     periods: [],
     orgUnits: [],
+    selectedOrgUnitDetails: [],
     includeChildren: false,
     columns: dataset?.dhis2_columns || [],
     previewData: [],
+    scheduleConfig: DEFAULT_SCHEDULE,
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -169,7 +235,7 @@ export default function DHIS2DatasetWizard({
       const newErrors: Record<string, string> = {};
 
       switch (step) {
-        case 0:
+        case STEP_INFO:
           if (!wizardState.datasetName.trim()) {
             newErrors.datasetName = t('Dataset name is required');
           }
@@ -177,19 +243,26 @@ export default function DHIS2DatasetWizard({
             newErrors.datasetName = t('Dataset name already exists');
           }
           break;
-        case 1:
-          if (wizardState.dataElements.length === 0) {
-            newErrors.dataElements = t(
-              'At least one data element must be selected',
+        case STEP_INSTANCES:
+          if (wizardState.selectedInstanceIds.length === 0) {
+            newErrors.instances = t(
+              'At least one DHIS2 instance must be selected',
             );
           }
           break;
-        case 2:
+        case STEP_DATA_ELEMENTS:
+          if (wizardState.variableMappings.length === 0) {
+            newErrors.dataElements = t(
+              'At least one DHIS2 variable must be selected',
+            );
+          }
+          break;
+        case STEP_PERIODS:
           if (wizardState.periods.length === 0) {
             newErrors.periods = t('At least one period must be selected');
           }
           break;
-        case 3:
+        case STEP_ORG_UNITS:
           if (wizardState.orgUnits.length === 0) {
             newErrors.orgUnits = t(
               'At least one organization unit must be selected',
@@ -263,66 +336,174 @@ export default function DHIS2DatasetWizard({
         .map(([key, value]) => `${key}=${value}`)
         .join('&');
 
-      const sql = `SELECT * FROM ${sourceTable}\n/* DHIS2: table=${sourceTable}&${paramsStr} */`;
+      let sql = `SELECT * FROM ${sourceTable}\n/* DHIS2: table=${sourceTable}&${paramsStr} */`;
+      let shouldRefreshColumnsFromSource = false;
+      let createdFromStaging = false;
+      let stagedDatasetResult: any = null;
 
       logging.info('[DHIS2 Wizard] Creating dataset:', wizardState.datasetName);
       logging.info('[DHIS2 Wizard] SQL:', sql);
 
+      // Build variables payload from variableMappings for staged-datasets API
+      const variablesPayload = wizardState.variableMappings.map(m => ({
+        instance_id: m.instanceId,
+        variable_id: m.variableId,
+        variable_type: m.variableType,
+        variable_name: m.variableName,
+        alias: m.alias || undefined,
+      }));
+
+      // Attempt staged-dataset creation first (multi-instance path)
+      if (wizardState.selectedInstanceIds.length > 0) {
+        try {
+          const stagedPayload = {
+            database_id: dataset.db.id,
+            name: wizardState.datasetName,
+            description: wizardState.description || undefined,
+            schedule_cron: wizardState.scheduleConfig.cron,
+            schedule_timezone: wizardState.scheduleConfig.timezone,
+            dataset_config: {
+              configured_connection_ids: wizardState.selectedInstanceIds,
+              periods: wizardState.periods,
+              org_units: wizardState.orgUnits,
+              org_unit_details: wizardState.selectedOrgUnitDetails || [],
+              org_unit_scope: dataLevelScope,
+              org_unit_source_mode:
+                wizardState.orgUnitSourceMode === 'federated'
+                  ? 'repository'
+                  : wizardState.orgUnitSourceMode || 'repository',
+              primary_org_unit_instance_id:
+                wizardState.orgUnitSourceMode === 'primary'
+                  ? wizardState.primaryOrgUnitInstanceId
+                  : null,
+            },
+            variables:
+              variablesPayload.length > 0 ? variablesPayload : undefined,
+          };
+
+          logging.info(
+            '[DHIS2 Wizard] Creating staged dataset:',
+            stagedPayload,
+          );
+
+          const stagedResponse = await SupersetClient.post({
+            endpoint: '/api/v1/dhis2/staged-datasets/',
+            jsonPayload: stagedPayload,
+          });
+
+          stagedDatasetResult = (stagedResponse.json as any)?.result;
+          const servingTableRef = stagedDatasetResult?.serving_table_ref || null;
+          const stagingTableRef =
+            stagedDatasetResult?.staging_table_ref ||
+            (stagedDatasetResult?.staging_table_name
+              ? `dhis2_staging.${stagedDatasetResult.staging_table_name}`
+              : null);
+
+          if (servingTableRef || stagingTableRef) {
+            sql = `SELECT * FROM ${servingTableRef || stagingTableRef}`;
+            shouldRefreshColumnsFromSource = true;
+            createdFromStaging = true;
+          }
+
+          logging.info('[DHIS2 Wizard] Staged dataset created successfully');
+        } catch (stagedErr) {
+          // Log but continue — fall through to legacy creation
+          logging.warn(
+            '[DHIS2 Wizard] Staged dataset creation failed, falling back to legacy:',
+            stagedErr,
+          );
+        }
+      }
+
+      // Always also create a standard Superset dataset record
       const response = await SupersetClient.post({
         endpoint: '/api/v1/dataset/',
-        jsonPayload: {
-          database: dataset.db.id,
-          catalog: dataset.catalog || null,
-          schema: dataset.schema || null,
-          table_name: wizardState.datasetName,
-          sql,
-        },
+        jsonPayload: createdFromStaging
+          ? buildStagedDhIS2DatasetPayload({
+              datasetName: wizardState.datasetName,
+              stagingTableRef: sql.replace(/^SELECT \* FROM\s+/i, ''),
+              servingTableRef: stagedDatasetResult?.serving_table_ref || null,
+              sourceDatabaseId: dataset.db.id,
+              sourceDatabaseName: dataset.db.database_name,
+              servingDatabaseId:
+                typeof stagedDatasetResult?.serving_database_id === 'number'
+                  ? stagedDatasetResult.serving_database_id
+                  : null,
+              servingDatabaseName:
+                typeof stagedDatasetResult?.serving_database_name === 'string'
+                  ? stagedDatasetResult.serving_database_name
+                  : null,
+              stagedDatasetId:
+                typeof stagedDatasetResult?.id === 'number'
+                  ? stagedDatasetResult.id
+                  : null,
+              selectedInstanceIds: wizardState.selectedInstanceIds,
+              selectedInstanceNames: Array.from(
+                new Set(
+                  wizardState.variableMappings
+                    .map(mapping => mapping.instanceName)
+                    .filter(Boolean),
+                ),
+              ),
+            })
+          : {
+              database: dataset.db.id,
+              catalog: dataset.catalog || null,
+              schema: dataset.schema || null,
+              table_name: wizardState.datasetName,
+              sql,
+            },
       });
 
       const result = response.json;
       logging.info('[DHIS2 Wizard] Dataset created:', result);
 
       if (result?.id) {
-        // Save columns directly to the dataset via PUT API
-        logging.info('[DHIS2 Wizard] Saving columns to dataset:', {
-          datasetId: result.id,
-          columnCount: wizardState.columns.length,
-          columns: wizardState.columns,
-        });
-
         try {
-          // Transform wizard columns to dataset column schema format
-          // Use sanitized verbose_name as column_name for human-readable database columns
-          // This ensures columns like "National", "Region", "Malaria_Total" instead of "ou_level_1", "de_xxx"
-          const datasetColumns = wizardState.columns.map((col, index) => {
-            // Use verbose_name (display name) as the base for column_name
-            // Fall back to col.name if verbose_name is not available
-            const displayName = col.verbose_name || col.name;
-            const sanitizedColumnName = sanitizeDHIS2ColumnName(displayName);
+          if (createdFromStaging) {
+            logging.info(
+              '[DHIS2 Wizard] Skipping dataset refresh for staged-local dataset',
+            );
+          } else if (shouldRefreshColumnsFromSource) {
+            await refreshDatasetMetadata(result.id);
+            logging.info(
+              '[DHIS2 Wizard] Refreshed staged dataset columns from source',
+            );
+          } else {
+            logging.info('[DHIS2 Wizard] Saving columns to dataset:', {
+              datasetId: result.id,
+              columnCount: wizardState.columns.length,
+              columns: wizardState.columns,
+            });
 
-            return {
-              column_name: sanitizedColumnName,
-              type: col.type || 'STRING',
-              verbose_name: displayName,
-              is_dttm: col.is_dttm || false,
-              filterable: true,
-              groupby: true,
-              is_active: true,
-            };
-          });
+            const datasetColumns = wizardState.columns.map(col => {
+              const displayName = col.verbose_name || col.name;
+              const sanitizedColumnName = sanitizeDHIS2ColumnName(displayName);
 
-          logging.info(
-            '[DHIS2 Wizard] Transformed columns for API:',
-            datasetColumns,
-          );
+              return {
+                column_name: sanitizedColumnName,
+                type: col.type || 'STRING',
+                verbose_name: displayName,
+                is_dttm: col.is_dttm || false,
+                filterable: true,
+                groupby: true,
+                is_active: true,
+              };
+            });
 
-          await SupersetClient.put({
-            endpoint: `/api/v1/dataset/${result.id}`,
-            jsonPayload: {
-              columns: datasetColumns,
-            },
-          });
-          logging.info('[DHIS2 Wizard] Columns saved successfully');
+            logging.info(
+              '[DHIS2 Wizard] Transformed columns for API:',
+              datasetColumns,
+            );
+
+            await SupersetClient.put({
+              endpoint: `/api/v1/dataset/${result.id}`,
+              jsonPayload: {
+                columns: datasetColumns,
+              },
+            });
+            logging.info('[DHIS2 Wizard] Columns saved successfully');
+          }
         } catch (columnError) {
           logging.error('[DHIS2 Wizard] Failed to save columns:', columnError);
           // Continue anyway - the dataset was created
@@ -335,11 +516,12 @@ export default function DHIS2DatasetWizard({
           payload: { name: 'table_name', value: wizardState.datasetName },
         });
 
-        setDataset({
-          type: DatasetActionType.SetDHIS2Parameters,
-          payload: { parameters: dhis2Params },
-        });
-
+        if (!createdFromStaging) {
+          setDataset({
+            type: DatasetActionType.SetDHIS2Parameters,
+            payload: { parameters: dhis2Params },
+          });
+        }
 
         setDataset({
           type: DatasetActionType.SetDHIS2Columns,
@@ -351,7 +533,7 @@ export default function DHIS2DatasetWizard({
         if (onSaveSuccess) {
           onSaveSuccess();
         } else {
-          history.push(`/chart/add/?dataset=${wizardState.datasetName}`);
+          history.push(`/chart/add/?dataset=${result.id}`);
         }
       } else {
         addDangerToast(t('Failed to create dataset - no ID returned'));
@@ -381,7 +563,7 @@ export default function DHIS2DatasetWizard({
 
   const renderStepContent = () => {
     switch (currentStep) {
-      case 0:
+      case STEP_INFO:
         return (
           <WizardStepInfo
             wizardState={wizardState}
@@ -390,7 +572,17 @@ export default function DHIS2DatasetWizard({
             dataset={dataset}
           />
         );
-      case 1:
+      case STEP_INSTANCES:
+        return (
+          <WizardStepInstances
+            databaseId={dataset?.db?.id ?? 0}
+            selectedInstanceIds={wizardState.selectedInstanceIds}
+            onChange={selectedInstanceIds =>
+              updateWizardState({ selectedInstanceIds })
+            }
+          />
+        );
+      case STEP_DATA_ELEMENTS:
         return (
           <WizardStepDataElements
             wizardState={wizardState}
@@ -399,7 +591,16 @@ export default function DHIS2DatasetWizard({
             databaseId={dataset?.db?.id}
           />
         );
-      case 2:
+      case STEP_VARIABLE_MAPPING:
+        return (
+          <WizardStepVariableMapping
+            variableMappings={wizardState.variableMappings}
+            onChange={variableMappings =>
+              updateWizardState({ variableMappings })
+            }
+          />
+        );
+      case STEP_PERIODS:
         return (
           <WizardStepPeriods
             wizardState={wizardState}
@@ -408,7 +609,7 @@ export default function DHIS2DatasetWizard({
             databaseId={dataset?.db?.id}
           />
         );
-      case 3:
+      case STEP_ORG_UNITS:
         return (
           <WizardStepOrgUnits
             wizardState={wizardState}
@@ -417,7 +618,7 @@ export default function DHIS2DatasetWizard({
             databaseId={dataset?.db?.id}
           />
         );
-      case 4:
+      case STEP_DATA_PREVIEW:
         console.log(
           '[DHIS2Wizard] Rendering DataPreview step with includeChildren:',
           wizardState.includeChildren,
@@ -434,7 +635,14 @@ export default function DHIS2DatasetWizard({
             includeChildren={wizardState.includeChildren}
           />
         );
-      case 5:
+      case STEP_SCHEDULE:
+        return (
+          <WizardStepSchedule
+            scheduleConfig={wizardState.scheduleConfig}
+            onChange={scheduleConfig => updateWizardState({ scheduleConfig })}
+          />
+        );
+      case STEP_SAVE:
         return (
           <WizardStepSave
             wizardState={wizardState}

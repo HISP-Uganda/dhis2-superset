@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import logging
+import json
 from functools import partial
 from typing import Any, Optional
 
@@ -30,6 +31,7 @@ from superset.commands.dataset.exceptions import (
     DatasetInvalidError,
     TableNotFoundValidationError,
 )
+from superset.connectors.sqla.models import SqlaTable
 from superset.daos.dataset import DatasetDAO
 from superset.exceptions import SupersetParseError, SupersetSecurityException
 from superset.extensions import security_manager
@@ -42,6 +44,39 @@ logger = logging.getLogger(__name__)
 class CreateDatasetCommand(CreateMixin, BaseCommand):
     def __init__(self, data: dict[str, Any]):
         self._properties = data.copy()
+        self._existing_staged_local_dataset: SqlaTable | None = None
+
+    def _get_extra_dict(self) -> dict[str, Any]:
+        extra = self._properties.get("extra")
+        if isinstance(extra, dict):
+            return extra
+        if isinstance(extra, str):
+            try:
+                return json.loads(extra)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _find_existing_staged_local_dataset(
+        self,
+        database: Any,
+        table: Table,
+        sql: str | None,
+    ) -> SqlaTable | None:
+        extra = self._get_extra_dict()
+        if not extra.get("dhis2_staged_local"):
+            return None
+
+        staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+        if not isinstance(staged_dataset_id, int):
+            staged_dataset_id = None
+
+        return DatasetDAO.find_dhis2_staged_local_dataset(
+            database,
+            table,
+            sql=sql,
+            staged_dataset_id=staged_dataset_id,
+        )
 
     @transaction(on_error=partial(on_error, reraise=DatasetCreateFailedError))
     def run(self) -> Model:
@@ -50,6 +85,21 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
         database = self._properties.get("database")
         table_name = self._properties.get("table_name")
         sql = self._properties.get("sql")
+        existing_staged_local_dataset = self._existing_staged_local_dataset
+
+        if existing_staged_local_dataset is not None:
+            dataset = DatasetDAO.update(
+                item=existing_staged_local_dataset,
+                attributes=self._properties,
+            )
+            if database and database.backend == "dhis2":
+                logger.info(
+                    "[DHIS2] Reused staged-local dataset id=%s without metadata fetch",
+                    dataset.id,
+                )
+                return dataset
+            dataset.fetch_metadata()
+            return dataset
 
         # Auto-convert DHIS2 datasets to virtual to preserve query parameters
         if database and database.backend == "dhis2":
@@ -164,8 +214,17 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
                 catalog = self._properties["catalog"] = database.get_default_catalog()
 
             table = Table(table_name, schema, catalog)
+            existing_staged_local_dataset = self._find_existing_staged_local_dataset(
+                database,
+                table,
+                sql,
+            )
+            self._existing_staged_local_dataset = existing_staged_local_dataset
 
-            if not DatasetDAO.validate_uniqueness(database, table):
+            if (
+                not DatasetDAO.validate_uniqueness(database, table)
+                and existing_staged_local_dataset is None
+            ):
                 exceptions.append(DatasetExistsValidationError(table))
 
         # Validate table exists on dataset if sql is not provided

@@ -78,9 +78,11 @@ import {
   CustomTextType,
   DatabaseParameters,
 } from '../types';
+import type { DHIS2Instance } from 'src/features/dhis2/types';
 import ExtraOptions from './ExtraOptions';
 import SqlAlchemyForm from './SqlAlchemyForm';
 import DatabaseConnectionForm from './DatabaseConnectionForm';
+import DHIS2ConfiguredConnectionsPanel from './DHIS2ConfiguredConnectionsPanel';
 import {
   antDAlertStyles,
   antdWarningAlertStyles,
@@ -109,11 +111,22 @@ import SSHTunnelSwitch from './SSHTunnelSwitch';
 const extensionsRegistry = getExtensionsRegistry();
 
 const DEFAULT_EXTRA = JSON.stringify({ allows_virtual_table_explore: true });
+const DATABASE_LIST_ROUTE = '/databaseview/list/';
 
 const TABS_KEYS = {
   BASIC: 'basic',
   ADVANCED: 'advanced',
+  CONNECTIONS: 'dhis2_connections',
 };
+
+const DHIS2_SHELL_EXCLUDED_FIELDS = [
+  'dhis2_authentication',
+  'host',
+  'authentication_type',
+  'username',
+  'password',
+  'access_token',
+];
 
 const engineSpecificAlertMapping = {
   [Engines.GSheet]: {
@@ -144,11 +157,30 @@ const ErrorAlertContainer = styled.div`
   `};
 `;
 
+type FormStatusType = 'error' | 'success';
+
+interface FormStatusState {
+  type: FormStatusType;
+  title: string;
+  description: string;
+  details?: string;
+}
+
+type DHIS2CreateStage = 'details' | 'connections' | 'review';
+
 const SSHTunnelContainer = styled.div`
   ${({ theme }) => `
     padding: 0px ${theme.sizeUnit * 4}px;
   `};
 `;
+
+const normalizeStatusDetails = (message: string) =>
+  message
+    .replace(/^ERROR:\s*/i, '')
+    .replace(/^\(builtins\.[^)]+\)\s+None\s*/im, '')
+    .replace(/^\[SQL:\s*(.*?)\]\s*$/ims, '$1')
+    .replace(/^\(Background on this error at:.*?\)\s*$/im, '')
+    .trim();
 
 export interface DatabaseModalProps {
   addDangerToast: (msg: string) => void;
@@ -566,7 +598,7 @@ export function dbReducer(
 const DEFAULT_TAB_KEY = TABS_KEYS.BASIC;
 
 const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
-  addDangerToast,
+  addDangerToast: _addDangerToast,
   addSuccessToast,
   onDatabaseAdd,
   onHide,
@@ -574,6 +606,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   databaseId,
   dbEngine,
 }) => {
+  const ignoreResourceToast = useCallback(() => undefined, []);
   const [db, setDB] = useReducer<
     Reducer<Partial<DatabaseObject> | null, DBReducerActionType>
   >(dbReducer, null);
@@ -587,7 +620,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   } = useSingleViewResource<DatabaseObject>(
     'database',
     t('database'),
-    addDangerToast,
+    ignoreResourceToast,
     'connection',
   );
 
@@ -603,6 +636,11 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   ] = useDatabaseValidation();
   const [hasConnectedDb, setHasConnectedDb] = useState<boolean>(false);
   const [showCTAbtns, setShowCTAbtns] = useState(false);
+  const [dhis2CreateStage, setDhis2CreateStage] =
+    useState<DHIS2CreateStage>('details');
+  const [dhis2ConfiguredConnections, setDhis2ConfiguredConnections] = useState<
+    DHIS2Instance[]
+  >([]);
   const [dbName, setDbName] = useState('');
   const [editNewDb, setEditNewDb] = useState<boolean>(false);
   const [isLoading, setLoading] = useState<boolean>(false);
@@ -620,6 +658,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [importingModal, setImportingModal] = useState<boolean>(false);
   const [importingErrorMessage, setImportingErrorMessage] = useState<string>();
+  const [formStatus, setFormStatus] = useState<FormStatusState | null>(null);
   const [passwordFields, setPasswordFields] = useState<string[]>([]);
   const [sshTunnelPasswordFields, setSSHTunnelPasswordFields] = useState<
     string[]
@@ -672,13 +711,24 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     );
   const useSqlAlchemyForm =
     db?.configuration_method === ConfigurationMethod.SqlalchemyUri;
-  const useTabLayout = isEditMode || useSqlAlchemyForm;
   const isDynamic = (engine: string | undefined) =>
     availableDbs?.databases?.find(
       (DB: DatabaseObject) => DB.backend === engine || DB.engine === engine,
     )?.parameters !== undefined;
-  const showDBError = validationErrors || dbErrors;
   const history = useHistory();
+  const isDHIS2Database = (db?.backend || db?.engine) === 'dhis2';
+  const isDHIS2GuidedFlow = isDHIS2Database;
+  const useTabLayout =
+    (isEditMode || useSqlAlchemyForm) && !isDHIS2GuidedFlow;
+  const isDHIS2ShellConfigurationStep =
+    isDHIS2GuidedFlow && dhis2CreateStage === 'details';
+  const effectiveValidationErrors = isDHIS2ShellConfigurationStep
+    ? null
+    : validationErrors;
+  const activeDHIS2ConfiguredConnections = dhis2ConfiguredConnections.filter(
+    instance => instance.is_active,
+  );
+  const modalWidth = isDHIS2Database ? '960px' : '500px';
 
   const dbModel: DatabaseForm =
     // TODO: we need a centralized engine in one place
@@ -699,16 +749,46 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     ) ||
     {};
 
+  const clearFormStatus = useCallback(() => {
+    setFormStatus(null);
+  }, []);
+
+  const showFormError = useCallback(
+    (title: string, description: string, details?: string) => {
+      setFormStatus({
+        type: 'error',
+        title,
+        description,
+        details: details ? normalizeStatusDetails(details) : undefined,
+      });
+    },
+    [],
+  );
+
+  const showFormSuccess = useCallback((title: string, description: string) => {
+    setFormStatus({
+      type: 'success',
+      title,
+      description,
+    });
+  }, []);
+
   // Test Connection logic
   const testConnection = () => {
     handleClearValidationErrors();
 
     // For parameter-based databases (dynamic form), send parameters and engine
     // Backend will call build_sqlalchemy_uri() to generate the URI
-    const isParameterBased = db?.parameters && db?.engine;
+    const isParameterBased =
+      db?.configuration_method === ConfigurationMethod.DynamicForm &&
+      !!db?.engine;
 
     if (!isParameterBased && !db?.sqlalchemy_uri) {
-      addDangerToast(t('Please enter a SQLAlchemy URI to test'));
+      showFormError(
+        t('SQLAlchemy URI required'),
+        t('Enter a SQLAlchemy URI before testing the connection.'),
+      );
+      setHasValidated(false);
       return;
     }
 
@@ -740,12 +820,19 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       connection,
       (errorMsg: string) => {
         setTestInProgress(false);
-        addDangerToast(errorMsg);
+        showFormError(
+          t('Connection test failed'),
+          t('Superset could not connect using the current settings.'),
+          errorMsg,
+        );
         setHasValidated(false);
       },
-      (errorMsg: string) => {
+      () => {
         setTestInProgress(false);
-        addSuccessToast(errorMsg);
+        showFormSuccess(
+          t('Connection looks good'),
+          t('Superset can reach this database with the current settings.'),
+        );
         setHasValidated(true);
       },
     );
@@ -768,16 +855,19 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       type: DBReducerActionType['type'],
       payload: CustomTextType | DBReducerPayloadType,
     ) => {
+      clearFormStatus();
+      clearError();
       setDB({ type, payload } as DBReducerActionType);
     },
-    [],
+    [clearError, clearFormStatus],
   );
 
   const handleClearValidationErrors = useCallback(() => {
     setValidationErrors(null);
     setHasValidated(false);
+    clearFormStatus();
     clearError();
-  }, [setValidationErrors, setHasValidated]);
+  }, [clearError, clearFormStatus, setValidationErrors, setHasValidated]);
 
   const handleParametersChange = useCallback(
     ({ target }: { target: HTMLInputElement }) => {
@@ -791,12 +881,25 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     [onChange],
   );
 
+  useEffect(() => {
+    if (isDHIS2ShellConfigurationStep && validationErrors) {
+      setValidationErrors(null);
+    }
+  }, [
+    isDHIS2ShellConfigurationStep,
+    setValidationErrors,
+    validationErrors,
+  ]);
+
   const onClose = () => {
     setDB({ type: ActionType.Reset });
     setHasConnectedDb(false);
     handleClearValidationErrors(); // reset validation errors on close
     clearError();
+    clearFormStatus();
     setEditNewDb(false);
+    setDhis2CreateStage('details');
+    setDhis2ConfiguredConnections([]);
     setFileList([]);
     setImportingModal(false);
     setImportingErrorMessage('');
@@ -812,6 +915,46 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     setUseSSHTunneling(undefined);
     onHide();
   };
+
+  const runExtraExtensionSave = useCallback(
+    async (databaseModel: Partial<DatabaseObject> | null) => {
+      if (!dbConfigExtraExtension?.onSave) {
+        return false;
+      }
+
+      try {
+        const result = await Promise.resolve(
+          dbConfigExtraExtension.onSave(
+            extraExtensionComponentState,
+            databaseModel,
+          ),
+        );
+        const error =
+          result && typeof result === 'object' && 'error' in result
+            ? String(result.error || '')
+            : '';
+
+        if (error) {
+          showFormError(
+            t('Additional settings need attention'),
+            t('Review the additional database options before continuing.'),
+            error,
+          );
+          return true;
+        }
+      } catch (error) {
+        showFormError(
+          t('Additional settings need attention'),
+          t('Review the additional database options before continuing.'),
+          error instanceof Error ? error.message : String(error),
+        );
+        return true;
+      }
+
+      return false;
+    },
+    [dbConfigExtraExtension, extraExtensionComponentState, showFormError],
+  );
 
   const redirectURL = (url: string) => {
     history.push(url);
@@ -834,24 +977,16 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   });
 
   const onSave = async () => {
-    let dbConfigExtraExtensionOnSaveError;
     setLoading(true);
     setHasValidated(false);
-    dbConfigExtraExtension
-      ?.onSave(extraExtensionComponentState, db)
-      .then(({ error }: { error: any }) => {
-        if (error) {
-          dbConfigExtraExtensionOnSaveError = error;
-          addDangerToast(error);
-        }
-      });
+    clearFormStatus();
+    // Clone DB object
+    const dbToUpdate = { ...(db || {}) };
 
-    if (dbConfigExtraExtensionOnSaveError) {
+    if (await runExtraExtensionSave(dbToUpdate)) {
       setLoading(false);
       return;
     }
-    // Clone DB object
-    const dbToUpdate = { ...(db || {}) };
 
     if (dbToUpdate.configuration_method === ConfigurationMethod.DynamicForm) {
       // Validate DB before saving
@@ -865,13 +1000,21 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
         });
       }
 
-      const errors = await getValidation(dbToUpdate, true);
-      if (!isEmpty(validationErrors) || errors?.length) {
-        addDangerToast(
-          t('Connection failed, please check your connection settings.'),
-        );
-        setLoading(false);
-        return;
+      if (!isDHIS2ShellConfigurationStep) {
+        const errors = await getValidation(dbToUpdate, true);
+        if (!isEmpty(errors)) {
+          showFormError(
+            t('Review the highlighted connection settings'),
+            t(
+              'Some database settings need attention before this connection can be saved.',
+            ),
+            typeof errors.description === 'string'
+              ? errors.description
+              : undefined,
+          );
+          setLoading(false);
+          return;
+        }
       }
 
       const parameters_schema = isEditMode
@@ -946,19 +1089,25 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       const result = await updateResource(
         db.id as number,
         dbToUpdate as DatabaseObject,
-        dbToUpdate.configuration_method === ConfigurationMethod.DynamicForm, // onShow toast on SQLA Forms
+        true,
       );
       if (result) {
         if (onDatabaseAdd) onDatabaseAdd();
-        dbConfigExtraExtension
-          ?.onSave(extraExtensionComponentState, db)
-          .then(({ error }: { error: any }) => {
-            if (error) {
-              dbConfigExtraExtensionOnSaveError = error;
-              addDangerToast(error);
-            }
-          });
-        if (dbConfigExtraExtensionOnSaveError) {
+        if (await runExtraExtensionSave(dbToUpdate)) {
+          setLoading(false);
+          return;
+        }
+        if (isDHIS2GuidedFlow) {
+          if (dhis2CreateStage === 'review') {
+            onClose();
+            addSuccessToast(t('DHIS2 Database saved'));
+            redirectURL(DATABASE_LIST_ROUTE);
+          } else {
+            setEditNewDb(false);
+            setHasConnectedDb(true);
+            setDhis2CreateStage('connections');
+          }
+          setShowCTAbtns(false);
           setLoading(false);
           return;
         }
@@ -971,20 +1120,19 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       // Create
       const dbId = await createResource(
         dbToUpdate as DatabaseObject,
-        dbToUpdate.configuration_method === ConfigurationMethod.DynamicForm, // onShow toast on SQLA Forms
+        true,
       );
       if (dbId) {
         setHasConnectedDb(true);
         if (onDatabaseAdd) onDatabaseAdd();
-        dbConfigExtraExtension
-          ?.onSave(extraExtensionComponentState, db)
-          .then(({ error }: { error: any }) => {
-            if (error) {
-              dbConfigExtraExtensionOnSaveError = error;
-              addDangerToast(error);
-            }
-          });
-        if (dbConfigExtraExtensionOnSaveError) {
+        if (await runExtraExtensionSave(dbToUpdate)) {
+          setLoading(false);
+          return;
+        }
+
+        if (isDHIS2GuidedFlow) {
+          setDhis2CreateStage('connections');
+          setShowCTAbtns(false);
           setLoading(false);
           return;
         }
@@ -1028,14 +1176,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   const fetchDB = () => {
     if (isEditMode && databaseId) {
       if (!dbLoading) {
-        fetchResource(databaseId).catch(e =>
-          addDangerToast(
-            t(
-              'Sorry there was an error fetching database information: %s',
-              e.message,
-            ),
-          ),
-        );
+        fetchResource(databaseId);
       }
     }
   };
@@ -1192,6 +1333,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
 
   const handleBackButtonOnConnect = () => {
     handleClearValidationErrors();
+    setDhis2CreateStage('details');
     if (editNewDb) setHasConnectedDb(false);
     if (importingModal) setImportingModal(false);
     if (importErrored) {
@@ -1228,6 +1370,55 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
 
   const renderModalFooter = () => {
     if (db) {
+      if (isDHIS2GuidedFlow && hasConnectedDb && !editNewDb) {
+        if (dhis2CreateStage === 'connections') {
+          return (
+            <>
+              <StyledFooterButton
+                key="back"
+                onClick={() => {
+                  setEditNewDb(true);
+                  setDhis2CreateStage('details');
+                }}
+                buttonStyle="secondary"
+              >
+                {t('Back')}
+              </StyledFooterButton>
+              <StyledFooterButton
+                key="submit"
+                buttonStyle="primary"
+                onClick={() => setDhis2CreateStage('review')}
+                disabled={activeDHIS2ConfiguredConnections.length === 0}
+              >
+                {t('Review database')}
+              </StyledFooterButton>
+            </>
+          );
+        }
+
+        if (dhis2CreateStage === 'review') {
+          return (
+            <>
+              <StyledFooterButton
+                key="back"
+                onClick={() => setDhis2CreateStage('connections')}
+                buttonStyle="secondary"
+              >
+                {t('Back')}
+              </StyledFooterButton>
+              <StyledFooterButton
+                key="submit"
+                buttonStyle="primary"
+                onClick={onSave}
+                loading={isLoading}
+              >
+                {t('Save Database')}
+              </StyledFooterButton>
+            </>
+          );
+        }
+      }
+
       // if db show back + connect
       if (!hasConnectedDb || editNewDb) {
         return (
@@ -1247,13 +1438,14 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
               loading={isLoading}
               disabled={
                 !!(
-                  !hasValidated ||
+                  (!hasValidated && !isDHIS2ShellConfigurationStep) ||
                   isValidating ||
-                  (validationErrors && Object.keys(validationErrors).length > 0)
+                  (effectiveValidationErrors &&
+                    Object.keys(effectiveValidationErrors).length > 0)
                 )
               }
             >
-              {t('Connect')}
+              {isDHIS2ShellConfigurationStep ? t('Continue') : t('Connect')}
             </StyledFooterButton>
           </>
         );
@@ -1643,40 +1835,91 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     );
   };
 
-  // eslint-disable-next-line consistent-return
-  const errorAlert = () => {
+  const getDatabaseAlertErrors = () => {
     let alertErrors: string[] = [];
     if (!isEmpty(dbErrors)) {
       alertErrors =
         typeof dbErrors === 'object'
-          ? Object.values(dbErrors)
+          ? Object.values(dbErrors).flatMap(value =>
+              Array.isArray(value)
+                ? value.map(item => String(item))
+                : typeof value === 'string'
+                  ? [value]
+                  : [JSON.stringify(value)],
+            )
           : typeof dbErrors === 'string'
             ? [dbErrors]
             : [];
     } else if (
-      !isEmpty(validationErrors) &&
-      validationErrors?.error_type === 'GENERIC_DB_ENGINE_ERROR'
+      !isEmpty(effectiveValidationErrors) &&
+      effectiveValidationErrors?.error_type === 'GENERIC_DB_ENGINE_ERROR'
     ) {
       alertErrors = [
-        validationErrors?.description || validationErrors?.message,
+        effectiveValidationErrors?.description ||
+          effectiveValidationErrors?.message,
       ];
     }
-    if (alertErrors.length) {
-      return (
-        <ErrorAlertContainer>
-          <ErrorMessageWithStackTrace
-            title={t('Database Creation Error')}
-            subtitle={t('We are unable to connect to your database.')}
-            descriptionDetails={
-              alertErrors?.[0] || validationErrors?.description
-            }
-            copyText={validationErrors?.description}
-          />
-        </ErrorAlertContainer>
-      );
-    }
-    return <></>;
+
+    return alertErrors.filter(Boolean);
   };
+
+  const renderFormStatusAlert = () => {
+    if (!formStatus) {
+      return null;
+    }
+
+    return (
+      <StyledAlertMargin>
+        <Alert
+          data-test="database-modal-status-alert"
+          closable
+          onClose={clearFormStatus}
+          css={(theme: SupersetTheme) => antDAlertStyles(theme)}
+          type={formStatus.type}
+          showIcon
+          message={formStatus.title}
+          description={
+            <>
+              <div>{formStatus.description}</div>
+              {formStatus.details && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {formStatus.details}
+                </div>
+              )}
+            </>
+          }
+        />
+      </StyledAlertMargin>
+    );
+  };
+
+  const errorAlert = () => {
+    const alertErrors = getDatabaseAlertErrors();
+    if (!alertErrors.length) {
+      return null;
+    }
+
+    return (
+      <ErrorAlertContainer>
+        <ErrorMessageWithStackTrace
+          title={t('Database connection issue')}
+          subtitle={t(
+            'Review the details below, update the settings, and try again.',
+          )}
+          descriptionDetails={alertErrors[0]}
+          copyText={alertErrors[0]}
+        />
+      </ErrorAlertContainer>
+    );
+  };
+
+  const hasInlineDatabaseError = getDatabaseAlertErrors().length > 0;
+  const shouldShowDatabaseErrorAlert = hasInlineDatabaseError && !formStatus;
 
   const fetchAndSetDB = () => {
     setLoading(true);
@@ -1735,11 +1978,17 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       <DatabaseConnectionForm
         isValidating={isValidating}
         isEditMode={isEditMode}
+        excludedFields={
+          isDHIS2ShellConfigurationStep ? DHIS2_SHELL_EXCLUDED_FIELDS : []
+        }
         db={db as DatabaseObject}
         sslForced={false}
         dbModel={dbModel}
-        testConnection={testConnection}
+        testConnection={
+          isDHIS2ShellConfigurationStep ? undefined : testConnection
+        }
         testInProgress={testInProgress}
+        hideTestConnection={isDHIS2ShellConfigurationStep}
         onAddTableCatalog={() => {
           setDB({ type: ActionType.AddTableCatalogSheet });
         }}
@@ -1778,62 +2027,338 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
             value: target.value,
           })
         }
-        getValidation={() => getValidation(db)}
-        validationErrors={validationErrors}
+        getValidation={() =>
+          isDHIS2ShellConfigurationStep ? Promise.resolve([]) : getValidation(db)
+        }
+        validationErrors={effectiveValidationErrors}
         getPlaceholder={getPlaceholder}
         clearValidationErrors={handleClearValidationErrors}
       />
       {useSSHTunneling && (
         <SSHTunnelContainer>{renderSSHTunnelForm()}</SSHTunnelContainer>
       )}
+      {isDHIS2ShellConfigurationStep && (
+        <StyledAlertMargin>
+          <Alert
+            closable={false}
+            css={(theme: SupersetTheme) => antDAlertStyles(theme)}
+            message={t('This DHIS2 Database is a logical container')}
+            showIcon
+            description={t(
+              'Define the Superset-facing database name here. In the next step you will add one or more configured DHIS2 instances, each with its own URL and authentication details. Dataset creation then loads those saved child connections automatically.',
+            )}
+            type="info"
+          />
+        </StyledAlertMargin>
+      )}
+    </>
+  );
+
+  const renderDHIS2ConnectionsPanel = () => (
+    <DHIS2ConfiguredConnectionsPanel
+      databaseId={db?.id}
+      databaseName={db?.database_name}
+      onInstancesChange={setDhis2ConfiguredConnections}
+    />
+  );
+
+  const renderDHIS2CreateReview = () => (
+    <>
+      <StyledAlertMargin>
+        <Alert
+          closable={false}
+          css={(theme: SupersetTheme) => antDAlertStyles(theme)}
+          message={t('Review the DHIS2 Database before saving')}
+          showIcon
+          description={t(
+            'This database will expose the configured DHIS2 instances below as a single logical Superset Database. Dataset creation uses these saved connections directly and loads metadata from local staging.',
+          )}
+          type="info"
+        />
+      </StyledAlertMargin>
+      <div css={formScrollableStyles}>
+        <div className="control-label">{t('Database name')}</div>
+        <div style={{ marginBottom: 16 }}>{db?.database_name || t('Unnamed')}</div>
+        <div className="control-label">{t('Configured DHIS2 instances')}</div>
+        <div style={{ marginBottom: 16 }}>
+          {activeDHIS2ConfiguredConnections.length === 0
+            ? t('No active instances configured yet')
+            : t(
+                '%s active instance(s) will be available for dataset creation.',
+                activeDHIS2ConfiguredConnections.length,
+              )}
+        </div>
+        {dhis2ConfiguredConnections.length > 0 && (
+          <div style={{ display: 'grid', gap: 12, marginBottom: 24 }}>
+            {dhis2ConfiguredConnections.map(instance => (
+              <div
+                key={instance.id}
+                style={{
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 8,
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{instance.name}</div>
+                <div style={{ color: 'rgba(0, 0, 0, 0.45)' }}>{instance.url}</div>
+                <div style={{ marginTop: 6, color: 'rgba(0, 0, 0, 0.65)' }}>
+                  {instance.is_active ? t('Active') : t('Inactive')} ·{' '}
+                  {instance.auth_type === 'pat'
+                    ? t('Personal Access Token')
+                    : t('Basic authentication')}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <ExtraOptions
+        extraExtension={dbConfigExtraExtension}
+        db={db as DatabaseObject}
+        onInputChange={(
+          e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
+        ) => {
+          const { target } = e;
+          onChange(ActionType.InputChange, {
+            type: target.type,
+            name: target.name,
+            checked: 'checked' in target ? target.checked : false,
+            value: target.value,
+          });
+        }}
+        onTextChange={({ target }: { target: HTMLTextAreaElement }) =>
+          onChange(ActionType.TextChange, {
+            name: target.name,
+            value: target.value,
+          })
+        }
+        onEditorChange={(payload: { name: string; json: any }) =>
+          onChange(ActionType.EditorChange, payload)
+        }
+        onExtraInputChange={(
+          e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
+        ) => {
+          const { target } = e;
+          onChange(ActionType.ExtraInputChange, {
+            type: target.type,
+            name: target.name,
+            checked: 'checked' in target ? target.checked : false,
+            value: target.value,
+          });
+        }}
+        onExtraEditorChange={(payload: { name: string; json: any }) =>
+          onChange(ActionType.ExtraEditorChange, payload)
+        }
+      />
     </>
   );
 
   const renderFinishState = () => {
+    if (isDHIS2GuidedFlow) {
+      if (dhis2CreateStage === 'connections') {
+        return renderDHIS2ConnectionsPanel();
+      }
+      if (dhis2CreateStage === 'review') {
+        return renderDHIS2CreateReview();
+      }
+    }
     if (!editNewDb) {
       return (
+        <>
+          {isDHIS2Database && renderDHIS2ConnectionsPanel()}
+          <ExtraOptions
+            extraExtension={dbConfigExtraExtension}
+            db={db as DatabaseObject}
+            onInputChange={(
+              e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
+            ) => {
+              const { target } = e;
+              onChange(ActionType.InputChange, {
+                type: target.type,
+                name: target.name,
+                checked: 'checked' in target ? target.checked : false,
+                value: target.value,
+              });
+            }}
+            onTextChange={({ target }: { target: HTMLTextAreaElement }) =>
+              onChange(ActionType.TextChange, {
+                name: target.name,
+                value: target.value,
+              })
+            }
+            onEditorChange={(payload: { name: string; json: any }) =>
+              onChange(ActionType.EditorChange, payload)
+            }
+            onExtraInputChange={(
+              e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
+            ) => {
+              const { target } = e;
+              onChange(ActionType.ExtraInputChange, {
+                type: target.type,
+                name: target.name,
+                checked: 'checked' in target ? target.checked : false,
+                value: target.value,
+              });
+            }}
+            onExtraEditorChange={(payload: { name: string; json: any }) =>
+              onChange(ActionType.ExtraEditorChange, payload)
+            }
+          />
+        </>
+      );
+    }
+    return renderDatabaseConnectionForm();
+  };
+
+  const modalTabs = [
+    {
+      key: TABS_KEYS.BASIC,
+      label: <span>{t('Basic')}</span>,
+      children: (
+        <>
+          {useSqlAlchemyForm ? (
+            <StyledAlignment>
+              <SqlAlchemyForm
+                db={db as DatabaseObject}
+                onInputChange={({
+                  target,
+                }: {
+                  target: HTMLInputElement;
+                }) => {
+                  setHasValidated(false);
+                  onChange(ActionType.InputChange, {
+                    type: target.type,
+                    name: target.name,
+                    checked: target.checked,
+                    value: target.value,
+                  });
+                }}
+                conf={conf}
+                testConnection={testConnection}
+                testInProgress={testInProgress}
+              >
+                <SSHTunnelSwitchComponent
+                  dbModel={dbModel}
+                  db={db as DatabaseObject}
+                  changeMethods={{
+                    onParametersChange: handleParametersChange,
+                  }}
+                  clearValidationErrors={handleClearValidationErrors}
+                />
+                {useSSHTunneling && renderSSHTunnelForm()}
+              </SqlAlchemyForm>
+              {isDynamic(db?.backend || db?.engine) && !isEditMode && (
+                <div css={(theme: SupersetTheme) => infoTooltip(theme)}>
+                  <Button
+                    buttonStyle="link"
+                    onClick={() =>
+                      setDB({
+                        type: ActionType.ConfigMethodChange,
+                        payload: {
+                          database_name: db?.database_name,
+                          configuration_method:
+                            ConfigurationMethod.DynamicForm,
+                          engine: db?.engine,
+                        },
+                      })
+                    }
+                    css={theme => alchemyButtonLinkStyles(theme)}
+                  >
+                    {t('Connect this database using the dynamic form instead')}
+                  </Button>
+                  <InfoTooltip
+                    tooltip={t(
+                      'Click this link to switch to an alternate form that exposes only the required fields needed to connect this database.',
+                    )}
+                  />
+                </div>
+              )}
+            </StyledAlignment>
+          ) : (
+            renderDatabaseConnectionForm()
+          )}
+          {!isEditMode && (
+            <StyledAlertMargin>
+              <Alert
+                closable={false}
+                css={(theme: SupersetTheme) => antDAlertStyles(theme)}
+                message={t('Additional fields may be required')}
+                showIcon
+                description={
+                  <>
+                    {t(
+                      'Select databases require additional fields to be completed in the Advanced tab to successfully connect the database. Learn what requirements your databases has ',
+                    )}
+                    <a
+                      href={DOCUMENTATION_LINK}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="additional-fields-alert-description"
+                    >
+                      {t('here')}
+                    </a>
+                    .
+                  </>
+                }
+                type="info"
+              />
+            </StyledAlertMargin>
+          )}
+        </>
+      ),
+    },
+    {
+      key: TABS_KEYS.ADVANCED,
+      label: <span>{t('Advanced')}</span>,
+      children: (
         <ExtraOptions
           extraExtension={dbConfigExtraExtension}
           db={db as DatabaseObject}
-          onInputChange={(
-            e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
-          ) => {
+          onInputChange={(e: CheckboxChangeEvent) => {
             const { target } = e;
             onChange(ActionType.InputChange, {
               type: target.type,
               name: target.name,
-              checked: 'checked' in target ? target.checked : false,
+              checked: target.checked,
               value: target.value,
             });
           }}
-          onTextChange={({ target }: { target: HTMLTextAreaElement }) =>
+          onTextChange={({ target }: { target: HTMLTextAreaElement }) => {
             onChange(ActionType.TextChange, {
               name: target.name,
               value: target.value,
-            })
-          }
-          onEditorChange={(payload: { name: string; json: any }) =>
-            onChange(ActionType.EditorChange, payload)
-          }
+            });
+          }}
+          onEditorChange={(payload: { name: string; json: any }) => {
+            onChange(ActionType.EditorChange, payload);
+          }}
           onExtraInputChange={(
-            e: CheckboxChangeEvent | React.ChangeEvent<HTMLInputElement>,
+            e: React.ChangeEvent<HTMLInputElement> | CheckboxChangeEvent,
           ) => {
             const { target } = e;
             onChange(ActionType.ExtraInputChange, {
               type: target.type,
               name: target.name,
-              checked: 'checked' in target ? target.checked : false,
+              checked: target.checked,
               value: target.value,
             });
           }}
-          onExtraEditorChange={(payload: { name: string; json: any }) =>
-            onChange(ActionType.ExtraEditorChange, payload)
-          }
+          onExtraEditorChange={(payload: { name: string; json: any }) => {
+            onChange(ActionType.ExtraEditorChange, payload);
+          }}
         />
-      );
-    }
-    return renderDatabaseConnectionForm();
-  };
+      ),
+    },
+    ...(isDHIS2Database && db?.id
+      ? [
+          {
+            key: TABS_KEYS.CONNECTIONS,
+            label: <span>{t('Configured Connections')}</span>,
+            children: renderDHIS2ConnectionsPanel(),
+          },
+        ]
+      : []),
+  ];
 
   if (
     fileList.length > 0 &&
@@ -1865,14 +2390,16 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
             icon={<Icons.InsertRowAboveOutlined />}
           />
         }
-        width="500px"
+        width={modalWidth}
       >
         <ModalHeader
           db={db}
           dbName={dbName}
           dbModel={dbModel}
+          dhis2CreateStage={dhis2CreateStage}
           fileList={fileList}
           hasConnectedDb={hasConnectedDb}
+          isDHIS2GuidedFlow={isDHIS2GuidedFlow}
           isEditMode={isEditMode}
           isLoading={isLoading}
           useSqlAlchemyForm={useSqlAlchemyForm}
@@ -1883,9 +2410,10 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       </Modal>
     );
   }
-  const modalFooter = isEditMode
-    ? renderEditModalFooter(db)
-    : renderModalFooter();
+  const modalFooter =
+    isEditMode && !isDHIS2GuidedFlow
+      ? renderEditModalFooter(db)
+      : renderModalFooter();
   return useTabLayout ? (
     <Modal
       css={(theme: SupersetTheme) => [
@@ -1900,7 +2428,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       onHandledPrimaryAction={onSave}
       onHide={onClose}
       primaryButtonName={isEditMode ? t('Save') : t('Connect')}
-      width="500px"
+      width={modalWidth}
       centered
       show={show}
       title={
@@ -1929,157 +2457,19 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
             db={db}
             dbName={dbName}
             dbModel={dbModel}
+            dhis2CreateStage={dhis2CreateStage}
+            isDHIS2GuidedFlow={isDHIS2GuidedFlow}
           />
         </TabHeader>
       </StyledStickyHeader>
+      {renderFormStatusAlert()}
+      {shouldShowDatabaseErrorAlert && errorAlert()}
       <TabsStyled
         defaultActiveKey={DEFAULT_TAB_KEY}
         activeKey={tabKey}
         onTabClick={tabChange}
         animated={{ inkBar: true, tabPane: true }}
-        items={[
-          {
-            key: TABS_KEYS.BASIC,
-            label: <span>{t('Basic')}</span>,
-            children: (
-              <>
-                {useSqlAlchemyForm ? (
-                  <StyledAlignment>
-                    <SqlAlchemyForm
-                      db={db as DatabaseObject}
-                      onInputChange={({
-                        target,
-                      }: {
-                        target: HTMLInputElement;
-                      }) => {
-                        setHasValidated(false);
-                        onChange(ActionType.InputChange, {
-                          type: target.type,
-                          name: target.name,
-                          checked: target.checked,
-                          value: target.value,
-                        });
-                      }}
-                      conf={conf}
-                      testConnection={testConnection}
-                      testInProgress={testInProgress}
-                    >
-                      <SSHTunnelSwitchComponent
-                        dbModel={dbModel}
-                        db={db as DatabaseObject}
-                        changeMethods={{
-                          onParametersChange: handleParametersChange,
-                        }}
-                        clearValidationErrors={handleClearValidationErrors}
-                      />
-                      {useSSHTunneling && renderSSHTunnelForm()}
-                    </SqlAlchemyForm>
-                    {isDynamic(db?.backend || db?.engine) && !isEditMode && (
-                      <div css={(theme: SupersetTheme) => infoTooltip(theme)}>
-                        <Button
-                          buttonStyle="link"
-                          onClick={() =>
-                            setDB({
-                              type: ActionType.ConfigMethodChange,
-                              payload: {
-                                database_name: db?.database_name,
-                                configuration_method:
-                                  ConfigurationMethod.DynamicForm,
-                                engine: db?.engine,
-                              },
-                            })
-                          }
-                          css={theme => alchemyButtonLinkStyles(theme)}
-                        >
-                          {t(
-                            'Connect this database using the dynamic form instead',
-                          )}
-                        </Button>
-                        <InfoTooltip
-                          tooltip={t(
-                            'Click this link to switch to an alternate form that exposes only the required fields needed to connect this database.',
-                          )}
-                        />
-                      </div>
-                    )}
-                  </StyledAlignment>
-                ) : (
-                  renderDatabaseConnectionForm()
-                )}
-                {!isEditMode && (
-                  <StyledAlertMargin>
-                    <Alert
-                      closable={false}
-                      css={(theme: SupersetTheme) => antDAlertStyles(theme)}
-                      message={t('Additional fields may be required')}
-                      showIcon
-                      description={
-                        <>
-                          {t(
-                            'Select databases require additional fields to be completed in the Advanced tab to successfully connect the database. Learn what requirements your databases has ',
-                          )}
-                          <a
-                            href={DOCUMENTATION_LINK}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="additional-fields-alert-description"
-                          >
-                            {t('here')}
-                          </a>
-                          .
-                        </>
-                      }
-                      type="info"
-                    />
-                  </StyledAlertMargin>
-                )}
-                {showDBError && errorAlert()}
-              </>
-            ),
-          },
-          {
-            key: TABS_KEYS.ADVANCED,
-            label: <span>{t('Advanced')}</span>,
-            children: (
-              <ExtraOptions
-                extraExtension={dbConfigExtraExtension}
-                db={db as DatabaseObject}
-                onInputChange={(e: CheckboxChangeEvent) => {
-                  const { target } = e;
-                  onChange(ActionType.InputChange, {
-                    type: target.type,
-                    name: target.name,
-                    checked: target.checked,
-                    value: target.value,
-                  });
-                }}
-                onTextChange={({ target }: { target: HTMLTextAreaElement }) => {
-                  onChange(ActionType.TextChange, {
-                    name: target.name,
-                    value: target.value,
-                  });
-                }}
-                onEditorChange={(payload: { name: string; json: any }) => {
-                  onChange(ActionType.EditorChange, payload);
-                }}
-                onExtraInputChange={(
-                  e: React.ChangeEvent<HTMLInputElement> | CheckboxChangeEvent,
-                ) => {
-                  const { target } = e;
-                  onChange(ActionType.ExtraInputChange, {
-                    type: target.type,
-                    name: target.name,
-                    checked: target.checked,
-                    value: target.value,
-                  });
-                }}
-                onExtraEditorChange={(payload: { name: string; json: any }) => {
-                  onChange(ActionType.ExtraEditorChange, payload);
-                }}
-              />
-            ),
-          },
-        ]}
+        items={modalTabs}
       />
     </Modal>
   ) : (
@@ -2093,14 +2483,31 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
       name="database"
       onHandledPrimaryAction={onSave}
       onHide={onClose}
-      primaryButtonName={hasConnectedDb ? t('Finish') : t('Connect')}
-      width="500px"
+      primaryButtonName={
+        isDHIS2GuidedFlow
+          ? dhis2CreateStage === 'review'
+            ? t('Save Database')
+            : dhis2CreateStage === 'connections'
+              ? t('Review database')
+              : t('Continue')
+          : hasConnectedDb
+            ? t('Finish')
+            : t('Connect')
+      }
+      width={modalWidth}
       centered
       show={show}
       title={
         <ModalTitleWithIcon
-          title={t('Connect a database')}
-          icon={<Icons.InsertRowAboveOutlined />}
+          isEditMode={isEditMode}
+          title={isEditMode ? t('Edit database') : t('Connect a database')}
+          icon={
+            isEditMode ? (
+              <Icons.EditOutlined iconSize="l" />
+            ) : (
+              <Icons.InsertRowAboveOutlined iconSize="l" />
+            )
+          }
         />
       }
       footer={renderModalFooter()}
@@ -2116,7 +2523,9 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
             db={db}
             dbName={dbName}
             dbModel={dbModel}
+            dhis2CreateStage={dhis2CreateStage}
             editNewDb={editNewDb}
+            isDHIS2GuidedFlow={isDHIS2GuidedFlow}
           />
           {showCTAbtns && renderCTABtns()}
           {renderFinishState()}
@@ -2135,6 +2544,8 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
                   db={db}
                   dbName={dbName}
                   dbModel={dbModel}
+                  dhis2CreateStage={dhis2CreateStage}
+                  isDHIS2GuidedFlow={isDHIS2GuidedFlow}
                 />
                 {renderPreferredSelector()}
                 {renderAvailableSelector()}
@@ -2169,11 +2580,13 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
                   db={db}
                   dbName={dbName}
                   dbModel={dbModel}
+                  dhis2CreateStage={dhis2CreateStage}
+                  isDHIS2GuidedFlow={isDHIS2GuidedFlow}
                 />
                 {hasAlert && renderStepTwoAlert()}
                 {renderDatabaseConnectionForm()}
                 <div css={(theme: SupersetTheme) => infoTooltip(theme)}>
-                  {dbModel.engine !== Engines.GSheet && (
+                  {dbModel.engine !== Engines.GSheet && !isDHIS2GuidedFlow && (
                     <>
                       <Button
                         data-test="sqla-connect-btn"
@@ -2205,7 +2618,8 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
                   )}
                 </div>
                 {/* Step 2 */}
-                {showDBError && errorAlert()}
+                {renderFormStatusAlert()}
+                {shouldShowDatabaseErrorAlert && errorAlert()}
               </>
             ))}
         </>

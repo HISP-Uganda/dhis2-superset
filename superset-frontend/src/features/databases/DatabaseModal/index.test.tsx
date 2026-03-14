@@ -62,6 +62,8 @@ const DATABASE_FETCH_ENDPOINT = 'glob:*/api/v1/database/10';
 const AVAILABLE_DB_ENDPOINT = 'glob:*/api/v1/database/available*';
 const VALIDATE_PARAMS_ENDPOINT = 'glob:*/api/v1/database/validate_parameters*';
 const DATABASE_CONNECT_ENDPOINT = 'glob:*/api/v1/database/';
+const DHIS2_INSTANCES_ENDPOINT =
+  'glob:*/api/v1/dhis2/instances/?database_id=10&include_inactive=true';
 
 const databaseFixture: DatabaseObject = {
   id: 123,
@@ -232,6 +234,53 @@ describe('DatabaseModal', () => {
           },
         },
         {
+          available_drivers: ['dhis2'],
+          default_driver: 'dhis2',
+          engine: 'dhis2',
+          name: 'DHIS2',
+          parameters: {
+            properties: {
+              dhis2_authentication: {
+                description: 'DHIS2 Authentication',
+                type: 'custom',
+              },
+              host: {
+                description: 'DHIS2 server URL',
+                type: 'string',
+              },
+              authentication_type: {
+                description: 'Authentication method',
+                type: 'string',
+              },
+              username: {
+                description: 'DHIS2 username',
+                nullable: true,
+                type: 'string',
+              },
+              password: {
+                description: 'DHIS2 password',
+                nullable: true,
+                type: 'string',
+                'x-encrypted-extra': true,
+              },
+              access_token: {
+                description: 'Personal Access Token',
+                nullable: true,
+                type: 'string',
+                'x-encrypted-extra': true,
+              },
+            },
+            type: 'object',
+          },
+          preferred: true,
+          sqlalchemy_uri_placeholder:
+            'dhis2://username:password@play.dhis2.org/40.2.2/api',
+          engine_information: {
+            supports_file_upload: false,
+            disable_ssh_tunneling: false,
+          },
+        },
+        {
           available_drivers: ['rest'],
           engine: 'druid',
           name: 'Apache Druid',
@@ -327,6 +376,217 @@ describe('DatabaseModal', () => {
       useRedux: true,
     });
 
+  test('uses the staged DHIS2 edit flow and exposes configured instances', async () => {
+    const onHide = jest.fn();
+    const useSingleViewResourceMock = jest.spyOn(hooks, 'useSingleViewResource');
+    useSingleViewResourceMock.mockReturnValue({
+      state: {
+        loading: false,
+        resource: {
+          id: 10,
+          database_name: 'Malaria Repository Multiple Sources',
+          backend: 'dhis2',
+          engine: 'dhis2',
+          configuration_method: 'sqlalchemy_form',
+          expose_in_sqllab: false,
+          allow_ctas: false,
+          allow_cvas: false,
+          is_managed_externally: false,
+        },
+        error: null,
+      },
+      fetchResource: jest.fn().mockResolvedValue({}),
+      createResource: jest.fn(),
+      updateResource: jest.fn().mockResolvedValue({
+        id: 10,
+      }),
+      clearError: jest.fn(),
+      setResource: jest.fn(),
+    });
+    fetchMock.get(DHIS2_INSTANCES_ENDPOINT, {
+      result: [
+        {
+          id: 101,
+          database_id: 10,
+          name: 'National eHMIS DHIS2',
+          url: 'https://national.example.org',
+          auth_type: 'basic',
+          is_active: true,
+          display_order: 10,
+          last_test_result: {
+            status: 'success',
+            message: 'Connection OK',
+          },
+        },
+      ],
+    });
+
+    setup({ databaseId: 10, dbEngine: undefined, onHide });
+
+    expect(await screen.findByText(/step 2 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /configure database details/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /edit database/i }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+
+    expect(await screen.findByText(/step 3 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /add dhis2 instances/i }),
+    ).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText(/^Configured DHIS2 Connections$/i)).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText(/National eHMIS DHIS2/i)).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/Order 10/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Edit$/i })).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /Review database/i }),
+    );
+
+    expect(await screen.findByText(/step 4 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /review & save database/i }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /save database/i }),
+    );
+
+    await waitFor(() => {
+      expect(onHide).toHaveBeenCalled();
+      expect(mockHistoryPush).toHaveBeenCalledWith('/databaseview/list/');
+    });
+
+    useSingleViewResourceMock.mockRestore();
+  });
+
+  test('uses the staged DHIS2 create flow with database details, instances, and review steps', async () => {
+    const React = jest.requireActual('react');
+    const onHide = jest.fn();
+    const useSingleViewResourceMock = jest.spyOn(hooks, 'useSingleViewResource');
+    useSingleViewResourceMock.mockImplementation(() => {
+      const [state, setState] = React.useState({
+        loading: false,
+        resource: null,
+        error: null,
+      });
+
+      return {
+        state,
+        fetchResource: jest.fn().mockResolvedValue({}),
+        createResource: jest.fn().mockImplementation(async () => {
+          setState({
+            loading: false,
+            resource: {
+              id: 10,
+              database_name: 'Malaria Repository Multiple Sources',
+              backend: 'dhis2',
+              engine: 'dhis2',
+              configuration_method: ConfigurationMethod.DynamicForm,
+              expose_in_sqllab: false,
+              allow_ctas: false,
+              allow_cvas: false,
+              is_managed_externally: false,
+            },
+            error: null,
+          });
+          return 10;
+        }),
+        updateResource: jest.fn().mockImplementation(async (_id, resource) => {
+          setState({
+            loading: false,
+            resource: { ...(resource as object), id: 10 },
+            error: null,
+          });
+          return resource;
+        }),
+        clearError: jest.fn(),
+        setResource: jest.fn(),
+      };
+    });
+
+    fetchMock.get(DHIS2_INSTANCES_ENDPOINT, {
+      result: [
+        {
+          id: 101,
+          database_id: 10,
+          name: 'National eHMIS DHIS2',
+          url: 'https://national.example.org',
+          auth_type: 'basic',
+          is_active: true,
+          display_order: 10,
+        },
+      ],
+    });
+
+    setup({ onHide });
+
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: /dhis2/i,
+      }),
+    );
+
+    expect(await screen.findByText(/step 2 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /configure database details/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/this dhis2 database is a logical container/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /test connection/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/host/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^username$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^password$/i)).not.toBeInTheDocument();
+    expect(fetchMock.calls(VALIDATE_PARAMS_ENDPOINT)).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+
+    expect(await screen.findByText(/step 3 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /add dhis2 instances/i }),
+    ).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText(/National eHMIS DHIS2/i)).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByRole('button', { name: /Add Connection/i }),
+    ).toBeInTheDocument();
+    expect(fetchMock.calls(VALIDATE_PARAMS_ENDPOINT)).toHaveLength(0);
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /Review database/i }),
+    );
+
+    expect(await screen.findByText(/step 4 of 4/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /review & save database/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 active instance\(s\) will be available for dataset creation/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /save database/i }),
+    );
+
+    await waitFor(() => {
+      expect(onHide).toHaveBeenCalled();
+      expect(mockHistoryPush).toHaveBeenCalledWith('/databaseview/list/');
+    });
+
+    useSingleViewResourceMock.mockRestore();
+  });
+
   // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
   describe('Visual: New database connection', () => {
     test('renders the initial load of Step 1 correctly', async () => {
@@ -340,9 +600,9 @@ describe('DatabaseModal', () => {
         name: /connect a database/i,
       });
       // <ModalHeader> - Connection header
-      const step1Helper = await screen.findByText(/step 1 of 3/i);
+      const step1Helper = await screen.findByText(/step 1 of 4/i);
       const selectDbHeader = screen.getByRole('heading', {
-        name: /select a database to connect/i,
+        name: /select database type/i,
       });
       // <IconButton> - Preferred database buttons
       const preferredDbButtonPostgreSQL = screen.getByRole('button', {
@@ -368,6 +628,12 @@ describe('DatabaseModal', () => {
       });
       const preferredDbTextSQLite = within(preferredDbButtonSQLite).getByText(
         /sqlite/i,
+      );
+      const preferredDbButtonDHIS2 = screen.getByRole('button', {
+        name: /dhis2/i,
+      });
+      const preferredDbTextDHIS2 = within(preferredDbButtonDHIS2).getByText(
+        /dhis2/i,
       );
       // renderAvailableSelector() => <Select> - Supported databases selector
       const supportedDbsHeader = screen.getByRole('heading', {
@@ -410,10 +676,12 @@ describe('DatabaseModal', () => {
         preferredDbButtonPresto,
         preferredDbButtonMySQL,
         preferredDbButtonSQLite,
+        preferredDbButtonDHIS2,
         preferredDbTextPostgreSQL,
         preferredDbTextPresto,
         preferredDbTextMySQL,
         preferredDbTextSQLite,
+        preferredDbTextDHIS2,
       ];
 
       visibleComponents.forEach(component => {
@@ -1157,6 +1425,100 @@ describe('DatabaseModal', () => {
           expect(sqlAlchemyURItextBox).toHaveValue('Different text');
         });
 
+        test('shows an inline status message when test connection is attempted without a SQLAlchemy URI', async () => {
+          setup();
+
+          await userEvent.click(
+            await screen.findByRole('button', {
+              name: /sqlite/i,
+            }),
+          );
+
+          expect(await screen.findByText(/step 2 of 2/i)).toBeInTheDocument();
+
+          await userEvent.click(
+            screen.getByRole('button', {
+              name: /test connection/i,
+            }),
+          );
+
+          let matchingAlert: Element | null = null;
+          await waitFor(() => {
+            matchingAlert =
+              Array.from(document.querySelectorAll('.ant-alert-error')).find(
+                alert =>
+                  /sqlalchemy uri required/i.test(alert.textContent || '') &&
+                  /enter a sqlalchemy uri before testing the connection/i.test(
+                    alert.textContent || '',
+                  ),
+              ) || null;
+            expect(matchingAlert).not.toBeNull();
+          });
+          expect(matchingAlert).not.toBeNull();
+          expect(matchingAlert).toHaveTextContent(/sqlalchemy uri required/i);
+          expect(matchingAlert).toHaveTextContent(
+            /enter a sqlalchemy uri before testing the connection/i,
+          );
+        });
+
+        test('shows a cleaned inline status message when the backend returns a wrapped connection error', async () => {
+          fetchMock.post('glob:*/api/v1/database/test_connection/', {
+            status: 422,
+            body: {
+              errors: [
+                {
+                  message:
+                    '(builtins.NoneType) None\n[SQL: Connection test failed: Authentication failed. Please check your credentials.]\n(Background on this error at: https://sqlalche.me/e/14/dbapi)',
+                  error_type: 'GENERIC_DB_ENGINE_ERROR',
+                  level: 'error',
+                  extra: { engine_name: 'PostgreSQL' },
+                },
+              ],
+            },
+          });
+
+          setup();
+
+          await userEvent.click(
+            await screen.findByRole('button', {
+              name: /sqlite/i,
+            }),
+          );
+
+          expect(await screen.findByText(/step 2 of 2/i)).toBeInTheDocument();
+
+          await userEvent.type(
+            screen.getByTestId('sqlalchemy-uri-input'),
+            'sqlite:////tmp/test.db',
+          );
+
+          await userEvent.click(
+            screen.getByRole('button', {
+              name: /test connection/i,
+            }),
+          );
+
+          let matchingAlert: Element | null = null;
+          await waitFor(() => {
+            matchingAlert =
+              Array.from(document.querySelectorAll('.ant-alert-error')).find(
+                alert =>
+                  /connection test failed/i.test(alert.textContent || '') &&
+                  /authentication failed\. please check your credentials\./i.test(
+                    alert.textContent || '',
+                  ),
+              ) || null;
+            expect(matchingAlert).not.toBeNull();
+          });
+
+          expect(matchingAlert).toHaveTextContent(
+            /authentication failed\. please check your credentials\./i,
+          );
+          expect(matchingAlert).not.toHaveTextContent(/\(builtins\.nonetype\)/i);
+          expect(matchingAlert).not.toHaveTextContent(/\[sql:/i);
+          expect(matchingAlert).not.toHaveTextContent(/background on this error/i);
+        });
+
         test('runs testDatabaseConnection when "TEST CONNECTION" is clicked', () => {
           /* ---------- 🐞 TODO (lyndsiWilliams): function mock is not currently working 🐞 ----------
 
@@ -1328,7 +1690,7 @@ describe('DatabaseModal', () => {
       test('enters step 2 of 3 when proper database is selected', async () => {
         setup();
 
-        expect(await screen.findByText(/step 1 of 3/i)).toBeInTheDocument();
+        expect(await screen.findByText(/step 1 of 4/i)).toBeInTheDocument();
         userEvent.click(
           screen.getByRole('button', {
             name: /postgresql/i,

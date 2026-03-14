@@ -190,7 +190,7 @@ export default function WizardStepDataPreview({
       const promises = ids.map(async id => {
         try {
           const response = await SupersetClient.get({
-            endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${id}`,
+            endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${id}&staged=true`,
           });
           const items = response.json?.result || [];
           const item = items.find((i: any) => i.id === id);
@@ -235,7 +235,7 @@ export default function WizardStepDataPreview({
             try {
               // eslint-disable-next-line no-await-in-loop
               const response = await SupersetClient.get({
-                endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${id}`,
+                endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${id}&staged=true`,
               });
               const items = response.json?.result || [];
               const item = items.find((i: any) => i.id === id);

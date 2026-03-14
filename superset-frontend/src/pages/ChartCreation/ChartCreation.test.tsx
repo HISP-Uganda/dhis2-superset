@@ -38,7 +38,7 @@ jest.mock('src/components/DynamicPlugins', () => ({
 const mockDatasourceResponse = {
   result: [
     {
-      id: 'table_1',
+      id: 1,
       table_name: 'table',
       datasource_type: 'table',
       database: { database_name: 'test_db' },
@@ -50,6 +50,11 @@ const mockDatasourceResponse = {
 
 fetchMock.get(/\/api\/v1\/dataset\/\?q=.*/, {
   body: mockDatasourceResponse,
+  status: 200,
+});
+
+fetchMock.get('glob:*/api/v1/dataset/1', {
+  body: { result: mockDatasourceResponse.result[0] },
   status: 200,
 });
 
@@ -190,6 +195,19 @@ test('double-click viz type submits with formatted URL if datasource is selected
   expect(
     screen.getByRole('button', { name: 'Create new chart' }),
   ).toBeEnabled();
-  const formattedUrl = '/explore/?viz_type=table&datasource=table_1__table';
+  const formattedUrl = '/explore/?viz_type=table&datasource=1__table';
   expect(history.push).toHaveBeenCalledWith(formattedUrl);
+});
+
+test('prepopulates the dataset chooser from a dataset id query param', async () => {
+  window.history.pushState({}, '', '/chart/add/?dataset=1');
+
+  await renderComponent();
+
+  await waitFor(() => {
+    expect(screen.getByText('table')).toBeInTheDocument();
+    expect(screen.getByText('test_db')).toBeInTheDocument();
+  });
+
+  window.history.pushState({}, '', '/chart/add/');
 });

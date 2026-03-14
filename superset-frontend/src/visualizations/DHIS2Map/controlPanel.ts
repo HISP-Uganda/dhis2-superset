@@ -26,6 +26,7 @@ import {
   ControlPanelConfig,
   sharedControls,
 } from '@superset-ui/chart-controls';
+import { getDatasourceBoundaryLevels } from './boundaryLevels';
 
 const sequentialSchemeRegistry = getSequentialSchemeRegistry();
 
@@ -112,6 +113,9 @@ const config: ControlPanelConfig = {
               mapStateToProps: (state: any) => {
                 // Get database ID from datasource
                 const databaseId = state.datasource?.database?.id;
+                const datasourceLevels = getDatasourceBoundaryLevels(
+                  state.datasource?.columns,
+                );
 
                 // Check if we have cached org unit levels in localStorage
                 const cacheKey = `dhis2_org_unit_levels_db${databaseId}`;
@@ -130,6 +134,15 @@ const config: ControlPanelConfig = {
                   // Ignore cache errors
                 }
 
+                if (datasourceLevels.length > 0) {
+                  return {
+                    choices: datasourceLevels.map(level => [
+                      level.level,
+                      `Level ${level.level} (${level.label})`,
+                    ]),
+                  };
+                }
+
                 // If we have cached levels, use them
                 if (cachedLevels.length > 0) {
                   return {
@@ -146,7 +159,7 @@ const config: ControlPanelConfig = {
                   // This runs in the background; next render will pick up cached data
                   import('@superset-ui/core').then(({ SupersetClient }) => {
                     SupersetClient.get({
-                      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnitLevels`,
+                      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnitLevels&staged=true`,
                     })
                       .then(response => {
                         if (response.json?.result) {
@@ -174,11 +187,11 @@ const config: ControlPanelConfig = {
                 // Fallback to default choices while loading or if no database
                 return {
                   choices: [
-                    [1, t('Level 1 (National)')],
-                    [2, t('Level 2 (Region)')],
-                    [3, t('Level 3 (District)')],
-                    [4, t('Level 4 (Sub-county)')],
-                    [5, t('Level 5 (Parish/Facility)')],
+                    [1, t('Level 1')],
+                    [2, t('Level 2')],
+                    [3, t('Level 3')],
+                    [4, t('Level 4')],
+                    [5, t('Level 5')],
                     [6, t('Level 6')],
                   ],
                 };
@@ -212,7 +225,7 @@ const config: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Level 1 Border Color'),
-              description: t('Border color for National level boundaries'),
+              description: t('Border color for level 1 boundaries'),
               default: { r: 0, g: 0, b: 0, a: 1 },
               renderTrigger: true,
               visibility: ({ form_data }: any) => {
@@ -229,7 +242,7 @@ const config: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Level 2 Border Color'),
-              description: t('Border color for Region level boundaries'),
+              description: t('Border color for level 2 boundaries'),
               default: { r: 220, g: 53, b: 69, a: 1 },
               renderTrigger: true,
               visibility: ({ form_data }: any) => {
@@ -248,7 +261,7 @@ const config: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Level 3 Border Color'),
-              description: t('Border color for District level boundaries'),
+              description: t('Border color for level 3 boundaries'),
               default: { r: 40, g: 167, b: 69, a: 1 },
               renderTrigger: true,
               visibility: ({ form_data }: any) => {
@@ -265,7 +278,7 @@ const config: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Level 4 Border Color'),
-              description: t('Border color for Sub-county level boundaries'),
+              description: t('Border color for level 4 boundaries'),
               default: { r: 0, g: 123, b: 255, a: 1 },
               renderTrigger: true,
               visibility: ({ form_data }: any) => {
@@ -285,7 +298,7 @@ const config: ControlPanelConfig = {
               type: 'ColorPickerControl',
               label: t('Level 5 Border Color'),
               description: t(
-                'Border color for Parish/Facility level boundaries',
+                'Border color for level 5 boundaries',
               ),
               default: { r: 255, g: 193, b: 7, a: 1 },
               renderTrigger: true,
@@ -326,6 +339,18 @@ const config: ControlPanelConfig = {
                 'Allow clicking on regions to drill down to child org units',
               ),
               default: true,
+            },
+          },
+          {
+            name: 'focus_selected_boundary_with_children',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Focus selected boundaries and show one level down'),
+              description: t(
+                'When the current map selection is only a subset of the level, zoom to those selected boundaries and render the next child level inside them.',
+              ),
+              default: false,
+              renderTrigger: true,
             },
           },
         ],
@@ -444,6 +469,84 @@ const config: ControlPanelConfig = {
             },
           },
         ],
+        [
+          {
+            name: 'style_unselected_areas',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Style unselected areas'),
+              description: t(
+                'When showing the full map with only a subset selected, apply a separate border and fill style to the unselected areas.',
+              ),
+              default: true,
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.show_all_boundaries?.value === true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'unselected_area_fill_color',
+            config: {
+              type: 'ColorPickerControl',
+              label: t('Unselected Area Fill'),
+              description: t('Fill color for boundaries outside the selected area'),
+              default: { r: 241, g: 245, b: 249, a: 1 },
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.show_all_boundaries?.value === true &&
+                controls?.style_unselected_areas?.value !== false,
+            },
+          },
+          {
+            name: 'unselected_area_fill_opacity',
+            config: {
+              type: 'SliderControl',
+              label: t('Unselected Fill Opacity'),
+              description: t('Opacity for boundaries outside the selected area'),
+              default: 0.45,
+              min: 0,
+              max: 1,
+              step: 0.05,
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.show_all_boundaries?.value === true &&
+                controls?.style_unselected_areas?.value !== false,
+            },
+          },
+        ],
+        [
+          {
+            name: 'unselected_area_border_color',
+            config: {
+              type: 'ColorPickerControl',
+              label: t('Unselected Area Border'),
+              description: t('Border color for boundaries outside the selected area'),
+              default: { r: 148, g: 163, b: 184, a: 1 },
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.show_all_boundaries?.value === true &&
+                controls?.style_unselected_areas?.value !== false,
+            },
+          },
+          {
+            name: 'unselected_area_border_width',
+            config: {
+              type: 'SliderControl',
+              label: t('Unselected Border Width'),
+              description: t('Border width for boundaries outside the selected area'),
+              default: 0.75,
+              min: 0,
+              max: 4,
+              step: 0.25,
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.show_all_boundaries?.value === true &&
+                controls?.style_unselected_areas?.value !== false,
+            },
+          },
+        ],
       ],
     },
     {
@@ -529,11 +632,12 @@ const config: ControlPanelConfig = {
               type: 'SelectControl',
               label: t('Legend Type'),
               description: t(
-                'Auto calculates ranges from data. Manual allows custom break points and colors.',
+                'Auto uses staged DHIS2 legend ranges when available, otherwise it calculates ranges from data. Manual allows custom break points and colors.',
               ),
               default: 'auto',
               choices: [
                 ['auto', t('Auto (from data)')],
+                ['staged', t('DHIS2 Staged Legend')],
                 ['equal_interval', t('Equal Interval')],
                 ['quantile', t('Quantile')],
                 ['manual', t('Manual Breaks')],

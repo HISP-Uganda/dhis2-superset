@@ -21,11 +21,13 @@ import {
   CategoricalColorNamespace,
   JsonObject,
   QueryFormData,
+  resolveDHIS2LegendDefinition,
 } from '@superset-ui/core';
 
 import {
   commonLayerProps,
   getAggFunc,
+  getColorForDHIS2Legend,
   getColorForBreakpoints,
   getColorRange,
 } from '../common';
@@ -38,7 +40,6 @@ import {
   CommonTooltipRows,
 } from '../../utilities/tooltipUtils';
 import { HIGHLIGHT_COLOR_ARRAY, TRANSPARENT_COLOR_ARRAY } from '../../utils';
-
 function defaultTooltipGenerator(o: JsonObject, formData: QueryFormData) {
   const metricLabel = formData.size?.label || formData.size?.value || 'Height';
 
@@ -59,12 +60,17 @@ export const getLayer: GetLayerType<GridLayer> = function ({
   setTooltip,
   setDataMask,
   onContextMenu,
+  datasource,
   filterState,
   emitCrossFilters,
 }) {
   const fd = formData;
   const appliedScheme = fd.color_scheme;
   const colorScale = CategoricalColorNamespace.getScale(appliedScheme);
+  const stagedLegendDefinition = resolveDHIS2LegendDefinition(
+    datasource,
+    fd.size,
+  );
   let data = payload.data.features;
 
   if (fd.js_data_mutator) {
@@ -81,6 +87,7 @@ export const getLayer: GetLayerType<GridLayer> = function ({
     colorScale,
     colorBreakpoints,
     fixedColor: fd.color_picker,
+    stagedLegendDefinition,
   });
 
   const aggFunc = getAggFunc(fd.js_agg_function, p => p.weight);
@@ -92,6 +99,9 @@ export const getLayer: GetLayerType<GridLayer> = function ({
   const colorAggFunc =
     colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints
       ? (p: number[]) => getColorForBreakpoints(aggFunc, p, colorBreakpoints)
+      : colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend
+        ? (p: number[]) =>
+            getColorForDHIS2Legend(aggFunc, p, stagedLegendDefinition)
       : aggFunc;
 
   return new GridLayer({
@@ -100,7 +110,9 @@ export const getLayer: GetLayerType<GridLayer> = function ({
     cellSize: fd.grid_size,
     extruded: fd.extruded,
     colorDomain:
-      colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints && colorRange
+      (colorSchemeType === COLOR_SCHEME_TYPES.color_breakpoints ||
+        colorSchemeType === COLOR_SCHEME_TYPES.dhis2_staged_legend) &&
+      colorRange
         ? [0, colorRange.length]
         : undefined,
     colorRange,

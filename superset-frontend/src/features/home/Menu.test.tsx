@@ -21,7 +21,7 @@ import fetchMock from 'fetch-mock';
 import { render, screen, userEvent } from 'spec/helpers/testing-library';
 import setupCodeOverrides from 'src/setup/setupCodeOverrides';
 import { getExtensionsRegistry } from '@superset-ui/core';
-import { Menu } from './Menu';
+import MenuWrapper, { Menu } from './Menu';
 
 const dropdownItems = [
   {
@@ -237,6 +237,68 @@ const notanonProps = {
   },
 };
 
+const wrapperMenuProps = {
+  ...mockedProps,
+  data: {
+    ...mockedProps.data,
+    menu: [
+      {
+        name: 'Home',
+        icon: '',
+        label: 'Home',
+        url: '/superset/welcome',
+        index: 1,
+      },
+      {
+        name: 'Datasets',
+        icon: 'fa-table',
+        label: 'Datasets',
+        url: '/tablemodelview/list/',
+        index: 2,
+      },
+      {
+        name: 'SQL Lab',
+        icon: 'fa-flask',
+        label: 'SQL Lab',
+        url: '/sqllab/',
+        index: 3,
+      },
+      {
+        name: 'Charts',
+        icon: 'fa-bar-chart',
+        label: 'Charts',
+        url: '/chart/list/',
+        index: 4,
+      },
+    ],
+    settings: [
+      ...mockedProps.data.settings,
+      {
+        name: 'DHIS2 Federation',
+        icon: 'fa-cogs',
+        label: 'DHIS2 Federation',
+        index: 2,
+        childs: [
+          {
+            name: 'Instances',
+            icon: 'fa-link',
+            label: 'Instances',
+            url: '/superset/dhis2/instances/',
+            index: 1,
+          },
+          {
+            name: 'Health',
+            icon: 'fa-heartbeat',
+            label: 'Health',
+            url: '/superset/dhis2/health/',
+            index: 2,
+          },
+        ],
+      },
+    ],
+  },
+};
+
 const useSelectorMock = jest.spyOn(reactRedux, 'useSelector');
 
 fetchMock.get(
@@ -272,22 +334,18 @@ test('should render the navigation', async () => {
   expect(await screen.findByRole('navigation')).toBeInTheDocument();
 });
 
-test('should render the brand', async () => {
+test('should keep the customized header on the text-only brand path', async () => {
   useSelectorMock.mockReturnValue({ roles: user.roles });
-  const {
-    data: {
-      brand: { alt, icon },
-    },
-  } = mockedProps;
   render(<Menu {...mockedProps} />, {
     useRedux: true,
     useQueryParams: true,
     useRouter: true,
     useTheme: true,
   });
-  expect(await screen.findByAltText(alt)).toBeInTheDocument();
-  const image = screen.getByAltText(alt);
-  expect(image).toHaveAttribute('src', icon);
+  expect(await screen.findByRole('navigation')).toBeInTheDocument();
+  expect(
+    screen.queryByAltText(mockedProps.data.brand.alt),
+  ).not.toBeInTheDocument();
 });
 
 test('should render the environment tag', async () => {
@@ -342,6 +400,54 @@ test('should render the top navbar child menu items', async () => {
 
   expect(datasets).toHaveAttribute('href', dataset.url);
   expect(databases).toHaveAttribute('href', database.url);
+});
+
+test('should keep Data visible in the top navbar and include the local workspace links', async () => {
+  useSelectorMock.mockReturnValue({ roles: user.roles });
+  render(<MenuWrapper {...mockedProps} />, {
+    useRedux: true,
+    useQueryParams: true,
+    useRouter: true,
+    useTheme: true,
+  });
+
+  const dataMenu = await screen.findByText('Data');
+  userEvent.hover(dataMenu);
+
+  expect(await screen.findByText('Data Workspace')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/local-data/',
+  );
+  expect(await screen.findByText('Local Metadata')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/local-metadata/',
+  );
+});
+
+test('should move DHIS2 and SQL into Data and place Data after Datasets', async () => {
+  useSelectorMock.mockReturnValue({ roles: user.roles });
+  render(<MenuWrapper {...wrapperMenuProps} />, {
+    useRedux: true,
+    useQueryParams: true,
+    useRouter: true,
+    useTheme: true,
+  });
+
+  const datasetsTab = await screen.findByText('Datasets');
+  const dataTab = await screen.findByText('Data');
+  expect(
+    datasetsTab.compareDocumentPosition(dataTab) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(screen.queryByText('SQL Lab')).not.toBeInTheDocument();
+
+  userEvent.hover(dataTab);
+
+  expect(await screen.findByText('DHIS2')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/instances/',
+  );
+  expect(await screen.findByText('SQL')).toHaveAttribute('href', '/sqllab/');
 });
 
 test('should render the dropdown items', async () => {

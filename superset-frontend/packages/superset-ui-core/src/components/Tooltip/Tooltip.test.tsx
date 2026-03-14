@@ -47,3 +47,26 @@ test('renders with icon child', async () => {
   await userEvent.hover(screen.getByRole('img'));
   expect(await screen.findByRole('tooltip')).toBeInTheDocument();
 });
+
+test('renders with a non-ref function child by wrapping it safely', async () => {
+  const PlainChild = () => <span>Hover me</span>;
+
+  render(
+    <Tooltip title="Simple tooltip">
+      <PlainChild />
+    </Tooltip>,
+  );
+
+  await userEvent.hover(screen.getByText('Hover me'));
+  expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+});
+
+test('supports the deprecated destroyTooltipOnHide prop', async () => {
+  render(
+    <Tooltip title="Simple tooltip" destroyTooltipOnHide>
+      <Button>Hover me</Button>
+    </Tooltip>,
+  );
+  await userEvent.hover(screen.getByRole('button'));
+  expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+});

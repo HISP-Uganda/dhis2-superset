@@ -101,6 +101,35 @@ const ExecutionLogList = lazy(
     ),
 );
 
+const DHIS2Instances = lazy(
+  () => import(/* webpackChunkName: "DHIS2Instances" */ 'src/pages/DHIS2Instances'),
+);
+
+const DHIS2Health = lazy(
+  () => import(/* webpackChunkName: "DHIS2Health" */ 'src/pages/DHIS2Health'),
+);
+
+const DHIS2SyncHistory = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "DHIS2SyncHistory" */ 'src/pages/DHIS2SyncHistory'
+    ),
+);
+
+const DHIS2LocalMetadata = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "DHIS2LocalMetadata" */ 'src/pages/DHIS2LocalMetadata'
+    ),
+);
+
+const DHIS2LocalData = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "DHIS2LocalData" */ 'src/pages/DHIS2LocalData'
+    ),
+);
+
 const Chart = lazy(
   () => import(/* webpackChunkName: "Chart" */ 'src/pages/Chart'),
 );
@@ -290,6 +319,26 @@ export const routes: Routes = [
   {
     path: '/dataset/:datasetId',
     Component: DatasetCreation,
+  },
+  {
+    path: '/superset/dhis2/instances/',
+    Component: DHIS2Instances,
+  },
+  {
+    path: '/superset/dhis2/health/',
+    Component: DHIS2Health,
+  },
+  {
+    path: '/superset/dhis2/sync-history/',
+    Component: DHIS2SyncHistory,
+  },
+  {
+    path: '/superset/dhis2/local-metadata/',
+    Component: DHIS2LocalMetadata,
+  },
+  {
+    path: '/superset/dhis2/local-data/',
+    Component: DHIS2LocalData,
   },
   {
     path: '/rowlevelsecurity/list',

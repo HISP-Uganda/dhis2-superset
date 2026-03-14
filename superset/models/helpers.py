@@ -1719,7 +1719,12 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             if denormalize_column
             else column_name
         )
-        cols = {col.column_name: col for col in self.columns}
+        queryable_columns = (
+            self.get_queryable_columns()
+            if hasattr(self, "get_queryable_columns")
+            else self.columns
+        )
+        cols = {col.column_name: col for col in queryable_columns}
         target_col = cols[column_name_]
         tp = self.get_template_processor()
         tbl, cte = self.get_from_clause(tp)
@@ -1979,7 +1984,14 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             "time_column": granularity,
             "time_grain": time_grain,
             "to_dttm": to_dttm.isoformat() if to_dttm else None,
-            "table_columns": [col.column_name for col in self.columns],
+            "table_columns": [
+                col.column_name
+                for col in (
+                    self.get_queryable_columns()
+                    if hasattr(self, "get_queryable_columns")
+                    else self.columns
+                )
+            ],
             "filter": filter,
         }
         columns = columns or []
@@ -2014,14 +2026,53 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         if granularity not in self.dttm_cols and granularity is not None:
             granularity = self.main_dttm_col
 
+        queryable_columns = (
+            self.get_queryable_columns()
+            if hasattr(self, "get_queryable_columns")
+            else self.columns
+        )
+        if getattr(self, "is_dhis2_staged_local", False):
+            from superset.dhis2.analytical_serving import (
+                build_terminal_hierarchy_sqla_predicate,
+                get_dhis2_hierarchy_column_names,
+                resolve_terminal_hierarchy_column,
+            )
+
+            dhis2_hierarchy_column_names = get_dhis2_hierarchy_column_names(
+                queryable_columns
+            )
+        else:
+            build_terminal_hierarchy_sqla_predicate = None
+            resolve_terminal_hierarchy_column = None
+            dhis2_hierarchy_column_names = []
         columns_by_name: dict[str, "TableColumn"] = {
-            col.column_name: col for col in self.columns
+            col.column_name: col for col in queryable_columns
         }
         quoted_columns_by_name = {quote(k): v for k, v in columns_by_name.items()}
 
         metrics_by_name: dict[str, "SqlMetric"] = {
             m.metric_name: m for m in self.metrics
         }
+        selected_hierarchy_candidates: list[str] = []
+        for selected in [*(groupby or []), *(columns or [])]:
+            if isinstance(selected, str):
+                selected_hierarchy_candidates.append(
+                    self._sanitize_column_reference(selected)
+                )
+        for filter_clause in filter or []:
+            filter_col = filter_clause.get("col")
+            if isinstance(filter_col, str):
+                selected_hierarchy_candidates.append(
+                    self._sanitize_column_reference(filter_col)
+                )
+        selected_terminal_hierarchy_column = (
+            resolve_terminal_hierarchy_column(
+                selected_hierarchy_candidates,
+                dhis2_hierarchy_column_names,
+            )
+            if resolve_terminal_hierarchy_column
+            else None
+        )
 
         # DHIS2 FIX: Skip temporal validation for DHIS2 datasets
         # DHIS2 data is multi-dimensional (period, orgUnit, dataElements, etc.)
@@ -2558,6 +2609,15 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                         raise QueryObjectValidationError(
                             _("Invalid filter operation type: %(op)s", op=op)
                         )
+        # When users select an OU hierarchy dimension, only keep rows where that
+        # selected level is the terminal populated OU level for the record.
+        if selected_terminal_hierarchy_column:
+            terminal_hierarchy_predicate = build_terminal_hierarchy_sqla_predicate(
+                selected_terminal_hierarchy_column,
+                dhis2_hierarchy_column_names,
+            )
+            if terminal_hierarchy_predicate is not None:
+                where_clause_and.append(terminal_hierarchy_predicate)
         where_clause_and += self.get_sqla_row_level_filters(template_processor)
         if extras:
             where = extras.get("where")

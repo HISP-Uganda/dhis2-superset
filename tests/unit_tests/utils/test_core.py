@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+import sqlalchemy as sa
 from flask import current_app
 from pandas.api.types import is_datetime64_dtype
 from pytest_mock import MockerFixture
@@ -201,6 +202,31 @@ def test_other_values():
     assert cast_to_boolean([]) is False
     assert cast_to_boolean({}) is False
     assert cast_to_boolean(object()) is False
+
+
+def test_pessimistic_connection_handling_sets_sqlite_concurrency_pragmas(
+    tmp_path,
+) -> None:
+    from superset.utils.core import pessimistic_connection_handling
+
+    database_path = tmp_path / "superset-metadata.db"
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+    pessimistic_connection_handling(engine)
+
+    connection = engine.raw_connection()
+    try:
+        cursor = connection.cursor()
+        foreign_keys = cursor.execute("PRAGMA foreign_keys").fetchone()[0]
+        busy_timeout = cursor.execute("PRAGMA busy_timeout").fetchone()[0]
+        journal_mode = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+        synchronous = cursor.execute("PRAGMA synchronous").fetchone()[0]
+
+        assert foreign_keys == 1
+        assert busy_timeout == 30000
+        assert str(journal_mode).lower() == "wal"
+        assert int(synchronous) == 1
+    finally:
+        connection.close()
 
 
 def test_normalize_dttm_col() -> None:

@@ -85,6 +85,11 @@ class ValidateDatabaseParametersCommand(BaseCommand):
         except json.JSONDecodeError:
             encrypted_extra = {}
 
+        if hasattr(engine_spec, "is_configured_connection_shell") and engine_spec.is_configured_connection_shell(  # type: ignore[attr-defined]
+            self._properties.get("parameters")
+        ):
+            return
+
         # try to connect
         sqlalchemy_uri = engine_spec.build_sqlalchemy_uri(  # type: ignore
             self._properties.get("parameters"),
@@ -102,32 +107,35 @@ class ValidateDatabaseParametersCommand(BaseCommand):
         database.db_engine_spec.mutate_db_for_connection_test(database)
 
         alive = False
-        with database.get_sqla_engine() as engine:
-            try:
-                with closing(engine.raw_connection()) as conn:
-                    alive = engine.dialect.do_ping(conn)
-            except Exception as ex:
-                # If the connection failed because OAuth2 is needed, we can save the
-                # database and trigger the OAuth2 flow whenever a user tries to run a
-                # query.
-                if (
-                    database.is_oauth2_enabled()
-                    and database.db_engine_spec.needs_oauth2(ex)
-                ):
-                    return
+        try:
+            if sqlalchemy_uri.startswith("dhis2://"):
+                alive = bool(database.db_engine_spec.test_connection(database))
+            else:
+                with database.get_sqla_engine() as engine:
+                    with closing(engine.raw_connection()) as conn:
+                        alive = engine.dialect.do_ping(conn)
+        except Exception as ex:
+            # If the connection failed because OAuth2 is needed, we can save the
+            # database and trigger the OAuth2 flow whenever a user tries to run a
+            # query.
+            if (
+                database.is_oauth2_enabled()
+                and database.db_engine_spec.needs_oauth2(ex)
+            ):
+                return
 
-                url = make_url_safe(sqlalchemy_uri)
-                context = {
-                    "hostname": url.host,
-                    "password": url.password,
-                    "port": url.port,
-                    "username": url.username,
-                    "database": url.database,
-                }
-                errors = database.db_engine_spec.extract_errors(
-                    ex, context, database_name=database.unique_name
-                )
-                raise DatabaseTestConnectionFailedError(errors, status=400) from ex
+            url = make_url_safe(sqlalchemy_uri)
+            context = {
+                "hostname": url.host,
+                "password": url.password,
+                "port": url.port,
+                "username": url.username,
+                "database": url.database,
+            }
+            errors = database.db_engine_spec.extract_errors(
+                ex, context, database_name=database.unique_name
+            )
+            raise DatabaseTestConnectionFailedError(errors, status=400) from ex
 
         if not alive:
             raise DatabaseOfflineError(

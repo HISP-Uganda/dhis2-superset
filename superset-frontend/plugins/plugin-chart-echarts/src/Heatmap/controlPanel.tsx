@@ -117,6 +117,7 @@ const config: ControlPanelConfig = {
               choices: [
                 ['continuous', t('Continuous')],
                 ['piecewise', t('Piecewise')],
+                ['staged', t('DHIS2 staged legend')],
               ],
               default: 'continuous',
               clearable: false,

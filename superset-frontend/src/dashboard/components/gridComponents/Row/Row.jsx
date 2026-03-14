@@ -69,9 +69,9 @@ const propTypes = {
   columnWidth: PropTypes.number.isRequired,
   occupiedColumnCount: PropTypes.number.isRequired,
   onResizeStart: PropTypes.func.isRequired,
-  onResize: PropTypes.func.isRequired,
-  onResizeStop: PropTypes.func.isRequired,
-  maxChildrenHeight: PropTypes.number.isRequired,
+  onResize: PropTypes.func,
+  onResizeStop: PropTypes.func,
+  maxChildrenHeight: PropTypes.number,
 
   // dnd
   handleComponentDrop: PropTypes.func.isRequired,
@@ -101,7 +101,7 @@ const GridRow = styled.div`
         &:not(:last-child) {
           width: ${theme.sizeUnit * 4}px;
         }
-        &:first-child:not(.droptarget-side) {
+        &:first-of-type:not(.droptarget-side) {
           z-index: ${EMPTY_CONTAINER_Z_INDEX};
           position: absolute;
           width: 100%;
@@ -112,7 +112,7 @@ const GridRow = styled.div`
         z-index: ${EMPTY_CONTAINER_Z_INDEX};
         position: absolute;
         width: ${theme.sizeUnit * 4}px;
-        &:first-child {
+        &:first-of-type {
           inset-inline-start: 0;
         }
       }
@@ -439,5 +439,11 @@ const Row = props => {
 };
 
 Row.propTypes = propTypes;
+
+Row.defaultProps = {
+  maxChildrenHeight: undefined,
+  onResize: undefined,
+  onResizeStop: undefined,
+};
 
 export default memo(Row);

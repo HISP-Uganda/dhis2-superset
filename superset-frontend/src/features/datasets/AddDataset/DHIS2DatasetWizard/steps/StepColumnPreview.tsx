@@ -83,7 +83,7 @@ export default function WizardStepColumnPreview({
         const results = await Promise.allSettled(
           dxTypes.map(dxType =>
             SupersetClient.get({
-              endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${deId}`,
+              endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${deId}&staged=true`,
             }),
           ),
         );
@@ -119,7 +119,7 @@ export default function WizardStepColumnPreview({
       const ouPromises = orgUnits.map(async ouId => {
         try {
           const response = await SupersetClient.get({
-            endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${ouId}`,
+            endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${ouId}&staged=true`,
           });
           const items = response.json?.result || [];
           const item = items.find((i: any) => i.id === ouId);

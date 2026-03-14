@@ -22,9 +22,29 @@ import {
   sanitizeDHIS2ColumnName,
   findMetricColumn,
 } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
-import { DHIS2MapProps, LevelBorderColor } from './types';
+import {
+  DHIS2LegendDefinition,
+  DHIS2MapProps,
+  LevelBorderColor,
+} from './types';
+import {
+  buildBoundaryLevelLabelMap,
+  getDatasourceBoundaryLevels,
+  inferBoundaryLevelFromOrgUnitColumn,
+} from './boundaryLevels';
 
 type RGBAColor = { r: number; g: number; b: number; a: number };
+type DatasourceColumn = {
+  column_name?: string;
+  verbose_name?: string;
+  extra?: unknown;
+};
+
+type StagedOrgUnitLevel = {
+  level?: number | string;
+  displayName?: string;
+  name?: string;
+};
 
 function generateLevelBorderColors(
   levels: number[],
@@ -52,6 +72,196 @@ function generateLevelBorderColors(
       defaultColors[Math.min(level - 1, defaultColors.length - 1)],
     width: widths[Math.min(level - 1, widths.length - 1)],
   }));
+}
+
+function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
+  if (!extra) {
+    return undefined;
+  }
+  if (typeof extra === 'string') {
+    try {
+      return JSON.parse(extra);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof extra === 'object') {
+    return extra as Record<string, any>;
+  }
+  return undefined;
+}
+
+function resolveHierarchyLevelFromDatasourceColumn(
+  datasourceColumns: DatasourceColumn[],
+  hierarchyLevelColumn: string,
+  stagedOrgUnitLevels: StagedOrgUnitLevel[] = [],
+): number | undefined {
+  const exactMatch = datasourceColumns.find(
+    column => column.column_name === hierarchyLevelColumn,
+  );
+  const sanitizedMatch = datasourceColumns.find(
+    column =>
+      column.column_name &&
+      sanitizeDHIS2ColumnName(column.column_name) === hierarchyLevelColumn,
+  );
+  const matchedColumn = exactMatch || sanitizedMatch;
+  const extra = parseColumnExtra(matchedColumn?.extra);
+  const explicitLevel = Number(
+    extra?.dhis2_ou_level ?? extra?.dhis2OuLevel ?? NaN,
+  );
+  if (Number.isFinite(explicitLevel) && explicitLevel > 0) {
+    return explicitLevel;
+  }
+  return inferBoundaryLevelFromOrgUnitColumn(
+    hierarchyLevelColumn,
+    datasourceColumns,
+    stagedOrgUnitLevels,
+  );
+}
+
+function parseLegendDefinition(
+  value: unknown,
+): DHIS2LegendDefinition | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, any>;
+  if (!Array.isArray(candidate.items) || candidate.items.length === 0) {
+    return undefined;
+  }
+
+  const items = candidate.items.reduce<DHIS2LegendDefinition['items']>(
+    (result, item) => {
+      if (!item || typeof item !== 'object') {
+        return result;
+      }
+      const rawItem = item as Record<string, any>;
+      const color = String(rawItem.color ?? '').trim();
+      if (!color) {
+        return result;
+      }
+
+      const startValue =
+        rawItem.startValue == null || rawItem.startValue === ''
+          ? undefined
+          : Number(rawItem.startValue);
+      const endValue =
+        rawItem.endValue == null || rawItem.endValue === ''
+          ? undefined
+          : Number(rawItem.endValue);
+
+      result.push({
+        id:
+          rawItem.id === undefined || rawItem.id === null
+            ? undefined
+            : String(rawItem.id),
+        label:
+          rawItem.label === undefined || rawItem.label === null
+            ? undefined
+            : String(rawItem.label),
+        startValue: Number.isFinite(startValue) ? startValue : undefined,
+        endValue: Number.isFinite(endValue) ? endValue : undefined,
+        color,
+      });
+      return result;
+    },
+    [],
+  );
+
+  if (!items.length) {
+    return undefined;
+  }
+
+  const minCandidate =
+    candidate.min == null || candidate.min === ''
+      ? undefined
+      : Number(candidate.min);
+  const maxCandidate =
+    candidate.max == null || candidate.max === ''
+      ? undefined
+      : Number(candidate.max);
+
+  return {
+    source:
+      candidate.source === undefined || candidate.source === null
+        ? undefined
+        : String(candidate.source),
+    setId:
+      candidate.setId === undefined || candidate.setId === null
+        ? undefined
+        : String(candidate.setId),
+    setName:
+      candidate.setName === undefined || candidate.setName === null
+        ? undefined
+        : String(candidate.setName),
+    min: Number.isFinite(minCandidate) ? minCandidate : undefined,
+    max: Number.isFinite(maxCandidate) ? maxCandidate : undefined,
+    items,
+  };
+}
+
+function resolveMetricLegendDefinition(
+  datasourceColumns: DatasourceColumn[],
+  metricColumnName: string,
+): DHIS2LegendDefinition | undefined {
+  if (!metricColumnName) {
+    return undefined;
+  }
+
+  const matchedColumn = datasourceColumns.find(
+    column => String(column.column_name || '').trim() === metricColumnName,
+  );
+  const extra = parseColumnExtra(matchedColumn?.extra);
+  return parseLegendDefinition(extra?.dhis2_legend ?? extra?.dhis2Legend);
+}
+
+function readCachedOrgUnitLevels(databaseId?: number): StagedOrgUnitLevel[] {
+  if (!databaseId || typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const cached = window.localStorage.getItem(
+      `dhis2_org_unit_levels_db${databaseId}`,
+    );
+    if (!cached) {
+      return [];
+    }
+
+    const parsed = JSON.parse(cached);
+    if (!Array.isArray(parsed?.data)) {
+      return [];
+    }
+
+    return parsed.data.filter(
+      (item: unknown): item is StagedOrgUnitLevel =>
+        Boolean(item) && typeof item === 'object',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mergeBoundaryLevels(
+  primaryBoundaryLevel: number | undefined,
+  configuredLevels: number[],
+): number[] {
+  if (!Number.isFinite(primaryBoundaryLevel) || !primaryBoundaryLevel) {
+    return configuredLevels;
+  }
+  return [
+    primaryBoundaryLevel,
+    ...configuredLevels.filter(level => level !== primaryBoundaryLevel),
+  ];
+}
+
+function coercePositiveInteger(value: unknown): number | undefined {
+  const parsedValue = Number(value);
+  if (Number.isFinite(parsedValue) && parsedValue > 0) {
+    return parsedValue;
+  }
+  return undefined;
 }
 
 export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
@@ -129,6 +339,23 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     formDataAny?.levelBorderColors || formDataAny?.level_border_colors;
   const show_all_boundaries =
     formDataAny?.showAllBoundaries ?? formDataAny?.show_all_boundaries;
+  const focus_selected_boundary_with_children =
+    formDataAny?.focusSelectedBoundaryWithChildren ??
+    formDataAny?.focus_selected_boundary_with_children;
+  const style_unselected_areas =
+    formDataAny?.styleUnselectedAreas ?? formDataAny?.style_unselected_areas;
+  const unselected_area_fill_color =
+    formDataAny?.unselectedAreaFillColor ||
+    formDataAny?.unselected_area_fill_color;
+  const unselected_area_fill_opacity =
+    formDataAny?.unselectedAreaFillOpacity ??
+    formDataAny?.unselected_area_fill_opacity;
+  const unselected_area_border_color =
+    formDataAny?.unselectedAreaBorderColor ||
+    formDataAny?.unselected_area_border_color;
+  const unselected_area_border_width =
+    formDataAny?.unselectedAreaBorderWidth ??
+    formDataAny?.unselected_area_border_width;
   const show_labels = formDataAny?.showLabels ?? formDataAny?.show_labels;
   const label_type = formDataAny?.labelType || formDataAny?.label_type;
   const label_font_size =
@@ -168,6 +395,13 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     legendPosition: legend_position,
     legendClasses: legend_classes,
     showLabels: show_labels,
+    focusSelectedBoundaryWithChildren:
+      focus_selected_boundary_with_children,
+    styleUnselectedAreas: style_unselected_areas,
+    unselectedAreaFillColor: unselected_area_fill_color,
+    unselectedAreaFillOpacity: unselected_area_fill_opacity,
+    unselectedAreaBorderColor: unselected_area_border_color,
+    unselectedAreaBorderWidth: unselected_area_border_width,
     levelColors: {
       level_1: level_1_color,
       level_2: level_2_color,
@@ -179,13 +413,42 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   });
 
   const data = queriesData[0]?.data || [];
+  const datasourceAny = datasource as any;
+  const datasourceColumns = Array.isArray(datasourceAny?.columns)
+    ? (datasourceAny.columns as DatasourceColumn[])
+    : [];
+  const extraRaw = datasourceAny?.extra;
+  let extraParsed: any;
+  try {
+    extraParsed = typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
+  } catch {
+    extraParsed = null;
+  }
 
-  // Extract database ID from datasource - try multiple paths
-  let databaseId = (datasource as any)?.database?.id;
+  const sourceDatabaseIdFromExtra =
+    extraParsed?.dhis2_source_database_id ??
+    extraParsed?.source_database_id ??
+    extraParsed?.dhis2SourceDatabaseId;
+  const sourceInstanceIdsFromExtra = Array.isArray(
+    extraParsed?.dhis2_source_instance_ids,
+  )
+    ? extraParsed.dhis2_source_instance_ids
+        .map((value: unknown) => Number(value))
+        .filter((value: number) => Number.isFinite(value) && value > 0)
+    : Array.isArray(extraParsed?.dhis2SourceInstanceIds)
+      ? extraParsed.dhis2SourceInstanceIds
+          .map((value: unknown) => Number(value))
+          .filter((value: number) => Number.isFinite(value) && value > 0)
+      : [];
+
+  // Extract database ID used for DHIS2 metadata/boundaries.
+  // For staged-local datasets this must be the original DHIS2 source database,
+  // not the local serving database attached to the SQL dataset itself.
+  let databaseId = sourceDatabaseIdFromExtra || datasourceAny?.database?.id;
 
   // Fallback: Check if database_id is directly on datasource
   if (!databaseId) {
-    databaseId = (datasource as any)?.database_id;
+    databaseId = datasourceAny?.database_id;
   }
 
   // Fallback: Try to get from formData
@@ -197,9 +460,18 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] Database ID extraction:', {
     databaseId,
+    sourceDatabaseIdFromExtra,
+    sourceInstanceIdsFromExtra,
+    servingDatabaseId: datasourceAny?.database?.id || datasourceAny?.database_id,
     datasource_keys: datasource ? Object.keys(datasource as object) : [],
-    database_obj: (datasource as any)?.database,
+    database_obj: datasourceAny?.database,
   });
+
+  const cachedOrgUnitLevels = readCachedOrgUnitLevels(databaseId);
+  const datasourceHierarchyLevels = getDatasourceBoundaryLevels(
+    datasourceColumns,
+    cachedOrgUnitLevels,
+  );
 
   const activeFilters = formData?.filters || [];
   const nativeFilters =
@@ -207,21 +479,22 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   // Get dataset SQL for fallback DHIS2 data fetching (used early for org unit detection)
   // If SQL is missing DHIS2 comment, try to reconstruct from datasource.extra.dhis2_params
-  const datasourceAny = datasource as any;
   let datasetSql = datasourceAny?.sql || '';
   let isDHIS2Dataset =
     datasetSql.includes('/* DHIS2:') || datasetSql.includes('-- DHIS2:');
 
-  if (!isDHIS2Dataset) {
-    const extraRaw = datasourceAny?.extra;
-    let extraParsed: any;
-    try {
-      extraParsed =
-        typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
-    } catch {
-      extraParsed = null;
-    }
+  if (
+    !isDHIS2Dataset &&
+    (sourceDatabaseIdFromExtra || sourceInstanceIdsFromExtra.length > 0)
+  ) {
+    isDHIS2Dataset = true;
+  }
 
+  if (!isDHIS2Dataset && formDataAny?.viz_type === 'dhis2_map' && !datasetSql) {
+    isDHIS2Dataset = true;
+  }
+
+  if (!isDHIS2Dataset) {
     const dhis2ParamsMap = extraParsed?.dhis2_params;
     if (dhis2ParamsMap) {
       const tableName =
@@ -265,6 +538,26 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     return sanitizeDHIS2ColumnName(colString);
   });
 
+  // Convert boundary_levels to array, supporting backward compatibility with boundary_level.
+  const rawBoundaryLevels = boundary_levels ?? (formData as any)?.boundaryLevels;
+  const rawBoundaryLevel = boundary_level ?? (formData as any)?.boundaryLevel;
+  const normalizeLevels = (
+    levels: number | string | (number | string)[] | undefined,
+  ): number[] => {
+    if (!levels) return [];
+    if (Array.isArray(levels)) {
+      return levels
+        .map(l => (typeof l === 'string' ? parseInt(String(l), 10) : l))
+        .filter(l => !Number.isNaN(l) && l > 0);
+    }
+    const parsed = typeof levels === 'string' ? parseInt(levels, 10) : levels;
+    return !Number.isNaN(parsed) && parsed > 0 ? [parsed] : [];
+  };
+  const requestedBoundaryLevels = normalizeLevels(rawBoundaryLevels);
+  const requestedBoundaryLevelFallback = normalizeLevels(rawBoundaryLevel);
+  const requestedPrimaryLevel =
+    requestedBoundaryLevels[0] || requestedBoundaryLevelFallback[0];
+
   // Backend returns WIDE/PIVOTED format with hierarchy levels as columns
   // Detect hierarchy level columns dynamically from first row
   let hierarchyLevelColumn = '';
@@ -299,52 +592,34 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     );
   }
 
-  // Priority 2: Look for known hierarchy column patterns
+  // Priority 2: Use staged hierarchy metadata carried on the dataset columns.
   let levelColumns: string[] = [];
   if (!hierarchyLevelColumn) {
-    const hierarchyPatterns = [
-      /^(country|national)$/i,
-      /^(region|province)$/i,
-      /^district$/i,
-      /^(subcounty|sub_county|sub-county)$/i,
-      /^(parish|town|town_council)$/i,
-      /^(village|facility|health_facility)$/i,
-      /level.*name/i,
-      /org.*unit/i,
-      /^(ou|organisationunit|org_unit)$/i,
-      /location/i,
-    ];
-
-    // Find columns that match hierarchy patterns
-    levelColumns = allColumns.filter(col =>
-      hierarchyPatterns.some(pattern => pattern.test(col)),
-    );
+    levelColumns = datasourceHierarchyLevels
+      .map(level => level.columnName)
+      .filter((columnName): columnName is string => Boolean(columnName))
+      .filter(columnName => allColumns.includes(columnName));
 
     if (levelColumns.length > 0) {
-      // Sort to get consistent ordering
-      levelColumns.sort();
+      const preferredHierarchyLevel =
+        datasourceHierarchyLevels.find(
+          level =>
+            level.level === requestedPrimaryLevel &&
+            level.columnName &&
+            allColumns.includes(level.columnName),
+        ) ||
+        datasourceHierarchyLevels
+          .filter(
+            level => level.columnName && allColumns.includes(level.columnName),
+          )
+          .slice(-1)[0];
 
-      // Determine which level to use based on boundary_level or boundary_levels
-      const selectedLevel =
-        boundary_level ||
-        (Array.isArray(boundary_levels) && boundary_levels.length > 0
-          ? boundary_levels[0]
-          : 2);
-
-      // Use the boundary level (1-indexed) to pick the corresponding column
-      // Level 1 = National, Level 2 = Region, etc.
-      const levelIndex = Math.min(selectedLevel - 1, levelColumns.length - 1);
-      hierarchyLevelColumn = levelColumns[Math.max(0, levelIndex)];
-      // eslint-disable-next-line no-console
-      console.log(
-        '[DHIS2Map transformProps] Using pattern-matched hierarchy column:',
-        {
-          hierarchyLevelColumn,
-          selectedLevel,
-          levelIndex,
-          allPatternMatches: levelColumns,
-        },
-      );
+      hierarchyLevelColumn = preferredHierarchyLevel?.columnName || '';
+      console.log('[DHIS2Map transformProps] Using staged hierarchy column:', {
+        hierarchyLevelColumn,
+        requestedPrimaryLevel,
+        availableHierarchyLevels: datasourceHierarchyLevels,
+      });
     }
   }
 
@@ -432,34 +707,29 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     metricColumn = 'value';
   }
 
-  // Convert boundary_levels to array, supporting backward compatibility with boundary_level
-  // IMPORTANT: Check Array.isArray first because empty arrays are falsy in JS
-  
-  // Also check for camelCase variants (sometimes Superset passes these)
-  const rawBoundaryLevels = boundary_levels ?? (formData as any)?.boundaryLevels;
-  const rawBoundaryLevel = boundary_level ?? (formData as any)?.boundaryLevel;
-  
-  // Normalize boundary levels - handle various input formats
-  // SelectControl can return: number[], string[], number, string, or undefined
-  const normalizeLevels = (
-    levels: number | string | (number | string)[] | undefined,
-  ): number[] => {
-    if (!levels) return [];
-    if (Array.isArray(levels)) {
-      return levels
-        .map(l => (typeof l === 'string' ? parseInt(String(l), 10) : l))
-        .filter(l => !Number.isNaN(l) && l > 0);
-    }
-    const parsed = typeof levels === 'string' ? parseInt(levels, 10) : levels;
-    return !Number.isNaN(parsed) && parsed > 0 ? [parsed] : [];
-  };
+  const stagedLegendDefinition = resolveMetricLegendDefinition(
+    datasourceColumns,
+    metricColumn,
+  );
+  const boundaryLevelLabels = buildBoundaryLevelLabelMap(
+    datasourceColumns,
+    cachedOrgUnitLevels,
+  );
+
+  const primaryBoundaryLevel = hierarchyLevelColumn
+    ? resolveHierarchyLevelFromDatasourceColumn(
+        datasourceColumns,
+        hierarchyLevelColumn,
+        cachedOrgUnitLevels,
+      )
+    : requestedPrimaryLevel;
 
   // Try boundary_levels first, then boundary_level for backward compatibility
-  let selectedLevels = normalizeLevels(rawBoundaryLevels);
+  let selectedLevels = requestedBoundaryLevels;
   let levelSource = 'boundary_levels';
 
   if (selectedLevels.length === 0) {
-    selectedLevels = normalizeLevels(rawBoundaryLevel);
+    selectedLevels = requestedBoundaryLevelFallback;
     levelSource = 'boundary_level';
   }
 
@@ -477,38 +747,18 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     levelSource,
   });
 
-  // AUTO-DETECT boundary level from org unit column name if no level explicitly set
-  // This helps when users don't explicitly set the boundary level
-  if (selectedLevels.length === 0 && hierarchyLevelColumn) {
-    const colLower = hierarchyLevelColumn.toLowerCase();
-    let detectedLevel: number | null = null;
-    
-    // Standard Uganda DHIS2 hierarchy mapping
-    // Level 1: National (Country)
-    // Level 2: Region  
-    // Level 3: District
-    // Level 4: Sub-county
-    // Level 5: Parish/Facility
-    if (colLower.includes('national') || colLower.includes('country')) {
-      detectedLevel = 1;
-    } else if (colLower.includes('region') || colLower.includes('province')) {
-      detectedLevel = 2;
-    } else if (colLower.includes('district') && !colLower.includes('sub')) {
-      detectedLevel = 3;
-    } else if (colLower.includes('subcounty') || colLower.includes('sub_county') || colLower.includes('sub-county')) {
-      detectedLevel = 4;
-    } else if (colLower.includes('parish') || colLower.includes('facility') || colLower.includes('village')) {
-      detectedLevel = 5;
-    }
-    
-    if (detectedLevel) {
-      selectedLevels = [detectedLevel];
-      levelSource = `auto-detected from column "${hierarchyLevelColumn}"`;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[DHIS2Map transformProps] Auto-detected boundary level ${detectedLevel} from column "${hierarchyLevelColumn}"`,
-      );
-    }
+  // Keep the selected OU hierarchy column as the primary boundary level so stale
+  // saved boundary config does not request the wrong administrative geometry.
+  if (selectedLevels.length === 0 && primaryBoundaryLevel) {
+    selectedLevels = [primaryBoundaryLevel];
+    levelSource = `resolved from column "${hierarchyLevelColumn}"`;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[DHIS2Map transformProps] Resolved primary boundary level ${primaryBoundaryLevel} from column "${hierarchyLevelColumn}"`,
+    );
+  } else if (primaryBoundaryLevel) {
+    selectedLevels = mergeBoundaryLevels(primaryBoundaryLevel, selectedLevels);
+    levelSource = `${levelSource} + column "${hierarchyLevelColumn}"`;
   }
   
   // Final fallback: Default to Level 2 if nothing is specified
@@ -589,6 +839,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     all_columns: allColumns,
     hierarchy_level_columns: levelColumns,
     selected_hierarchy_column: hierarchyLevelColumn,
+    primary_boundary_level: primaryBoundaryLevel,
     org_unit_column_original: org_unit_column,
     org_unit_column_sanitized: sanitizedOrgUnitColumn,
     selected_metric_column: metricColumn,
@@ -631,7 +882,10 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] FINAL PROPS:', {
     databaseId,
+    sourceInstanceIds: sourceInstanceIdsFromExtra,
+    primaryBoundaryLevel,
     boundaryLevels: selectedLevels,
+    boundaryLevelLabels,
     levelBorderColors,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
@@ -645,17 +899,31 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     (typeof (formData as any)?.datasource === 'string'
       ? parseInt((formData as any).datasource.split('__')[0], 10)
       : undefined);
+  const chartId =
+    coercePositiveInteger(formDataAny?.slice_id) ||
+    coercePositiveInteger(formDataAny?.sliceId) ||
+    (typeof window !== 'undefined'
+      ? coercePositiveInteger(
+          new URLSearchParams(window.location.search).get('slice_id'),
+        )
+      : undefined);
+  const dashboardId =
+    coercePositiveInteger(formDataAny?.dashboard_id) ||
+    coercePositiveInteger(formDataAny?.dashboardId);
 
   return {
     width,
     height,
     data,
     databaseId,
+    sourceInstanceIds: sourceInstanceIdsFromExtra,
     datasetId,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
     aggregationMethod: aggregation_method || 'sum',
+    primaryBoundaryLevel,
     boundaryLevels: selectedLevels,
+    boundaryLevelLabels,
     levelBorderColors,
     enableDrill: enable_drill !== false,
     colorScheme: color_scheme || 'supersetColors',
@@ -665,7 +933,24 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     strokeColor: stroke_color || { r: 255, g: 255, b: 255, a: 1 },
     strokeWidth: stroke_width ?? 1,
     autoThemeBorders: auto_theme_borders ?? false,
-    showAllBoundaries: show_all_boundaries !== false,
+    showAllBoundaries: show_all_boundaries ?? false,
+    focusSelectedBoundaryWithChildren:
+      focus_selected_boundary_with_children ?? false,
+    styleUnselectedAreas: style_unselected_areas ?? true,
+    unselectedAreaFillColor: unselected_area_fill_color || {
+      r: 241,
+      g: 245,
+      b: 249,
+      a: 1,
+    },
+    unselectedAreaFillOpacity: unselected_area_fill_opacity ?? 0.45,
+    unselectedAreaBorderColor: unselected_area_border_color || {
+      r: 148,
+      g: 163,
+      b: 184,
+      a: 1,
+    },
+    unselectedAreaBorderWidth: unselected_area_border_width ?? 0.75,
     showLabels: show_labels !== false,
     labelType: label_type || 'name',
     labelFontSize: label_font_size || 12,
@@ -677,6 +962,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     legendMax: legend_max ? Number(legend_max) : undefined,
     manualBreaks: parsedManualBreaks,
     manualColors: parsedManualColors,
+    stagedLegendDefinition,
     legendReverseColors: legend_reverse_colors ?? false,
     legendNoDataColor: legend_no_data_color || { r: 204, g: 204, b: 204, a: 1 },
     tooltipColumns: sanitizedTooltipColumns,
@@ -688,5 +974,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     isDHIS2Dataset,
     // Boundary loading method - default to geoJSON for better multi-level support
     boundaryLoadMethod: formData.boundary_load_method || 'geoJSON',
+    chartId,
+    dashboardId,
   };
 }

@@ -29,7 +29,7 @@ export interface HeatmapFormData extends QueryFormData {
   bottomMargin: string;
   currencyFormat?: Currency;
   leftMargin: string;
-  legendType: 'continuous' | 'piecewise';
+  legendType: 'continuous' | 'piecewise' | 'staged';
   linearColorScheme?: string;
   metric: QueryFormMetric;
   normalizeAcross: 'heatmap' | 'x' | 'y';

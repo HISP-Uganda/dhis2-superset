@@ -29,6 +29,8 @@ import {
   StyledStickyHeader,
 } from './styles';
 
+type DHIS2CreateStage = 'details' | 'connections' | 'review';
+
 const supersetTextDocs = getDatabaseDocumentationLinks();
 
 export const DOCUMENTATION_LINK = supersetTextDocs
@@ -71,6 +73,8 @@ const ModalHeader = ({
   dbModel,
   editNewDb,
   fileList,
+  isDHIS2GuidedFlow = false,
+  dhis2CreateStage = 'details',
 }: {
   isLoading: boolean;
   isEditMode: boolean;
@@ -81,6 +85,8 @@ const ModalHeader = ({
   dbModel: DatabaseForm;
   editNewDb?: boolean;
   fileList?: UploadFile[];
+  isDHIS2GuidedFlow?: boolean;
+  dhis2CreateStage?: DHIS2CreateStage;
   passwordFields?: string[];
   needsOverwriteConfirm?: boolean;
 }) => {
@@ -138,6 +144,69 @@ const ModalHeader = ({
     </StyledStickyHeader>
   );
 
+  const dhis2DetailsHeader = (
+    <StyledStickyHeader>
+      <StyledFormHeader>
+        <p className="helper-top">
+          {t('STEP %(stepCurr)s OF %(stepLast)s', {
+            stepCurr: 2,
+            stepLast: 4,
+          })}
+        </p>
+        <Typography.Title level={4}>
+          {t('Configure Database details')}
+        </Typography.Title>
+        <p className="helper-bottom">
+          {t(
+            'Name the logical Superset Database here. The DHIS2 instance URLs and authentication details are added in the next step.',
+          )}
+        </p>
+      </StyledFormHeader>
+    </StyledStickyHeader>
+  );
+
+  const dhis2ConnectionsHeader = (
+    <StyledStickyHeader>
+      <StyledFormHeader>
+        <p className="helper-top">
+          {t('STEP %(stepCurr)s OF %(stepLast)s', {
+            stepCurr: 3,
+            stepLast: 4,
+          })}
+        </p>
+        <Typography.Title level={4}>
+          {t('Add DHIS2 instances')}
+        </Typography.Title>
+        <p className="helper-bottom">
+          {t(
+            'Add the configured DHIS2 instances that belong to this Database. Dataset creation will load these saved child connections automatically.',
+          )}
+        </p>
+      </StyledFormHeader>
+    </StyledStickyHeader>
+  );
+
+  const dhis2ReviewHeader = (
+    <StyledStickyHeader>
+      <StyledFormHeader>
+        <p className="helper-top">
+          {t('STEP %(stepCurr)s OF %(stepLast)s', {
+            stepCurr: 4,
+            stepLast: 4,
+          })}
+        </p>
+        <Typography.Title level={4}>
+          {t('Review & save Database')}
+        </Typography.Title>
+        <p className="helper-bottom">
+          {t(
+            'Confirm the logical Database details and configured DHIS2 instances before saving.',
+          )}
+        </p>
+      </StyledFormHeader>
+    </StyledStickyHeader>
+  );
+
   const hasDbHeader = (
     <StyledStickyHeader>
       <StyledFormHeader>
@@ -173,11 +242,11 @@ const ModalHeader = ({
           <p className="helper-top">
             {t('STEP %(stepCurr)s OF %(stepLast)s', {
               stepCurr: 1,
-              stepLast: 3,
+              stepLast: 4,
             })}
           </p>
           <Typography.Title level={4}>
-            {t('Select a database to connect')}
+            {t('Select Database Type')}
           </Typography.Title>
         </div>
       </StyledFormHeader>
@@ -205,6 +274,15 @@ const ModalHeader = ({
 
   if (fileCheck) return importDbHeader;
   if (isLoading) return <></>;
+  if (isDHIS2GuidedFlow) {
+    if (!hasConnectedDb || editNewDb || dhis2CreateStage === 'details') {
+      return dhis2DetailsHeader;
+    }
+    if (dhis2CreateStage === 'connections') {
+      return dhis2ConnectionsHeader;
+    }
+    return dhis2ReviewHeader;
+  }
   if (isEditMode) return isEditHeader;
   if (useSqlAlchemyForm) return useSqlAlchemyFormHeader;
   if (hasConnectedDb && !editNewDb) return hasConnectedDbHeader;

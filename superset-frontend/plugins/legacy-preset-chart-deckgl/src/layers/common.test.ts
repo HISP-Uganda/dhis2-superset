@@ -22,6 +22,7 @@ import { JsonObject, QueryFormData } from '@superset-ui/core';
 import {
   getAggFunc,
   commonLayerProps,
+  getColorForDHIS2Legend,
   getColorForBreakpoints,
   getColorRange,
 } from './common';
@@ -32,6 +33,13 @@ import { DEFAULT_DECKGL_COLOR } from '../utilities/Shared_DeckGL';
 const partialformData: Partial<QueryFormData> = {
   viz_type: 'table',
   datasource: '3_sqla',
+};
+
+const stagedLegendDefinition = {
+  items: [
+    { label: 'Low', startValue: 0, endValue: 10, color: '#111111' },
+    { label: 'High', startValue: 11, endValue: 20, color: '#222222' },
+  ],
 };
 
 describe('getAggFunc', () => {
@@ -202,6 +210,18 @@ describe('getColorForBreakpoints', () => {
   });
 });
 
+describe('getColorForDHIS2Legend', () => {
+  it('returns the staged legend item index for numeric values', () => {
+    const aggFunc = (arr: number[]) => arr[0];
+    expect(
+      getColorForDHIS2Legend(aggFunc, [5], stagedLegendDefinition),
+    ).toBe(1);
+    expect(
+      getColorForDHIS2Legend(aggFunc, [15], stagedLegendDefinition),
+    ).toBe(2);
+  });
+});
+
 describe('getColorRange', () => {
   const fdBase: any = {
     color_picker: { r: 10, g: 20, b: 30, a: 0.5 },
@@ -252,6 +272,24 @@ describe('getColorRange', () => {
       ],
       [255, 0, 0, 255],
       [0, 255, 0, 255],
+    ]);
+  });
+
+  it('returns color range for staged DHIS2 legends', () => {
+    const result = getColorRange({
+      defaultBreakpointsColor: DEFAULT_DECKGL_COLOR,
+      colorSchemeType: COLOR_SCHEME_TYPES.dhis2_staged_legend,
+      stagedLegendDefinition,
+    });
+    expect(result).toEqual([
+      [
+        DEFAULT_DECKGL_COLOR.r,
+        DEFAULT_DECKGL_COLOR.g,
+        DEFAULT_DECKGL_COLOR.b,
+        DEFAULT_DECKGL_COLOR.a * 255,
+      ],
+      [17, 17, 17, 255],
+      [34, 34, 34, 255],
     ]);
   });
 

@@ -16,10 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import fetchMock from 'fetch-mock';
 import { render, screen } from 'spec/helpers/testing-library';
-import AddDataset from 'src/pages/DatasetCreation';
+
+import DatasetCreationPage from 'src/pages/DatasetCreation';
 
 const mockHistoryPush = jest.fn();
+
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
   useHistory: () => ({
@@ -28,20 +31,22 @@ jest.mock('react-router-dom', () => ({
   useParams: () => ({ datasetId: undefined }),
 }));
 
-// eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
-describe('AddDataset', () => {
-  test('renders a blank state AddDataset', async () => {
-    render(<AddDataset />, { useRedux: true, useRouter: true });
+describe('DatasetCreationPage', () => {
+  beforeEach(() => {
+    fetchMock.get('glob:*/api/v1/database/?q=*', {
+      count: 0,
+      result: [],
+    });
+  });
 
-    const blankeStateImgs = screen.getAllByRole('img', { name: /empty/i });
+  afterEach(() => {
+    fetchMock.reset();
+  });
 
-    // Header
-    expect(await screen.findByText(/new dataset/i)).toBeVisible();
-    // Left panel
-    expect(blankeStateImgs[0]).toBeVisible();
-    // Footer
-    expect(screen.getByText(/Cancel/i)).toBeVisible();
+  test('renders database selection first', async () => {
+    render(<DatasetCreationPage />, { useRedux: true, useRouter: true });
 
-    expect(blankeStateImgs.length).toBe(1);
+    expect(await screen.findByText(/Create a dataset/i)).toBeVisible();
+    expect(await screen.findByText(/Choose a Database to start/i)).toBeVisible();
   });
 });

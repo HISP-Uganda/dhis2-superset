@@ -650,7 +650,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
             )
             return self.response_422(message=str(ex))
 
-    @expose("/<pk>/refresh", methods=("PUT",))
+    @expose("/<pk>/refresh", methods=("PUT", "POST"))
     @protect()
     @safe
     @statsd_metrics
@@ -662,6 +662,8 @@ class DatasetRestApi(BaseSupersetModelRestApi):
         """Refresh and update columns of a dataset.
         ---
         put:
+          summary: Refresh and update columns of a dataset
+        post:
           summary: Refresh and update columns of a dataset
           parameters:
           - in: path
@@ -1145,6 +1147,14 @@ class DatasetRestApi(BaseSupersetModelRestApi):
         if not table:
             return self.response_404()
 
+        repair_database_binding = getattr(
+            table,
+            "repair_staged_local_database_binding",
+            None,
+        )
+        if callable(repair_database_binding):
+            repair_database_binding()
+
         response: dict[str, Any] = {}
         args = kwargs.get("rison", {})
         select_cols = args.get(API_SELECT_COLUMNS_RIS_KEY, [])
@@ -1162,6 +1172,17 @@ class DatasetRestApi(BaseSupersetModelRestApi):
 
         response["id"] = table.id
         response[API_RESULT_RES_KEY] = show_model_schema.dump(table, many=False)
+        if getattr(table, "is_dhis2_staged_local", False):
+            try:
+                response[API_RESULT_RES_KEY]["columns"] = (
+                    table.get_staged_local_columns_payload()
+                )
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed to hydrate staged-local dataset columns for dataset id=%s",
+                    table.id,
+                    exc_info=True,
+                )
 
         # remove folders from resposne if `DATASET_FOLDERS` is disabled, so that it's
         # possible to inspect if the feature is supported or not

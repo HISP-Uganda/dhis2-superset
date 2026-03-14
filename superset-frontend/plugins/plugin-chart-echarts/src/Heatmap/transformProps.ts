@@ -19,11 +19,15 @@
 import {
   NumberFormats,
   QueryFormColumn,
+  buildDHIS2LegendPieces,
   getColumnLabel,
+  getDHIS2LegendRange,
+  hasDHIS2LegendItems,
   getMetricLabel,
   getSequentialSchemeRegistry,
   getTimeFormatter,
   getValueFormatter,
+  resolveDHIS2LegendDefinition,
   rgbToHex,
   addAlpha,
   tooltipHtml,
@@ -40,7 +44,6 @@ import { Refs } from '../types';
 import { parseAxisBound } from '../utils/controls';
 import { NULL_STRING } from '../constants';
 import { getPercentFormatter } from '../utils/formatters';
-
 type EChartsOption = ComposeOption<HeatmapSeriesOption>;
 
 const DEFAULT_ECHARTS_BOUNDS = [0, 200];
@@ -109,6 +112,10 @@ export default function transformProps(
   const { data, colnames, coltypes } = queriesData[0];
   const { columnFormats = {}, currencyFormats = {} } = datasource;
   const colorColumn = normalized ? 'rank' : metricLabel;
+  const stagedLegendDefinition = resolveDHIS2LegendDefinition(
+    datasource,
+    metric,
+  );
   const colors = getSequentialSchemeRegistry().get(linearColorScheme)?.colors;
   const getAxisFormatter =
     (colType: GenericDataType) => (value: number | string) => {
@@ -143,6 +150,14 @@ export default function transformProps(
       (maxBy(data, row => row[colorColumn])?.[colorColumn] as number) ||
       DEFAULT_ECHARTS_BOUNDS[1];
   }
+
+  const stagedLegendRange = getDHIS2LegendRange(stagedLegendDefinition);
+  const visualMapType =
+    legendType === 'staged' && hasDHIS2LegendItems(stagedLegendDefinition)
+      ? 'piecewise'
+      : legendType === 'staged'
+        ? 'piecewise'
+        : legendType;
 
   const series: HeatmapSeriesOption[] = [
     {
@@ -230,19 +245,23 @@ export default function transformProps(
       },
     },
     visualMap: {
-      type: legendType,
-      min,
-      max,
+      type: visualMapType,
+      min: stagedLegendRange?.min ?? min,
+      max: stagedLegendRange?.max ?? max,
       calculable: true,
       orient: 'horizontal',
       right: 0,
       top: 0,
-      itemHeight: legendType === 'continuous' ? 300 : 14,
+      itemHeight: visualMapType === 'continuous' ? 300 : 14,
       itemWidth: 15,
       formatter: (min: number) => valueFormatter(min),
       inRange: {
         color: colors,
       },
+      pieces:
+        legendType === 'staged'
+          ? buildDHIS2LegendPieces(stagedLegendDefinition, valueFormatter)
+          : undefined,
       show: showLegend,
       // By default, ECharts uses the last dimension which is rank
       dimension: normalized ? 3 : 2,

@@ -71,3 +71,12 @@ test('fires an event when visibility is changed', async () => {
   await userEvent.hover(screen.getByRole('button'));
   await waitFor(() => expect(onOpenChange).toHaveBeenCalledTimes(1));
 });
+
+test('supports the deprecated destroyTooltipOnHide prop without passing it through', () => {
+  render(
+    <Popover content="Content sample" destroyTooltipOnHide>
+      <Button>Hover me</Button>
+    </Popover>,
+  );
+  expect(screen.getByRole('button')).toBeInTheDocument();
+});

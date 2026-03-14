@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import { Fragment } from 'react';
 import { SupersetTheme, t } from '@superset-ui/core';
 import { Form, Button } from '@superset-ui/core/components';
 import { FormFieldOrder, FORM_FIELD_MAP } from './constants';
@@ -30,6 +31,7 @@ const DatabaseConnectionForm = ({
   dbModel,
   db,
   editNewDb,
+  excludedFields = [],
   getPlaceholder,
   getValidation,
   isEditMode = false,
@@ -47,6 +49,7 @@ const DatabaseConnectionForm = ({
   isValidating,
   testConnection,
   testInProgress = false,
+  hideTestConnection = false,
 }: DatabaseConnectionFormProps) => {
   const parameters = dbModel?.parameters as {
     properties: {
@@ -79,38 +82,41 @@ const DatabaseConnectionForm = ({
             const isHidden =
               (parameters.properties[key] as any)?.['x-hidden'] === true;
 
-            return isStandardField && !isHidden;
-          }).map(field =>
-            // @ts-ignore TODO: fix ComponentClass for SSHTunnelSwitchComponent not having call signature.
-            FORM_FIELD_MAP[field]({
-              required: parameters.required?.includes(field),
-              changeMethods: {
-                onParametersChange,
-                onChange,
-                onQueryChange,
-                onParametersUploadFileChange,
-                onAddTableCatalog,
-                onRemoveTableCatalog,
-                onExtraInputChange,
-                onEncryptedExtraInputChange,
-              },
-              validationErrors,
-              getValidation,
-              clearValidationErrors,
-              db,
-              key: field,
-              field,
-              default_value: parameters.properties[field]?.default,
-              description: parameters.properties[field]?.description,
-              isEditMode,
-              sslForced,
-              editNewDb,
-              isValidating,
-              placeholder: getPlaceholder ? getPlaceholder(field) : undefined,
-            }),
-          )}
+            return isStandardField && !isHidden && !excludedFields.includes(key);
+          }).map(field => (
+            <Fragment key={field}>
+              {
+                // @ts-ignore TODO: fix ComponentClass for SSHTunnelSwitchComponent not having call signature.
+                FORM_FIELD_MAP[field]({
+                  required: parameters.required?.includes(field),
+                  changeMethods: {
+                    onParametersChange,
+                    onChange,
+                    onQueryChange,
+                    onParametersUploadFileChange,
+                    onAddTableCatalog,
+                    onRemoveTableCatalog,
+                    onExtraInputChange,
+                    onEncryptedExtraInputChange,
+                  },
+                  validationErrors,
+                  getValidation,
+                  clearValidationErrors,
+                  db,
+                  field,
+                  default_value: parameters.properties[field]?.default,
+                  description: parameters.properties[field]?.description,
+                  isEditMode,
+                  sslForced,
+                  editNewDb,
+                  isValidating,
+                  placeholder: getPlaceholder ? getPlaceholder(field) : undefined,
+                })
+              }
+            </Fragment>
+          ))}
       </div>
-      {testConnection && (
+      {testConnection && !hideTestConnection && (
         <Button
           onClick={testConnection}
           loading={testInProgress}

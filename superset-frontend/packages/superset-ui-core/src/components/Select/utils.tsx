@@ -23,6 +23,8 @@ import { LabeledValue as AntdLabeledValue, SELECT_ALL_VALUE } from '.';
 import { StyledHelperText, StyledLoadingText, StyledSpin } from './styles';
 import { CustomLabeledValue, RawValue, SelectOptionsType, V } from './types';
 
+export const NULL_OPTION_VALUE = '__superset_null_option__';
+
 export function isObject(value: unknown): value is Record<string, unknown> {
   return (
     value !== null &&
@@ -39,6 +41,82 @@ export function getValue(
   option: string | number | AntdLabeledValue | null | undefined,
 ) {
   return isLabeledValue(option) ? option.value : option;
+}
+
+export function normalizeOptionValue<T>(value: T) {
+  return (value === null ? NULL_OPTION_VALUE : value) as T;
+}
+
+export function denormalizeOptionValue<T>(value: T) {
+  return (value === NULL_OPTION_VALUE ? null : value) as T;
+}
+
+export function normalizeOption<T>(option: T): T {
+  if (!isObject(option)) {
+    return option;
+  }
+  if ('options' in option && Array.isArray(option.options)) {
+    return ({
+      ...option,
+      options: normalizeOptions(option.options),
+    }) as T;
+  }
+
+  return ({
+    ...option,
+    value: normalizeOptionValue(option.value),
+  }) as T;
+}
+
+export function denormalizeOption<T>(option: T): T {
+  if (!isObject(option)) {
+    return option;
+  }
+  if ('options' in option && Array.isArray(option.options)) {
+    return ({
+      ...option,
+      options: denormalizeOptions(option.options),
+    }) as T;
+  }
+
+  return ({
+    ...option,
+    value: denormalizeOptionValue(option.value),
+  }) as T;
+}
+
+export function normalizeOptions(values: SelectOptionsType): SelectOptionsType {
+  return values.map(option => normalizeOption(option));
+}
+
+export function denormalizeOptions(values: SelectOptionsType): SelectOptionsType {
+  return values.map(option => denormalizeOption(option));
+}
+
+export function normalizeSelectValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(item => normalizeSelectValue(item)) as T;
+  }
+  if (isLabeledValue(value)) {
+    return {
+      ...value,
+      value: normalizeOptionValue(value.value),
+    } as T;
+  }
+  return normalizeOptionValue(value) as T;
+}
+
+export function denormalizeSelectValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(item => denormalizeSelectValue(item)) as T;
+  }
+  if (isLabeledValue(value)) {
+    return {
+      ...value,
+      value: denormalizeOptionValue(value.value),
+    } as T;
+  }
+  return denormalizeOptionValue(value) as T;
 }
 
 export function isEqual(

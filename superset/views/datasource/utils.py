@@ -100,6 +100,9 @@ def get_samples(  # pylint: disable=too-many-arguments
         datasource_type=datasource_type,
         database_id_or_uuid=str(datasource_id),
     )
+    repair_binding = getattr(datasource, "repair_staged_local_database_binding", None)
+    if callable(repair_binding):
+        repair_binding()
 
     limit_clause = get_limit_clause(page, per_page)
 

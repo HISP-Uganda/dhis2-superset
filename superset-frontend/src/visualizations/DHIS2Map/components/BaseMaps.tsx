@@ -23,6 +23,12 @@ import { styled } from '@superset-ui/core';
 
 // Available base map configurations
 export const BASE_MAPS = {
+  none: {
+    name: 'White Background',
+    url: '',
+    attribution: '',
+    maxZoom: 20,
+  },
   osmLight: {
     name: 'OSM Light (DHIS2 Default)',
     url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',

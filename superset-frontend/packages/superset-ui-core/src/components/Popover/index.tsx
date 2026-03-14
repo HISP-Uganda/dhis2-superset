@@ -16,11 +16,36 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import { forwardRef } from 'react';
 import { Popover as AntdPopover } from 'antd';
 import { PopoverProps as AntdPopoverProps } from 'antd/es/popover';
 
-export interface PopoverProps extends AntdPopoverProps {
+type LegacyDestroyOnHide = boolean | { keepParent?: boolean };
+
+export interface PopoverProps
+  extends Omit<AntdPopoverProps, 'destroyTooltipOnHide'> {
   forceRender?: boolean;
+  destroyTooltipOnHide?: LegacyDestroyOnHide;
 }
 
-export const Popover = (props: PopoverProps) => <AntdPopover {...props} />;
+export const Popover = forwardRef<unknown, PopoverProps>(
+  ({ destroyOnHidden, destroyTooltipOnHide, ...props }, _ref) => {
+    const resolvedDestroyOnHidden =
+      typeof destroyOnHidden === 'boolean'
+        ? destroyOnHidden
+        : typeof destroyTooltipOnHide === 'boolean'
+          ? destroyTooltipOnHide
+          : destroyTooltipOnHide
+            ? true
+            : undefined;
+
+    return (
+      <AntdPopover
+        destroyOnHidden={resolvedDestroyOnHidden}
+        {...props}
+      />
+    );
+  },
+);
+
+Popover.displayName = 'Popover';

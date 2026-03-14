@@ -113,6 +113,7 @@ const config: ControlPanelConfig = {
                 [COLOR_SCHEME_TYPES.fixed_color, t('Fixed color')],
                 [COLOR_SCHEME_TYPES.linear_palette, t('Linear palette')],
                 [COLOR_SCHEME_TYPES.color_breakpoints, t('Color breakpoints')],
+                [COLOR_SCHEME_TYPES.dhis2_staged_legend, t('DHIS2 staged legend')],
               ],
               default: COLOR_SCHEME_TYPES.linear_palette,
             },

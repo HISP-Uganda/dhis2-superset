@@ -26,6 +26,7 @@ export enum DatasetActionType {
   ChangeDataset,
   SetDHIS2Parameters,
   SetDHIS2Columns,
+  SetStagingCapabilities,
 }
 
 export interface DatasetObject {
@@ -38,6 +39,11 @@ export interface DatasetObject {
   dhis2_parameters?: Record<string, string>;
   dhis2_columns?: Array<{ name: string; type: string }>;
   dhis2_source_table?: string; // The actual DHIS2 table (e.g., "analytics")
+  staging_supported?: boolean;
+  staging_source_type?: string;
+  staging_builder_mode?: string;
+  staging_requires_instance_selection?: boolean;
+  staging_background_refresh_forced?: boolean;
 }
 
 export interface DatasetReducerPayloadType {
@@ -69,4 +75,15 @@ export type DSReducerActionType =
   | {
       type: DatasetActionType.SetDHIS2Columns;
       payload: { columns: Array<{ name: string; type: string }> };
+    }
+  | {
+      type: DatasetActionType.SetStagingCapabilities;
+      payload: Pick<
+        DatasetObject,
+        | 'staging_supported'
+        | 'staging_source_type'
+        | 'staging_builder_mode'
+        | 'staging_requires_instance_selection'
+        | 'staging_background_refresh_forced'
+      >;
     };

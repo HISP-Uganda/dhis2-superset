@@ -22,7 +22,6 @@ import { PageHeaderWithActions } from '@superset-ui/core/components/PageHeaderWi
 import { Button } from '@superset-ui/core/components';
 import { TooltipPlacement } from '@superset-ui/core/components/Tooltip/types';
 import { Icons } from '@superset-ui/core/components/Icons';
-import { Menu } from '@superset-ui/core/components/Menu';
 import {
   DatasetActionType,
   DSReducerActionType,
@@ -51,15 +50,6 @@ const renderDisabledSaveButton = () => (
     <Icons.SaveOutlined iconSize="m" />
     {t('Save')}
   </Button>
-);
-
-const renderOverlay = () => (
-  <Menu
-    items={[
-      { key: 'settings', label: t('Settings') },
-      { key: 'delete', label: t('Delete') },
-    ]}
-  />
 );
 
 export default function Header({
@@ -95,7 +85,7 @@ export default function Header({
           faveStarProps={{ itemId: 1, saveFaveStar: () => {} }}
           titlePanelAdditionalItems={<></>}
           rightPanelAdditionalItems={renderDisabledSaveButton()}
-          additionalActionsMenu={renderOverlay()}
+          additionalActionsMenu={<></>}
           menuDropdownProps={{
             disabled: true,
           }}

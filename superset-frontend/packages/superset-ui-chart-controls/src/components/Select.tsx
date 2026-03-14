@@ -23,6 +23,7 @@ import {
 } from '@superset-ui/core/components';
 
 export const { Option }: any = AntdSelect;
+const NULL_OPTION_VALUE = '__superset_null_option__';
 
 export type SelectOption<VT = string> = [VT, ReactNode];
 
@@ -48,6 +49,29 @@ export default function Select<VT extends string | number>({
   ...props
 }: SelectProps<VT>) {
   const [searchValue, setSearchValue] = useState<string>();
+  const hasNullOption = options?.some(([val]) => val === null) ?? false;
+  const normalizeOptionValue = (optionValue: VT | null | undefined) =>
+    optionValue === null ? NULL_OPTION_VALUE : optionValue;
+  const normalizeValue = (selectedValue: unknown) => {
+    if (Array.isArray(selectedValue)) {
+      return selectedValue.map(item => normalizeOptionValue(item as VT | null));
+    }
+    if (selectedValue === null && !hasNullOption) {
+      return selectedValue;
+    }
+    return normalizeOptionValue(selectedValue as VT | null | undefined);
+  };
+  const denormalizeValue = (selectedValue: unknown) => {
+    if (selectedValue === NULL_OPTION_VALUE) {
+      return null;
+    }
+    if (Array.isArray(selectedValue)) {
+      return selectedValue.map(item =>
+        item === NULL_OPTION_VALUE ? null : item,
+      );
+    }
+    return selectedValue;
+  };
   // force show search if creatable
   const showSearch = showSearch_ || creatable;
   const handleSearch = showSearch
@@ -61,18 +85,27 @@ export default function Select<VT extends string | number>({
       }
     : undefined;
 
-  const optionsHasSearchValue = options?.some(([val]) => val === searchValue);
-  const optionsHasValue = options?.some(([val]) => val === value);
+  const optionsHasSearchValue = options?.some(
+    ([val]) => normalizeOptionValue(val) === searchValue,
+  );
+  const optionsHasValue = !Array.isArray(value)
+    ? options?.some(
+        ([val]) => normalizeOptionValue(val) === normalizeValue(value),
+      )
+    : false;
+  const normalizedValue = normalizeValue(value);
+  const normalizedSelectValue =
+    normalizedValue as unknown as AntdSelectProps<VT>['value'];
 
   const handleChange: SelectProps<VT>['onChange'] = showSearch
     ? (val, opt) => {
         // reset input value once selected
         setSearchValue('');
         if (onChange) {
-          onChange(val, opt);
+          onChange(denormalizeValue(val) as VT, opt);
         }
       }
-    : onChange;
+    : ((val, opt) => onChange?.(denormalizeValue(val) as VT, opt));
 
   return (
     <AntdSelect<VT>
@@ -80,18 +113,26 @@ export default function Select<VT extends string | number>({
       showSearch={showSearch}
       onSearch={handleSearch}
       onChange={handleChange}
-      value={value}
+      value={normalizedSelectValue}
       {...props}
       css={{
         minWidth,
       }}
     >
-      {options?.map(([val, label]) => (
-        <Option value={val}>{label}</Option>
-      ))}
+      {options?.map(([val, label]) => {
+        const normalizedOptionValue = normalizeOptionValue(val);
+        return (
+          <Option
+            key={String(normalizedOptionValue)}
+            value={normalizedOptionValue}
+          >
+            {label}
+          </Option>
+        );
+      })}
       {children}
-      {value && !optionsHasValue && (
-        <Option key={value} value={value}>
+      {value != null && !optionsHasValue && (
+        <Option key={String(normalizedValue)} value={normalizedValue}>
           {value}
         </Option>
       )}

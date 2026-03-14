@@ -59,17 +59,42 @@ export type AggregationMethod =
   | 'min'
   | 'count'
   | 'latest';
-export type LegendType = 'auto' | 'equal_interval' | 'quantile' | 'manual';
+export type LegendType =
+  | 'auto'
+  | 'equal_interval'
+  | 'quantile'
+  | 'manual'
+  | 'staged';
+
+export interface DHIS2LegendItem {
+  id?: string | null;
+  label?: string | null;
+  startValue?: number | null;
+  endValue?: number | null;
+  color: string;
+}
+
+export interface DHIS2LegendDefinition {
+  source?: string;
+  setId?: string | null;
+  setName?: string | null;
+  min?: number | null;
+  max?: number | null;
+  items: DHIS2LegendItem[];
+}
 
 export interface DHIS2MapProps {
   width: number;
   height: number;
   data: Record<string, any>[];
   databaseId: number;
+  sourceInstanceIds?: number[];
   orgUnitColumn: string;
   metric: string;
+  primaryBoundaryLevel?: number;
   aggregationMethod?: AggregationMethod;
   boundaryLevels: number[];
+  boundaryLevelLabels?: Record<number, string>;
   enableDrill: boolean;
   colorScheme: string;
   linearColorScheme?: string;
@@ -80,6 +105,12 @@ export interface DHIS2MapProps {
   autoThemeBorders?: boolean;
   levelBorderColors?: LevelBorderColor[];
   showAllBoundaries?: boolean;
+  focusSelectedBoundaryWithChildren?: boolean;
+  styleUnselectedAreas?: boolean;
+  unselectedAreaFillColor?: { r: number; g: number; b: number; a: number };
+  unselectedAreaFillOpacity?: number;
+  unselectedAreaBorderColor?: { r: number; g: number; b: number; a: number };
+  unselectedAreaBorderWidth?: number;
   showLabels: boolean;
   labelType: 'name' | 'value' | 'name_value' | 'percent';
   labelFontSize: number;
@@ -91,6 +122,7 @@ export interface DHIS2MapProps {
   legendMax?: number;
   manualBreaks?: number[];
   manualColors?: string[];
+  stagedLegendDefinition?: DHIS2LegendDefinition;
   legendReverseColors?: boolean;
   legendNoDataColor?: { r: number; g: number; b: number; a: number };
   tooltipColumns: string[];
@@ -106,6 +138,8 @@ export interface DHIS2MapProps {
   datasetSql?: string;
   isDHIS2Dataset?: boolean;
   datasetId?: number;
+  chartId?: number;
+  dashboardId?: number;
   // Boundary loading method: 'geoFeatures' (default) or 'geoJSON'
   boundaryLoadMethod?: 'geoFeatures' | 'geoJSON';
 }

@@ -16,9 +16,36 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { isFrontendRoute, routes } from './routes';
+jest.mock('@superset-ui/core', () => ({
+  FeatureFlag: {
+    EnableExtensions: 'EnableExtensions',
+    TaggingSystem: 'TaggingSystem',
+  },
+  isFeatureEnabled: jest.fn(() => false),
+}));
+
+jest.mock('src/utils/getBootstrapData', () => ({
+  __esModule: true,
+  default: () => ({
+    common: {
+      conf: {
+        AUTH_USER_REGISTRATION: false,
+      },
+    },
+    user: null,
+  }),
+}));
+
+jest.mock('src/dashboard/util/permissionUtils', () => ({
+  isUserAdmin: jest.fn(() => false),
+}));
 
 jest.mock('src/pages/Home', () => () => <div data-test="mock-home" />);
+jest.mock('src/pages/PublicLandingPage', () => () => (
+  <div data-test="mock-public-landing" />
+));
+
+import { isFrontendRoute, routes } from './routes';
 
 // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
 describe('isFrontendRoute', () => {

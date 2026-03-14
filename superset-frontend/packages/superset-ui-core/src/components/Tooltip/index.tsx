@@ -16,17 +16,93 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import {
+  Children,
+  forwardRef,
+  isValidElement,
+  type ReactNode,
+} from 'react';
 import { Tooltip as AntdTooltip } from 'antd';
 
 import type { TooltipProps, TooltipPlacement } from './types';
 
-export const Tooltip = ({ overlayStyle, ...props }: TooltipProps) => (
-  <AntdTooltip
-    styles={{
-      body: { overflow: 'hidden', textOverflow: 'ellipsis' },
-      root: overlayStyle ?? {},
-    }}
-    {...props}
-  />
+const FORWARD_REF_SYMBOL = Symbol.for('react.forward_ref');
+const MEMO_SYMBOL = Symbol.for('react.memo');
+
+function supportsRef(child: ReactNode) {
+  if (!isValidElement(child)) {
+    return false;
+  }
+
+  const type = child.type as { $$typeof?: symbol; type?: { $$typeof?: symbol } } | string;
+  if (typeof type === 'string') {
+    return true;
+  }
+  if (type?.$$typeof === FORWARD_REF_SYMBOL) {
+    return true;
+  }
+  if (type?.$$typeof === MEMO_SYMBOL && type.type?.$$typeof === FORWARD_REF_SYMBOL) {
+    return true;
+  }
+  return false;
+}
+
+function wrapTooltipChildren(children: TooltipProps['children']) {
+  const childCount = Children.count(children);
+  if (childCount !== 1) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+        {children}
+      </span>
+    );
+  }
+
+  const child = Children.toArray(children)[0];
+  if (supportsRef(child)) {
+    return child;
+  }
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+      {child}
+    </span>
+  );
+}
+
+export const Tooltip = forwardRef<unknown, TooltipProps>(
+  (
+    {
+      overlayStyle,
+      children,
+      destroyTooltipOnHide,
+      destroyOnHidden,
+      ...props
+    }: TooltipProps,
+    _ref,
+  ) => {
+    const resolvedDestroyOnHidden =
+      typeof destroyOnHidden === 'boolean'
+        ? destroyOnHidden
+        : typeof destroyTooltipOnHide === 'boolean'
+          ? destroyTooltipOnHide
+          : destroyTooltipOnHide
+            ? true
+            : undefined;
+
+    return (
+      <AntdTooltip
+        styles={{
+          body: { overflow: 'hidden', textOverflow: 'ellipsis' },
+          root: overlayStyle ?? {},
+        }}
+        destroyOnHidden={resolvedDestroyOnHidden}
+        {...props}
+      >
+        {wrapTooltipChildren(children)}
+      </AntdTooltip>
+    );
+  },
 );
+
+Tooltip.displayName = 'Tooltip';
 export type { TooltipProps, TooltipPlacement };

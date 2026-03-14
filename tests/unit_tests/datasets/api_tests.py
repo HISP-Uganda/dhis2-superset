@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy.orm.session import Session
 
 from superset import db
+from superset.datasets.schemas import DatasetPostSchema
 
 
 def test_put_invalid_dataset(
@@ -72,3 +73,21 @@ def test_put_invalid_dataset(
             }
         ]
     }
+
+
+def test_post_schema_accepts_staged_local_dataset_fields() -> None:
+    payload = DatasetPostSchema().load(
+        {
+            "database": 7,
+            "table_name": "ANC Coverage",
+            "sql": "SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+            "is_sqllab_view": True,
+            "extra": '{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        }
+    )
+
+    assert payload["database"] == 7
+    assert payload["is_sqllab_view"] is True
+    assert payload["extra"] == (
+        '{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}'
+    )

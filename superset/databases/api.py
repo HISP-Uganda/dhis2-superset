@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from io import BytesIO
-from typing import Any, cast
+from typing import Any, Callable, cast
 from zipfile import is_zipfile, ZipFile
 
 from deprecation import deprecated
@@ -39,9 +39,11 @@ from functools import wraps
 from flask_appbuilder.api import expose, protect, rison, safe
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from marshmallow import ValidationError
+import requests
 from sqlalchemy.exc import NoSuchTableError, OperationalError, SQLAlchemyError
+from sqlalchemy.engine.url import make_url
 
-from superset import event_logger
+from superset import db, event_logger
 from superset.commands.database.create import CreateDatabaseCommand
 from superset.commands.database.delete import DeleteDatabaseCommand
 from superset.commands.database.exceptions import (
@@ -223,6 +225,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "oauth2",
         "sync_permissions",
         "dhis2_metadata",
+        "dhis2_metadata_public",
         "dhis2_preview_columns",
         "dhis2_preview_data",
         "dhis2_chart_data",
@@ -2180,6 +2183,11 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
               type: string
               enum: [dataElements, indicators, organisationUnits, periods]
           - in: query
+            name: instance_id
+            schema:
+              type: integer
+            description: Optional DHIS2 instance override for multi-instance metadata browsing
+          - in: query
             name: table
             schema:
               type: string
@@ -2216,22 +2224,74 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             500:
               $ref: '#/components/responses/500'
         """
-        import requests
-        import json
-        from sqlalchemy.engine.url import make_url
+        database = DatabaseDAO.find_by_id(pk)
+        if not database:
+            return self.response_404()
+        chart = self._resolve_authenticated_dhis2_chart()
+        resolved_database = (
+            self._resolve_dhis2_database_from_chart_context(
+                database=database,
+                chart=chart,
+            )
+            if chart is not None
+            else database
+        )
+        if not resolved_database:
+            return self.response_404()
+        return self._handle_dhis2_metadata_request(resolved_database, chart=chart)
+
+    @expose("/<int:pk>/dhis2_metadata_public/", methods=["GET"])
+    @safe
+    @statsd_metrics
+    @event_logger.log_this_with_context(
+        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
+        f".dhis2_metadata_public",
+        log_to_statsd=False,
+    )
+    def dhis2_metadata_public(self, pk: int) -> Response:
+        """Fetch DHIS2 metadata for public charts and guest dashboard charts."""
+        chart = self._resolve_public_dhis2_chart()
+        if isinstance(chart, Response):
+            return chart
 
         database = DatabaseDAO.find_by_id(pk)
         if not database:
             return self.response_404()
 
-        # Check if this is a DHIS2 database
+        resolved_database = self._resolve_dhis2_database_from_chart_context(
+            database=database,
+            chart=chart,
+        )
+        if not resolved_database:
+            return self.response_404()
+
+        return self._handle_dhis2_metadata_request(resolved_database, chart=chart)
+
+    def _handle_dhis2_metadata_request(
+        self,
+        database: Database,
+        *,
+        chart: Any | None = None,
+    ) -> Response:
         if database.backend != "dhis2":
             return self.response_400(message="Database is not a DHIS2 connection")
 
         metadata_type = request.args.get("type", "dataElements")
+        instance_id = request.args.get("instance_id", type=int)
+        requested_instance_ids = self._parse_dhis2_instance_ids()
+        if not requested_instance_ids and chart is not None:
+            requested_instance_ids = self._resolve_dhis2_instance_ids_from_chart_context(
+                chart,
+            )
+        federated = self._is_truthy(request.args.get("federated"))
+        staged = self._is_truthy(request.args.get("staged"))
         level = request.args.get("level")  # Optional level filter for org units
         parent_ids = request.args.getlist("parent_ids")  # Optional parent org unit IDs to filter children
         period_type = request.args.get("periodType", "YEARLY")  # For periods
+        org_unit_source_mode = (
+            request.args.get("org_unit_source_mode", "federated").strip().lower()
+        )
+        primary_instance_id = request.args.get("primary_instance_id", type=int)
         period_year_raw = request.args.get("year")
         period_year = None
         if period_year_raw:
@@ -2241,6 +2301,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 period_year = None
         table_name = request.args.get("table")  # Optional table context for filtering
         search_term = request.args.get("search", "")
+        group_search = request.args.get("group_search", request.args.get("groupSearch", ""))
         
         # DX-specific filters
         domain_type = request.args.get("domainType")  # For data elements: AGGREGATE, TRACKER
@@ -2248,201 +2309,896 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         aggregation_type = request.args.get("aggregationType")  # For data elements: SUM, AVERAGE, etc.
         form_type = request.args.get("formType")  # For datasets: CUSTOM, SECTION, etc.
         program_id = request.args.get("programId")  # For program indicators, event data items
+        program_stage_id = request.args.get("programStageId")
+        indicator_type_id = request.args.get("indicatorTypeId")
+        analytics_type = request.args.get("analyticsType")
+        group_id = request.args.get("groupId", request.args.get("group"))
+        group_set_id = request.args.get("groupSetId")
+        page = request.args.get("page", type=int)
+        page_size = request.args.get("page_size", request.args.get("pageSize"), type=int)
 
         # Handle periods specially - generate fixed periods
         if metadata_type == "periods":
             return self._generate_fixed_periods(period_type, period_year)
 
-        # Handle organisationUnitLevels specially - different endpoint structure
-        if metadata_type == "organisationUnitLevels":
-            return self._fetch_org_unit_levels(database)
+        if (
+            metadata_type in {
+                "organisationUnits",
+                "organisationUnitLevels",
+                "organisationUnitGroups",
+                "geoFeatures",
+                "geoJSON",
+            }
+            and org_unit_source_mode == "primary"
+            and primary_instance_id is not None
+        ):
+            requested_instance_ids = [primary_instance_id]
+            federated = False
 
-        # Handle organisationUnitGroups specially - different endpoint structure
-        if metadata_type == "organisationUnitGroups":
-            return self._fetch_org_unit_groups(database)
-
-        # Handle geoFeatures - load geographic features from DHIS2
         if metadata_type == "geoFeatures":
             ou_param = request.args.get("ou", "")
-            return self._fetch_geo_features(database, ou_param)
+            return self._fetch_geo_features(
+                database,
+                ou_param,
+                staged=staged,
+                instance_id=instance_id,
+                requested_instance_ids=requested_instance_ids,
+                federated=federated,
+            )
 
-        # Handle geoJSON - load GeoJSON from organisationUnits.geojson endpoint
         if metadata_type == "geoJSON":
             levels_param = request.args.get("levels", "")
             parents_param = request.args.get("parents", "")
-            return self._fetch_geo_json(database, levels_param, parents_param)
-
-        try:
-            # Parse database URI to get connection details
-            uri = make_url(database.sqlalchemy_uri_decrypted)
-
-            # Build DHIS2 API URL
-            api_path = uri.database or "/api"
-            if not api_path.startswith("/"):
-                api_path = f"/{api_path}"
-
-            base_url = f"https://{uri.host}{api_path}"
-
-            # Determine auth method
-            if not uri.username and uri.password:
-                # PAT authentication
-                auth = None
-                headers = {"Authorization": f"ApiToken {uri.password}"}
-            else:
-                # Basic authentication
-                auth = (uri.username, uri.password) if uri.username else None
-                headers = {}
-
-            # Build request parameters with DX-specific filtering
-            filters = []
-            
-            if metadata_type == "dataElements":
-                params = {
-                    "fields": "id,displayName,aggregationType,valueType,domainType,groups",
-                    "paging": "false",
-                }
-                
-                # Apply user-selected filters
-                if domain_type:
-                    filters.append(f"domainType:eq:{domain_type}")
-                if value_type:
-                    filters.append(f"valueType:eq:{value_type}")
-                if aggregation_type:
-                    filters.append(f"aggregationType:eq:{aggregation_type}")
-                
-                # Table-specific filtering
-                if table_name == "analytics":
-                    filters.append("valueType:in:[NUMBER,INTEGER,INTEGER_POSITIVE,INTEGER_NEGATIVE,INTEGER_ZERO_OR_POSITIVE,PERCENTAGE,UNIT_INTERVAL]")
-                elif table_name == "events":
-                    filters.append("domainType:eq:TRACKER")
-                    
-            elif metadata_type == "indicators":
-                params = {
-                    "fields": "id,displayName,valueType,indicatorType,groups",
-                    "paging": "false",
-                }
-                
-                if value_type:
-                    filters.append(f"valueType:eq:{value_type}")
-                    
-            elif metadata_type == "dataSets":
-                params = {
-                    "fields": "id,displayName,formType,dataSetElements",
-                    "paging": "false",
-                }
-                
-                if form_type:
-                    filters.append(f"formType:eq:{form_type}")
-                    
-            elif metadata_type == "programIndicators":
-                params = {
-                    "fields": "id,displayName,program,analyticsType",
-                    "paging": "false",
-                }
-                
-                if program_id:
-                    filters.append(f"program.id:eq:{program_id}")
-                    
-            elif metadata_type == "eventDataItems":
-                params = {
-                    "fields": "id,displayName,programStage,dataElement",
-                    "paging": "false",
-                }
-                
-                if program_id:
-                    filters.append(f"programStage.program.id:eq:{program_id}")
-                    
-            elif metadata_type in ["dataElementGroups", "indicatorGroups"]:
-                params = {
-                    "fields": "id,displayName,members",
-                    "paging": "false",
-                }
-                
-            else:
-                # Org units and other metadata types
-                params = {
-                    "fields": "id,displayName,level,parent,path",
-                    "paging": "false",
-                }
-                
-                # Add level filter for org units if specified
-                if metadata_type == "organisationUnits" and level:
-                    filters.append(f"level:eq:{level}")
-                
-                # Add parent filtering for org units if specified
-                # This fetches children of specific parent org units (e.g., all health facilities in a district)
-                if metadata_type == "organisationUnits" and parent_ids:
-                    # Create a filter for org units whose parent is in the parent_ids list
-                    parent_filter = "parent.id:in:[" + ",".join(parent_ids) + "]"
-                    filters.append(parent_filter)
-            
-            # Add search filter if provided
-            if search_term:
-                # Check if search term looks like a DHIS2 UID (11 alphanumeric characters)
-                import re
-                if re.match(r'^[a-zA-Z][a-zA-Z0-9]{10}$', search_term):
-                    # Search by ID for UID-like terms
-                    filters.append(f"id:eq:{search_term}")
-                    logger.info(f"[DHIS2 Metadata] Searching by ID: {search_term}")
-                else:
-                    # Search by display name for regular search terms
-                    filters.append(f"displayName:ilike:{search_term}")
-                    logger.info(f"[DHIS2 Metadata] Searching by displayName: {search_term}")
-
-            if filters:
-                params["filter"] = filters
-
-            # Fetch metadata from DHIS2
-            response = requests.get(
-                f"{base_url}/{metadata_type}",
-                params=params,
-                auth=auth,
-                headers=headers,
-                timeout=30,
+            return self._fetch_geo_json(
+                database,
+                levels_param,
+                parents_param,
+                staged=staged,
+                instance_id=instance_id,
+                requested_instance_ids=requested_instance_ids,
+                federated=federated,
             )
 
-            logger.info(f"[DHIS2 Metadata] Request URL: {base_url}/{metadata_type}")
-            logger.info(f"[DHIS2 Metadata] Response status: {response.status_code}")
+        if staged:
+            from superset.dhis2.metadata_staging_service import (
+                get_staged_metadata_payload,
+            )
 
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get(metadata_type, [])
+            try:
+                payload = get_staged_metadata_payload(
+                    database=database,
+                    metadata_type=metadata_type,
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                    table_name=table_name,
+                    search_term=search_term,
+                    level=level,
+                    parent_ids=parent_ids,
+                    domain_type=domain_type,
+                    value_type=value_type,
+                    aggregation_type=aggregation_type,
+                    form_type=form_type,
+                    program_id=program_id,
+                    program_stage_id=program_stage_id,
+                    indicator_type_id=indicator_type_id,
+                    analytics_type=analytics_type,
+                    group_id=group_id,
+                    group_set_id=group_set_id,
+                    group_search=group_search,
+                    org_unit_source_mode=org_unit_source_mode,
+                    page=page,
+                    page_size=page_size,
+                )
+                return self.response(200, **payload)
+            except ValueError as ex:
+                return self.response_400(message=str(ex))
+            except Exception as ex:
+                logger.exception("Failed to fetch staged DHIS2 metadata")
+                return self.response_500(message=str(ex))
 
-                logger.info(f"[DHIS2 Metadata] Found {len(items)} {metadata_type}")
-                if len(items) > 0:
-                    logger.info(f"[DHIS2 Metadata] First item: {items[0].get('displayName', items[0].get('name', 'N/A'))}")
+        cache_key_parts = self._build_dhis2_metadata_cache_key_parts(
+            metadata_type=metadata_type,
+            instance_id=instance_id,
+            requested_instance_ids=requested_instance_ids,
+            federated=federated,
+            staged=staged,
+            level=level,
+            parent_ids=parent_ids,
+            period_type=period_type,
+            period_year=period_year,
+            table_name=table_name,
+            search_term=search_term,
+            group_search=group_search,
+            domain_type=domain_type,
+            value_type=value_type,
+            aggregation_type=aggregation_type,
+            form_type=form_type,
+            program_id=program_id,
+            program_stage_id=program_stage_id,
+            indicator_type_id=indicator_type_id,
+            analytics_type=analytics_type,
+            group_id=group_id,
+            group_set_id=group_set_id,
+            org_unit_source_mode=org_unit_source_mode,
+            primary_instance_id=primary_instance_id,
+            page=page,
+            page_size=page_size,
+        )
+        cached_payload = self._get_cached_dhis2_metadata_payload(
+            database.id,
+            metadata_type,
+            cache_key_parts,
+        )
+        if cached_payload is not None:
+            return self.response(200, **cached_payload)
 
-                # For org units, sort by level and then by name
-                if metadata_type == "organisationUnits":
-                    items = sorted(items, key=lambda x: (x.get("level", 999), x.get("displayName", "")))
+        # Handle organisationUnitLevels specially - different endpoint structure
+        if metadata_type == "organisationUnitLevels":
+            try:
+                payload = self._build_org_unit_levels_payload(
+                    database,
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                )
+                payload = self._store_cached_dhis2_metadata_payload(
+                    database.id,
+                    metadata_type,
+                    cache_key_parts,
+                    payload,
+                )
+                return self.response(200, **payload)
+            except Exception as ex:
+                logger.exception("Failed to fetch DHIS2 organisation unit levels")
+                return self.response_500(message=str(ex))
 
-                # For data elements, add type information for grouping
-                if metadata_type == "dataElements" and table_name == "analytics":
-                    for item in items:
-                        # Add category for UI grouping
-                        agg_type = item.get("aggregationType", "NONE")
-                        value_type = item.get("valueType", "TEXT")
-                        item["category"] = "Aggregatable Data Elements"
-                        item["typeInfo"] = f"{value_type} ({agg_type})"
+        # Handle organisationUnitGroups specially - different endpoint structure
+        if metadata_type == "organisationUnitGroups":
+            try:
+                payload = self._build_org_unit_groups_payload(
+                    database,
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                )
+                payload = self._store_cached_dhis2_metadata_payload(
+                    database.id,
+                    metadata_type,
+                    cache_key_parts,
+                    payload,
+                )
+                return self.response(200, **payload)
+            except Exception as ex:
+                logger.exception("Failed to fetch DHIS2 organisation unit groups")
+                return self.response_500(message=str(ex))
 
-                # Return limited results for performance (increased from 1000 to 5000)
-                # If searching, return all matching results
-                max_items = 5000 if not search_term else len(items)
-                logger.info(f"[DHIS2 Metadata] Returning {min(len(items), max_items)} items to frontend (total: {len(items)})")
-                return self.response(200, result=items[:max_items])
-            elif response.status_code == 401:
-                error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}. Please check database credentials."
-                logger.error(f"[DHIS2 Metadata] {error_msg}")
-                logger.error(f"[DHIS2 Metadata] Response: {response.text[:500]}")
-                return self.response_400(message=error_msg)
-            else:
-                error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
-                logger.error(f"[DHIS2 Metadata] {error_msg}")
-                return self.response_400(message=error_msg)
+        try:
+            payload = self._build_dhis2_metadata_payload(
+                database=database,
+                metadata_type=metadata_type,
+                instance_id=instance_id,
+                requested_instance_ids=requested_instance_ids,
+                federated=federated,
+                table_name=table_name,
+                search_term=search_term,
+                level=level,
+                parent_ids=parent_ids,
+                domain_type=domain_type,
+                value_type=value_type,
+                aggregation_type=aggregation_type,
+                form_type=form_type,
+                program_id=program_id,
+                group_search=group_search,
+            )
+            payload = self._store_cached_dhis2_metadata_payload(
+                database.id,
+                metadata_type,
+                cache_key_parts,
+                payload,
+            )
+            return self.response(200, **payload)
 
+        except DatabaseNotFoundException:
+            return self.response_404()
+        except ValueError as ex:
+            return self.response_400(message=str(ex))
         except Exception as ex:
             logger.exception("Failed to fetch DHIS2 metadata")
             return self.response_500(message=str(ex))
+
+    def _resolve_public_dhis2_chart(self) -> Any | Response:
+        from superset.models.dashboard import Dashboard
+        from superset.models.slice import Slice
+
+        chart_id = request.args.get("slice_id", type=int) or request.args.get(
+            "chart_id",
+            type=int,
+        )
+        if not chart_id:
+            return self.response_400(message="slice_id is required")
+
+        chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
+        if chart is None:
+            return self.response_404()
+
+        dashboard_id = request.args.get("dashboard_id", type=int)
+        dashboard = None
+        if dashboard_id is not None:
+            dashboard = (
+                db.session.query(Dashboard)
+                .filter(Dashboard.id == dashboard_id)
+                .one_or_none()
+            )
+            if dashboard is None:
+                return self.response_404()
+            if not any(existing_chart.id == chart.id for existing_chart in dashboard.slices):
+                return self.response_403()
+
+        if getattr(chart, "is_public", False):
+            return chart
+
+        if (
+            dashboard is not None
+            and security_manager.is_guest_user()
+            and security_manager.has_guest_access(dashboard)
+        ):
+            return chart
+
+        return self.response_403()
+
+    @staticmethod
+    def _resolve_authenticated_dhis2_chart() -> Any | None:
+        from superset.models.slice import Slice
+
+        chart_id = request.args.get("slice_id", type=int) or request.args.get(
+            "chart_id",
+            type=int,
+        )
+        if not chart_id:
+            return None
+
+        return db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
+
+    @staticmethod
+    def _get_chart_context_datasource_extra(chart: Any) -> dict[str, Any] | None:
+        datasource = getattr(chart, "datasource", None)
+        if datasource is None:
+            return None
+
+        extra_raw = getattr(datasource, "extra", None)
+        extra: dict[str, Any] | None = None
+        if isinstance(extra_raw, str) and extra_raw:
+            try:
+                extra = cast(dict[str, Any], json_lib.loads(extra_raw))
+            except (TypeError, ValueError):
+                extra = None
+        elif isinstance(extra_raw, dict):
+            extra = cast(dict[str, Any], extra_raw)
+
+        return extra
+
+    @staticmethod
+    def _resolve_dhis2_database_from_chart_context(
+        *,
+        database: Database,
+        chart: Any,
+    ) -> Database | None:
+        if getattr(database, "backend", None) == "dhis2":
+            return database
+
+        datasource = getattr(chart, "datasource", None)
+        if datasource is None:
+            return database
+
+        extra = DatabaseRestApi._get_chart_context_datasource_extra(chart)
+
+        source_database_id = (
+            extra.get("dhis2_source_database_id")
+            if extra
+            else None
+        ) or (
+            extra.get("source_database_id") if extra else None
+        ) or (
+            extra.get("dhis2SourceDatabaseId") if extra else None
+        )
+        if source_database_id is not None:
+            try:
+                resolved_source_database_id = int(source_database_id)
+            except (TypeError, ValueError):
+                resolved_source_database_id = None
+            if resolved_source_database_id is not None:
+                source_database = DatabaseDAO.find_by_id(resolved_source_database_id)
+                if source_database is not None:
+                    return source_database
+
+        datasource_database = getattr(datasource, "database", None)
+        if getattr(datasource_database, "backend", None) == "dhis2":
+            return datasource_database
+
+        return database
+
+    @staticmethod
+    def _resolve_dhis2_instance_ids_from_chart_context(chart: Any) -> list[int]:
+        extra = DatabaseRestApi._get_chart_context_datasource_extra(chart)
+        if not extra:
+            return []
+
+        raw_values = (
+            extra.get("dhis2_source_instance_ids")
+            or extra.get("dhis2SourceInstanceIds")
+            or extra.get("configured_connection_ids")
+        )
+        if not isinstance(raw_values, list):
+            return []
+
+        resolved_instance_ids: list[int] = []
+        for raw_value in raw_values:
+            try:
+                parsed_value = int(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if parsed_value > 0:
+                resolved_instance_ids.append(parsed_value)
+
+        return list(dict.fromkeys(resolved_instance_ids))
+
+    @staticmethod
+    def _is_truthy(value: str | None) -> bool:
+        return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _parse_dhis2_instance_ids() -> list[int]:
+        requested_instance_ids: list[int] = []
+        for raw_value in request.args.getlist("instance_ids"):
+            for candidate in str(raw_value).split(","):
+                candidate = candidate.strip()
+                if not candidate:
+                    continue
+                try:
+                    requested_instance_ids.append(int(candidate))
+                except ValueError:
+                    logger.warning(
+                        "[DHIS2 Metadata] Ignoring invalid instance_ids value %r",
+                        candidate,
+                    )
+        return list(dict.fromkeys(requested_instance_ids))
+
+    @staticmethod
+    def _build_dhis2_metadata_cache_key_parts(
+        *,
+        metadata_type: str,
+        instance_id: int | None,
+        requested_instance_ids: list[int],
+        federated: bool,
+        staged: bool,
+        level: str | None,
+        parent_ids: list[str],
+        period_type: str,
+        period_year: int | None,
+        table_name: str | None,
+        search_term: str,
+        group_search: str,
+        domain_type: str | None,
+        value_type: str | None,
+        aggregation_type: str | None,
+        form_type: str | None,
+        program_id: str | None,
+        program_stage_id: str | None,
+        indicator_type_id: str | None,
+        analytics_type: str | None,
+        group_id: str | None,
+        group_set_id: str | None,
+        org_unit_source_mode: str,
+        primary_instance_id: int | None,
+        page: int | None,
+        page_size: int | None,
+    ) -> dict[str, Any]:
+        return {
+            "metadata_type": metadata_type,
+            "instance_id": instance_id,
+            "instance_ids": sorted(requested_instance_ids),
+            "federated": federated,
+            "staged": staged,
+            "level": level,
+            "parent_ids": sorted(parent_ids),
+            "period_type": period_type,
+            "period_year": period_year,
+            "table_name": table_name,
+            "search_term": search_term,
+            "group_search": group_search,
+            "domain_type": domain_type,
+            "value_type": value_type,
+            "aggregation_type": aggregation_type,
+            "form_type": form_type,
+            "program_id": program_id,
+            "program_stage_id": program_stage_id,
+            "indicator_type_id": indicator_type_id,
+            "analytics_type": analytics_type,
+            "group_id": group_id,
+            "group_set_id": group_set_id,
+            "org_unit_source_mode": org_unit_source_mode,
+            "primary_instance_id": primary_instance_id,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    @staticmethod
+    def _get_dhis2_metadata_cache_namespace(metadata_type: str) -> str:
+        return f"dhis2_metadata:{metadata_type}"
+
+    def _get_cached_dhis2_metadata_payload(
+        self,
+        database_id: int,
+        metadata_type: str,
+        key_parts: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        from superset.staging import metadata_cache_service
+
+        try:
+            return metadata_cache_service.get_cached_metadata_payload(
+                database_id,
+                self._get_dhis2_metadata_cache_namespace(metadata_type),
+                key_parts,
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.debug(
+                "Skipping DHIS2 metadata cache lookup for database id=%s",
+                database_id,
+                exc_info=True,
+            )
+            return None
+
+    def _store_cached_dhis2_metadata_payload(
+        self,
+        database_id: int,
+        metadata_type: str,
+        key_parts: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        from superset.staging import metadata_cache_service
+
+        if payload.get("status") == "failed":
+            payload = dict(payload)
+            payload["cached"] = False
+            payload["cache_refreshed_at"] = None
+            return payload
+
+        try:
+            return metadata_cache_service.set_cached_metadata_payload(
+                database_id,
+                self._get_dhis2_metadata_cache_namespace(metadata_type),
+                key_parts,
+                payload,
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.debug(
+                "Skipping DHIS2 metadata cache write for database id=%s",
+                database_id,
+                exc_info=True,
+            )
+            payload = dict(payload)
+            payload["cached"] = False
+            payload["cache_refreshed_at"] = None
+            return payload
+
+    def _build_dhis2_metadata_payload(
+        self,
+        *,
+        database: Database,
+        metadata_type: str,
+        instance_id: int | None,
+        requested_instance_ids: list[int],
+        federated: bool,
+        table_name: str | None,
+        search_term: str,
+        group_search: str,
+        level: str | None,
+        parent_ids: list[str],
+        domain_type: str | None,
+        value_type: str | None,
+        aggregation_type: str | None,
+        form_type: str | None,
+        program_id: str | None,
+    ) -> dict[str, Any]:
+        contexts = self._build_dhis2_metadata_contexts(
+            database=database,
+            instance_id=instance_id,
+            requested_instance_ids=requested_instance_ids,
+            federated=federated,
+        )
+        params = self._build_dhis2_metadata_params(
+            metadata_type=metadata_type,
+            table_name=table_name,
+            search_term=search_term,
+            level=level,
+            parent_ids=parent_ids,
+            domain_type=domain_type,
+            value_type=value_type,
+            aggregation_type=aggregation_type,
+            form_type=form_type,
+            program_id=program_id,
+        )
+        from superset.dhis2.metadata_staging_service import filter_metadata_items
+
+        if federated or requested_instance_ids:
+            aggregated_items: list[dict[str, Any]] = []
+            instance_results: list[dict[str, Any]] = []
+            successful_loads = 0
+
+            for context in contexts:
+                try:
+                    items = self._fetch_dhis2_metadata_items(
+                        metadata_type=metadata_type,
+                        base_url=context["base_url"],
+                        params=params,
+                        auth=context["auth"],
+                        headers=context["headers"],
+                        table_name=table_name,
+                        search_term=search_term,
+                    )
+                    items = filter_metadata_items(
+                        metadata_type=metadata_type,
+                        items=items,
+                        table_name=table_name,
+                        search_term=search_term,
+                        level=level,
+                        parent_ids=parent_ids,
+                        domain_type=domain_type,
+                        value_type=value_type,
+                        aggregation_type=aggregation_type,
+                        form_type=form_type,
+                        program_id=program_id,
+                        group_search=group_search,
+                    )
+                    successful_loads += 1
+                    instance_results.append(
+                        {
+                            "id": context["instance_id"],
+                            "name": context["instance_name"],
+                            "status": "success",
+                            "count": len(items),
+                        }
+                    )
+                    aggregated_items.extend(
+                        [
+                            {
+                                **item,
+                                "source_instance_id": context["instance_id"],
+                                "source_instance_name": context["instance_name"],
+                                "source_database_id": database.id,
+                                "source_database_name": database.database_name,
+                            }
+                            for item in items
+                        ]
+                    )
+                except Exception as ex:  # pylint: disable=broad-except
+                    logger.warning(
+                        "[DHIS2 Metadata] Failed to load %s for instance id=%s",
+                        metadata_type,
+                        context["instance_id"],
+                        exc_info=True,
+                    )
+                    instance_results.append(
+                        {
+                            "id": context["instance_id"],
+                            "name": context["instance_name"],
+                            "status": "failed",
+                            "count": 0,
+                            "error": str(ex),
+                        }
+                    )
+
+            status = "failed"
+            if successful_loads and successful_loads == len(contexts):
+                status = "success"
+            elif successful_loads:
+                status = "partial"
+
+            response_payload: dict[str, Any] = {
+                "result": aggregated_items,
+                "status": status,
+                "instance_results": instance_results,
+            }
+            if status == "failed":
+                response_payload["message"] = (
+                    "Failed to load DHIS2 metadata from the configured connections."
+                )
+            elif status == "partial":
+                response_payload["message"] = (
+                    "Some configured DHIS2 connections could not be loaded."
+                )
+            return response_payload
+
+        context = contexts[0]
+        items = self._fetch_dhis2_metadata_items(
+            metadata_type=metadata_type,
+            base_url=context["base_url"],
+            params=params,
+            auth=context["auth"],
+            headers=context["headers"],
+            table_name=table_name,
+            search_term=search_term,
+        )
+        items = filter_metadata_items(
+            metadata_type=metadata_type,
+            items=items,
+            table_name=table_name,
+            search_term=search_term,
+            level=level,
+            parent_ids=parent_ids,
+            domain_type=domain_type,
+            value_type=value_type,
+            aggregation_type=aggregation_type,
+            form_type=form_type,
+            program_id=program_id,
+            group_search=group_search,
+        )
+        return {"result": items}
+
+    @staticmethod
+    def _build_dhis2_database_context(database: Database) -> dict[str, Any]:
+        uri = make_url(database.sqlalchemy_uri_decrypted)
+        api_path = uri.database or "/api"
+        if not api_path.startswith("/"):
+            api_path = f"/{api_path}"
+
+        base_url = f"https://{uri.host}{api_path}"
+        auth = None
+        headers: dict[str, str] = {}
+        if not uri.username and uri.password:
+            headers = {"Authorization": f"ApiToken {uri.password}"}
+        else:
+            auth = (uri.username, uri.password) if uri.username else None
+
+        return {
+            "instance_id": None,
+            "instance_name": database.database_name,
+            "base_url": base_url,
+            "auth": auth,
+            "headers": headers,
+        }
+
+    def _build_dhis2_metadata_contexts(
+        self,
+        *,
+        database: Database,
+        instance_id: int | None,
+        requested_instance_ids: list[int],
+        federated: bool,
+    ) -> list[dict[str, Any]]:
+        if instance_id is not None and not federated and not requested_instance_ids:
+            from superset.dhis2 import instance_service as inst_svc
+
+            dhis2_instance = inst_svc.get_instance(instance_id)
+            if dhis2_instance is None:
+                raise DatabaseNotFoundException("No such DHIS2 instance")
+            if dhis2_instance.database_id != database.id:
+                raise ValueError("DHIS2 instance does not belong to this database")
+            return [
+                {
+                    "instance_id": dhis2_instance.id,
+                    "instance_name": dhis2_instance.name,
+                    "base_url": f"{dhis2_instance.url.rstrip('/')}/api",
+                    "auth": None,
+                    "headers": dhis2_instance.get_auth_headers(),
+                }
+            ]
+
+        if federated or requested_instance_ids:
+            from superset.dhis2 import instance_service as inst_svc
+
+            instances = inst_svc.get_instances_with_legacy_fallback(
+                database.id,
+                include_inactive=False,
+            )
+            if requested_instance_ids:
+                requested_ids = set(requested_instance_ids)
+                instances = [
+                    instance for instance in instances if instance.id in requested_ids
+                ]
+            return [
+                {
+                    "instance_id": instance.id,
+                    "instance_name": instance.name,
+                    "base_url": f"{instance.url.rstrip('/')}/api",
+                    "auth": None,
+                    "headers": instance.get_auth_headers(),
+                }
+                for instance in instances
+            ]
+
+        return [self._build_dhis2_database_context(database)]
+
+    @staticmethod
+    def _build_dhis2_metadata_params(
+        *,
+        metadata_type: str,
+        table_name: str | None,
+        search_term: str,
+        level: str | None,
+        parent_ids: list[str],
+        domain_type: str | None,
+        value_type: str | None,
+        aggregation_type: str | None,
+        form_type: str | None,
+        program_id: str | None,
+    ) -> dict[str, Any]:
+        filters: list[str] = []
+
+        if metadata_type == "dataElements":
+            params: dict[str, Any] = {
+                "fields": (
+                    "id,displayName,name,aggregationType,valueType,domainType,"
+                    "groups[id,displayName,name]"
+                ),
+                "paging": "false",
+            }
+            if domain_type:
+                filters.append(f"domainType:eq:{domain_type}")
+            if value_type:
+                filters.append(f"valueType:eq:{value_type}")
+            if aggregation_type:
+                filters.append(f"aggregationType:eq:{aggregation_type}")
+            if table_name == "analytics":
+                filters.append(
+                    "valueType:in:[NUMBER,INTEGER,INTEGER_POSITIVE,INTEGER_NEGATIVE,INTEGER_ZERO_OR_POSITIVE,PERCENTAGE,UNIT_INTERVAL]"
+                )
+            elif table_name == "events":
+                filters.append("domainType:eq:TRACKER")
+        elif metadata_type == "indicators":
+            params = {
+                "fields": (
+                    "id,displayName,name,valueType,"
+                    "indicatorType[id,displayName,name],groups[id,displayName,name]"
+                ),
+                "paging": "false",
+            }
+            if value_type:
+                filters.append(f"valueType:eq:{value_type}")
+        elif metadata_type == "dataSets":
+            params = {
+                "fields": "id,displayName,formType,dataSetElements",
+                "paging": "false",
+            }
+            if form_type:
+                filters.append(f"formType:eq:{form_type}")
+        elif metadata_type == "programIndicators":
+            params = {
+                "fields": (
+                    "id,displayName,name,program[id,displayName,name],analyticsType"
+                ),
+                "paging": "false",
+            }
+            if program_id:
+                filters.append(f"program.id:eq:{program_id}")
+        elif metadata_type == "eventDataItems":
+            params = {
+                "fields": (
+                    "id,displayName,name,"
+                    "programStage[id,displayName,name,program[id,displayName,name]],"
+                    "dataElement[id,displayName,name,groups[id,displayName,name]]"
+                ),
+                "paging": "false",
+            }
+            if program_id:
+                filters.append(f"programStage.program.id:eq:{program_id}")
+        elif metadata_type in ["dataElementGroups", "indicatorGroups", "programs"]:
+            params = {
+                "fields": "id,displayName,members",
+                "paging": "false",
+            }
+        else:
+            params = {
+                "fields": "id,displayName,level,parent,path",
+                "paging": "false",
+            }
+            if metadata_type == "organisationUnits" and level:
+                filters.append(f"level:eq:{level}")
+            if metadata_type == "organisationUnits" and parent_ids:
+                filters.append("parent.id:in:[" + ",".join(parent_ids) + "]")
+
+        if search_term:
+            import re
+
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9]{10}$", search_term):
+                filters.append(f"id:eq:{search_term}")
+                logger.info("[DHIS2 Metadata] Searching by ID: %s", search_term)
+            else:
+                filters.append(f"displayName:ilike:{search_term}")
+                logger.info(
+                    "[DHIS2 Metadata] Searching by displayName: %s",
+                    search_term,
+                )
+
+        if filters:
+            params["filter"] = filters
+        return params
+
+    @staticmethod
+    def _postprocess_dhis2_metadata_items(
+        *,
+        metadata_type: str,
+        items: list[dict[str, Any]],
+        table_name: str | None,
+        search_term: str,
+    ) -> list[dict[str, Any]]:
+        processed_items = list(items)
+
+        if metadata_type == "organisationUnits":
+            processed_items = sorted(
+                processed_items,
+                key=lambda item: (
+                    item.get("level", 999),
+                    item.get("displayName", ""),
+                ),
+            )
+
+        if metadata_type == "dataElements" and table_name == "analytics":
+            for item in processed_items:
+                agg_type = item.get("aggregationType", "NONE")
+                value_type = item.get("valueType", "TEXT")
+                item["category"] = "Aggregatable Data Elements"
+                item["typeInfo"] = f"{value_type} ({agg_type})"
+
+        max_items = 5000 if not search_term else len(processed_items)
+        logger.info(
+            "[DHIS2 Metadata] Returning %s items to frontend (total: %s)",
+            min(len(processed_items), max_items),
+            len(processed_items),
+        )
+        return processed_items[:max_items]
+
+    def _fetch_dhis2_metadata_items(
+        self,
+        *,
+        metadata_type: str,
+        base_url: str,
+        params: dict[str, Any],
+        auth: Any,
+        headers: dict[str, str],
+        table_name: str | None,
+        search_term: str,
+    ) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{base_url}/{metadata_type}",
+            params=params,
+            auth=auth,
+            headers=headers,
+            timeout=30,
+        )
+
+        logger.info("[DHIS2 Metadata] Request URL: %s/%s", base_url, metadata_type)
+        logger.info("[DHIS2 Metadata] Response status: %s", response.status_code)
+
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get(metadata_type, [])
+            logger.info("[DHIS2 Metadata] Found %s %s", len(items), metadata_type)
+            if items:
+                logger.info(
+                    "[DHIS2 Metadata] First item: %s",
+                    items[0].get("displayName", items[0].get("name", "N/A")),
+                )
+            return self._postprocess_dhis2_metadata_items(
+                metadata_type=metadata_type,
+                items=items,
+                table_name=table_name,
+                search_term=search_term,
+            )
+
+        if response.status_code == 401:
+            error_msg = (
+                "DHIS2 API authentication failed. "
+                f"Status: {response.status_code}. Please check database credentials."
+            )
+            logger.error("[DHIS2 Metadata] %s", error_msg)
+            logger.error("[DHIS2 Metadata] Response: %s", response.text[:500])
+            raise ValueError(error_msg)
+
+        error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
+        logger.error("[DHIS2 Metadata] %s", error_msg)
+        raise ValueError(error_msg)
 
     def _generate_fixed_periods(self, period_type: str, year: int | None = None) -> Response:
         """Generate fixed periods based on period type.
@@ -2729,7 +3485,222 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         return self.response(200, result=periods)
 
-    def _fetch_org_unit_levels(self, database: Database) -> Response:
+    @staticmethod
+    def _fetch_dhis2_collection_items(
+        *,
+        base_url: str,
+        collection_path: str,
+        collection_key: str,
+        params: dict[str, Any],
+        auth: Any,
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{base_url}/{collection_path}",
+            params=params,
+            auth=auth,
+            headers=headers,
+            timeout=30,
+        )
+
+        logger.info(
+            "[DHIS2 Metadata] Request URL: %s/%s",
+            base_url,
+            collection_path,
+        )
+        logger.info("[DHIS2 Metadata] Response status: %s", response.status_code)
+
+        if response.status_code == 200:
+            data = response.json()
+            return data.get(collection_key, [])
+
+        if response.status_code == 401:
+            error_msg = (
+                "DHIS2 API authentication failed. "
+                f"Status: {response.status_code}. Please check database credentials."
+            )
+            logger.error("[DHIS2 Metadata] %s", error_msg)
+            logger.error("[DHIS2 Metadata] Response: %s", response.text[:500])
+            raise ValueError(error_msg)
+
+        error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
+        logger.error("[DHIS2 Metadata] %s", error_msg)
+        raise ValueError(error_msg)
+
+    @staticmethod
+    def _merge_org_unit_level_items(
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[int, dict[str, Any]] = {}
+        for item in items:
+            level_raw = item.get("level")
+            try:
+                level = int(level_raw)
+            except (TypeError, ValueError):
+                continue
+
+            current = merged.get(level)
+            if current is None:
+                merged[level] = dict(item)
+                merged[level]["level"] = level
+                continue
+
+            if not current.get("displayName") and item.get("displayName"):
+                current["displayName"] = item["displayName"]
+            if not current.get("name") and item.get("name"):
+                current["name"] = item["name"]
+
+        return [merged[level] for level in sorted(merged)]
+
+    @staticmethod
+    def _merge_org_unit_group_items(
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+
+        for item in items:
+            key = str(item.get("id") or item.get("displayName") or item.get("name") or "")
+            if not key:
+                continue
+
+            current = merged.get(key)
+            if current is None:
+                current = dict(item)
+                current["organisationUnits"] = []
+                merged[key] = current
+
+            if not current.get("displayName") and item.get("displayName"):
+                current["displayName"] = item["displayName"]
+            if not current.get("name") and item.get("name"):
+                current["name"] = item["name"]
+
+            existing_units = {
+                str(unit.get("id") or unit.get("displayName") or unit.get("name") or ""): unit
+                for unit in current.get("organisationUnits", [])
+                if isinstance(unit, dict)
+            }
+            for unit in item.get("organisationUnits", []) or []:
+                if not isinstance(unit, dict):
+                    continue
+                unit_key = str(
+                    unit.get("id") or unit.get("displayName") or unit.get("name") or ""
+                )
+                if not unit_key:
+                    continue
+                if unit_key not in existing_units:
+                    existing_units[unit_key] = unit
+
+            current["organisationUnits"] = list(existing_units.values())
+
+        return sorted(
+            merged.values(),
+            key=lambda item: (
+                item.get("displayName", "") or item.get("name", ""),
+                str(item.get("id", "")),
+            ),
+        )
+
+    def _build_dhis2_special_collection_payload(
+        self,
+        *,
+        database: Database,
+        instance_id: int | None,
+        requested_instance_ids: list[int],
+        federated: bool,
+        collection_path: str,
+        collection_key: str,
+        params: dict[str, Any],
+        merge_items: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        contexts = self._build_dhis2_metadata_contexts(
+            database=database,
+            instance_id=instance_id,
+            requested_instance_ids=requested_instance_ids,
+            federated=federated,
+        )
+
+        if not (federated or requested_instance_ids):
+            context = contexts[0]
+            items = self._fetch_dhis2_collection_items(
+                base_url=context["base_url"],
+                collection_path=collection_path,
+                collection_key=collection_key,
+                params=params,
+                auth=context["auth"],
+                headers=context["headers"],
+            )
+            return {"result": merge_items(items)}
+
+        aggregated_items: list[dict[str, Any]] = []
+        instance_results: list[dict[str, Any]] = []
+        successful_loads = 0
+
+        for context in contexts:
+            try:
+                items = self._fetch_dhis2_collection_items(
+                    base_url=context["base_url"],
+                    collection_path=collection_path,
+                    collection_key=collection_key,
+                    params=params,
+                    auth=context["auth"],
+                    headers=context["headers"],
+                )
+                successful_loads += 1
+                instance_results.append(
+                    {
+                        "id": context["instance_id"],
+                        "name": context["instance_name"],
+                        "status": "success",
+                        "count": len(items),
+                    }
+                )
+                aggregated_items.extend(items)
+            except Exception as ex:  # pylint: disable=broad-except
+                logger.warning(
+                    "[DHIS2 Metadata] Failed to load %s for instance id=%s",
+                    collection_path,
+                    context["instance_id"],
+                    exc_info=True,
+                )
+                instance_results.append(
+                    {
+                        "id": context["instance_id"],
+                        "name": context["instance_name"],
+                        "status": "failed",
+                        "count": 0,
+                        "error": str(ex),
+                    }
+                )
+
+        status = "failed"
+        if successful_loads and successful_loads == len(contexts):
+            status = "success"
+        elif successful_loads:
+            status = "partial"
+
+        response_payload: dict[str, Any] = {
+            "result": merge_items(aggregated_items),
+            "status": status,
+            "instance_results": instance_results,
+        }
+        if status == "failed":
+            response_payload["message"] = (
+                "Failed to load DHIS2 metadata from the configured connections."
+            )
+        elif status == "partial":
+            response_payload["message"] = (
+                "Some configured DHIS2 connections could not be loaded."
+            )
+        return response_payload
+
+    def _build_org_unit_levels_payload(
+        self,
+        database: Database,
+        *,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
         """Fetch organisation unit levels from DHIS2 API.
 
         Args:
@@ -2738,71 +3709,50 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         Returns:
             Response with list of organisation unit level objects
         """
-        import requests
-        from sqlalchemy.engine.url import make_url
-
-        try:
-            # Parse database URI to get connection details
-            uri = make_url(database.sqlalchemy_uri_decrypted)
-
-            # Build DHIS2 API URL
-            api_path = uri.database or "/api"
-            if not api_path.startswith("/"):
-                api_path = f"/{api_path}"
-
-            base_url = f"https://{uri.host}{api_path}"
-
-            # Determine auth method
-            if not uri.username and uri.password:
-                # PAT authentication
-                auth = None
-                headers = {"Authorization": f"ApiToken {uri.password}"}
-            else:
-                # Basic authentication
-                auth = (uri.username, uri.password) if uri.username else None
-                headers = {}
-
-            # Fetch organisation unit levels
-            params = {
+        return self._build_dhis2_special_collection_payload(
+            database=database,
+            instance_id=instance_id,
+            requested_instance_ids=requested_instance_ids or [],
+            federated=federated,
+            collection_path="organisationUnitLevels",
+            collection_key="organisationUnitLevels",
+            params={
                 "fields": "level,displayName,name",
                 "paging": "false",
-            }
+            },
+            merge_items=self._merge_org_unit_level_items,
+        )
 
-            response = requests.get(
-                f"{base_url}/organisationUnitLevels",
-                params=params,
-                auth=auth,
-                headers=headers,
-                timeout=30,
+    def _fetch_org_unit_levels(
+        self,
+        database: Database,
+        *,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
+        try:
+            return self.response(
+                200,
+                **self._build_org_unit_levels_payload(
+                    database,
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                ),
             )
-
-            logger.info(f"[DHIS2 OrgUnitLevels] Request URL: {base_url}/organisationUnitLevels")
-            logger.info(f"[DHIS2 OrgUnitLevels] Response status: {response.status_code}")
-
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("organisationUnitLevels", [])
-
-                # Sort by level number
-                items = sorted(items, key=lambda x: x.get("level", 999))
-
-                logger.info(f"[DHIS2 OrgUnitLevels] Found {len(items)} levels")
-
-                return self.response(200, result=items)
-            elif response.status_code == 401:
-                error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}. Please check database credentials."
-                logger.error(f"[DHIS2 OrgUnitLevels] {error_msg}")
-                return self.response_400(message=error_msg)
-            else:
-                error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
-                logger.error(f"[DHIS2 OrgUnitLevels] {error_msg}")
-                return self.response_400(message=error_msg)
-
         except Exception as ex:
             logger.exception("Failed to fetch DHIS2 organisation unit levels")
             return self.response_500(message=str(ex))
 
-    def _fetch_org_unit_groups(self, database: Database) -> Response:
+    def _build_org_unit_groups_payload(
+        self,
+        database: Database,
+        *,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
         """Fetch organisation unit groups from DHIS2 API.
 
         Args:
@@ -2811,63 +3761,38 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         Returns:
             Response with list of organisation unit group objects
         """
-        import requests
-        from sqlalchemy.engine.url import make_url
-
-        try:
-            # Parse database URI to get connection details
-            uri = make_url(database.sqlalchemy_uri_decrypted)
-
-            # Build DHIS2 API URL
-            api_path = uri.database or "/api"
-            if not api_path.startswith("/"):
-                api_path = f"/{api_path}"
-
-            base_url = f"https://{uri.host}{api_path}"
-
-            # Determine auth method
-            if not uri.username and uri.password:
-                # PAT authentication
-                auth = None
-                headers = {"Authorization": f"ApiToken {uri.password}"}
-            else:
-                # Basic authentication
-                auth = (uri.username, uri.password) if uri.username else None
-                headers = {}
-
-            # Fetch organisation unit groups
-            params = {
+        return self._build_dhis2_special_collection_payload(
+            database=database,
+            instance_id=instance_id,
+            requested_instance_ids=requested_instance_ids or [],
+            federated=federated,
+            collection_path="organisationUnitGroups",
+            collection_key="organisationUnitGroups",
+            params={
                 "fields": "id,displayName,name,organisationUnits[id,displayName,level,parent[id]]",
                 "paging": "false",
-            }
+            },
+            merge_items=self._merge_org_unit_group_items,
+        )
 
-            response = requests.get(
-                f"{base_url}/organisationUnitGroups",
-                params=params,
-                auth=auth,
-                headers=headers,
-                timeout=30,
+    def _fetch_org_unit_groups(
+        self,
+        database: Database,
+        *,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
+        try:
+            return self.response(
+                200,
+                **self._build_org_unit_groups_payload(
+                    database,
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                ),
             )
-
-            logger.info(f"[DHIS2 OrgUnitGroups] Request URL: {base_url}/organisationUnitGroups")
-            logger.info(f"[DHIS2 OrgUnitGroups] Response status: {response.status_code}")
-
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("organisationUnitGroups", [])
-
-                logger.info(f"[DHIS2 OrgUnitGroups] Found {len(items)} groups")
-
-                return self.response(200, result=items)
-            elif response.status_code == 401:
-                error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}. Please check database credentials."
-                logger.error(f"[DHIS2 OrgUnitGroups] {error_msg}")
-                return self.response_400(message=error_msg)
-            else:
-                error_msg = f"DHIS2 API error: {response.status_code} {response.text[:200]}"
-                logger.error(f"[DHIS2 OrgUnitGroups] {error_msg}")
-                return self.response_400(message=error_msg)
-
         except Exception as ex:
             logger.exception("Failed to fetch DHIS2 organisation unit groups")
             return self.response_500(message=str(ex))
@@ -2946,7 +3871,16 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         return data, False
 
-    def _fetch_geo_features(self, database: Database, ou_param: str) -> Response:
+    def _fetch_geo_features(
+        self,
+        database: Database,
+        ou_param: str,
+        *,
+        staged: bool = False,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
         """Fetch geoFeatures from DHIS2 API with stale-while-revalidate caching.
 
         Args:
@@ -2956,11 +3890,42 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         Returns:
             Response with list of geoFeature objects
         """
+        import hashlib
         import requests
         from sqlalchemy.engine.url import make_url
-        import hashlib
 
         try:
+            if staged:
+                from superset.dhis2.metadata_staging_service import (
+                    get_staged_geo_payload,
+                )
+
+                levels: list[str] = []
+                parent_ids: list[str] = []
+                for candidate in str(ou_param or "").split(";"):
+                    candidate = candidate.strip()
+                    if not candidate:
+                        continue
+                    normalized = candidate[3:] if candidate.upper().startswith("OU:") else candidate
+                    if normalized.upper().startswith("LEVEL-"):
+                        level_value = normalized.split("-", 1)[1].strip()
+                        if level_value:
+                            levels.append(level_value)
+                    else:
+                        parent_ids.append(normalized)
+
+                response_data = get_staged_geo_payload(
+                    database=database,
+                    metadata_type="geoFeatures",
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                    levels=list(dict.fromkeys(levels)),
+                    parent_ids=list(dict.fromkeys(parent_ids)),
+                    allow_live_fallback=True,
+                )
+                return compress_response_if_supported(response_data)
+
             # Generate cache key based on database and ou params
             cache_key_base = f"dhis2_geo_{database.id}_{ou_param}"
             cache_key = f"dhis2_geo_{hashlib.md5(cache_key_base.encode()).hexdigest()}"
@@ -3071,7 +4036,17 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             logger.exception("Failed to fetch DHIS2 geoFeatures")
             return self.response_500(message=str(ex))
 
-    def _fetch_geo_json(self, database: Database, levels_param: str, parents_param: str) -> Response:
+    def _fetch_geo_json(
+        self,
+        database: Database,
+        levels_param: str,
+        parents_param: str,
+        *,
+        staged: bool = False,
+        instance_id: int | None = None,
+        requested_instance_ids: list[int] | None = None,
+        federated: bool = False,
+    ) -> Response:
         """Fetch GeoJSON from DHIS2 organisationUnits.geojson endpoint.
 
         Args:
@@ -3086,6 +4061,33 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         from sqlalchemy.engine.url import make_url
 
         try:
+            if staged:
+                from superset.dhis2.metadata_staging_service import (
+                    get_staged_geo_payload,
+                )
+
+                levels = [
+                    candidate.strip()
+                    for candidate in str(levels_param or "").split(",")
+                    if candidate.strip()
+                ]
+                parents = [
+                    candidate.strip()
+                    for candidate in str(parents_param or "").split(",")
+                    if candidate.strip()
+                ]
+                response_data = get_staged_geo_payload(
+                    database=database,
+                    metadata_type="geoJSON",
+                    instance_id=instance_id,
+                    requested_instance_ids=requested_instance_ids,
+                    federated=federated,
+                    levels=levels,
+                    parent_ids=parents,
+                    allow_live_fallback=True,
+                )
+                return compress_response_if_supported(response_data)
+
             # Parse database URI to get connection details
             uri = make_url(database.sqlalchemy_uri_decrypted)
 

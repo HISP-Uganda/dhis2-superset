@@ -175,6 +175,8 @@ export class ChartCreation extends PureComponent<
   ChartCreationProps,
   ChartCreationState
 > {
+  private isMountedComponent = false;
+
   constructor(props: ChartCreationProps) {
     super(props);
     this.state = {
@@ -189,19 +191,26 @@ export class ChartCreation extends PureComponent<
     this.changeDatasource = this.changeDatasource.bind(this);
     this.changeVizType = this.changeVizType.bind(this);
     this.gotoSlice = this.gotoSlice.bind(this);
+    this.loadDatasourceById = this.loadDatasourceById.bind(this);
     this.loadDatasources = this.loadDatasources.bind(this);
+    this.mapDatasetToOption = this.mapDatasetToOption.bind(this);
+    this.prepopulateDatasource = this.prepopulateDatasource.bind(this);
     this.onVizTypeDoubleClick = this.onVizTypeDoubleClick.bind(this);
   }
 
   componentDidMount() {
-    const params = new URLSearchParams(window.location.search).get('dataset');
-    if (params) {
-      this.loadDatasources(params, 0, 1).then(r => {
-        const datasource = r.data[0];
-        this.setState({ datasource });
-      });
+    this.isMountedComponent = true;
+    const datasetParam = new URLSearchParams(window.location.search).get(
+      'dataset',
+    );
+    if (datasetParam) {
+      this.prepopulateDatasource(datasetParam);
       this.props.addSuccessToast(t('The dataset has been saved'));
     }
+  }
+
+  componentWillUnmount() {
+    this.isMountedComponent = false;
   }
 
   exploreUrl() {
@@ -235,6 +244,55 @@ export class ChartCreation extends PureComponent<
     }
   }
 
+  mapDatasetToOption(item: Dataset) {
+    return {
+      id: item.id,
+      value: `${item.id}__${item.datasource_type || 'table'}`,
+      label: DatasetSelectLabel(item),
+      customLabel: item.table_name,
+    };
+  }
+
+  loadDatasourceById(datasetId: number) {
+    return SupersetClient.get({
+      endpoint: `/api/v1/dataset/${datasetId}`,
+    }).then((response: JsonResponse) =>
+      this.mapDatasetToOption(response.json.result as Dataset),
+    );
+  }
+
+  async prepopulateDatasource(datasetParam: string) {
+    const trimmedValue = datasetParam.trim();
+    const isNumericDatasetId = /^\d+$/.test(trimmedValue);
+
+    try {
+      let datasource:
+        | { id: number; label: string | ReactNode; value: string }
+        | undefined;
+
+      if (isNumericDatasetId) {
+        datasource = await this.loadDatasourceById(Number(trimmedValue));
+      } else {
+        const response = await this.loadDatasources(trimmedValue, 0, 1);
+        datasource = response.data[0];
+      }
+
+      if (this.isMountedComponent && datasource) {
+        this.setState({ datasource });
+      }
+    } catch (error) {
+      if (!isNumericDatasetId) {
+        return;
+      }
+
+      const response = await this.loadDatasources(trimmedValue, 0, 1);
+      const datasource = response.data[0];
+      if (this.isMountedComponent && datasource) {
+        this.setState({ datasource });
+      }
+    }
+  }
+
   loadDatasources(search: string, page: number, pageSize: number) {
     const query = rison.encode({
       columns: [
@@ -257,12 +315,9 @@ export class ChartCreation extends PureComponent<
         id: number;
         label: string | ReactNode;
         value: string;
-      }[] = response.json.result.map((item: Dataset) => ({
-        id: item.id,
-        value: `${item.id}__${item.datasource_type}`,
-        label: DatasetSelectLabel(item),
-        customLabel: item.table_name,
-      }));
+      }[] = response.json.result.map((item: Dataset) =>
+        this.mapDatasetToOption(item),
+      );
       return {
         data: list,
         totalCount: response.json.count,

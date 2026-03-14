@@ -23,6 +23,7 @@ import {
   userEvent,
 } from 'spec/helpers/testing-library';
 import Footer from 'src/features/datasets/AddDataset/Footer';
+import refreshDatasetMetadata from 'src/features/datasets/AddDataset/refreshDatasetMetadata';
 
 const mockHistoryPush = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -42,6 +43,11 @@ jest.mock('src/views/CRUD/hooks', () => ({
     support:
       'https://superset.apache.org/docs/databases/installing-database-drivers',
   }),
+}));
+
+jest.mock('src/features/datasets/AddDataset/refreshDatasetMetadata', () => ({
+  __esModule: true,
+  default: jest.fn(),
 }));
 
 const mockedProps = {
@@ -128,6 +134,7 @@ describe('Footer', () => {
 
   test('navigates to chart creation when main button is clicked', async () => {
     mockCreateResource.mockResolvedValue(123); // Mock successful dataset creation
+    (refreshDatasetMetadata as jest.Mock).mockResolvedValue(undefined);
 
     render(<Footer {...mockPropsWithDataset} />, { useRedux: true });
 
@@ -142,11 +149,10 @@ describe('Footer', () => {
         database: '1',
         catalog: undefined,
         schema: 'public',
-        table_name: 'real_info',
+        table_name: 'Untitled',
       });
-      expect(mockHistoryPush).toHaveBeenCalledWith(
-        '/chart/add/?dataset=real_info',
-      );
+      expect(refreshDatasetMetadata).toHaveBeenCalledWith(123);
+      expect(mockHistoryPush).toHaveBeenCalledWith('/chart/add/?dataset=123');
     });
   });
 
@@ -170,7 +176,7 @@ describe('Footer', () => {
         database: '1',
         catalog: undefined,
         schema: 'public',
-        table_name: 'real_info',
+        table_name: 'Untitled',
       });
       expect(mockHistoryPush).toHaveBeenCalledWith('/tablemodelview/list/');
     });
@@ -218,7 +224,7 @@ describe('Footer', () => {
         database: '1',
         catalog: 'test_catalog',
         schema: 'public',
-        table_name: 'real_info',
+        table_name: 'Untitled',
       });
     });
   });

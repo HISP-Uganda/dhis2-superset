@@ -71,6 +71,12 @@ export interface DHIS2GeoFeature {
 export interface GeoFeatureLoadOptions {
   /** Database ID for the DHIS2 connection */
   databaseId: number;
+  /** Optional chart id for public/guest-safe metadata fallback */
+  chartId?: number;
+  /** Optional dashboard id for guest dashboard metadata fallback */
+  dashboardId?: number;
+  /** Optional DHIS2 instance IDs to scope staged/local boundary loading */
+  sourceInstanceIds?: number[];
   /** Organization unit levels to load (e.g., [1, 2, 3]) */
   levels: number[];
   /** Parent organization unit IDs to filter by (optional) */
@@ -141,6 +147,7 @@ export interface GeoFeatureLoadResult {
 interface GeoFeatureCache {
   features: DHIS2GeoJSONFeature[];
   timestamp: number;
+  sourceInstanceIds?: number[];
   levels: number[];
   parentOuIds?: string[];
   endpoint: 'geoFeatures' | 'geoJSON';
@@ -161,6 +168,66 @@ const memoryCache = new Map<string, GeoFeatureCache>();
 
 // Track ongoing background refreshes to prevent duplicates
 const backgroundRefreshInProgress = new Set<string>();
+
+function shouldTryPublicChartFallback(
+  error: unknown,
+  chartId?: number,
+): boolean {
+  if (!chartId) {
+    return false;
+  }
+  const status = Number((error as any)?.status);
+  return [400, 401, 403, 404].includes(status);
+}
+
+function buildMetadataSearchParams(
+  params: Record<string, string | undefined>,
+): Record<string, string> {
+  return Object.entries(params).reduce<Record<string, string>>(
+    (result, [key, value]) => {
+      if (value !== undefined) {
+        result[key] = value;
+      }
+      return result;
+    },
+    {},
+  );
+}
+
+async function fetchDHIS2MetadataWithPublicFallback(
+  options: GeoFeatureLoadOptions,
+  params: Record<string, string | undefined>,
+) {
+  const chartContextParams = {
+    slice_id: options.chartId ? String(options.chartId) : undefined,
+    dashboard_id: options.dashboardId
+      ? String(options.dashboardId)
+      : undefined,
+  };
+  const searchParams = buildMetadataSearchParams({
+    ...params,
+    ...chartContextParams,
+  });
+
+  try {
+    return await SupersetClient.get({
+      endpoint: `/api/v1/database/${options.databaseId}/dhis2_metadata/`,
+      searchParams,
+    });
+  } catch (error) {
+    if (!shouldTryPublicChartFallback(error, options.chartId)) {
+      throw error;
+    }
+
+    return SupersetClient.get({
+      endpoint: `/api/v1/database/${options.databaseId}/dhis2_metadata_public/`,
+      searchParams: buildMetadataSearchParams({
+        ...params,
+        ...chartContextParams,
+      }),
+    });
+  }
+}
 
 /**
  * Initialize IndexedDB database
@@ -478,12 +545,16 @@ function convertGeoFeatureToGeoJSON(
  * Load geo features using the geoFeatures endpoint
  */
 async function loadViaGeoFeaturesEndpoint(
-  databaseId: number,
-  levels: number[],
-  parentOuIds?: string[],
-  useWebWorker: boolean = false,
+  options: GeoFeatureLoadOptions,
 ): Promise<DHIS2GeoJSONFeature[]> {
   const allFeatures: DHIS2GeoJSONFeature[] = [];
+  const {
+    databaseId,
+    levels,
+    parentOuIds,
+    useWebWorker = false,
+    sourceInstanceIds,
+  } = options;
 
   const ouParts: string[] = [];
   levels.forEach(level => {
@@ -496,21 +567,21 @@ async function loadViaGeoFeaturesEndpoint(
   const ouDimension = ouParts.join(';');
 
   // eslint-disable-next-line no-console
-  console.log('[GeoFeatureLoader] loadViaGeoFeaturesEndpoint:', {
-    databaseId,
-    levels,
-    parentOuIds,
-    ouDimension,
-    ouParts,
-  });
+    console.log('[GeoFeatureLoader] loadViaGeoFeaturesEndpoint:', {
+      databaseId,
+      levels,
+      parentOuIds,
+      sourceInstanceIds,
+      ouDimension,
+      ouParts,
+    });
 
   try {
-    const response = await SupersetClient.get({
-      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/`,
-      searchParams: {
+    const response = await fetchDHIS2MetadataWithPublicFallback(options, {
         type: 'geoFeatures',
         ou: ouDimension,
-      },
+        staged: 'true',
+        instance_ids: sourceInstanceIds?.join(',') || undefined,
     });
 
     // eslint-disable-next-line no-console
@@ -608,20 +679,18 @@ async function loadViaGeoFeaturesEndpoint(
  * Load geo features using the GeoJSON endpoint
  */
 async function loadViaGeoJSONEndpoint(
-  databaseId: number,
-  levels: number[],
-  parentOuIds?: string[],
+  options: GeoFeatureLoadOptions,
 ): Promise<DHIS2GeoJSONFeature[]> {
   const allFeatures: DHIS2GeoJSONFeature[] = [];
+  const { levels, parentOuIds, sourceInstanceIds } = options;
 
   try {
-    const response = await SupersetClient.get({
-      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/`,
-      searchParams: {
+    const response = await fetchDHIS2MetadataWithPublicFallback(options, {
         type: 'geoJSON',
         levels: levels.join(','),
         parents: parentOuIds?.join(',') || '',
-      },
+        staged: 'true',
+        instance_ids: sourceInstanceIds?.join(',') || undefined,
     });
 
     const featureCollection: DHIS2GeoJSONFeatureCollection = response.json
@@ -646,8 +715,15 @@ function getCacheKey(options: GeoFeatureLoadOptions): string {
   const prefix = options.cacheKeyPrefix || 'dhis2_geo';
   const levels = options.levels.sort((a, b) => a - b).join('_');
   const parents = options.parentOuIds?.sort().join('_') || 'all';
+  const instances =
+    options.sourceInstanceIds
+      ?.slice()
+      .sort((a, b) => a - b)
+      .join('_') || 'all';
+  const chart = options.chartId ? `C${options.chartId}` : 'Call';
+  const dashboard = options.dashboardId ? `D${options.dashboardId}` : 'Dall';
   const endpoint = options.endpoint || 'geoFeatures';
-  return `${prefix}_db${options.databaseId}_${endpoint}_L${levels}_P${parents}`;
+  return `${prefix}_db${options.databaseId}_${endpoint}_${chart}_${dashboard}_I${instances}_L${levels}_P${parents}`;
 }
 
 /**
@@ -680,6 +756,15 @@ function isCacheValid(
   if (
     cachedParents.size !== requestedParents.size ||
     ![...cachedParents].every(p => requestedParents.has(p))
+  ) {
+    return false;
+  }
+
+  const cachedInstances = new Set(cache.sourceInstanceIds || []);
+  const requestedInstances = new Set(options.sourceInstanceIds || []);
+  if (
+    cachedInstances.size !== requestedInstances.size ||
+    ![...cachedInstances].every(instanceId => requestedInstances.has(instanceId))
   ) {
     return false;
   }
@@ -733,6 +818,7 @@ async function saveToCache(
     timestamp: Date.now(),
     levels: options.levels,
     parentOuIds: options.parentOuIds,
+    sourceInstanceIds: options.sourceInstanceIds,
     endpoint: options.endpoint || 'geoFeatures',
     databaseId: options.databaseId,
   };
@@ -765,18 +851,9 @@ async function backgroundRefresh(options: GeoFeatureLoadOptions): Promise<void> 
   try {
     let features: DHIS2GeoJSONFeature[];
     if (options.endpoint === 'geoJSON') {
-      features = await loadViaGeoJSONEndpoint(
-        options.databaseId,
-        options.levels,
-        options.parentOuIds,
-      );
+      features = await loadViaGeoJSONEndpoint(options);
     } else {
-      features = await loadViaGeoFeaturesEndpoint(
-        options.databaseId,
-        options.levels,
-        options.parentOuIds,
-        options.useWebWorker || false,
-      );
+      features = await loadViaGeoFeaturesEndpoint(options);
     }
 
     if (features.length > 0) {
@@ -843,6 +920,9 @@ export async function loadDHIS2GeoFeatures(
   // eslint-disable-next-line no-console
   console.log('[GeoFeatureLoader] Loading geo features:', {
     databaseId: options.databaseId,
+    chartId: options.chartId,
+    dashboardId: options.dashboardId,
+    sourceInstanceIds: options.sourceInstanceIds,
     levels: options.levels,
     endpoint: options.endpoint || 'geoFeatures',
     forceRefresh: options.forceRefresh,
@@ -919,17 +999,9 @@ export async function loadDHIS2GeoFeatures(
 
   try {
     if (options.endpoint === 'geoJSON') {
-      allFeatures = await loadViaGeoJSONEndpoint(
-        options.databaseId,
-        options.levels,
-        options.parentOuIds,
-      );
+      allFeatures = await loadViaGeoJSONEndpoint(options);
     } else {
-      allFeatures = await loadViaGeoFeaturesEndpoint(
-        options.databaseId,
-        options.levels,
-        options.parentOuIds,
-      );
+      allFeatures = await loadViaGeoFeaturesEndpoint(options);
     }
 
     // Verify loaded features have correct levels
@@ -1224,4 +1296,3 @@ export async function preloadAdjacentLevels(
 }
 
 export default loadDHIS2GeoFeatures;
-

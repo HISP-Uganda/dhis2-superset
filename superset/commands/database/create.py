@@ -42,6 +42,10 @@ from superset.commands.database.test_connection import TestConnectionDatabaseCom
 from superset.commands.database.utils import add_permissions
 from superset.daos.database import DatabaseDAO
 from superset.databases.ssh_tunnel.models import SSHTunnel
+from superset.db_engine_specs.dhis2 import DHIS2EngineSpec
+from superset.dhis2.metadata_staging_service import (
+    schedule_database_metadata_refresh_after_commit,
+)
 from superset.exceptions import OAuth2RedirectError, SupersetErrorsException
 from superset.extensions import event_logger
 from superset.models.core import Database
@@ -60,13 +64,20 @@ class CreateDatabaseCommand(BaseCommand):
         self.validate()
 
         try:
-            # Test connection before starting create transaction
-            TestConnectionDatabaseCommand(self._properties).run()
+            # A logical DHIS2 database shell is only a container for child instances.
+            # Its real endpoint authentication is validated when those instances are
+            # created in the following step.
+            if not DHIS2EngineSpec.is_shell_sqlalchemy_uri(
+                self._properties.get("sqlalchemy_uri")
+            ):
+                TestConnectionDatabaseCommand(self._properties).run()
         except OAuth2RedirectError:
             # If we can't connect to the database due to an OAuth2 error we can still
             # save the database. Later, the user can sync permissions when setting up
             # data access rules.
-            return self._create_database()
+            database = self._create_database()
+            self._schedule_dhis2_metadata_refresh(database)
+            return database
         except (
             SupersetErrorsException,
             SSHTunnelingNotEnabledError,
@@ -125,6 +136,7 @@ class CreateDatabaseCommand(BaseCommand):
         if ssh_tunnel:
             stats_logger.incr("db_creation_success.ssh_tunnel")
 
+        self._schedule_dhis2_metadata_refresh(database)
         return database
 
     def validate(self) -> None:
@@ -162,3 +174,12 @@ class CreateDatabaseCommand(BaseCommand):
         database = DatabaseDAO.create(attributes=self._properties)
         database.set_sqlalchemy_uri(database.sqlalchemy_uri)
         return database
+
+    @staticmethod
+    def _schedule_dhis2_metadata_refresh(database: Database) -> None:
+        if database.backend != "dhis2":
+            return
+        schedule_database_metadata_refresh_after_commit(
+            database.id,
+            reason="database_created",
+        )

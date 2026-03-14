@@ -23,6 +23,7 @@ export const COLOR_SCHEME_TYPES = {
   categorical_palette: 'categorical_palette',
   linear_palette: 'linear_palette',
   color_breakpoints: 'color_breakpoints',
+  dhis2_staged_legend: 'dhis2_staged_legend',
 } as const;
 
 export type ColorSchemeType =

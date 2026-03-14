@@ -146,7 +146,7 @@ type SliceHeaderControlsPropsWithRouter = SliceHeaderControlsProps &
   RouteComponentProps;
 
 const dropdownIconsStyles = css`
-  &&.anticon > .anticon:first-child {
+  &&.anticon > .anticon:first-of-type {
     margin-right: 0;
     vertical-align: 0;
   }

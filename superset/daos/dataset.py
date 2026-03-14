@@ -16,6 +16,7 @@
 # under the License.
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List
@@ -114,6 +115,48 @@ class DatasetDAO(BaseDAO[SqlaTable]):
             dataset_query = dataset_query.filter(SqlaTable.id != dataset_id)
 
         return not db.session.query(dataset_query.exists()).scalar()
+
+    @staticmethod
+    def find_dhis2_staged_local_dataset(
+        database: Database,
+        table: Table,
+        sql: str | None = None,
+        staged_dataset_id: int | None = None,
+    ) -> SqlaTable | None:
+        catalog = table.catalog or database.get_default_catalog()
+        dataset_query = db.session.query(SqlaTable).filter(
+            SqlaTable.table_name == table.table,
+            SqlaTable.schema == table.schema,
+            SqlaTable.catalog == catalog,
+            SqlaTable.database_id == database.id,
+        )
+
+        normalized_sql = (sql or "").strip() or None
+
+        for dataset in dataset_query.order_by(SqlaTable.id.desc()).all():
+            extra_raw = getattr(dataset, "extra", None)
+            if isinstance(extra_raw, dict):
+                extra = extra_raw
+            else:
+                try:
+                    extra = json.loads(extra_raw or "{}")
+                except (TypeError, ValueError):
+                    extra = {}
+
+            if not extra.get("dhis2_staged_local"):
+                continue
+
+            if (
+                isinstance(staged_dataset_id, int)
+                and extra.get("dhis2_staged_dataset_id") == staged_dataset_id
+            ):
+                return dataset
+
+            dataset_sql = (getattr(dataset, "sql", None) or "").strip() or None
+            if normalized_sql and dataset_sql == normalized_sql:
+                return dataset
+
+        return None
 
     @staticmethod
     def validate_update_uniqueness(

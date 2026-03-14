@@ -790,7 +790,7 @@ def pessimistic_connection_handling(some_engine: Engine) -> None:
             *args: Any,
         ) -> None:
             r"""
-            Enable foreign key support for SQLite.
+            Enable safer concurrent access defaults for SQLite metadata DBs.
 
             :param connection: The SQLite connection
             :param \*args: Additional positional arguments
@@ -799,6 +799,20 @@ def pessimistic_connection_handling(some_engine: Engine) -> None:
 
             with closing(connection.cursor()) as cursor:
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.fetchone()
+                except sqlite3.DatabaseError:
+                    logger.debug("SQLite journal_mode=WAL pragma unavailable", exc_info=True)
+                try:
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                except sqlite3.DatabaseError:
+                    logger.debug("SQLite synchronous pragma unavailable", exc_info=True)
+                try:
+                    cursor.execute("PRAGMA temp_store=MEMORY")
+                except sqlite3.DatabaseError:
+                    logger.debug("SQLite temp_store pragma unavailable", exc_info=True)
 
 
 def send_email_smtp(  # pylint: disable=invalid-name,too-many-arguments,too-many-locals

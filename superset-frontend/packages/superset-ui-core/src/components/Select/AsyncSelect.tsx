@@ -57,6 +57,10 @@ import {
   mapOptions,
   getOption,
   isObject,
+  normalizeOptions,
+  normalizeSelectValue,
+  denormalizeOption,
+  denormalizeSelectValue,
   isEqual as utilsIsEqual,
 } from './utils';
 import {
@@ -228,27 +232,38 @@ const AsyncSelect = forwardRef(
         ? missingValues.concat(selectOptions)
         : selectOptions;
     }, [selectOptions, selectValue]);
+    const normalizedFullSelectOptions = useMemo(
+      () => normalizeOptions(fullSelectOptions),
+      [fullSelectOptions],
+    );
+    const normalizedSelectValue = useMemo(
+      () => normalizeSelectValue(selectValue),
+      [selectValue],
+    );
 
     const handleOnSelect: SelectProps['onSelect'] = (selectedItem, option) => {
+      const normalizedSelectedItem = denormalizeSelectValue(selectedItem);
+      const normalizedOption = denormalizeOption(option);
+
       if (isSingleMode) {
         // on select is fired in single value mode if the same value is selected
         const valueChanged = !utilsIsEqual(
-          selectedItem,
+          normalizedSelectedItem,
           selectValue as RawValue | AntdLabeledValue,
           'value',
         );
-        setSelectValue(selectedItem);
+        setSelectValue(normalizedSelectedItem);
         if (valueChanged) {
           fireOnChange();
         }
       } else {
         setSelectValue(previousState => {
           const array = ensureIsArray(previousState);
-          const value = getValue(selectedItem);
+          const value = getValue(normalizedSelectedItem);
           // Tokenized values can contain duplicated values
           if (!hasOption(value, array)) {
-            const result = [...array, selectedItem];
-            return isLabeledValue(selectedItem)
+            const result = [...array, normalizedSelectedItem];
+            return isLabeledValue(normalizedSelectedItem)
               ? (result as AntdLabeledValue[])
               : (result as (string | number)[]);
           }
@@ -256,31 +271,34 @@ const AsyncSelect = forwardRef(
         });
         fireOnChange();
       }
-      onSelect?.(selectedItem, option);
+      onSelect?.(normalizedSelectedItem, normalizedOption);
     };
 
     const handleOnDeselect: SelectProps['onDeselect'] = (value, option) => {
+      const normalizedValue = denormalizeSelectValue(value);
+      const normalizedOption = denormalizeOption(option);
+
       if (Array.isArray(selectValue)) {
-        if (isLabeledValue(value)) {
+        if (isLabeledValue(normalizedValue)) {
           const array = selectValue as AntdLabeledValue[];
           setSelectValue(
-            array.filter(element => element.value !== value.value),
+            array.filter(element => element.value !== normalizedValue.value),
           );
         } else {
           const array = selectValue as (string | number)[];
-          setSelectValue(array.filter(element => element !== value));
+          setSelectValue(array.filter(element => element !== normalizedValue));
         }
         // removes new option
-        if (option.isNewOption) {
+        if (normalizedOption.isNewOption) {
           setSelectOptions(
             fullSelectOptions.filter(
-              option => getValue(option.value) !== getValue(value),
+              option => getValue(option.value) !== getValue(normalizedValue),
             ),
           );
         }
       }
       fireOnChange();
-      onDeselect?.(value, option);
+      onDeselect?.(normalizedValue, normalizedOption);
     };
 
     const internalOnError = useCallback(
@@ -625,12 +643,12 @@ const AsyncSelect = forwardRef(
           onSearch={showSearch ? handleOnSearch : undefined}
           onSelect={handleOnSelect}
           onClear={handleClear}
-          options={fullSelectOptions}
+          options={normalizedFullSelectOptions}
           optionRender={option => <Space>{option.label || option.value}</Space>}
           placeholder={placeholder}
           showSearch={allowNewOptions ? true : showSearch}
           tokenSeparators={tokenSeparators}
-          value={selectValue}
+          value={normalizedSelectValue}
           suffixIcon={getSuffixIcon(isLoading, showSearch, isDropdownVisible)}
           menuItemSelectedIcon={
             invertSelection ? (

@@ -103,7 +103,12 @@ def get_virtual_table_metadata(dataset: SqlaTable) -> list[ResultSetColumnType]:
             message=_("Virtual dataset query cannot be empty"),
         )
 
-    db_engine_spec = dataset.database.db_engine_spec
+    database = (
+        dataset.get_serving_database()
+        if hasattr(dataset, "get_serving_database")
+        else dataset.database
+    )
+    db_engine_spec = database.db_engine_spec
     try:
         sql = dataset.get_template_processor().process_template(
             dataset.sql, **dataset.template_params_dict
@@ -135,7 +140,7 @@ def get_virtual_table_metadata(dataset: SqlaTable) -> list[ResultSetColumnType]:
             )
         )
     return get_columns_description(
-        dataset.database,
+        database,
         dataset.catalog,
         dataset.schema,
         sql,

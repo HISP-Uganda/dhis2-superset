@@ -113,12 +113,12 @@ export const DatasetPreviewModal = ({
         }
       } else {
         const result = await getDatasourceSamples(
-          dataset.kind === 'virtual' ? 'table' : 'table',
+          'table',
           dataset.id,
           false,
           {},
           100,
-          0,
+          1,
         );
 
         if (result) {
@@ -138,10 +138,24 @@ export const DatasetPreviewModal = ({
             },
           }));
 
-          const rows = coldata.map((row: any, idx: number) => ({
-            ...Object.fromEntries(colnames.map((name: string) => [name, row])),
-            key: `row-${idx}`,
-          }));
+          const rows = coldata.map((row: any, idx: number) => {
+            const rowObject: Record<string, any> = {};
+
+            if (Array.isArray(row)) {
+              colnames.forEach((name: string, columnIndex: number) => {
+                rowObject[name] = row[columnIndex];
+              });
+            } else if (row && typeof row === 'object') {
+              colnames.forEach((name: string) => {
+                rowObject[name] = row[name];
+              });
+            }
+
+            return {
+              ...rowObject,
+              key: `row-${idx}`,
+            };
+          });
 
           setColumns(cols);
           setData(rows);

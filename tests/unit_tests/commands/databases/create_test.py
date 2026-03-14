@@ -155,3 +155,66 @@ def test_create_with_oauth2(
     ).run()
 
     add_permission_view_menu.assert_not_called()
+
+
+def test_create_dhis2_database_queues_metadata_refresh(
+    mocker: MockerFixture,
+    database_without_catalog: MockerFixture,
+) -> None:
+    database_without_catalog.id = 42
+    database_without_catalog.backend = "dhis2"
+    schedule_refresh = mocker.patch(
+        "superset.commands.database.create.schedule_database_metadata_refresh_after_commit"
+    )
+
+    CreateDatabaseCommand(
+        {
+            "database_name": "dhis2_db",
+            "sqlalchemy_uri": "dhis2://admin:district@example.org/api",
+        }
+    ).run()
+
+    schedule_refresh.assert_called_once_with(42, reason="database_created")
+
+
+def test_create_dhis2_shell_database_skips_live_connection_test(
+    mocker: MockerFixture,
+    database_without_catalog: MockerFixture,
+) -> None:
+    database_without_catalog.id = 44
+    database_without_catalog.backend = "dhis2"
+    test_connection_command = mocker.patch(
+        "superset.commands.database.create.TestConnectionDatabaseCommand"
+    )
+    mocker.patch(
+        "superset.commands.database.create.schedule_database_metadata_refresh_after_commit"
+    )
+
+    CreateDatabaseCommand(
+        {
+            "database_name": "dhis2_shell_db",
+            "sqlalchemy_uri": "dhis2://",
+        }
+    ).run()
+
+    test_connection_command.return_value.run.assert_not_called()
+
+
+def test_create_non_dhis2_database_does_not_queue_metadata_refresh(
+    mocker: MockerFixture,
+    database_without_catalog: MockerFixture,
+) -> None:
+    database_without_catalog.id = 43
+    database_without_catalog.backend = "sqlite"
+    schedule_refresh = mocker.patch(
+        "superset.commands.database.create.schedule_database_metadata_refresh_after_commit"
+    )
+
+    CreateDatabaseCommand(
+        {
+            "database_name": "sqlite_db",
+            "sqlalchemy_uri": "sqlite://",
+        }
+    ).run()
+
+    schedule_refresh.assert_not_called()

@@ -205,3 +205,49 @@ def test_command_with_oauth2_not_configured(mocker: MockerFixture) -> None:
             extra={"engine_name": "gsheets"},
         )
     ]
+
+
+def test_dhis2_validate_command_uses_engine_specific_connection_probe(
+    mocker: MockerFixture,
+) -> None:
+    database = mocker.MagicMock()
+    database.db_engine_spec.test_connection.return_value = True
+
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.validate.DatabaseDAO"
+    )
+    DatabaseDAO.build_db_for_connection_test.return_value = database
+
+    properties = {
+        "engine": "dhis2",
+        "driver": "dhis2",
+        "parameters": {
+            "host": "https://play.im.dhis2.org/stable-2-42-4",
+            "authentication_type": "basic",
+            "username": "admin",
+            "password": "district",
+        },
+    }
+
+    ValidateDatabaseParametersCommand(properties).run()
+
+    database.db_engine_spec.test_connection.assert_called_once_with(database)
+    database.get_sqla_engine.assert_not_called()
+
+
+def test_dhis2_shell_validate_command_skips_live_connection_probe(
+    mocker: MockerFixture,
+) -> None:
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.validate.DatabaseDAO"
+    )
+
+    properties = {
+        "engine": "dhis2",
+        "driver": "dhis2",
+        "parameters": {},
+    }
+
+    ValidateDatabaseParametersCommand(properties).run()
+
+    DatabaseDAO.build_db_for_connection_test.assert_not_called()

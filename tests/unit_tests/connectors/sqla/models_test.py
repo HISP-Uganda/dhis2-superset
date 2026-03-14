@@ -15,6 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from contextlib import contextmanager
+
 import pandas as pd
 import pytest
 from pytest_mock import MockerFixture
@@ -22,6 +24,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.session import Session
 
+from superset.commands.dataset.refresh import RefreshDatasetCommand
 from superset.connectors.sqla.models import SqlaTable, TableColumn
 from superset.daos.dataset import DatasetDAO
 from superset.exceptions import OAuth2RedirectError
@@ -71,6 +74,723 @@ def test_query_bubbles_errors(mocker: MockerFixture) -> None:
     }
     with pytest.raises(OAuth2RedirectError):
         sqla_table.query(query_obj)
+
+
+def test_staged_local_dataset_resolves_serving_database_from_extra(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="main",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ds_1_test",
+        sql="SELECT * FROM ds_1_test",
+        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        database=source_database,
+        database_id=2,
+    )
+
+    get_mock = mocker.patch("superset.connectors.sqla.models.db.session.get")
+    get_mock.return_value = serving_database
+
+    assert sqla_table.is_dhis2_staged_local is True
+    assert sqla_table.get_serving_database() is serving_database
+    get_mock.assert_called_once_with(Database, 7)
+
+
+def test_staged_local_dataset_falls_back_to_staging_database_for_legacy_sql(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+
+    serving_database = Database(
+        id=7,
+        database_name="main",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="Test DS",
+        sql="SELECT * FROM dhis2_staging.ds_1_test_ds",
+        extra=None,
+        database=source_database,
+        database_id=2,
+    )
+
+    get_staging_database = mocker.patch(
+        "superset.dhis2.staging_database_service.get_staging_database",
+        return_value=serving_database,
+    )
+
+    assert sqla_table.is_dhis2_staged_local is True
+    assert sqla_table.get_serving_database() is serving_database
+    get_staging_database.assert_called_once_with(always_create=True)
+
+
+def test_query_uses_serving_database_for_staged_local_dataset(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+
+    serving_database = mocker.MagicMock()
+    serving_database.get_df.return_value = pd.DataFrame({"value": [1]})
+    serving_database.unique_name = "[main]"
+    serving_database.get_extra.return_value = {}
+
+    sqla_table = SqlaTable(
+        table_name="ds_1_test",
+        sql="SELECT * FROM ds_1_test",
+        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        columns=[],
+        metrics=[],
+        database=source_database,
+        database_id=2,
+    )
+    mocker.patch.object(
+        sqla_table,
+        "get_query_str_extended",
+        return_value=mocker.MagicMock(
+            sql="SELECT * FROM ds_1_test",
+            labels_expected=["value"],
+            applied_template_filters=[],
+            applied_filter_columns=[],
+            rejected_filter_columns=[],
+        ),
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+
+    query_obj: QueryObjectDict = {
+        "granularity": None,
+        "from_dttm": None,
+        "to_dttm": None,
+        "groupby": ["value"],
+        "metrics": [],
+        "is_timeseries": False,
+        "filter": [],
+    }
+
+    result = sqla_table.query(query_obj)
+
+    assert result.status.value == "success"
+    serving_database.get_df.assert_called_once()
+
+
+def test_external_metadata_uses_serving_database_for_staged_local_dataset(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+
+    serving_database = mocker.MagicMock()
+    serving_database.db_engine_spec.engine = "sqlite"
+    serving_database.get_extra.return_value = {}
+
+    sqla_table = SqlaTable(
+        table_name="ds_1_test",
+        sql="SELECT * FROM ds_1_test",
+        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        database=source_database,
+        database_id=2,
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    get_columns_description = mocker.patch(
+        "superset.connectors.sqla.utils.get_columns_description",
+        return_value=[{"column_name": "value", "type": "INT"}],
+    )
+
+    result = sqla_table.external_metadata()
+
+    assert result == [{"column_name": "value", "type": "INT"}]
+    get_columns_description.assert_called_once_with(
+        serving_database,
+        sqla_table.catalog,
+        sqla_table.schema,
+        "SELECT * FROM sv_1_test",
+    )
+
+
+def test_refresh_repairs_database_binding_for_staged_local_dataset(
+    mocker: MockerFixture,
+) -> None:
+    dataset = mocker.MagicMock()
+    repair_binding = mocker.MagicMock()
+    dataset.repair_staged_local_database_binding = repair_binding
+    dataset.fetch_metadata = mocker.MagicMock()
+
+    mocker.patch(
+        "superset.commands.dataset.refresh.DatasetDAO.find_by_id",
+        return_value=dataset,
+    )
+    mocker.patch(
+        "superset.commands.dataset.refresh.security_manager.raise_for_ownership",
+        return_value=None,
+    )
+
+    RefreshDatasetCommand(42).run()
+
+    repair_binding.assert_called_once()
+    dataset.fetch_metadata.assert_called_once()
+
+
+def test_staged_local_repair_updates_legacy_sql_to_serving_table(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=source_database,
+        database_id=2,
+    )
+
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    ensure_serving_table = mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_staging.sv_4_anc_coverage", []),
+    )
+
+    sqla_table.repair_staged_local_database_binding()
+
+    assert sqla_table.database_id == 7
+    assert sqla_table.sql == "SELECT * FROM dhis2_staging.sv_4_anc_coverage"
+    assert sqla_table.extra_dict["dhis2_serving_table_ref"] == (
+        "dhis2_staging.sv_4_anc_coverage"
+    )
+    assert sqla_table.extra_dict["dhis2_serving_database_id"] == 7
+    ensure_serving_table.assert_called_once_with(4)
+
+
+def test_external_metadata_repairs_legacy_staged_local_sql_before_introspection(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=source_database,
+        database_id=2,
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_staging.sv_4_anc_coverage", []),
+    )
+    get_columns_description = mocker.patch(
+        "superset.connectors.sqla.utils.get_columns_description",
+        return_value=[{"column_name": "period", "type": "STRING"}],
+    )
+
+    result = sqla_table.external_metadata()
+
+    assert result == [{"column_name": "period", "type": "STRING"}]
+    get_columns_description.assert_called_once_with(
+        serving_database,
+        sqla_table.catalog,
+        sqla_table.schema,
+        "SELECT * FROM dhis2_staging.sv_4_anc_coverage",
+    )
+
+
+def test_staged_local_columns_payload_uses_serving_metadata_shape(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=source_database,
+        database_id=2,
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_staging.sv_4_anc_coverage", []),
+    )
+    mocker.patch.object(
+        sqla_table,
+        "external_metadata",
+        return_value=[
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "STRING",
+                "type_generic": "STRING",
+                "is_dttm": False,
+                "comment": "Serving period",
+            }
+        ],
+    )
+
+    assert sqla_table.get_staged_local_columns_payload() == [
+        {
+            "column_name": "period",
+            "verbose_name": "Period",
+            "type": "STRING",
+            "type_generic": "STRING",
+            "is_dttm": False,
+            "description": "Serving period",
+            "groupby": True,
+            "filterable": True,
+            "is_active": True,
+        }
+    ]
+
+
+def test_staged_local_data_uses_serving_columns_for_explore_bootstrap(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=source_database,
+        database_id=2,
+        columns=[
+            TableColumn(column_name="source_instance_id", type="INT"),
+            TableColumn(column_name="dx_uid", type="STRING"),
+        ],
+        metrics=[],
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "district",
+                "verbose_name": "District",
+                "type": "STRING",
+                "type_generic": "STRING",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "STRING",
+                "type_generic": "STRING",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "anc_1st_visit",
+                "verbose_name": "ANC 1st visit",
+                "type": "FLOAT",
+                "type_generic": "NUMERIC",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    data = sqla_table.data
+
+    assert data["database"]["id"] == 7
+    assert [column["column_name"] for column in data["columns"]] == [
+        "district",
+        "period",
+        "anc_1st_visit",
+    ]
+    assert data["verbose_map"]["district"] == "District"
+    assert data["verbose_map"]["anc_1st_visit"] == "ANC 1st visit"
+    assert data["order_by_choices"] == [
+        ('["district", true]', "district [asc]"),
+        ('["district", false]', "district [desc]"),
+        ('["period", true]', "period [asc]"),
+        ('["period", false]', "period [desc]"),
+        ('["anc_1st_visit", true]', "anc_1st_visit [asc]"),
+        ('["anc_1st_visit", false]', "anc_1st_visit [desc]"),
+    ]
+
+
+def test_staged_local_runtime_columns_resolve_from_serving_payload(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=source_database,
+        database_id=2,
+        columns=[
+            TableColumn(column_name="source_instance_id", type="INT"),
+            TableColumn(column_name="dx_uid", type="STRING"),
+        ],
+        metrics=[],
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "district",
+                "verbose_name": "District",
+                "type": "TEXT",
+                "type_generic": "STRING",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "TEXT",
+                "type_generic": "STRING",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "anc_1st_visit",
+                "verbose_name": "ANC 1st visit",
+                "type": "FLOAT",
+                "type_generic": "NUMERIC",
+                "is_dttm": False,
+                "description": None,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    assert sqla_table.column_names == ["anc_1st_visit", "district", "period"]
+    assert sqla_table.filterable_column_names == [
+        "anc_1st_visit",
+        "district",
+        "period",
+    ]
+    assert sqla_table.get_column("anc_1st_visit") is not None
+    assert sqla_table.get_column("anc_1st_visit").column_name == "anc_1st_visit"
+    assert sqla_table.get_column("source_instance_id") is None
+
+
+def test_staged_local_query_applies_terminal_ou_filter_for_selected_hierarchy_level(
+    mocker: MockerFixture,
+) -> None:
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+    engine = create_engine("sqlite://")
+
+    @contextmanager
+    def mock_get_sqla_engine(catalog=None, schema=None, **kwargs):
+        yield engine
+
+    mocker.patch.object(
+        serving_database,
+        "get_sqla_engine",
+        new=mock_get_sqla_engine,
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_4_anc_coverage",
+        sql="SELECT * FROM sv_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=serving_database,
+        database_id=7,
+        columns=[],
+        metrics=[],
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "national",
+                "verbose_name": "National",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 1}'
+                ),
+            },
+            {
+                "column_name": "region",
+                "verbose_name": "Region",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 2}'
+                ),
+            },
+            {
+                "column_name": "district",
+                "verbose_name": "District",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 3}'
+                ),
+            },
+            {
+                "column_name": "facility",
+                "verbose_name": "Facility",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 4}'
+                ),
+            },
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "cases",
+                "verbose_name": "Cases",
+                "type": "FLOAT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    sql = sqla_table.get_query_str_extended(
+        {
+            "granularity": None,
+            "from_dttm": None,
+            "to_dttm": None,
+            "groupby": ["region", "district"],
+            "metrics": [],
+            "is_timeseries": False,
+            "filter": [],
+        },
+        mutate=False,
+    ).sql
+
+    where_sql = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "district" in where_sql
+    assert "facility" in where_sql
+    assert "region" not in where_sql
+
+
+def test_query_repairs_staged_local_dataset_before_generating_sql(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = mocker.MagicMock()
+    serving_database.get_df.return_value = pd.DataFrame({"value": [1]})
+    serving_database.unique_name = "[main]"
+    serving_database.get_extra.return_value = {}
+
+    sqla_table = SqlaTable(
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.ds_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        columns=[],
+        metrics=[],
+        database=source_database,
+        database_id=2,
+    )
+
+    call_order: list[str] = []
+
+    def repair_side_effect() -> None:
+        call_order.append("repair")
+        sqla_table.sql = "SELECT * FROM dhis2_staging.sv_4_anc_coverage"
+
+    def get_query_str_extended_side_effect(*args, **kwargs):
+        call_order.append("query")
+        assert sqla_table.sql == "SELECT * FROM dhis2_staging.sv_4_anc_coverage"
+        return mocker.MagicMock(
+            sql=sqla_table.sql,
+            labels_expected=["value"],
+            applied_template_filters=[],
+            applied_filter_columns=[],
+            rejected_filter_columns=[],
+        )
+
+    mocker.patch.object(
+        sqla_table,
+        "repair_staged_local_database_binding",
+        side_effect=repair_side_effect,
+    )
+    mocker.patch.object(
+        sqla_table,
+        "get_query_str_extended",
+        side_effect=get_query_str_extended_side_effect,
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+
+    query_obj: QueryObjectDict = {
+        "granularity": None,
+        "from_dttm": None,
+        "to_dttm": None,
+        "groupby": ["value"],
+        "metrics": [],
+        "is_timeseries": False,
+        "filter": [],
+    }
+
+    result = sqla_table.query(query_obj)
+
+    assert result.status.value == "success"
+    assert call_order == ["repair", "query"]
+    serving_database.get_df.assert_called_once()
+
+
+def test_cleanup_linked_dhis2_staged_dataset_removes_local_tables_and_metadata(
+    mocker: MockerFixture,
+) -> None:
+    database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    sqla_table = SqlaTable(
+        id=21,
+        table_name="ANC Coverage",
+        sql="SELECT * FROM dhis2_staging.sv_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=database,
+        database_id=2,
+    )
+    connection = mocker.MagicMock()
+    select_result = mocker.MagicMock()
+    select_result.mappings.return_value.first.return_value = {
+        "id": 4,
+        "database_id": 2,
+        "name": "ANC Coverage",
+        "staging_table_name": "ds_4_anc_coverage",
+        "generic_dataset_id": 9,
+    }
+    connection.execute.side_effect = [
+        select_result,
+        mocker.MagicMock(),
+        mocker.MagicMock(),
+        mocker.MagicMock(),
+        mocker.MagicMock(),
+    ]
+
+    sqla_table.cleanup_linked_dhis2_staged_dataset(connection)
+
+    executed_sql = [call.args[0].text for call in connection.execute.call_args_list]
+    assert any("FROM dhis2_staged_datasets" in sql for sql in executed_sql)
+    assert any(
+        sql.endswith("ds_4_anc_coverage") and sql.startswith("DROP TABLE IF EXISTS ")
+        for sql in executed_sql
+    )
+    assert any(
+        sql.endswith("sv_4_anc_coverage") and sql.startswith("DROP TABLE IF EXISTS ")
+        for sql in executed_sql
+    )
+    assert any("DELETE FROM staged_datasets" in sql for sql in executed_sql)
+    assert any("DELETE FROM dhis2_staged_datasets" in sql for sql in executed_sql)
 
 
 def test_permissions_without_catalog() -> None:

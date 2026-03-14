@@ -18,6 +18,7 @@
 import pytest
 from pytest_mock import MockerFixture
 
+from superset.commands.database.exceptions import DatabaseTestConnectionFailedError
 from superset.commands.database.test_connection import TestConnectionDatabaseCommand
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import OAuth2RedirectError
@@ -89,3 +90,100 @@ def test_command_with_oauth2(mocker: MockerFixture) -> None:
         level=ErrorLevel.WARNING,
         extra={"url": "url", "tab_id": "tab_id", "redirect_uri": "redirect_uri"},
     )
+
+
+def test_dhis2_command_uses_engine_specific_connection_probe(
+    mocker: MockerFixture,
+) -> None:
+    database = mocker.MagicMock()
+    database.db_engine_spec.__name__ = "DHIS2EngineSpec"
+    database.db_engine_spec.test_connection.return_value = True
+
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.test_connection.DatabaseDAO"
+    )
+    DatabaseDAO.build_db_for_connection_test.return_value = database
+
+    properties = {
+        "sqlalchemy_uri": "dhis2://admin:district@play.im.dhis2.org/stable-2-42-4/api",
+    }
+
+    TestConnectionDatabaseCommand(properties).run()
+
+    database.db_engine_spec.test_connection.assert_called_once_with(database)
+    database.get_sqla_engine.assert_not_called()
+
+
+def test_dhis2_shell_command_skips_live_connection_probe(
+    mocker: MockerFixture,
+) -> None:
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.test_connection.DatabaseDAO"
+    )
+
+    properties = {
+        "engine": "dhis2",
+        "driver": "dhis2",
+        "sqlalchemy_uri": "dhis2://",
+        "parameters": {},
+    }
+
+    TestConnectionDatabaseCommand(properties).run()
+
+    DatabaseDAO.build_db_for_connection_test.assert_not_called()
+
+
+def test_dhis2_shell_uri_command_skips_live_connection_probe(
+    mocker: MockerFixture,
+) -> None:
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.test_connection.DatabaseDAO"
+    )
+
+    properties = {
+        "sqlalchemy_uri": "dhis2://",
+    }
+
+    TestConnectionDatabaseCommand(properties).run()
+
+    DatabaseDAO.build_db_for_connection_test.assert_not_called()
+
+
+def test_dhis2_command_returns_clean_connection_failure(
+    mocker: MockerFixture,
+) -> None:
+    database = mocker.MagicMock()
+    database.db_engine_spec.__name__ = "DHIS2EngineSpec"
+    database.unique_name = "Malaria Repository"
+    database.db_engine_spec.test_connection.side_effect = Exception(
+        "Connection test failed: Authentication failed. Please check your credentials."
+    )
+    database.db_engine_spec.extract_errors.return_value = [
+        SupersetError(
+            message="Authentication failed. Please check your credentials.",
+            error_type=SupersetErrorType.GENERIC_DB_ENGINE_ERROR,
+            level=ErrorLevel.ERROR,
+            extra={"engine_name": "DHIS2"},
+        )
+    ]
+
+    DatabaseDAO = mocker.patch(  # noqa: N806
+        "superset.commands.database.test_connection.DatabaseDAO"
+    )
+    DatabaseDAO.build_db_for_connection_test.return_value = database
+
+    properties = {
+        "sqlalchemy_uri": "dhis2://admin:district@play.im.dhis2.org/stable-2-42-4/api",
+    }
+
+    with pytest.raises(DatabaseTestConnectionFailedError) as excinfo:
+        TestConnectionDatabaseCommand(properties).run()
+
+    assert excinfo.value.errors == [
+        SupersetError(
+            message="Authentication failed. Please check your credentials.",
+            error_type=SupersetErrorType.GENERIC_DB_ENGINE_ERROR,
+            level=ErrorLevel.ERROR,
+            extra={"engine_name": "DHIS2"},
+        )
+    ]

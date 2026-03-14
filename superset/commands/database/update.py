@@ -41,6 +41,10 @@ from superset.commands.database.ssh_tunnel.update import UpdateSSHTunnelCommand
 from superset.commands.database.sync_permissions import SyncPermissionsCommand
 from superset.daos.database import DatabaseDAO
 from superset.databases.ssh_tunnel.models import SSHTunnel
+from superset.db_engine_specs.dhis2 import DHIS2EngineSpec
+from superset.dhis2.metadata_staging_service import (
+    schedule_database_metadata_refresh_after_commit,
+)
 from superset.exceptions import OAuth2RedirectError
 from superset.models.core import Database
 from superset.utils import json
@@ -66,6 +70,7 @@ class UpdateDatabaseCommand(BaseCommand):
             raise DatabaseNotFoundError()
 
         self.validate()
+        is_dhis2_shell = self._is_dhis2_shell_database()
 
         if "masked_encrypted_extra" in self._properties:
             # unmask ``encrypted_extra``
@@ -85,44 +90,50 @@ class UpdateDatabaseCommand(BaseCommand):
         # `get_default_catalog` would raise an exception. We need to
         # gracefully handle that so that the connection can be fixed.
         original_database_name = self._model.database_name
-        force_update: bool = False
-        try:
-            original_catalog = self._model.get_default_catalog()
-        except Exception:
-            original_catalog = None
-            force_update = True
+        force_update = False
+        original_catalog = None
+        if not is_dhis2_shell:
+            try:
+                original_catalog = self._model.get_default_catalog()
+            except Exception:
+                force_update = True
 
         # build new DB
         database = DatabaseDAO.update(self._model, self._properties)
         database.set_sqlalchemy_uri(database.sqlalchemy_uri)
         ssh_tunnel = self._handle_ssh_tunnel(database)
-        new_catalog = database.get_default_catalog()
+        new_catalog = None if is_dhis2_shell else database.get_default_catalog()
 
         # update assets when the database catalog changes, if the database was not
         # configured with multi-catalog support; if it was enabled or is enabled in the
         # update we don't update the assets
         if (
-            force_update
-            or new_catalog != original_catalog
-            and not self._model.allow_multi_catalog
-            and not database.allow_multi_catalog
+            not is_dhis2_shell
+            and (
+                force_update
+                or new_catalog != original_catalog
+                and not self._model.allow_multi_catalog
+                and not database.allow_multi_catalog
+            )
         ):
             self._update_catalog_attribute(self._model.id, new_catalog)
 
         # if the database name changed we need to update any existing permissions,
         # since they're name based
-        try:
-            current_username = get_username()
-            SyncPermissionsCommand(
-                self._model_id,
-                current_username,
-                old_db_connection_name=original_database_name,
-                db_connection=database,
-                ssh_tunnel=ssh_tunnel,
-            ).run()
-        except (OAuth2RedirectError, MissingOAuth2TokenError):
-            pass
+        if not is_dhis2_shell:
+            try:
+                current_username = get_username()
+                SyncPermissionsCommand(
+                    self._model_id,
+                    current_username,
+                    old_db_connection_name=original_database_name,
+                    db_connection=database,
+                    ssh_tunnel=ssh_tunnel,
+                ).run()
+            except (OAuth2RedirectError, MissingOAuth2TokenError):
+                pass
 
+        self._schedule_dhis2_metadata_refresh(database)
         return database
 
     def _handle_oauth2(self) -> None:
@@ -214,3 +225,36 @@ class UpdateDatabaseCommand(BaseCommand):
                 database_name,
             ):
                 raise DatabaseInvalidError(exceptions=[DatabaseExistsValidationError()])
+
+    def _is_dhis2_shell_database(self) -> bool:
+        if not self._model:
+            return False
+
+        backend = (
+            self._properties.get("backend")
+            or self._properties.get("engine")
+            or self._model.backend
+        )
+        if backend != "dhis2":
+            return False
+
+        sqlalchemy_uri = (
+            self._properties.get("sqlalchemy_uri")
+            or getattr(self._model, "sqlalchemy_uri_decrypted", None)
+            or getattr(self._model, "sqlalchemy_uri", None)
+        )
+        parameters = self._properties.get("parameters")
+
+        return DHIS2EngineSpec.is_shell_sqlalchemy_uri(sqlalchemy_uri) or (
+            isinstance(parameters, dict)
+            and DHIS2EngineSpec.is_configured_connection_shell(parameters)
+        )
+
+    @staticmethod
+    def _schedule_dhis2_metadata_refresh(database: Database) -> None:
+        if database.backend != "dhis2":
+            return
+        schedule_database_metadata_refresh_after_commit(
+            database.id,
+            reason="database_updated",
+        )

@@ -2238,6 +2238,32 @@ class TestDatasetApi(SupersetTestCase):
         assert id_column is not None
         self.items_to_delete = [dataset]
 
+    def test_dataset_item_refresh_accepts_post_for_backward_compatibility(self):
+        """
+        Dataset API: Test item refresh also accepts POST for older clients
+        """
+
+        dataset = self.insert_default_dataset()
+        id_column = (
+            db.session.query(TableColumn)
+            .filter_by(table_id=dataset.id, column_name="id")
+            .one()
+        )
+        self.items_to_delete = [id_column]
+
+        self.login(ADMIN_USERNAME)
+        uri = f"api/v1/dataset/{dataset.id}/refresh"
+        rv = self.post_assert_metric(uri, {}, "refresh")
+        assert rv.status_code == 200
+
+        id_column = (
+            db.session.query(TableColumn)
+            .filter_by(table_id=dataset.id, column_name="id")
+            .one()
+        )
+        assert id_column is not None
+        self.items_to_delete = [dataset]
+
     def test_dataset_item_refresh_not_found(self):
         """
         Dataset API: Test item refresh not found dataset
