@@ -5,13 +5,14 @@
   "keywords": ["superset", "map", "maplibre", "geo", "choropleth", "health"],
   "license": "Apache-2.0",
   "sideEffects": false,
-  "main": "src/index.ts",
+  "main": "lib/index.js",
   "dependencies": {
     "maplibre-gl": "^4.7.1",
     "lodash": "^4.17.21"
   },
   "peerDependencies": {
     "@superset-ui/core": "*",
+    "@superset-ui/chart-controls": "*",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
   },

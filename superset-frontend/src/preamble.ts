@@ -45,6 +45,16 @@ import 'dayjs/plugin/updateLocale';
 import 'dayjs/plugin/localizedFormat';
 import 'dayjs/plugin/isSameOrBefore';
 
+// Suppress "Download the React DevTools" console.info message in development.
+// We define a minimal stub so React sees the hook as present. If real DevTools
+// are already installed (extension present), this block is skipped.
+if (
+  typeof window !== 'undefined' &&
+  typeof (window as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ === 'undefined'
+) {
+  (window as any).__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
+}
+
 // Suppress ResizeObserver loop error - this is a harmless browser warning
 // that doesn't affect functionality but shows in webpack-dev-server overlay
 if (typeof window !== 'undefined') {

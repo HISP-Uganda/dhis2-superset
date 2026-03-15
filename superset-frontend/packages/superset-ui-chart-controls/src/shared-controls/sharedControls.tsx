@@ -250,7 +250,7 @@ const dhis2_period_filter_values: SharedControlConfig<'SelectAsyncControl'> = {
       resolveDhis2PeriodColumnName(datasource as Dataset) &&
         buildDhis2PeriodFilterEndpoint(datasource as Dataset),
     ),
-  mutator: response => getDhis2PeriodFilterChoices(response),
+  mutator: (response: Record<string, any>) => getDhis2PeriodFilterChoices(response),
   mapStateToProps: ({ datasource }) => {
     const dataEndpoint = buildDhis2PeriodFilterEndpoint(
       datasource as Dataset,

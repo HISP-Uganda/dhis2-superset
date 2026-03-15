@@ -96,7 +96,8 @@ export const BaseIconComponent = forwardRef<
       </span>
     ) : (
       <Component
-        ref={ref}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ref={ref as any}
         role={whatRole}
         style={style}
         aria-label={ariaLabel}

@@ -8,6 +8,7 @@ const metadata = new ChartMetadata({
   description: t(
     'High-visibility thematic and geographic analysis maps for points, boundaries, heatmaps, bubbles, and public-health spatial reporting.',
   ),
+  thumbnail: '',
   category: t('Map'),
   tags: [
     t('Map'),

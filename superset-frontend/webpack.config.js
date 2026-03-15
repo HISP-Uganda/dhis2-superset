@@ -251,15 +251,11 @@ if (isDevMode) {
 }
 
 const PREAMBLE = [path.join(APP_DIR, '/src/preamble.ts')];
-if (isDevMode) {
-  // A Superset webpage normally includes two JS bundles in dev, `theme.ts` and
-  // the main entrypoint. Only the main entry should have the dev server client,
-  // otherwise the websocket client will initialize twice, creating two sockets.
-  // Ref: https://github.com/gaearon/react-hot-loader/issues/141
-  PREAMBLE.unshift(
-    `webpack-dev-server/client?http://localhost:${devserverPort}`,
-  );
-}
+// Note: webpack-dev-server v4 auto-injects its HMR client with the correct
+// webSocketURL (port 9000) from devServer.client config. We no longer manually
+// add the client to PREAMBLE — that approach used a legacy query-string URL
+// that fell back to auto-detecting from window.location, causing it to try
+// ws://localhost:8088/ws when browsing the Flask server on port 8088.
 
 function addPreamble(entry) {
   return PREAMBLE.concat([path.join(APP_DIR, entry)]);

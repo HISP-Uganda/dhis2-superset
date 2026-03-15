@@ -9,7 +9,7 @@ export default function buildQuery(formData: QueryFormData) {
 
   return buildQueryContext(formData, params => [
     {
-      ...params[0],
+      ...(params[0] as object),
       metrics: metric ? [metric] : [],
       columns,
       orderby: [],

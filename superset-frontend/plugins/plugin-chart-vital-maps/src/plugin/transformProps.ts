@@ -6,7 +6,7 @@ import {
   DEFAULT_POINT_RADIUS_MIN, DEFAULT_POINT_RADIUS_MAX, DEFAULT_LABEL_ZOOM,
   DEFAULT_CLASS_COUNT, DEFAULT_NO_DATA_COLOR,
 } from '../constants/defaults';
-import { normalizeToFeatureCollection, detectDataType } from '../utils/geometry';
+import { normalizeToFeatureCollection } from '../utils/geometry';
 import { computeBoundsFromFeatureCollection } from '../utils/bounds';
 import { quantileBreaks, equalIntervalBreaks, parseManualBreaks, extractCategories } from '../utils/classify';
 import { getRamp, getCategoricalPalette, rampColors } from '../utils/colorScales';

@@ -23,7 +23,6 @@ export function buildTooltipPayload(
 ): TooltipPayload {
   if (!properties) return {};
   const { metricCol, labelCol, categoryCol, extraCols = [], metricLabel } = opts;
-  const excludedCols = new Set([metricCol, labelCol, categoryCol, ...extraCols].filter(Boolean) as string[]);
 
   const payload: TooltipPayload = {};
   if (labelCol && properties[labelCol] !== undefined) {

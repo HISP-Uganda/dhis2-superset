@@ -46,7 +46,8 @@ const AsyncIcon = forwardRef<HTMLSpanElement, IconType>((props, ref) => {
 
   return (
     <BaseIconComponent
-      ref={ref}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ref={ref as any}
       component={ImportedSVG.current || TransparentIcon}
       fileName={fileName}
       customIcons={customIcons}

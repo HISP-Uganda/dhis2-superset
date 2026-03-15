@@ -20,6 +20,13 @@
   {% set favicons = appbuilder.app.config['FAVICONS'] %}
 
   <head>
+    {# Suppress "Download the React DevTools" console.info in development.
+       Must be an inline script before any bundle scripts load. #}
+    <script nonce="{{ macros.get_nonce() }}">
+      if (!window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
+        window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
+      }
+    </script>
     <title>
       {% block title %}
         {% if title %}

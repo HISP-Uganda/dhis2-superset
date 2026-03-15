@@ -1,5 +1,4 @@
 type AnyFeature = GeoJSON.Feature<GeoJSON.Geometry | null, Record<string, unknown>>;
-type AnyFeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Geometry | null, Record<string, unknown>>;
 
 export function parseGeometry(raw: unknown): GeoJSON.Geometry | null {
   if (!raw) return null;
@@ -90,8 +89,8 @@ export function normalizeToFeatureCollection(
     labelCol?: string;
     categoryCol?: string;
   },
-): AnyFeatureCollection {
-  const features: AnyFeature[] = [];
+): GeoJSON.FeatureCollection {
+  const features: GeoJSON.Feature[] = [];
   const { latCol, lonCol, geometryCol } = opts;
   const dataType = detectDataType(rows, opts);
 

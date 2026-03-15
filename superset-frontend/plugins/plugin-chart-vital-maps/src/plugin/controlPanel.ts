@@ -1,10 +1,11 @@
-import { t, ControlPanelConfig, sections } from '@superset-ui/core';
+import { t } from '@superset-ui/core';
+import { ControlPanelConfig } from '@superset-ui/chart-controls';
 import {
-  DEFAULT_BASEMAP_ID, DEFAULT_OPACITY, DEFAULT_BORDER_WIDTH, DEFAULT_BORDER_COLOR,
+  DEFAULT_OPACITY, DEFAULT_BORDER_WIDTH,
   DEFAULT_POINT_RADIUS, DEFAULT_POINT_RADIUS_MIN, DEFAULT_POINT_RADIUS_MAX,
   DEFAULT_LABEL_ZOOM, DEFAULT_CLASS_COUNT, DEFAULT_LAYER_TYPE,
 } from '../constants/defaults';
-import { BASEMAP_PRESETS } from '../constants/basemaps';
+import { BASEMAP_PRESETS, DEFAULT_BASEMAP_ID } from '../constants/basemaps';
 
 const controlPanel: ControlPanelConfig = {
   controlPanelSections: [

@@ -1,6 +1,5 @@
 import maplibregl from 'maplibre-gl';
-import { SRC, LYR, DEFAULT_NO_DATA_COLOR } from '../constants/defaults';
-import { assignClass } from '../utils/classify';
+import { SRC, LYR } from '../constants/defaults';
 
 const SID = SRC.CHOROPLETH;
 

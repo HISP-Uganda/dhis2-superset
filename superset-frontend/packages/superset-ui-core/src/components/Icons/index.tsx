@@ -70,7 +70,8 @@ customIcons.forEach(customIcon => {
   iconOverrides[customIcon] = forwardRef<HTMLSpanElement, IconType>(
     (props, ref) => (
       <AsyncIcon
-        ref={ref}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ref={ref as any}
         customIcons
         fileName={fileName}
         {...props}

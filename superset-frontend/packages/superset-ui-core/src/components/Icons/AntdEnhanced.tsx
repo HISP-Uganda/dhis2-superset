@@ -305,7 +305,8 @@ export const antdEnhancedIcons: Record<
       acc[key as AntdIconNames] = forwardRef<HTMLSpanElement, IconType>(
         (props, ref) => (
           <BaseIconComponent
-            ref={ref}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ref={ref as any}
             component={AntdIcons[key as AntdIconNames]}
             fileName={key}
             {...props}

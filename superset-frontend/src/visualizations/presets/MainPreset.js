@@ -83,7 +83,7 @@ import { FilterPlugins } from 'src/constants';
 import AgGridTableChartPlugin from '@superset-ui/plugin-chart-ag-grid-table';
 import TimeTableChartPlugin from '../TimeTable';
 import DHIS2MapChartPlugin from '../DHIS2Map';
-import VitalMapsChartPlugin from '../../plugins/plugin-chart-vital-maps/src/index';
+import VitalMapsChartPlugin from '@superset-ui/plugin-chart-vital-maps';
 
 export default class MainPreset extends Preset {
   constructor() {
