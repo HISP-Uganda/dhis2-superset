@@ -272,6 +272,7 @@ class DashboardDatasetSchema(Schema):
     id = fields.Int()
     uid = fields.Str()
     column_formats = fields.Dict()
+    extra = fields.Str()  # needed for DHIS2 Map (source_database_id, staged_local flag, etc.)
     database = fields.Nested(DatabaseSchema)
     default_endpoint = fields.String()
     filter_select = fields.Bool()

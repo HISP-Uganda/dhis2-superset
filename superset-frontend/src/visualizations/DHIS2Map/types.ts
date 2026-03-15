@@ -59,6 +59,11 @@ export type AggregationMethod =
   | 'min'
   | 'count'
   | 'latest';
+export type MapCornerPosition =
+  | 'topleft'
+  | 'topright'
+  | 'bottomleft'
+  | 'bottomright';
 export type LegendType =
   | 'auto'
   | 'equal_interval'
@@ -106,6 +111,7 @@ export interface DHIS2MapProps {
   sourceInstanceIds?: number[];
   orgUnitColumn: string;
   metric: string;
+  metricLabel?: string;
   primaryBoundaryLevel?: number;
   aggregationMethod?: AggregationMethod;
   boundaryLevels: number[];
@@ -131,7 +137,7 @@ export interface DHIS2MapProps {
   labelType: 'name' | 'value' | 'name_value' | 'percent';
   labelFontSize: number;
   showLegend: boolean;
-  legendPosition: 'topleft' | 'topright' | 'bottomleft' | 'bottomright';
+  legendPosition: MapCornerPosition;
   legendClasses: number;
   legendType?: LegendType;
   legendMin?: number;

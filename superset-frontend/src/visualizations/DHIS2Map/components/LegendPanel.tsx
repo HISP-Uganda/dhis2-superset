@@ -17,27 +17,21 @@
  * under the License.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { styled, t } from '@superset-ui/core';
 import { ComputedLegendEntry, formatValue } from '../utils';
-import { DHIS2LegendDefinition, LevelBorderColor } from '../types';
-
-export type LegendMode = 'compact' | 'detailed' | 'hidden';
-export type LegendPosition =
-  | 'topleft'
-  | 'topright'
-  | 'bottomleft'
-  | 'bottomright';
+import {
+  DHIS2LegendDefinition,
+  LevelBorderColor,
+  MapCornerPosition,
+} from '../types';
 
 interface LegendPanelProps {
   colorScale: (value: number) => string;
   valueRange: { min: number; max: number };
-  position: LegendPosition;
+  position: MapCornerPosition;
   classes: number;
   metricName: string;
-  mode?: LegendMode;
-  onModeChange?: (mode: LegendMode) => void;
-  backgroundColor?: string;
   noDataColor?: { r: number; g: number; b: number; a: number };
   levelBorderColors?: LevelBorderColor[];
   levelLabels?: Record<number, string>;
@@ -48,106 +42,129 @@ interface LegendPanelProps {
   legendEntries?: ComputedLegendEntry[];
 }
 
+function colorWithAlpha(color: string, alpha: number): string {
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    const normalizedHex =
+      hex.length === 3
+        ? hex
+            .split('')
+            .map(char => `${char}${char}`)
+            .join('')
+        : hex;
+    if (normalizedHex.length === 6) {
+      const r = parseInt(normalizedHex.slice(0, 2), 16);
+      const g = parseInt(normalizedHex.slice(2, 4), 16);
+      const b = parseInt(normalizedHex.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+  }
+
+  const rgbMatch = color.match(
+    /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/i,
+  );
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
+  }
+
+  return `rgba(241, 245, 249, ${alpha})`;
+}
+
 /* eslint-disable theme-colors/no-literal-colors */
 const LegendContainer = styled.div<{
-  position: LegendPosition;
-  isCompact: boolean;
-  backgroundColor: string;
+  position: MapCornerPosition;
 }>`
-  position: absolute;
-  ${({ position }) => {
-    const [vertical, horizontal] = [
-      position.includes('top') ? 'top: 12px' : 'bottom: 18px',
-      position.includes('left') ? 'left: 12px' : 'right: 12px',
-    ];
-    return `${vertical}; ${horizontal};`;
-  }}
-  background: ${({ backgroundColor }) => backgroundColor};
-  padding: ${({ isCompact }) => (isCompact ? '4px 6px' : '6px 8px')};
-  border-radius: 4px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-  z-index: 1000;
-  min-width: ${({ isCompact }) => (isCompact ? '88px' : '112px')};
-  max-width: ${({ isCompact }) => (isCompact ? '160px' : '190px')};
-  max-height: ${({ isCompact }) => (isCompact ? '34px' : '240px')};
-  overflow-y: auto;
-  opacity: 0.95;
-  backdrop-filter: blur(2px);
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: ${({ position }) =>
+    position.includes('left') ? 'flex-start' : 'flex-end'};
+  pointer-events: none;
 `;
 
-const LegendHeader = styled.div`
+const LegendContent = styled.div`
+  width: 100%;
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  margin-bottom: 4px;
+  gap: 3px 6px;
 `;
 
 const LegendTitle = styled.div`
-  font-weight: 600;
-  margin-bottom: 2px;
-  font-size: 10px;
-  line-height: 1.2;
-  max-width: 132px;
-  word-break: break-word;
+  flex: 1 0 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: fit-content;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(191, 219, 254, 0.28);
+  font-weight: 500;
+  margin-bottom: 0;
+  font-size: 7px;
+  line-height: 1.15;
+  color: #334155;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 `;
 
-const LegendItem = styled.div`
-  display: flex;
+const LegendItem = styled.div<{
+  $backgroundColor?: string;
+  $borderColor?: string;
+}>`
+  display: inline-flex;
   align-items: center;
-  margin: 2px 0;
-  font-size: 9px;
-  line-height: 1.2;
+  font-size: 7px;
+  line-height: 1.1;
+  font-weight: 400;
+  color: #334155;
+  white-space: normal;
+  max-width: 100%;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: ${({ $backgroundColor }) =>
+    $backgroundColor || 'rgba(248, 250, 252, 0.88)'};
+  border: 1px solid
+    ${({ $borderColor }) => $borderColor || 'rgba(148, 163, 184, 0.28)'};
 `;
 
 const ColorBox = styled.div<{ color: string }>`
-  width: 14px;
-  min-width: 14px;
-  height: 10px;
+  width: 8px;
+  min-width: 8px;
+  height: 7px;
   background: ${({ color }) => color};
-  margin-right: 6px;
+  margin-right: 3px;
   border: 1px solid rgba(0, 0, 0, 0.2);
   border-radius: 2px;
 `;
 
-const ModeButton = styled.button`
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 10px;
-  color: #666;
-  padding: 0 2px;
-
-  &:hover {
-    color: #000;
-  }
-`;
-
-const CompactLegend = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 9px;
-  line-height: 1.1;
-`;
-
 const LegendDivider = styled.hr`
+  width: 1px;
+  align-self: stretch;
   border: none;
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-  margin: 6px 0;
+  background: rgba(15, 23, 42, 0.1);
+  margin: 0 2px;
 `;
 
 const BoundaryLegendTitle = styled.div`
-  font-weight: 600;
-  font-size: 9px;
-  margin-bottom: 3px;
-  color: #666;
+  font-weight: 500;
+  font-size: 7px;
+  line-height: 1.1;
+  color: #475569;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.5);
 `;
 
 const BorderLineBox = styled.div<{ color: string; width: number }>`
-  width: 14px;
-  min-width: 14px;
+  width: 8px;
+  min-width: 8px;
   background: ${({ color }) => color};
-  margin-right: 6px;
+  margin-right: 3px;
   border-radius: 1px;
   height: ${({ width }) => Math.max(width * 2, 2)}px;
 `;
@@ -159,9 +176,6 @@ function LegendPanel({
   position,
   classes,
   metricName,
-  mode = 'detailed',
-  onModeChange,
-  backgroundColor = 'rgba(255, 255, 255, 0.95)',
   noDataColor = { r: 204, g: 204, b: 204, a: 1 },
   levelBorderColors = [],
   levelLabels = {},
@@ -171,13 +185,6 @@ function LegendPanel({
   stagedLegendDefinition,
   legendEntries = [],
 }: LegendPanelProps): React.ReactElement | null {
-  const [currentMode, setCurrentMode] = useState<LegendMode>(mode);
-
-  const handleModeChange = (newMode: LegendMode) => {
-    setCurrentMode(newMode);
-    onModeChange?.(newMode);
-  };
-
   // Calculate breaks - use manual breaks if provided, otherwise auto-calculate
   const breaks = useMemo(() => {
     if (stagedLegendDefinition?.items?.length) {
@@ -205,47 +212,11 @@ function LegendPanel({
   const getLevelName = (level: number): string =>
     levelLabels[level] || `Level ${level}`;
 
-  if (currentMode === 'compact') {
-    return (
-      <LegendContainer
-        position={position}
-        isCompact
-        backgroundColor={backgroundColor}
-      >
-        <CompactLegend>
-          <span>{metricName}:</span>
-          <span>
-            {formatValue(valueRange.min)} – {formatValue(valueRange.max)}
-          </span>
-          <ModeButton
-            onClick={() => handleModeChange('detailed')}
-            title={t('Expand')}
-          >
-            ▼
-          </ModeButton>
-        </CompactLegend>
-      </LegendContainer>
-    );
-  }
-
   return (
-    <LegendContainer
-      position={position}
-      isCompact={false}
-      backgroundColor={backgroundColor}
-    >
-      <LegendHeader>
+    <LegendContainer position={position}>
+      <LegendContent>
         <LegendTitle>{metricName}</LegendTitle>
-        <div>
-          <ModeButton
-            onClick={() => handleModeChange('compact')}
-            title={t('Compact')}
-          >
-            ▲
-          </ModeButton>
-        </div>
-      </LegendHeader>
-      {(legendEntries.length
+        {(legendEntries.length
         ? legendEntries
         : (stagedLegendDefinition?.items?.length
             ? stagedLegendDefinition.items.map((item, index) => ({
@@ -286,37 +257,61 @@ function LegendPanel({
             };
           })).map(entry => {
         return (
-          <LegendItem key={entry.key}>
+          <LegendItem
+            key={entry.key}
+            $backgroundColor={colorWithAlpha(entry.color, 0.14)}
+            $borderColor={colorWithAlpha(entry.color, 0.28)}
+          >
             <ColorBox color={entry.color} />
             <span>{entry.label}</span>
           </LegendItem>
         );
       })}
-      <LegendItem>
-        <ColorBox
-          color={`rgba(${noDataColor.r},${noDataColor.g},${noDataColor.b},${noDataColor.a})`}
-        />
-        <span>{t('No data')}</span>
-      </LegendItem>
+        <LegendItem
+          $backgroundColor={colorWithAlpha(
+            `rgba(${noDataColor.r},${noDataColor.g},${noDataColor.b},${noDataColor.a})`,
+            0.12,
+          )}
+          $borderColor={colorWithAlpha(
+            `rgba(${noDataColor.r},${noDataColor.g},${noDataColor.b},${noDataColor.a})`,
+            0.22,
+          )}
+        >
+          <ColorBox
+            color={`rgba(${noDataColor.r},${noDataColor.g},${noDataColor.b},${noDataColor.a})`}
+          />
+          <span>{t('No data')}</span>
+        </LegendItem>
 
-      {/* Boundary Level Legend */}
-      {showBoundaryLegend &&
-        levelBorderColors &&
-        levelBorderColors.length > 1 && (
-          <>
-            <LegendDivider />
-            <BoundaryLegendTitle>{t('Boundary Levels')}</BoundaryLegendTitle>
-            {levelBorderColors.map(levelConfig => (
-              <LegendItem key={levelConfig.level}>
-                <BorderLineBox
-                  color={`rgba(${levelConfig.color.r},${levelConfig.color.g},${levelConfig.color.b},${levelConfig.color.a})`}
-                  width={levelConfig.width || 1}
-                />
-                <span>{getLevelName(levelConfig.level)}</span>
-              </LegendItem>
-            ))}
-          </>
-        )}
+        {/* Boundary Level Legend */}
+        {showBoundaryLegend &&
+          levelBorderColors &&
+          levelBorderColors.length > 1 && (
+            <>
+              <LegendDivider />
+              <BoundaryLegendTitle>{t('Boundary Levels')}</BoundaryLegendTitle>
+              {levelBorderColors.map(levelConfig => (
+                <LegendItem
+                  key={levelConfig.level}
+                  $backgroundColor={colorWithAlpha(
+                    `rgba(${levelConfig.color.r},${levelConfig.color.g},${levelConfig.color.b},${levelConfig.color.a})`,
+                    0.12,
+                  )}
+                  $borderColor={colorWithAlpha(
+                    `rgba(${levelConfig.color.r},${levelConfig.color.g},${levelConfig.color.b},${levelConfig.color.a})`,
+                    0.26,
+                  )}
+                >
+                  <BorderLineBox
+                    color={`rgba(${levelConfig.color.r},${levelConfig.color.g},${levelConfig.color.b},${levelConfig.color.a})`}
+                    width={levelConfig.width || 1}
+                  />
+                  <span>{getLevelName(levelConfig.level)}</span>
+                </LegendItem>
+              ))}
+            </>
+          )}
+      </LegendContent>
     </LegendContainer>
   );
 };

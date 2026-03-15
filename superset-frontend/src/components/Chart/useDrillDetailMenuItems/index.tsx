@@ -109,6 +109,7 @@ export const useDrillDetailMenuItems = ({
   setFilters,
   setShowModal,
   key,
+  isLoadingDataset: _isLoadingDataset, // destructured to prevent leaking into ...props and reaching DOM elements
   ...props
 }: DrillDetailMenuItemsProps): ItemType[] => {
   const drillToDetailDisabled = useSelector<RootState, boolean | undefined>(

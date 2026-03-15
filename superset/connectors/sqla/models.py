@@ -1301,6 +1301,12 @@ class SqlaTable(
         serving_database_name = getattr(serving_database, "database_name", None)
 
         if isinstance(serving_database_id, int) and serving_database_id != self.database_id:
+            # Persist the DHIS2 source database ID before overwriting it so that
+            # transformProps can look up the correct DHIS2 connection in the
+            # dashboard context (where only datasource.extra is available).
+            if not extra.get("dhis2_source_database_id"):
+                extra["dhis2_source_database_id"] = self.database_id
+                changed = True
             self.database = serving_database
             self.database_id = serving_database_id
             changed = True
@@ -1609,6 +1615,23 @@ class SqlaTable(
                     )
 
                 data_["database"] = self.get_serving_database().data
+                # Ensure the DHIS2 source database ID is always exposed in
+                # the extra JSON so the frontend can use it for boundary
+                # fetches in dashboard context.  If repair_staged_local_-
+                # database_binding hasn't stored it yet, derive it from the
+                # DHIS2StagedDataset record so no migration is required.
+                if not self.extra_dict.get("dhis2_source_database_id"):
+                    staged_dataset_id = self.extra_dict.get("dhis2_staged_dataset_id")
+                    if isinstance(staged_dataset_id, int):
+                        try:
+                            from superset.dhis2.models import DHIS2StagedDataset
+                            staged = db.session.get(DHIS2StagedDataset, staged_dataset_id)
+                            if staged is not None and staged.database_id:
+                                enriched_extra = dict(self.extra_dict)
+                                enriched_extra["dhis2_source_database_id"] = staged.database_id
+                                data_["extra"] = json.dumps(enriched_extra)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
                 data_["columns"] = columns_payload
                 data_["verbose_map"] = verbose_map
                 data_["granularity_sqla"] = utils.choicify(serving_dttm_cols)

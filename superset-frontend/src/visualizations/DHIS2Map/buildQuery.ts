@@ -19,6 +19,7 @@
 
 import { buildQueryContext, QueryFormData } from '@superset-ui/core';
 import { sanitizeDHIS2ColumnName } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
+import { resolveDHIS2MetricLabel } from '../../utils/dhis2MetricLabel';
 
 function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
   if (!extra) {
@@ -303,12 +304,18 @@ export default function buildQuery(formData: QueryFormData) {
           return 'SUM';
       }
     })();
+    const metricLabel =
+      (typeof metric === 'string'
+        ? undefined
+        : resolveDHIS2MetricLabel(metric as any)) ||
+      (sanitizedMetric ? `${aggregateFunction}(${sanitizedMetric})` : undefined);
     const aggregatedMetric =
       sanitizedMetric && !isLatestAggregation
         ? {
             expressionType: 'SQL' as const,
             sqlExpression: `${aggregateFunction}(${sanitizedMetric})`,
-            label: `${aggregateFunction}(${sanitizedMetric})`,
+            label:
+              metricLabel || `${aggregateFunction}(${sanitizedMetric})`,
           }
         : undefined;
 
@@ -329,6 +336,7 @@ export default function buildQuery(formData: QueryFormData) {
       focusSelectedBoundaryWithChildren,
       aggregationMethod: aggregation_method,
       isLatestAggregation,
+      metricLabel,
       aggregatedMetricLabel: aggregatedMetric?.label,
       columns,
       granularity: granularity_sqla,

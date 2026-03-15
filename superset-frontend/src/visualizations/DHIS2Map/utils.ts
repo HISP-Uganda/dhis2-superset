@@ -34,6 +34,7 @@ import {
   DHIS2LegendDefinition,
   DHIS2LegendItem,
   LegendType,
+  MapCornerPosition,
 } from './types';
 
 const ORG_UNIT_SUFFIX_PATTERNS = [
@@ -729,7 +730,7 @@ export function buildOrgUnitMatchKeys(value: unknown): string[] {
   return Array.from(keys).filter(Boolean);
 }
 
-export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
+function buildBounds(features: BoundaryFeature[]): L.LatLngBounds {
   const featureCollection = {
     type: 'FeatureCollection' as const,
     features: features as GeoJSON.Feature[],
@@ -737,8 +738,12 @@ export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
   const geojsonLayer = L.geoJSON(
     featureCollection as GeoJSON.FeatureCollection,
   );
-  const bounds = geojsonLayer.getBounds();
-  
+  return geojsonLayer.getBounds();
+}
+
+export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
+  const bounds = buildBounds(features);
+
   // Debug: Log the calculated bounds with actual values
   const ne = bounds.getNorthEast();
   const sw = bounds.getSouthWest();
@@ -762,38 +767,160 @@ export interface MapFitViewportConfig {
   maxZoom: number;
 }
 
+export interface MapFitViewportOptions {
+  legendPosition?: MapCornerPosition;
+  reserveLegendSpace?: boolean;
+}
+
+const getFeatureBoundsCenter = (
+  feature: BoundaryFeature,
+): L.LatLng | null => {
+  try {
+    const featureBounds = L.geoJSON(feature as any).getBounds();
+    return featureBounds.isValid() ? featureBounds.getCenter() : null;
+  } catch {
+    return null;
+  }
+};
+
+function getLegendCornerCoordinates(
+  position: MapCornerPosition,
+): { x: number; y: number } {
+  return {
+    x: position.includes('right') ? 1 : 0,
+    y: position.includes('bottom') ? 1 : 0,
+  };
+}
+
+export function resolveStrategicLegendPosition(
+  features: BoundaryFeature[],
+  preferredPosition: MapCornerPosition = 'bottomright',
+): MapCornerPosition {
+  if (!features.length) {
+    return preferredPosition;
+  }
+
+  const bounds = buildBounds(features);
+  if (!bounds.isValid()) {
+    return preferredPosition;
+  }
+
+  const northEast = bounds.getNorthEast();
+  const southWest = bounds.getSouthWest();
+  const latSpan = Math.max(0.000001, northEast.lat - southWest.lat);
+  const lngSpan = Math.max(0.000001, northEast.lng - southWest.lng);
+
+  const centroids = features
+    .map(getFeatureBoundsCenter)
+    .filter(Boolean)
+    .map(center => ({
+      x: ((center as L.LatLng).lng - southWest.lng) / lngSpan,
+      y: (northEast.lat - (center as L.LatLng).lat) / latSpan,
+    }));
+
+  if (!centroids.length) {
+    return preferredPosition;
+  }
+
+  const candidatePositions: MapCornerPosition[] = [
+    'topright',
+    'bottomright',
+    'bottomleft',
+    'topleft',
+  ];
+
+  return candidatePositions.reduce<MapCornerPosition>((best, candidate) => {
+    const bestCorner = getLegendCornerCoordinates(best);
+    const candidateCorner = getLegendCornerCoordinates(candidate);
+    const bestScore = centroids.reduce((total, centroid) => {
+      const distance = Math.hypot(bestCorner.x - centroid.x, bestCorner.y - centroid.y);
+      return total + 1 / Math.max(distance, 0.15);
+    }, 0);
+    const candidateScore = centroids.reduce((total, centroid) => {
+      const distance = Math.hypot(
+        candidateCorner.x - centroid.x,
+        candidateCorner.y - centroid.y,
+      );
+      return total + 1 / Math.max(distance, 0.15);
+    }, 0);
+
+    if (candidateScore < bestScore) {
+      return candidate;
+    }
+    if (candidateScore === bestScore && candidate === preferredPosition) {
+      return candidate;
+    }
+    return best;
+  }, preferredPosition);
+}
+
 export function getMapFitViewportConfig(
   mapWidth: number,
   mapHeight: number,
+  options: MapFitViewportOptions = {},
 ): MapFitViewportConfig {
   const safeWidth = Math.max(0, Math.round(mapWidth || 0));
   const safeHeight = Math.max(0, Math.round(mapHeight || 0));
   const horizontalPadding = Math.max(
-    6,
-    Math.min(20, Math.round(safeWidth * 0.015)),
+    2,
+    Math.min(8, Math.round(safeWidth * 0.004)),
   );
   const verticalPadding = Math.max(
-    6,
-    Math.min(16, Math.round(safeHeight * 0.015)),
+    2,
+    Math.min(8, Math.round(safeHeight * 0.004)),
   );
 
   const minDimension = Math.min(safeWidth, safeHeight);
-  const maxDimension = Math.max(safeWidth, safeHeight);
-
-  let maxZoom = 18;
-  if (minDimension < 280) {
+  let maxZoom = 20;
+  if (minDimension < 180) {
     maxZoom = 14;
-  } else if (minDimension < 420) {
+  } else if (minDimension < 260) {
     maxZoom = 15;
-  } else if (minDimension < 700) {
+  } else if (minDimension < 360) {
     maxZoom = 16;
-  } else if (maxDimension < 1200) {
+  } else if (minDimension < 460) {
     maxZoom = 17;
+  } else if (minDimension < 620) {
+    maxZoom = 18;
+  } else if (minDimension < 820) {
+    maxZoom = 19;
+  }
+
+  const paddingTopLeft: [number, number] = [
+    horizontalPadding,
+    verticalPadding,
+  ];
+  const paddingBottomRight: [number, number] = [
+    horizontalPadding,
+    verticalPadding,
+  ];
+
+  if (options.reserveLegendSpace && options.legendPosition) {
+    const legendHorizontalReserve = Math.max(
+      44,
+      Math.min(88, Math.round(safeWidth * 0.12)),
+    );
+    const legendVerticalReserve = Math.max(
+      44,
+      Math.min(84, Math.round(safeHeight * 0.1)),
+    );
+
+    if (options.legendPosition.includes('left')) {
+      paddingTopLeft[0] += legendHorizontalReserve;
+    } else {
+      paddingBottomRight[0] += legendHorizontalReserve;
+    }
+
+    if (options.legendPosition.includes('top')) {
+      paddingTopLeft[1] += legendVerticalReserve;
+    } else {
+      paddingBottomRight[1] += legendVerticalReserve;
+    }
   }
 
   return {
-    paddingTopLeft: [horizontalPadding, verticalPadding],
-    paddingBottomRight: [horizontalPadding, verticalPadding],
+    paddingTopLeft,
+    paddingBottomRight,
     maxZoom,
   };
 }

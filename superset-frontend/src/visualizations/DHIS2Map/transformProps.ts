@@ -22,6 +22,7 @@ import {
   sanitizeDHIS2ColumnName,
   findMetricColumn,
 } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
+import { resolveDHIS2MetricLabel } from '../../utils/dhis2MetricLabel';
 import {
   DHIS2LegendDefinition,
   DHIS2MapProps,
@@ -580,18 +581,20 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     coercePositiveInteger(extraParsed?.dhis2StagedDatasetId);
   const isStagedLocalDataset =
     extraParsed?.dhis2_staged_local === true ||
-    extraParsed?.dhis2StagedLocal === true;
-  const sourceInstanceIdsFromExtra = Array.isArray(
-    extraParsed?.dhis2_source_instance_ids,
-  )
+    extraParsed?.dhis2StagedLocal === true ||
+    (formData as any)?.dhis2_staged_local_dataset === true ||
+    (formData as any)?.dhis2_staged_local_dataset === 'true' ||
+    (formData as any)?.dhis2StagedLocalDataset === true;
+  const rawSourceInstanceIds = Array.isArray(extraParsed?.dhis2_source_instance_ids)
     ? extraParsed.dhis2_source_instance_ids
-        .map((value: unknown) => Number(value))
-        .filter((value: number) => Number.isFinite(value) && value > 0)
     : Array.isArray(extraParsed?.dhis2SourceInstanceIds)
       ? extraParsed.dhis2SourceInstanceIds
-          .map((value: unknown) => Number(value))
-          .filter((value: number) => Number.isFinite(value) && value > 0)
-      : [];
+      : Array.isArray((formData as any)?.dhis2_source_instance_ids)
+        ? (formData as any).dhis2_source_instance_ids
+        : [];
+  const sourceInstanceIdsFromExtra = rawSourceInstanceIds
+    .map((value: unknown) => Number(value))
+    .filter((value: number) => Number.isFinite(value) && value > 0);
 
   // Extract database ID used for DHIS2 metadata/boundaries.
   // For staged-local datasets this must be the original DHIS2 source database,
@@ -603,10 +606,15 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     databaseId = datasourceAny?.database_id;
   }
 
-  // Fallback: Try to get from formData
+  // Fallback: Try to get from formData (also check DHIS2-specific formData keys
+  // that buildQuery writes — these are present in dashboard context where
+  // datasource.extra fields may be absent)
   if (!databaseId && formData) {
     databaseId =
-      (formData as any)?.database_id || (formData as any)?.database?.id;
+      (formData as any)?.dhis2_source_database_id ||
+      (formData as any)?.dhis2SourceDatabaseId ||
+      (formData as any)?.database_id ||
+      (formData as any)?.database?.id;
   }
 
   // eslint-disable-next-line no-console
@@ -615,6 +623,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     isStagedLocalDataset,
     sourceDatabaseIdFromExtra,
     sourceInstanceIdsFromExtra,
+    formData_dhis2_source_database_id: (formData as any)?.dhis2_source_database_id,
+    formData_dhis2_staged_local_dataset: (formData as any)?.dhis2_staged_local_dataset,
     servingDatabaseId: datasourceAny?.database?.id || datasourceAny?.database_id,
     datasource_keys: datasource ? Object.keys(datasource as object) : [],
     database_obj: datasourceAny?.database,
@@ -679,6 +689,10 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
         (metric as any)?.label ||
         (metric as any)?.expressionType ||
         'value';
+  const metricDisplayLabel =
+    (typeof metric === 'string'
+      ? undefined
+      : resolveDHIS2MetricLabel(metric as any)) || metricString;
   const sanitizedMetric = sanitizeDHIS2ColumnName(metricString);
 
   // Sanitize org_unit_column for matching
@@ -829,10 +843,28 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // Example: "105_EP01b_Malaria_Total" (ID_CODE_Name format)
   let metricColumn: string | undefined;
 
-  if (metricString) {
-    // Use the comprehensive findMetricColumn function
-    // It handles: exact matches, sanitized matches, aggregation functions, and partial matches
-    metricColumn = findMetricColumn(metricString, allColumns);
+  const metricCandidates = Array.from(
+    new Set(
+      [
+        metricDisplayLabel,
+        metricString,
+        typeof metric === 'string'
+          ? undefined
+          : (metric as any)?.sqlExpression,
+        typeof metric === 'string'
+          ? undefined
+          : (metric as any)?.column?.verbose_name,
+      ]
+        .map(value => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  );
+
+  for (const candidate of metricCandidates) {
+    metricColumn = findMetricColumn(candidate, allColumns);
+    if (metricColumn) {
+      break;
+    }
   }
 
   // Fallback: First numeric column if metric not found
@@ -1008,6 +1040,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     org_unit_column_sanitized: sanitizedOrgUnitColumn,
     selected_metric_column: metricColumn,
     metric_string: metricString,
+    metric_display_label: metricDisplayLabel,
     sanitized_metric: sanitizedMetric,
     boundary_levels_from_formData: boundary_levels,
     boundary_level_from_formData: boundary_level,
@@ -1088,6 +1121,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     datasourceColumns,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
+    metricLabel: metricDisplayLabel || metricColumn,
     aggregationMethod: aggregation_method || 'sum',
     primaryBoundaryLevel,
     boundaryLevels: selectedLevels,

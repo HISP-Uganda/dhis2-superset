@@ -27,9 +27,44 @@ import {
   getLegendRangeFromDefinition,
   normalizeOrgUnitMatchKey,
   parseCoordinates,
+  resolveStrategicLegendPosition,
 } from './utils';
+import { BoundaryFeature } from './types';
 
 describe('DHIS2Map Utils', () => {
+  const buildBoundary = (
+    id: string,
+    name: string,
+    west: number,
+    south: number,
+    east: number,
+    north: number,
+  ): BoundaryFeature => ({
+    type: 'Feature',
+    id,
+    properties: {
+      id,
+      name,
+      level: 2,
+      parentId: '',
+      parentName: '',
+      hasChildrenWithCoordinates: true,
+      hasParentWithCoordinates: true,
+    },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [west, south],
+          [east, south],
+          [east, north],
+          [west, north],
+          [west, south],
+        ],
+      ],
+    },
+  });
+
   describe('formatValue', () => {
     test('should format millions', () => {
       expect(formatValue(1500000)).toBe('1.5M');
@@ -184,18 +219,45 @@ describe('DHIS2Map Utils', () => {
   describe('map viewport fit config', () => {
     test('allows larger zoom on bigger map panels', () => {
       expect(getMapFitViewportConfig(1280, 720)).toEqual({
-        paddingTopLeft: [19, 11],
-        paddingBottomRight: [19, 11],
-        maxZoom: 18,
+        paddingTopLeft: [5, 3],
+        paddingBottomRight: [5, 3],
+        maxZoom: 19,
       });
     });
 
     test('keeps compact cards on a safer zoom ceiling', () => {
       expect(getMapFitViewportConfig(320, 240)).toEqual({
-        paddingTopLeft: [6, 6],
-        paddingBottomRight: [6, 6],
-        maxZoom: 14,
+        paddingTopLeft: [2, 2],
+        paddingBottomRight: [2, 2],
+        maxZoom: 15,
       });
+    });
+
+    test('reserves corner space when a visible legend should avoid the map body', () => {
+      expect(
+        getMapFitViewportConfig(480, 624, {
+          legendPosition: 'topright',
+          reserveLegendSpace: true,
+        }),
+      ).toEqual({
+        paddingTopLeft: [2, 64],
+        paddingBottomRight: [60, 2],
+        maxZoom: 18,
+      });
+    });
+  });
+
+  describe('strategic legend placement', () => {
+    test('uses the emptiest corner away from boundary centers', () => {
+      const features = [
+        buildBoundary('1', 'North West', 30, 2, 31, 3),
+        buildBoundary('2', 'Upper Mid', 31, 1.5, 32, 2.5),
+        buildBoundary('3', 'Left Mid', 30.2, 0.7, 31.1, 1.4),
+      ];
+
+      expect(resolveStrategicLegendPosition(features, 'topleft')).toBe(
+        'bottomright',
+      );
     });
   });
 });

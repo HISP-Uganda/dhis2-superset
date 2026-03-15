@@ -85,9 +85,7 @@ export function BaseMapLayer({ mapType }: BaseMapLayerProps): React.ReactElement
 
 /* eslint-disable theme-colors/no-literal-colors */
 const SelectorWrapper = styled.div`
-  position: absolute;
-  top: 10px;
-  left: 10px;
+  position: relative;
   z-index: 1001;
 `;
 
@@ -95,30 +93,30 @@ const SelectorButton = styled.button`
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  background: #ffffff;
-  border: 2px solid rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
+  padding: 5px 9px;
+  background: rgba(248, 250, 252, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  color: #334155;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 
   &:hover {
-    background: #f4f4f4;
+    background: rgba(241, 245, 249, 0.98);
   }
 `;
 
 const DropdownMenu = styled.div`
   position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 4px;
+  bottom: calc(100% + 6px);
+  right: 0;
   background: #ffffff;
-  border: 2px solid rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  min-width: 200px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14);
+  min-width: 196px;
   max-height: 300px;
   overflow-y: auto;
   z-index: 1002;
@@ -127,12 +125,12 @@ const DropdownMenu = styled.div`
 const MapOption = styled.button<{ $isActive: boolean }>`
   display: block;
   width: 100%;
-  padding: 10px 12px;
+  padding: 9px 12px;
   text-align: left;
   border: none;
   background: ${({ $isActive }) => ($isActive ? '#e6f7ff' : '#ffffff')};
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   color: ${({ $isActive }) => ($isActive ? '#1890ff' : '#333333')};
   border-bottom: 1px solid #f0f0f0;
 

@@ -324,7 +324,32 @@ class Chart extends PureComponent<ChartProps, {}> {
       width,
     } = this.props;
 
-    const databaseName = datasource?.database?.name as string | undefined;
+    // For staged DHIS2 local datasets the datasource is backed by a local
+    // serving database whose name is stored in the extra JSON
+    // (dhis2_serving_database_name).  Always prefer that value over
+    // datasource.database.name, which may be absent or may reflect the source
+    // DHIS2 database rather than the local serving database (e.g. "main").
+    let databaseName = datasource?.database?.name as string | undefined;
+    if (datasource) {
+      try {
+        const extraRaw = (datasource as any)?.extra;
+        const extra: Record<string, any> =
+          typeof extraRaw === 'string' ? JSON.parse(extraRaw) : (extraRaw ?? {});
+        const servingName = extra?.dhis2_serving_database_name;
+        if (typeof servingName === 'string' && servingName) {
+          // Always prefer the serving database name for staged DHIS2 datasets —
+          // it is the database that actually executes the query (e.g. "main").
+          databaseName = servingName;
+        } else {
+          const sourceName = extra?.dhis2_source_database_name;
+          if (typeof sourceName === 'string' && sourceName && !databaseName) {
+            databaseName = sourceName;
+          }
+        }
+      } catch {
+        // extra is malformed — keep whatever databaseName we already have
+      }
+    }
 
     const isLoading = chartStatus === 'loading';
 

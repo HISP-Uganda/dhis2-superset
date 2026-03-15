@@ -124,6 +124,15 @@ const MapWrapper = styled.div`
   width: 100%;
   height: 100%;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+`;
+
+const MapCanvas = styled.div`
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
 
   .leaflet-container {
     width: 100%;
@@ -209,6 +218,37 @@ const MapWrapper = styled.div`
     color: #333333;
   }
 `;
+
+const MapFooterBar = styled.div`
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 4px 1px;
+  min-height: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(248, 250, 252, 0.92) 0%,
+    rgba(248, 250, 252, 0.74) 100%
+  );
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+`;
+
+const MapFooterLegendSlot = styled.div`
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+`;
+
+const MapFooterControlSlot = styled.div`
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-top: 1px;
+`;
 /* eslint-enable theme-colors/no-literal-colors */
 
 // Component to auto-fit map bounds when boundaries change
@@ -217,6 +257,8 @@ interface MapAutoFocusProps {
   enabled: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  legendPosition?: 'topleft' | 'topright' | 'bottomleft' | 'bottomright';
+  reserveLegendSpace?: boolean;
 }
 
 function MapAutoFocus({
@@ -224,6 +266,8 @@ function MapAutoFocus({
   enabled,
   viewportWidth,
   viewportHeight,
+  legendPosition,
+  reserveLegendSpace = false,
 }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
@@ -289,6 +333,10 @@ function MapAutoFocus({
           const fitConfig = getMapFitViewportConfig(
             Math.max(size.x, viewportWidth),
             Math.max(size.y, viewportHeight),
+            {
+              legendPosition,
+              reserveLegendSpace,
+            },
           );
           // eslint-disable-next-line no-console
           console.log('[MapAutoFocus] Applying viewport-aware fit config:', {
@@ -444,9 +492,15 @@ function BoundaryMask({
 // Component for manual focus button
 interface FocusButtonProps {
   boundaries: BoundaryFeature[];
+  legendPosition?: 'topleft' | 'topright' | 'bottomleft' | 'bottomright';
+  reserveLegendSpace?: boolean;
 }
 
-function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
+function FocusButton({
+  boundaries,
+  legendPosition,
+  reserveLegendSpace = false,
+}: FocusButtonProps): ReactElement | null {
   const map = useMap();
 
   const handleFocus = () => {
@@ -456,7 +510,10 @@ function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
         const bounds = calculateBounds(boundaries);
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
-          const fitConfig = getMapFitViewportConfig(size.x, size.y);
+          const fitConfig = getMapFitViewportConfig(size.x, size.y, {
+            legendPosition,
+            reserveLegendSpace,
+          });
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
             paddingBottomRight: fitConfig.paddingBottomRight,
@@ -774,6 +831,7 @@ function DHIS2Map({
   sourceInstanceIds = [],
   orgUnitColumn,
   metric,
+  metricLabel,
   primaryBoundaryLevel,
   aggregationMethod = 'sum',
   boundaryLevels,
@@ -822,6 +880,7 @@ function DHIS2Map({
   datasourceColumns = [],
   boundaryLoadMethod = 'geoFeatures',
 }: DHIS2MapProps): ReactElement {
+  const metricDisplayName = metricLabel || metric;
   const hasQueryData = data.length > 0;
   const sourceInstanceIdsInputKey = useMemo(
     () =>
@@ -950,6 +1009,11 @@ function DHIS2Map({
   const [resolvedIsDHIS2Dataset, setResolvedIsDHIS2Dataset] =
     useState(isDHIS2Dataset);
   const lastLoadedDhis2RequestKeyRef = useRef<string | null>(null);
+  const lastLoadedBoundaryRequestKeyRef = useRef<string | null>(null);
+  // Track whether we've had a successful databaseId at least once — while it
+  // has never been set, we suppress the "no database" error (the datasource
+  // may still be loading).
+  const everHadDatabaseIdRef = useRef<boolean>(false);
   const lastLoadedStagedLocalRequestKeyRef = useRef<string | null>(null);
   const inFlightStagedLocalRequestKeyRef = useRef<string | null>(null);
   const stagedLocalFocusCacheRef = useRef<
@@ -987,6 +1051,34 @@ function DHIS2Map({
     () => buildHierarchyColumns(boundaryLevelColumns),
     [boundaryLevelColumns],
   );
+  const prefetchFocusedChildLevel = useMemo(() => {
+    if (
+      activeFocusedBoundaryRequest?.childLevel &&
+      Number.isFinite(activeFocusedBoundaryRequest.childLevel)
+    ) {
+      return activeFocusedBoundaryRequest.childLevel;
+    }
+    if (
+      !focusSelectedBoundaryWithChildren ||
+      !Number.isFinite(resolvedPrimaryBoundaryLevel) ||
+      resolvedPrimaryBoundaryLevel <= 0
+    ) {
+      return undefined;
+    }
+    if (
+      Number.isFinite(maxAvailableBoundaryLevel) &&
+      Number(maxAvailableBoundaryLevel) > 0 &&
+      resolvedPrimaryBoundaryLevel >= Number(maxAvailableBoundaryLevel)
+    ) {
+      return undefined;
+    }
+    return resolvedPrimaryBoundaryLevel + 1;
+  }, [
+    activeFocusedBoundaryRequest,
+    focusSelectedBoundaryWithChildren,
+    maxAvailableBoundaryLevel,
+    resolvedPrimaryBoundaryLevel,
+  ]);
   const effectiveOrgUnitColumn = useMemo(
     () =>
       boundaryLevelColumns?.[effectiveDataBoundaryLevel] ||
@@ -994,6 +1086,18 @@ function DHIS2Map({
         ? `ou_level_${effectiveDataBoundaryLevel}`
         : orgUnitColumn),
     [boundaryLevelColumns, effectiveDataBoundaryLevel, orgUnitColumn],
+  );
+  const prefetchFocusedOrgUnitColumn = useMemo(
+    () =>
+      boundaryLevelColumns?.[prefetchFocusedChildLevel || 0] ||
+      (Number.isFinite(prefetchFocusedChildLevel)
+        ? `ou_level_${prefetchFocusedChildLevel}`
+        : effectiveOrgUnitColumn),
+    [
+      boundaryLevelColumns,
+      effectiveOrgUnitColumn,
+      prefetchFocusedChildLevel,
+    ],
   );
   const effectiveDataParentId = useMemo(() => {
     if (activeFocusedBoundaryRequest?.parentIds?.length === 1) {
@@ -1153,6 +1257,12 @@ function DHIS2Map({
   // Fetch and cache org unit levels for the control panel dropdown
   // This ensures the boundary_levels control shows actual DHIS2 levels
   useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !/(^|\/)explore(\/|$)/.test(window.location.pathname)
+    ) {
+      return;
+    }
     if (!databaseId) return;
 
     const cacheKey = `dhis2_org_unit_levels_db${databaseId}`;
@@ -1245,7 +1355,6 @@ function DHIS2Map({
       !shouldUseLoaderData ||
       !databaseId ||
       !resolvedDatasetSql ||
-      dhis2DataLoading ||
       lastLoadedDhis2RequestKeyRef.current === dhis2DataRequestKey
     ) {
       if (!shouldUseLoaderData) {
@@ -1253,11 +1362,9 @@ function DHIS2Map({
       }
       // eslint-disable-next-line no-console
       console.log('[DHIS2Map] Skipping DHIS2 data fetch:', {
-        hasData: data && data.length > 0,
         shouldFetchDHIS2: shouldUseLoaderData,
         hasDatabaseId: !!databaseId,
         hasDatasetSql: !!resolvedDatasetSql,
-        isLoading: dhis2DataLoading,
         requestKey: dhis2DataRequestKey,
         alreadyLoaded:
           lastLoadedDhis2RequestKeyRef.current === dhis2DataRequestKey,
@@ -1341,13 +1448,13 @@ function DHIS2Map({
     resolvedDatasetSql,
     shouldUseLoaderData,
     dhis2DataRequestKey,
-    data,
-    dhis2DataLoading,
+    // dhis2DataLoading intentionally excluded — including it caused the effect
+    // to re-run on every load-state toggle, generating spurious fetches.
+    // The lastLoadedDhis2RequestKeyRef guard is sufficient to deduplicate.
+    // data (queriesData) intentionally excluded — SQL query rows should not
+    // retrigger the DHIS2 API fetch; the request key captures all meaningful changes.
     effectiveDataBoundaryLevel,
-    drillState.parentId,
     effectiveDataParentId,
-    isDHIS2Dataset,
-    resolvedIsDHIS2Dataset,
     activeFocusedBoundaryRequest,
   ]);
 
@@ -1364,44 +1471,78 @@ function DHIS2Map({
     [chartData],
   );
 
+  const stagedLocalFocusParentValues = useMemo(() => {
+    const selectedParentValues = Array.from(
+      new Set(
+        (activeFocusedBoundaryRequest?.selectedParents || [])
+          .map(feature => String(feature.properties?.name || '').trim())
+          .filter(Boolean),
+      ),
+    );
+    if (selectedParentValues.length > 0) {
+      return selectedParentValues;
+    }
+    if (
+      !effectiveIsStagedLocalDataset ||
+      !focusSelectedBoundaryWithChildren ||
+      !parentSelectionColumn ||
+      !chartData.length
+    ) {
+      return [];
+    }
+
+    const resolvedParentColumn = resolveQueryDimensionColumnName({
+      requestedColumn: parentSelectionColumn,
+      datasourceColumns,
+      availableColumns: chartDataColumns,
+    });
+    if (!resolvedParentColumn) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        chartData
+          .map(row => String(row?.[resolvedParentColumn] ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+  }, [
+    activeFocusedBoundaryRequest,
+    chartData,
+    chartDataColumns,
+    datasourceColumns,
+    effectiveIsStagedLocalDataset,
+    focusSelectedBoundaryWithChildren,
+    parentSelectionColumn,
+  ]);
+
   const shouldFetchStagedLocalFocusData = useMemo(
     () =>
       shouldLoadStagedLocalFocusData({
         isStagedLocalDataset: effectiveIsStagedLocalDataset,
         stagedDatasetId: effectiveStagedDatasetId,
         focusSelectedBoundaryWithChildren,
-        focusedChildLevel: activeFocusedBoundaryRequest?.childLevel,
+        focusedChildLevel: prefetchFocusedChildLevel,
         chartRows: chartData,
         chartColumns: chartDataColumns,
-        requestedChildColumn: effectiveOrgUnitColumn,
+        requestedChildColumn: prefetchFocusedOrgUnitColumn,
         requestedMetric: metric,
         datasourceColumns,
         hierarchyColumns,
       }),
     [
-      activeFocusedBoundaryRequest,
       chartData,
       chartDataColumns,
       datasourceColumns,
       effectiveIsStagedLocalDataset,
       effectiveStagedDatasetId,
-      effectiveOrgUnitColumn,
       focusSelectedBoundaryWithChildren,
       hierarchyColumns,
       metric,
+      prefetchFocusedChildLevel,
+      prefetchFocusedOrgUnitColumn,
     ],
-  );
-
-  const stagedLocalFocusParentValues = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (activeFocusedBoundaryRequest?.selectedParents || [])
-            .map(feature => String(feature.properties?.name || '').trim())
-            .filter(Boolean),
-        ),
-      ),
-    [activeFocusedBoundaryRequest],
   );
 
   const stagedLocalFocusSelectedColumns = useMemo(
@@ -1410,7 +1551,7 @@ function DHIS2Map({
         new Set(
           [
             parentSelectionColumn,
-            effectiveOrgUnitColumn,
+            prefetchFocusedOrgUnitColumn,
             metric,
             ...tooltipColumns,
             ...activeFilters.map(filter => String(filter.col || '').trim()),
@@ -1419,9 +1560,9 @@ function DHIS2Map({
       ),
     [
       activeFilters,
-      effectiveOrgUnitColumn,
       metric,
       parentSelectionColumn,
+      prefetchFocusedOrgUnitColumn,
       tooltipColumns,
     ],
   );
@@ -1431,7 +1572,7 @@ function DHIS2Map({
       buildFocusedStagedLocalAggregateQuery({
         aggregationMethod,
         metric,
-        selectedOrgUnitColumn: effectiveOrgUnitColumn,
+        selectedOrgUnitColumn: prefetchFocusedOrgUnitColumn,
         parentSelectionColumn,
         tooltipColumns,
         datasourceColumns,
@@ -1439,9 +1580,9 @@ function DHIS2Map({
     [
       aggregationMethod,
       datasourceColumns,
-      effectiveOrgUnitColumn,
       metric,
       parentSelectionColumn,
+      prefetchFocusedOrgUnitColumn,
       tooltipColumns,
     ],
   );
@@ -1452,14 +1593,14 @@ function DHIS2Map({
         parentSelectionColumn,
         parentValues: stagedLocalFocusParentValues,
         activeFilters,
-        selectedOrgUnitColumn: effectiveOrgUnitColumn,
+        selectedOrgUnitColumn: prefetchFocusedOrgUnitColumn,
         hierarchyColumns,
       }),
     [
       activeFilters,
-      effectiveOrgUnitColumn,
       hierarchyColumns,
       parentSelectionColumn,
+      prefetchFocusedOrgUnitColumn,
       stagedLocalFocusParentValues,
     ],
   );
@@ -1469,7 +1610,7 @@ function DHIS2Map({
       [
         effectiveStagedDatasetId ?? 'none',
         parentSelectionColumn || 'none',
-        effectiveOrgUnitColumn || 'none',
+        prefetchFocusedOrgUnitColumn || 'none',
         metric || 'none',
         stagedLocalFocusAggregateQuery
           ? JSON.stringify(stagedLocalFocusAggregateQuery)
@@ -1479,10 +1620,10 @@ function DHIS2Map({
         serializeStagedLocalQueryFilters(stagedLocalFocusRequestFilters),
       ].join('|'),
     [
-      effectiveOrgUnitColumn,
       effectiveStagedDatasetId,
       metric,
       parentSelectionColumn,
+      prefetchFocusedOrgUnitColumn,
       stagedLocalFocusAggregateQuery,
       stagedLocalFocusParentValues,
       stagedLocalFocusRequestFilters,
@@ -1604,12 +1745,17 @@ function DHIS2Map({
         // eslint-disable-next-line no-console
         console.warn('[DHIS2Map] Failed to load staged-local focus rows:', err);
       } finally {
+        // Only reset loading when we are still the current in-flight request.
+        // This covers both the normal case (fetch completes) and the cancellation
+        // case where the effect re-ran with the same key (guard returned early):
+        // the old fetch's finally will still clear loading, and since no new fetch
+        // was started for the same key, the overlay correctly disappears.
+        // If a NEW key's fetch is now in-flight, its ref won't match, so we do
+        // NOT clear loading — that fetch's own finally will handle it.
         if (
           inFlightStagedLocalRequestKeyRef.current === stagedLocalFocusRequestKey
         ) {
           inFlightStagedLocalRequestKeyRef.current = null;
-        }
-        if (!cancelled) {
           setStagedLocalDataLoading(false);
         }
       }
@@ -1631,9 +1777,14 @@ function DHIS2Map({
 
   const shouldUseStagedLocalFocusRows = useMemo(
     () =>
+      Boolean(activeFocusedBoundaryRequest?.childLevel) &&
       shouldFetchStagedLocalFocusData &&
       Array.isArray(stagedLocalData),
-    [shouldFetchStagedLocalFocusData, stagedLocalData],
+    [
+      activeFocusedBoundaryRequest,
+      shouldFetchStagedLocalFocusData,
+      stagedLocalData,
+    ],
   );
 
   // Prefer staged-local serving rows for focused child rendering when the
@@ -1913,6 +2064,15 @@ function DHIS2Map({
       ),
     [parentSelectionDataMap, parentSelectionDataMapByName],
   );
+  // Keep a ref so fetchBoundaries can read the latest value without it
+  // becoming a reactive dependency.  If getParentSelectionValue were in the
+  // fetchBoundaries useCallback deps, every data load would recreate the
+  // callback → trigger the boundary-load effect → set loading=true again,
+  // making the map appear permanently loading.
+  const getParentSelectionValueRef = useRef(getParentSelectionValue);
+  useEffect(() => {
+    getParentSelectionValueRef.current = getParentSelectionValue;
+  }, [getParentSelectionValue]);
 
   // Aggregate data by OrgUnit using the selected aggregation method
   // Build maps by both ID and name to support different data formats
@@ -2111,6 +2271,7 @@ function DHIS2Map({
 
     if (!databaseId) {
       setError(t('No database selected'));
+      setLoading(false);
       return;
     }
     if (!effectiveBoundaryLevels || effectiveBoundaryLevels.length === 0) {
@@ -2124,6 +2285,7 @@ function DHIS2Map({
           'Please select at least one boundary level in the chart configuration',
         ),
       );
+      setLoading(false);
       return;
     }
 
@@ -2194,7 +2356,7 @@ function DHIS2Map({
           currentLevel: resolvedPrimaryBoundaryLevel,
           maxAvailableLevel: maxAvailableBoundaryLevel,
           parentFeatures,
-          getFeatureValue: getParentSelectionValue,
+          getFeatureValue: getParentSelectionValueRef.current,
         });
 
         if (focusedRequest.childLevel && focusedRequest.parentIds.length > 0) {
@@ -2349,7 +2511,9 @@ function DHIS2Map({
     focusSelectedBoundaryWithChildren,
     resolvedPrimaryBoundaryLevel,
     maxAvailableBoundaryLevel,
-    getParentSelectionValue,
+    // getParentSelectionValue is intentionally excluded — it's accessed via
+    // getParentSelectionValueRef so data changes don't recreate this callback
+    // and retrigger the boundary-load effect (which would set loading=true again).
   ]);
 
   // Create a stable string representation of boundary levels for change detection
@@ -2364,6 +2528,22 @@ function DHIS2Map({
 
   // Fetch boundaries when levels change
   useEffect(() => {
+    // Build a stable key from the config values that actually matter for
+    // boundary fetching.  If fetchBoundaries is recreated (e.g. because a
+    // prop array got a new reference with the same content) but the
+    // meaningful config hasn't changed, the guard below prevents a redundant
+    // setLoading(true) + re-fetch cycle that would make the map appear
+    // permanently loading.
+    const boundaryRequestKey = [
+      databaseId ?? 'none',
+      boundaryLevelsKey,
+      sourceInstanceIdsKey,
+    ].join('|');
+
+    if (lastLoadedBoundaryRequestKeyRef.current === boundaryRequestKey) {
+      return; // same config — do not re-fetch
+    }
+
     // eslint-disable-next-line no-console
     console.log(
       `[DHIS2Map] Boundary config changed - levels: ${boundaryLevelsKey}`,
@@ -2375,11 +2555,18 @@ function DHIS2Map({
       },
     );
     // Only call fetchBoundaries if we have valid level and database info
+    if (databaseId) {
+      everHadDatabaseIdRef.current = true;
+    }
+
     if (
       databaseId &&
       effectiveBoundaryLevels &&
       effectiveBoundaryLevels.length > 0
     ) {
+      // Optimistically mark config as loaded so concurrent/duplicate invocations
+      // of this effect (triggered by fetchBoundaries being recreated) are ignored.
+      lastLoadedBoundaryRequestKeyRef.current = boundaryRequestKey;
       // Reset loading state and fetch new boundaries
       setLoading(true);
       fetchBoundaries();
@@ -2395,14 +2582,19 @@ function DHIS2Map({
         databaseId,
         boundaryLevels: effectiveBoundaryLevels,
       });
-      if (!databaseId) {
+      // Only show the "no database" error if we have previously had a valid
+      // databaseId — while the datasource is still loading (placeholder),
+      // databaseId is undefined but the error would be spurious.
+      if (!databaseId && everHadDatabaseIdRef.current) {
         setError(
           t(
             'Database connection not found. Please ensure your dataset is linked to a DHIS2 database.',
           ),
         );
-        setLoading(false);
       }
+      // Always clear loading when we've decided not to fetch boundaries — the
+      // map should not remain stuck on the loading overlay indefinitely.
+      setLoading(false);
     }
   }, [boundaryLevelsKey, sourceInstanceIdsKey, databaseId, fetchBoundaries]);
 
@@ -2620,22 +2812,9 @@ function DHIS2Map({
       showAllBoundaries,
     });
 
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map] Display boundaries:', {
-      totalBoundaries: boundaries.length,
-      visibleBoundaries: visibleBoundaries.length,
-      selectedBoundaryCount: selectedBoundaryIds.size,
-      showAllBoundaries,
-      fallbackToNoDataRender:
-        !showAllBoundaries && selectedBoundaryIds.size === 0,
-      dataMapSize: dataMap.size,
-      boundaryNames: visibleBoundaries.slice(0, 5).map(b => b.properties.name),
-    });
-
     return visibleBoundaries;
   }, [
     boundaries,
-    dataMap.size,
     selectedBoundaryIds,
     showAllBoundaries,
   ]);
@@ -2657,17 +2836,6 @@ function DHIS2Map({
   const getFeatureStyle = useCallback(
     (feature: BoundaryFeature) => {
       // Debug: Log that we're styling (only for first feature to avoid spam)
-      if (feature.id === boundaries[0]?.id) {
-        // eslint-disable-next-line no-console
-        console.log('[DHIS2Map] ⚡ getFeatureStyle called for first boundary:', {
-          featureName: feature.properties.name,
-          hasLevelBorderColors: !!levelBorderColors,
-          levelBorderColorsLength: levelBorderColors?.length,
-          autoThemeBorders,
-          strokeColor,
-        });
-      }
-
       const value = getFeatureValue(feature);
       const noDataColorRgb = `rgba(${legendNoDataColor.r},${legendNoDataColor.g},${legendNoDataColor.b},${legendNoDataColor.a})`;
       const unselectedFillRgb = `rgba(${unselectedAreaFillColor.r},${unselectedAreaFillColor.g},${unselectedAreaFillColor.b},${unselectedAreaFillColor.a})`;
@@ -2700,10 +2868,8 @@ function DHIS2Map({
       const isSelected = selectedFeatureId === feature.id;
 
       // Auto-theme and level border colors only apply to selected/thematic areas.
-      if (isSelectedArea && autoThemeBorders) {
+        if (isSelectedArea && autoThemeBorders) {
         borderColor = darkenColor(fillColor, 0.4);
-        // eslint-disable-next-line no-console
-        console.log('[DHIS2Map] Using autoThemeBorders for', feature.properties.name);
       } else if (
         isSelectedArea &&
         levelBorderColors &&
@@ -2792,7 +2958,7 @@ function DHIS2Map({
         <div class="dhis2-map-tooltip">
           <strong>${feature.properties.name}</strong>
           <br/>
-          ${metric}: ${value !== undefined ? formatValue(value) : 'No data'}
+          ${metricDisplayName}: ${value !== undefined ? formatValue(value) : 'No data'}
           ${
             tooltipColumns
               ?.map(col => {
@@ -2897,6 +3063,7 @@ function DHIS2Map({
       getFeatureValue,
       dataMap,
       metric,
+      metricDisplayName,
       filteredData,
       getRowColumnValue,
       effectiveOrgUnitDataColumn,
@@ -2917,10 +3084,8 @@ function DHIS2Map({
     loading || dhis2DataLoading || stagedLocalDataLoading;
 
   return (
-    <MapWrapper
-      style={{ width, height }}
-      onMouseLeave={() => setHoveredFeature(null)}
-    >
+    <MapWrapper style={{ width, height }}>
+      <MapCanvas onMouseLeave={() => setHoveredFeature(null)}>
       {/* @ts-ignore - React 19 compatibility */}
       <MapContainer
         center={[1.3733, 32.2903]}
@@ -3012,35 +3177,12 @@ function DHIS2Map({
         </div>
       )}
 
-      {/* Base Map Selector */}
-      {/* @ts-ignore - React 19 compatibility */}
-      <BaseMapSelector currentMap={baseMapType} onMapChange={setBaseMapType} />
-
       {enableDrill && drillState.breadcrumbs.length > 0 && (
         /* @ts-ignore - React 19 compatibility */
         <DrillControls
           breadcrumbs={drillState.breadcrumbs}
           onDrillUp={() => handleDrillUp()}
           onBreadcrumbClick={index => handleDrillUp(index)}
-        />
-      )}
-
-      {showLegend && (
-        /* @ts-ignore - React 19 compatibility */
-        <LegendPanel
-          colorScale={colorScale}
-          valueRange={valueRange}
-          position={legendPosition}
-          classes={legendClasses}
-          metricName={metric}
-          noDataColor={legendNoDataColor}
-          levelBorderColors={levelBorderColors}
-          levelLabels={boundaryLevelLabels}
-          showBoundaryLegend={boundaryLevels && boundaryLevels.length > 1}
-          manualBreaks={manualBreaks}
-          manualColors={manualColors}
-          stagedLegendDefinition={effectiveStagedLegendDefinition}
-          legendEntries={computedLegendEntries}
         />
       )}
 
@@ -3091,6 +3233,35 @@ function DHIS2Map({
           </div>
         </div>
       )}
+      </MapCanvas>
+
+      <MapFooterBar>
+        <MapFooterLegendSlot>
+          {showLegend && (
+            /* @ts-ignore - React 19 compatibility */
+          <LegendPanel
+              colorScale={colorScale}
+              valueRange={valueRange}
+              position={legendPosition || 'bottomright'}
+              classes={legendClasses}
+              metricName={metricDisplayName}
+              noDataColor={legendNoDataColor}
+              levelBorderColors={levelBorderColors}
+              levelLabels={boundaryLevelLabels}
+              showBoundaryLegend={boundaryLevels && boundaryLevels.length > 1}
+              manualBreaks={manualBreaks}
+              manualColors={manualColors}
+              stagedLegendDefinition={effectiveStagedLegendDefinition}
+              legendEntries={computedLegendEntries}
+            />
+          )}
+        </MapFooterLegendSlot>
+
+        <MapFooterControlSlot>
+          {/* @ts-ignore - React 19 compatibility */}
+          <BaseMapSelector currentMap={baseMapType} onMapChange={setBaseMapType} />
+        </MapFooterControlSlot>
+      </MapFooterBar>
 
       {loadTime !== null && !loading && (
         <div

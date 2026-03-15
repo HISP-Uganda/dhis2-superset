@@ -227,6 +227,37 @@ const config: ControlPanelConfig = {
             },
           },
           {
+            // Persist the DHIS2 source database ID into formData so that
+            // transformProps can read it in the dashboard context where
+            // datasource.extra fields may be absent.
+            name: 'dhis2_source_database_id',
+            config: {
+              type: 'HiddenControl',
+              hidden: true,
+              mapStateToProps: (state: any) => ({
+                value: getDhis2SourceDatabaseId(state.datasource),
+              }),
+            },
+          },
+          {
+            // Persist the DHIS2 source instance IDs into formData for
+            // the same reason — dashboard datasource may lack extra fields.
+            name: 'dhis2_source_instance_ids',
+            config: {
+              type: 'HiddenControl',
+              hidden: true,
+              mapStateToProps: (state: any) => {
+                const extra = parseColumnExtra(state.datasource?.extra);
+                const ids = Array.isArray(extra?.dhis2_source_instance_ids)
+                  ? extra.dhis2_source_instance_ids
+                  : Array.isArray(extra?.dhis2SourceInstanceIds)
+                    ? extra.dhis2SourceInstanceIds
+                    : [];
+                return { value: ids };
+              },
+            },
+          },
+          {
             name: 'dhis2_hierarchy_columns',
             config: {
               type: 'HiddenControl',

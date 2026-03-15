@@ -72,14 +72,20 @@ export const useDatasetDrillInfo = (
   });
 
   useEffect(() => {
+    let mounted = true;
+
     if (skip) {
       // short circuit if `skip` is `true`
-      setResource({
-        status: ResourceStatus.Complete,
-        result: {} as Dataset,
-        error: null,
-      });
-      return;
+      if (mounted) {
+        setResource({
+          status: ResourceStatus.Complete,
+          result: {} as Dataset,
+          error: null,
+        });
+      }
+      return () => {
+        mounted = false;
+      };
     }
     const fetchDataset = async () => {
       try {
@@ -110,21 +116,28 @@ export const useDatasetDrillInfo = (
 
         const verbose_map = createVerboseMap(result);
 
-        setResource({
-          status: ResourceStatus.Complete,
-          result: { ...result, verbose_map },
-          error: null,
-        });
+        if (mounted) {
+          setResource({
+            status: ResourceStatus.Complete,
+            result: { ...result, verbose_map },
+            error: null,
+          });
+        }
       } catch (error) {
-        setResource({
-          status: ResourceStatus.Error,
-          result: null,
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
+        if (mounted) {
+          setResource({
+            status: ResourceStatus.Error,
+            result: null,
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+        }
       }
     };
 
     fetchDataset();
+    return () => {
+      mounted = false;
+    };
   }, [datasetId, dashboardId, formData, skip]);
 
   return resource;
