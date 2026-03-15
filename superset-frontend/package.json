@@ -141,7 +141,7 @@
     "content-disposition": "^0.5.4",
     "currencyformatter.js": "^2.2.0",
     "d3-color": "^3.1.0",
-    "d3-scale": "^2.1.2",
+    "d3-scale": "^4.0.2",
     "dayjs": "^1.11.18",
     "diff-match-patch": "^1.0.5",
     "dom-to-image-more": "^3.6.0",
