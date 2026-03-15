@@ -47,6 +47,7 @@ describe('DHIS2Map transformProps', () => {
         database: { id: 3 },
         extra: JSON.stringify({
           dhis2_staged_local: true,
+          dhis2_staged_dataset_id: 4,
           dhis2_source_database_id: 2,
           dhis2_source_instance_ids: [101, 102],
           dhis2_serving_database_id: 3,
@@ -59,10 +60,13 @@ describe('DHIS2Map transformProps', () => {
     const result = transformProps(chartProps);
 
     expect(result.databaseId).toBe(2);
+    expect(result.isStagedLocalDataset).toBe(true);
+    expect(result.stagedDatasetId).toBe(4);
     expect(result.sourceInstanceIds).toEqual([101, 102]);
     expect(result.isDHIS2Dataset).toBe(true);
     expect(result.chartId).toBe(77);
     expect(result.dashboardId).toBe(11);
+    expect(result.datasourceColumns).toEqual([]);
     expect(result.orgUnitColumn).toBe('region');
     expect(result.metric).toBe('c_cases');
   });
@@ -100,6 +104,13 @@ describe('DHIS2Map transformProps', () => {
             }),
           },
           {
+            column_name: 'district_city',
+            extra: JSON.stringify({
+              dhis2_is_ou_hierarchy: true,
+              dhis2_ou_level: 3,
+            }),
+          },
+          {
             column_name: 'c_cases',
           },
         ],
@@ -118,7 +129,14 @@ describe('DHIS2Map transformProps', () => {
 
     expect(result.primaryBoundaryLevel).toBe(2);
     expect(result.boundaryLevels).toEqual([2, 3]);
-    expect(result.boundaryLevelLabels).toEqual({ 2: 'region' });
+    expect(result.boundaryLevelLabels).toEqual({
+      2: 'region',
+      3: 'district_city',
+    });
+    expect(result.boundaryLevelColumns).toEqual({
+      2: 'region',
+      3: 'district_city',
+    });
     expect(result.orgUnitColumn).toBe('region');
   });
 
@@ -191,6 +209,168 @@ describe('DHIS2Map transformProps', () => {
 
     expect(result.stagedLegendDefinition?.setName).toBe('Malaria Burden');
     expect(result.stagedLegendDefinition?.items[0].color).toBe('#2ca25f');
+  });
+
+  test('uses the explicitly selected staged legend column when provided', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'SUM(c_cases)',
+        org_unit_column: 'region',
+        boundary_levels: [2],
+        legend_type: 'staged',
+        staged_legend_column: 'c_admissions',
+        tooltip_columns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              region: 'Acholi',
+              period: '202401',
+              c_cases: 10,
+              c_admissions: 4,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 4,
+        database: { id: 3 },
+        columns: [
+          {
+            column_name: 'region',
+            extra: JSON.stringify({
+              dhis2_is_ou_hierarchy: true,
+              dhis2_ou_level: 2,
+            }),
+          },
+          {
+            column_name: 'c_cases',
+            extra: JSON.stringify({
+              dhis2_legend: {
+                setName: 'Cases Legend',
+                items: [{ startValue: 0, endValue: 10, color: '#2ca25f' }],
+              },
+            }),
+          },
+          {
+            column_name: 'c_admissions',
+            extra: JSON.stringify({
+              dhis2_legend: {
+                setName: 'Admissions Legend',
+                items: [{ startValue: 0, endValue: 5, color: '#de2d26' }],
+              },
+            }),
+          },
+        ],
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 2,
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.stagedLegendDefinition?.setName).toBe('Admissions Legend');
+    expect(result.stagedLegendDefinition?.items[0].color).toBe('#de2d26');
+  });
+
+  test('resolves a selected staged legend set from cached staged metadata', () => {
+    window.localStorage.setItem(
+      'dhis2_legend_sets_db2',
+      JSON.stringify({
+        data: [
+          {
+            id: 'legend_set_99',
+            displayName: 'Incidence Legend',
+            legendDefinition: {
+              source: 'dhis2',
+              setId: 'legend_set_99',
+              setName: 'Incidence Legend',
+              min: 0,
+              max: 100,
+              items: [
+                {
+                  id: 'legend_low',
+                  label: 'Low',
+                  startValue: 0,
+                  endValue: 50,
+                  color: '#2ca25f',
+                },
+                {
+                  id: 'legend_high',
+                  label: 'High',
+                  startValue: 50,
+                  endValue: 100,
+                  color: '#de2d26',
+                },
+              ],
+            },
+          },
+        ],
+        timestamp: Date.now(),
+      }),
+    );
+
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'SUM(c_cases)',
+        org_unit_column: 'region',
+        boundary_levels: [2],
+        legend_type: 'staged',
+        staged_legend_column: 'legendset:legend_set_99',
+        tooltip_columns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              region: 'Acholi',
+              period: '202401',
+              c_cases: 10,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 4,
+        database: { id: 3 },
+        columns: [
+          {
+            column_name: 'region',
+            extra: JSON.stringify({
+              dhis2_is_ou_hierarchy: true,
+              dhis2_ou_level: 2,
+            }),
+          },
+          {
+            column_name: 'c_cases',
+          },
+        ],
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 2,
+          dhis2_source_instance_ids: [101],
+          dhis2_serving_database_id: 3,
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.stagedLegendDefinition?.setId).toBe('legend_set_99');
+    expect(result.stagedLegendDefinition?.items[1].color).toBe('#de2d26');
+
+    window.localStorage.removeItem('dhis2_legend_sets_db2');
   });
 
   test('passes through focused sub-boundary and unselected area styling options', () => {

@@ -49,6 +49,9 @@ declare module '@emotion/react' {
 
 export function useTheme() {
   const theme = useThemeBasic();
+  if (theme == null) {
+    return supersetTheme;
+  }
   // in the case there is no theme, useTheme returns an empty object
   if (Object.keys(theme).length === 0 && theme.constructor === Object) {
     throw new Error(

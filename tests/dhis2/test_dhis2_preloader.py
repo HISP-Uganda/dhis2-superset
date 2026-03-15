@@ -81,5 +81,6 @@ def test_requested_refreshes_use_metadata_staging_service(mocker):
     assert "dataElements" in refresh.call_args.kwargs["metadata_types"]
     assert "organisationUnitLevels" in refresh.call_args.kwargs["metadata_types"]
     assert "organisationUnits" in refresh.call_args.kwargs["metadata_types"]
+    assert "legendSets" in refresh.call_args.kwargs["metadata_types"]
     assert "geoJSON" in refresh.call_args.kwargs["metadata_types"]
     assert "orgUnitHierarchy" in refresh.call_args.kwargs["metadata_types"]

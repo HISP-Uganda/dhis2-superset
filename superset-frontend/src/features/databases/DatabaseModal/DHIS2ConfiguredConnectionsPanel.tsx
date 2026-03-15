@@ -42,8 +42,12 @@ const { Paragraph, Text } = Typography;
 const SummaryGrid = styled.div`
   ${({ theme }) => css`
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: ${theme.sizeUnit * 4}px;
+
+    @media (max-width: 1200px) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
     @media (max-width: 900px) {
       grid-template-columns: 1fr;
@@ -616,6 +620,16 @@ export default function DHIS2ConfiguredConnectionsPanel({
                   )})`}
                 />
               </Card>
+              <Card>
+                <Statistic
+                  title={t('Legend sets staged')}
+                  value={`${
+                    metadataStatus.legend_sets?.count ?? 0
+                  } (${formatMetadataStatus(
+                    metadataStatus.legend_sets?.status || 'missing',
+                  )})`}
+                />
+              </Card>
             </SummaryGrid>
             <Space wrap>
               <Tag color={getStatusColor(metadataStatus.overall_status)}>
@@ -627,6 +641,14 @@ export default function DHIS2ConfiguredConnectionsPanel({
               <Tag color={getStatusColor(metadataStatus.org_units.status)}>
                 {t('Org units: %s', formatMetadataStatus(metadataStatus.org_units.status))}
               </Tag>
+              {metadataStatus.legend_sets ? (
+                <Tag color={getStatusColor(metadataStatus.legend_sets.status)}>
+                  {t(
+                    'Legend sets: %s',
+                    formatMetadataStatus(metadataStatus.legend_sets.status),
+                  )}
+                </Tag>
+              ) : null}
             </Space>
             <Text type="secondary">
               {t('Last refreshed')}: {formatDateTime(metadataStatus.last_refreshed_at)}
@@ -671,19 +693,37 @@ export default function DHIS2ConfiguredConnectionsPanel({
                       key: 'variables',
                       label: t('Variables metadata'),
                       progress: metadataStatus.refresh_progress.variables,
+                      strokeColor: '#1677ff',
+                    },
+                    {
+                      key: 'legend_sets',
+                      label: t('Legend sets metadata'),
+                      progress: metadataStatus.refresh_progress.legend_sets,
+                      strokeColor: '#fa8c16',
                     },
                     {
                       key: 'org_units',
                       label: t('Organisation units metadata'),
                       progress: metadataStatus.refresh_progress.org_units,
+                      strokeColor: '#13a8a8',
                     },
                   ] as Array<{
                     key: string;
                     label: string;
-                    progress: DHIS2MetadataRefreshFamilyProgress;
+                    progress?: DHIS2MetadataRefreshFamilyProgress;
+                    strokeColor: string;
                   }>
-                ).map(section => (
-                  <Card key={section.key} size="small">
+                ).flatMap(section => {
+                  const progress = section.progress;
+                  if (
+                    !progress ||
+                    (progress.total_units <= 0 && progress.loaded_count <= 0)
+                  ) {
+                    return [];
+                  }
+
+                  return [
+                    <Card key={section.key} size="small">
                     <Space
                       align="center"
                       style={{ justifyContent: 'space-between', width: '100%' }}
@@ -693,21 +733,21 @@ export default function DHIS2ConfiguredConnectionsPanel({
                         <Text strong>{section.label}</Text>
                         <div>
                           <Text type="secondary">
-                            {formatRefreshProgressCounter(section.progress)}
+                            {formatRefreshProgressCounter(progress)}
                           </Text>
                         </div>
                       </div>
-                      <Tag color={getStatusColor(section.progress.status)}>
-                        {formatRefreshProgressStatus(section.progress.status)}
+                      <Tag color={getStatusColor(progress.status)}>
+                        {formatRefreshProgressStatus(progress.status)}
                       </Tag>
                     </Space>
                     <Progress
-                      percent={section.progress.percent_complete}
-                      status={getProgressStatus(section.progress.status)}
-                      strokeColor={section.key === 'variables' ? '#1677ff' : '#13a8a8'}
+                      percent={progress.percent_complete}
+                      status={getProgressStatus(progress.status)}
+                      strokeColor={section.strokeColor}
                       style={{ marginTop: 12, marginBottom: 8 }}
                     />
-                    {section.progress.instances.map(instance => (
+                    {progress.instances.map(instance => (
                       <div key={`${section.key}-${instance.id}`} style={{ marginTop: 10 }}>
                         <Space
                           align="center"
@@ -725,12 +765,13 @@ export default function DHIS2ConfiguredConnectionsPanel({
                           showInfo={false}
                           size="small"
                           status={getProgressStatus(instance.status)}
-                          strokeColor={section.key === 'variables' ? '#1677ff' : '#13a8a8'}
+                          strokeColor={section.strokeColor}
                         />
                       </div>
                     ))}
                   </Card>
-                ))}
+                  ];
+                })}
               </ProgressSection>
             ) : null}
           </Space>

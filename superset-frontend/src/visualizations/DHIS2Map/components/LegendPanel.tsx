@@ -19,7 +19,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { styled, t } from '@superset-ui/core';
-import { formatValue } from '../utils';
+import { ComputedLegendEntry, formatValue } from '../utils';
 import { DHIS2LegendDefinition, LevelBorderColor } from '../types';
 
 export type LegendMode = 'compact' | 'detailed' | 'hidden';
@@ -45,6 +45,7 @@ interface LegendPanelProps {
   manualBreaks?: number[];
   manualColors?: string[];
   stagedLegendDefinition?: DHIS2LegendDefinition;
+  legendEntries?: ComputedLegendEntry[];
 }
 
 /* eslint-disable theme-colors/no-literal-colors */
@@ -168,6 +169,7 @@ function LegendPanel({
   manualBreaks,
   manualColors,
   stagedLegendDefinition,
+  legendEntries = [],
 }: LegendPanelProps): React.ReactElement | null {
   const [currentMode, setCurrentMode] = useState<LegendMode>(mode);
 
@@ -243,42 +245,50 @@ function LegendPanel({
           </ModeButton>
         </div>
       </LegendHeader>
-      {(stagedLegendDefinition?.items?.length
-        ? stagedLegendDefinition.items.map((item, index) => ({
-            item,
-            index,
-            breakValue: undefined as number | undefined,
-          }))
-        : breaks.slice(0, -1).map((breakValue, index) => ({
-            item: undefined,
-            index,
-            breakValue,
-          }))
-      ).map(({ item, index, breakValue }) => {
-        const startValue = item?.startValue ?? breakValue ?? breaks[index];
-        const endValue = item?.endValue ?? breaks[index + 1];
-        const midValue =
-          typeof startValue === 'number' && typeof endValue === 'number'
-            ? (startValue + endValue) / 2
-            : typeof startValue === 'number'
-              ? startValue
-              : 0;
-        const displayColor =
-          item?.color ||
-          (manualColors && manualColors[index]
-            ? manualColors[index]
-            : colorScale(midValue));
-        const formattedRange =
-          typeof startValue === 'number' && typeof endValue === 'number'
-            ? `${formatValue(startValue)} - ${formatValue(endValue)}`
-            : item?.label || t('Legend item');
-        const label = item?.label
-          ? `${item.label}: ${formattedRange}`
-          : formattedRange;
+      {(legendEntries.length
+        ? legendEntries
+        : (stagedLegendDefinition?.items?.length
+            ? stagedLegendDefinition.items.map((item, index) => ({
+                item,
+                index,
+                breakValue: undefined as number | undefined,
+              }))
+            : breaks.slice(0, -1).map((breakValue, index) => ({
+                item: undefined,
+                index,
+                breakValue,
+              }))
+          ).map(({ item, index, breakValue }) => {
+            const startValue = item?.startValue ?? breakValue ?? breaks[index];
+            const endValue = item?.endValue ?? breaks[index + 1];
+            const midValue =
+              typeof startValue === 'number' && typeof endValue === 'number'
+                ? (startValue + endValue) / 2
+                : typeof startValue === 'number'
+                  ? startValue
+                  : 0;
+            const displayColor =
+              item?.color ||
+              (manualColors && manualColors[index]
+                ? manualColors[index]
+                : colorScale(midValue));
+            const formattedRange =
+              typeof startValue === 'number' && typeof endValue === 'number'
+                ? `${formatValue(startValue)} - ${formatValue(endValue)}`
+                : item?.label || t('Legend item');
+            const label = item?.label
+              ? `${item.label}: ${formattedRange}`
+              : formattedRange;
+            return {
+              key: item?.id || `${index}-${displayColor}`,
+              color: displayColor,
+              label,
+            };
+          })).map(entry => {
         return (
-          <LegendItem key={item?.id || `${index}-${displayColor}`}>
-            <ColorBox color={displayColor} />
-            <span>{label}</span>
+          <LegendItem key={entry.key}>
+            <ColorBox color={entry.color} />
+            <span>{entry.label}</span>
           </LegendItem>
         );
       })}

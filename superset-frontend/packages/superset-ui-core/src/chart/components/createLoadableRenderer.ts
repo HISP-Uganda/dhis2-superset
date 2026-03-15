@@ -41,6 +41,20 @@ export default function createLoadableRenderer<
   const LoadableRenderer = Loadable.Map<Props, Exports>(
     options,
   ) as LoadableRenderer<Props>;
+  const loadablePrototype = LoadableRenderer.prototype as {
+    componentWillMount?: () => void;
+    UNSAFE_componentWillMount?: () => void;
+  };
+
+  if (
+    loadablePrototype.componentWillMount &&
+    !loadablePrototype.UNSAFE_componentWillMount
+  ) {
+    // react-loadable still defines componentWillMount on the generated class.
+    loadablePrototype.UNSAFE_componentWillMount =
+      loadablePrototype.componentWillMount;
+    delete loadablePrototype.componentWillMount;
+  }
 
   // Extends the behavior of LoadableComponent to provide post-render listeners
   class CustomLoadableRenderer extends LoadableRenderer {

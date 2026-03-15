@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { resolveFocusedBoundaryRequest } from './focusMode';
+import {
+  resolveFocusedBoundaryRequest,
+  resolveFocusedDataLevel,
+} from './focusMode';
 import { BoundaryFeature } from './types';
 
 const buildFeature = (
@@ -105,5 +108,17 @@ describe('resolveFocusedBoundaryRequest', () => {
 
     expect(result.childLevel).toBeUndefined();
     expect(result.parentIds).toEqual([]);
+  });
+
+  it('uses the focused child level for data fetches when focus mode is active', () => {
+    expect(
+      resolveFocusedDataLevel(2, {
+        childLevel: 3,
+        parentIds: ['a1'],
+        selectedParents: [buildFeature('a1', 'Acholi', 2)],
+      }),
+    ).toBe(3);
+
+    expect(resolveFocusedDataLevel(2, null)).toBe(2);
   });
 });

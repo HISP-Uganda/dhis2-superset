@@ -109,6 +109,13 @@ _SUPPORTED_QUERY_OPERATORS = {
     "lt": "<",
     "lte": "<=",
 }
+_SUPPORTED_QUERY_AGGREGATIONS = {
+    "sum": "SUM",
+    "average": "AVG",
+    "max": "MAX",
+    "min": "MIN",
+    "count": "COUNT",
+}
 
 
 def _isoformat_timestamp(value: Any) -> str | None:
@@ -702,6 +709,11 @@ class DHIS2StagingEngine:
         escaped_value = str(value).replace("'", "''")
         return f"'{escaped_value}'"
 
+    def _build_empty_value_expression(self, quoted_column: str) -> str:
+        return (
+            f"NULLIF(TRIM(COALESCE(CAST({quoted_column} AS TEXT), '')), '')"
+        )
+
     def _build_filter_clauses(
         self,
         filters: list[dict[str, Any]] | None,
@@ -718,10 +730,26 @@ class DHIS2StagingEngine:
             column = str(filter_item.get("column") or "").strip()
             operator = str(filter_item.get("operator") or "eq").strip().lower()
             raw_value = filter_item.get("value")
-            if not column or column not in available_columns or raw_value is None:
+            if not column or column not in available_columns:
                 continue
 
             quoted_column = self._quote_identifier(column)
+
+            if operator in {"is_empty", "not_empty"}:
+                empty_value_expression = self._build_empty_value_expression(
+                    quoted_column
+                )
+                comparator = "IS NULL" if operator == "is_empty" else "IS NOT NULL"
+                where_clauses.append(
+                    f"{empty_value_expression} {comparator}"
+                )
+                preview_clauses.append(
+                    f"{empty_value_expression} {comparator}"
+                )
+                continue
+
+            if raw_value is None:
+                continue
 
             if operator == "in":
                 if not isinstance(raw_value, (list, tuple, set)):
@@ -790,6 +818,15 @@ class DHIS2StagingEngine:
 
         return where_clauses, preview_clauses, params
 
+    def _normalize_query_aggregation(
+        self,
+        aggregation_method: str | None,
+    ) -> str | None:
+        normalized = str(aggregation_method or "").strip().lower()
+        if not normalized:
+            return None
+        return normalized if normalized in _SUPPORTED_QUERY_AGGREGATIONS else None
+
     def _build_serving_query(
         self,
         staged_dataset: DHIS2StagedDataset,
@@ -798,6 +835,10 @@ class DHIS2StagingEngine:
         filters: list[dict[str, Any]] | None = None,
         limit: int | None = None,
         page: int | None = None,
+        group_by_columns: list[str] | None = None,
+        metric_column: str | None = None,
+        metric_alias: str | None = None,
+        aggregation_method: str | None = None,
         for_download: bool = False,
     ) -> tuple[str, str, str, dict[str, Any], list[str], int]:
         full_name = self.get_serving_sql_table_ref(staged_dataset)
@@ -805,31 +846,92 @@ class DHIS2StagingEngine:
         if not available_columns:
             return "", "", "", {}, [], 1
 
-        requested_columns = [
-            column
-            for column in list(selected_columns or [])
-            if column in available_columns
-        ]
-        resolved_columns = requested_columns or available_columns
-        selected_sql = ", ".join(
-            self._quote_identifier(column) for column in resolved_columns
-        )
         where_clauses, preview_clauses, params = self._build_filter_clauses(
             filters,
             available_columns,
         )
-
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         preview_where_sql = (
             f" WHERE {' AND '.join(preview_clauses)}" if preview_clauses else ""
         )
-
-        select_sql = f"SELECT {selected_sql} FROM {full_name}{where_sql}"
-        preview_sql = f"SELECT {selected_sql} FROM {full_name}{preview_where_sql}"
-
         safe_limit = self._coerce_query_limit(limit, for_download=for_download)
         safe_page = max(1, int(page or 1))
         offset = 0 if for_download else (safe_page - 1) * safe_limit
+
+        normalized_aggregation = self._normalize_query_aggregation(
+            aggregation_method
+        )
+        if normalized_aggregation:
+            resolved_group_by_columns = [
+                column
+                for column in list(group_by_columns or [])
+                if column in available_columns
+            ]
+            resolved_metric_column = (
+                str(metric_column or "").strip()
+                if str(metric_column or "").strip() in available_columns
+                else None
+            )
+            if not resolved_group_by_columns or not resolved_metric_column:
+                return "", "", "", {}, [], safe_page
+
+            resolved_metric_alias = str(metric_alias or "").strip() or (
+                f"{normalized_aggregation.upper()}({resolved_metric_column})"
+            )
+            quoted_group_by_columns = [
+                self._quote_identifier(column)
+                for column in resolved_group_by_columns
+            ]
+            group_by_sql = ", ".join(quoted_group_by_columns)
+            preview_group_by_sql = ", ".join(quoted_group_by_columns)
+            quoted_metric_column = self._quote_identifier(resolved_metric_column)
+            quoted_metric_alias = self._quote_identifier(resolved_metric_alias)
+
+            if normalized_aggregation == "count":
+                aggregate_sql = f"COUNT(*) AS {quoted_metric_alias}"
+                preview_aggregate_sql = aggregate_sql
+            else:
+                metric_expression = f"COALESCE({quoted_metric_column}, 0)"
+                aggregate_fn = _SUPPORTED_QUERY_AGGREGATIONS[normalized_aggregation]
+                aggregate_sql = (
+                    f"{aggregate_fn}({metric_expression}) AS {quoted_metric_alias}"
+                )
+                preview_aggregate_sql = aggregate_sql
+
+            resolved_columns = [
+                *resolved_group_by_columns,
+                resolved_metric_alias,
+            ]
+            select_sql = (
+                f"SELECT {group_by_sql}, {aggregate_sql} "
+                f"FROM {full_name}{where_sql} "
+                f"GROUP BY {group_by_sql}"
+            )
+            preview_sql = (
+                f"SELECT {preview_group_by_sql}, {preview_aggregate_sql} "
+                f"FROM {full_name}{preview_where_sql} "
+                f"GROUP BY {preview_group_by_sql}"
+            )
+            count_sql = (
+                "SELECT COUNT(*) FROM ("
+                f"SELECT {group_by_sql} FROM {full_name}{where_sql} "
+                f"GROUP BY {group_by_sql}"
+                ") AS grouped_rows"
+            )
+        else:
+            requested_columns = [
+                column
+                for column in list(selected_columns or [])
+                if column in available_columns
+            ]
+            resolved_columns = requested_columns or available_columns
+            selected_sql = ", ".join(
+                self._quote_identifier(column) for column in resolved_columns
+            )
+            select_sql = f"SELECT {selected_sql} FROM {full_name}{where_sql}"
+            preview_sql = f"SELECT {selected_sql} FROM {full_name}{preview_where_sql}"
+            count_sql = f"SELECT COUNT(*) FROM {full_name}{where_sql}"
+
         select_sql = f"{select_sql} LIMIT :limit"
         preview_sql = f"{preview_sql} LIMIT {safe_limit}"
         if offset > 0:
@@ -839,7 +941,6 @@ class DHIS2StagingEngine:
         if offset > 0:
             params["offset"] = offset
 
-        count_sql = f"SELECT COUNT(*) FROM {full_name}{where_sql}"
         return select_sql, count_sql, preview_sql, params, resolved_columns, safe_page
 
     def query_serving_table(
@@ -850,6 +951,10 @@ class DHIS2StagingEngine:
         filters: list[dict[str, Any]] | None = None,
         limit: int | None = None,
         page: int | None = None,
+        group_by_columns: list[str] | None = None,
+        metric_column: str | None = None,
+        metric_alias: str | None = None,
+        aggregation_method: str | None = None,
     ) -> dict[str, Any]:
         full_name = self.get_serving_sql_table_ref(staged_dataset)
         safe_limit = self._coerce_query_limit(limit)
@@ -879,6 +984,10 @@ class DHIS2StagingEngine:
             filters=filters,
             limit=limit,
             page=page,
+            group_by_columns=group_by_columns,
+            metric_column=metric_column,
+            metric_alias=metric_alias,
+            aggregation_method=aggregation_method,
         )
         if not resolved_columns:
             return {

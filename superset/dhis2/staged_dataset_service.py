@@ -631,6 +631,10 @@ def query_serving_data(
     filters: list[dict[str, Any]] | None = None,
     limit: int = 100,
     page: int = 1,
+    group_by_columns: list[str] | None = None,
+    metric_column: str | None = None,
+    metric_alias: str | None = None,
+    aggregation_method: str | None = None,
 ) -> dict[str, Any]:
     dataset = get_staged_dataset(dataset_id)
     if dataset is None:
@@ -644,6 +648,10 @@ def query_serving_data(
         filters=filters,
         limit=limit,
         page=page,
+        group_by_columns=group_by_columns,
+        metric_column=metric_column,
+        metric_alias=metric_alias,
+        aggregation_method=aggregation_method,
     )
 
 

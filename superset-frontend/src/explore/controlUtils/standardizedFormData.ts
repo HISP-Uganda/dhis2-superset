@@ -58,6 +58,8 @@ export const publicControls = [
   'granularity_sqla', // via sharedControls
   'time_grain_sqla', // via sharedControls
   'time_range', // via sharedControls
+  'dhis2_period_column', // via sharedControls
+  'dhis2_period_filter_values', // via sharedControls
   // filters
   'adhoc_filters', // via sharedControls
   // subquery limit(series limit)

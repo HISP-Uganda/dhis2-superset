@@ -544,6 +544,14 @@ def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_p
         )
         == "level2"
     )
+    assert (
+        resolve_terminal_hierarchy_column(
+            ["level1", "level2", "level3"],
+            hierarchy_column_names,
+            preferred_selected_column="level2",
+        )
+        == "level2"
+    )
     assert is_terminal_at_selected_level(
         {
             "level1": "Uganda",

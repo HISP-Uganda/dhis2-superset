@@ -194,6 +194,8 @@ describe('should collect control values and create SFD', () => {
     granularity_sqla: 'time_column',
     time_grain_sqla: TimeGranularity.DAY,
     time_range: '2000 : today',
+    dhis2_period_column: 'period',
+    dhis2_period_filter_values: ['202503', '202502'],
     // filters
     adhoc_filters: [],
     // subquery limit(series limit)

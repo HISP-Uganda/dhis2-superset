@@ -18,12 +18,39 @@
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy.exc import OperationalError
+from werkzeug.exceptions import NotFound
 
 from superset.app import SupersetApp
 from superset.initialization import SupersetAppInitializer
 
 
 class TestSupersetApp:
+    def test_send_static_file_returns_empty_hot_update_manifest(self):
+        app = SupersetApp(__name__)
+
+        with patch(
+            "flask.app.Flask.send_static_file",
+            side_effect=NotFound(),
+        ):
+            response = app.send_static_file("spa.missing.hot-update.json")
+
+        assert response.status_code == 200
+        assert response.mimetype == "application/json"
+        assert response.get_data(as_text=True) == '{"c":[],"r":[],"m":[]}'
+
+    def test_send_static_file_returns_empty_hot_update_chunk(self):
+        app = SupersetApp(__name__)
+
+        with patch(
+            "flask.app.Flask.send_static_file",
+            side_effect=NotFound(),
+        ):
+            response = app.send_static_file("spa.missing.hot-update.js")
+
+        assert response.status_code == 200
+        assert response.mimetype == "application/javascript"
+        assert "missing hot update chunk" in response.get_data(as_text=True)
+
     @patch("superset.app.logger")
     def test_sync_config_to_db_skips_when_no_tables(self, mock_logger):
         """Test that sync is skipped when database is not up-to-date."""

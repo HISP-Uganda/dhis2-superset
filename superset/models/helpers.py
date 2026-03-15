@@ -2065,10 +2065,26 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 selected_hierarchy_candidates.append(
                     self._sanitize_column_reference(filter_col)
                 )
+        preferred_terminal_hierarchy_column = None
+        explicit_selected_org_unit_column = extras.get(
+            "dhis2_selected_org_unit_column"
+        )
+        if isinstance(explicit_selected_org_unit_column, str):
+            normalized_explicit_selected_org_unit_column = (
+                self._sanitize_column_reference(explicit_selected_org_unit_column)
+            )
+            if (
+                normalized_explicit_selected_org_unit_column
+                in dhis2_hierarchy_column_names
+            ):
+                preferred_terminal_hierarchy_column = (
+                    normalized_explicit_selected_org_unit_column
+                )
         selected_terminal_hierarchy_column = (
             resolve_terminal_hierarchy_column(
                 selected_hierarchy_candidates,
                 dhis2_hierarchy_column_names,
+                preferred_selected_column=preferred_terminal_hierarchy_column,
             )
             if resolve_terminal_hierarchy_column
             else None

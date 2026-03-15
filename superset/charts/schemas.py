@@ -1023,6 +1023,14 @@ class ChartDataExtrasSchema(Schema):
         },
         allow_none=True,
     )
+    dhis2_selected_org_unit_column = fields.String(
+        metadata={
+            "description": "For DHIS2 staged-local charts, the explicitly selected "
+            "org-unit hierarchy column whose terminal-level predicate should "
+            "be applied to the query."
+        },
+        allow_none=True,
+    )
 
 
 class AnnotationLayerSchema(Schema):

@@ -183,6 +183,8 @@ export interface BaseFormData extends TimeRange, FormDataResidual {
   annotation_layers?: AnnotationLayer[];
   url_params?: Record<string, string>;
   custom_params?: Record<string, string>;
+  dhis2_period_column?: string;
+  dhis2_period_filter_values?: (string | number)[];
   /** limit number of series */
   series_columns?: QueryFormColumn[];
   series_limit?: number;

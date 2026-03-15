@@ -95,6 +95,11 @@ beforeEach(() => {
               count: 42,
               last_refreshed_at: '2026-03-13T12:00:00',
             },
+            legend_sets: {
+              status: 'ready',
+              count: 6,
+              last_refreshed_at: '2026-03-13T12:00:00',
+            },
             org_units: {
               status: 'ready',
               count: 18,
@@ -136,6 +141,7 @@ test('renders local metadata status and can request a refresh', async () => {
     await screen.findByRole('heading', { name: 'Local Metadata' }),
   ).toBeInTheDocument();
   expect(await screen.findByText('ANC Visits')).toBeInTheDocument();
+  expect(await screen.findByText('Legend sets: ready')).toBeInTheDocument();
 
   await userEvent.click(
     screen.getByRole('button', { name: 'Refresh local metadata' }),

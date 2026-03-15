@@ -27,7 +27,7 @@ import {
 
 const { Text } = Typography;
 
-type MetadataFamily = 'variables' | 'org_units';
+type MetadataFamily = 'variables' | 'legend_sets' | 'org_units';
 type MetadataPreviewRow = Record<string, unknown> & {
   id?: string;
   displayName?: string;
@@ -35,6 +35,9 @@ type MetadataPreviewRow = Record<string, unknown> & {
   level?: number;
   source_instance_name?: string;
   groupLabels?: string[];
+  legendDefinition?: {
+    items?: unknown[];
+  };
 };
 
 const VARIABLE_TYPE_OPTIONS = [
@@ -49,6 +52,10 @@ const ORG_UNIT_TYPE_OPTIONS = [
   { label: t('Organisation Units'), value: 'organisationUnits' },
   { label: t('Organisation Unit Levels'), value: 'organisationUnitLevels' },
   { label: t('Organisation Unit Groups'), value: 'organisationUnitGroups' },
+];
+
+const LEGEND_SET_TYPE_OPTIONS = [
+  { label: t('Legend Sets'), value: 'legendSets' },
 ];
 
 export default function DHIS2LocalMetadata() {
@@ -73,7 +80,12 @@ export default function DHIS2LocalMetadata() {
   const [previewMessage, setPreviewMessage] = useState<string | null>(null);
 
   const typeOptions = useMemo(
-    () => (family === 'variables' ? VARIABLE_TYPE_OPTIONS : ORG_UNIT_TYPE_OPTIONS),
+    () =>
+      family === 'variables'
+        ? VARIABLE_TYPE_OPTIONS
+        : family === 'legend_sets'
+          ? LEGEND_SET_TYPE_OPTIONS
+          : ORG_UNIT_TYPE_OPTIONS,
     [family],
   );
 
@@ -172,7 +184,11 @@ export default function DHIS2LocalMetadata() {
   };
 
   const familyStatus =
-    family === 'variables' ? metadataStatus?.variables : metadataStatus?.org_units;
+    family === 'variables'
+      ? metadataStatus?.variables
+      : family === 'legend_sets'
+        ? metadataStatus?.legend_sets
+        : metadataStatus?.org_units;
 
   const previewColumns =
     family === 'variables'
@@ -213,7 +229,41 @@ export default function DHIS2LocalMetadata() {
             key: 'id',
           },
         ]
-      : [
+      : family === 'legend_sets'
+        ? [
+            {
+              title: t('Legend set'),
+              key: 'displayName',
+              render: (_value: unknown, row: MetadataPreviewRow) =>
+                row.displayName || row.name || row.id || t('Unknown'),
+            },
+            {
+              title: t('Legends'),
+              key: 'legendCount',
+              render: (_value: unknown, row: MetadataPreviewRow) =>
+                String(
+                  Array.isArray(row.legendDefinition?.items)
+                    ? row.legendDefinition?.items.length
+                    : 0,
+                ),
+            },
+            {
+              title: t('Instance'),
+              key: 'source_instance_name',
+              render: (_value: unknown, row: MetadataPreviewRow) =>
+                row.source_instance_name ? (
+                  <Tag>{row.source_instance_name}</Tag>
+                ) : (
+                  <Text type="secondary">{t('Unknown')}</Text>
+                ),
+            },
+            {
+              title: t('UID'),
+              dataIndex: 'id',
+              key: 'id',
+            },
+          ]
+        : [
           {
             title: t('Organisation unit'),
             key: 'displayName',
@@ -253,7 +303,7 @@ export default function DHIS2LocalMetadata() {
       activeTab="local-metadata"
       databases={databases}
       description={t(
-        'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables or organisation units without waiting on live DHIS2 responses.',
+        'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables, legend sets, or organisation units without waiting on live DHIS2 responses.',
       )}
       extra={
         <Button onClick={() => void handleRefresh()}>
@@ -315,6 +365,11 @@ export default function DHIS2LocalMetadata() {
                 <Tag color={getStatusColor(metadataStatus.variables.status)}>
                   {t('Variables: %s', metadataStatus.variables.status)}
                 </Tag>
+                {metadataStatus.legend_sets ? (
+                  <Tag color={getStatusColor(metadataStatus.legend_sets.status)}>
+                    {t('Legend sets: %s', metadataStatus.legend_sets.status)}
+                  </Tag>
+                ) : null}
                 <Tag color={getStatusColor(metadataStatus.org_units.status)}>
                   {t('Org units: %s', metadataStatus.org_units.status)}
                 </Tag>
@@ -332,6 +387,7 @@ export default function DHIS2LocalMetadata() {
                 aria-label={t('Metadata family')}
                 options={[
                   { label: t('Variables'), value: 'variables' },
+                  { label: t('Legend Sets'), value: 'legend_sets' },
                   { label: t('Organisation Units'), value: 'org_units' },
                 ]}
                 style={{ width: 180 }}

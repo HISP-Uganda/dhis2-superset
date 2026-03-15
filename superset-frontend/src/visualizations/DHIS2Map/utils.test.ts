@@ -18,6 +18,7 @@
  */
 
 import {
+  buildLegendEntries,
   buildOrgUnitMatchKeys,
   formatValue,
   getColorScale,
@@ -143,6 +144,40 @@ describe('DHIS2Map Utils', () => {
       expect(collapsedColor).toBe(colorScale(1));
       expect(collapsedColor).not.toBe('#ffffff');
       expect(collapsedColor).not.toBe('rgb(255, 255, 255)');
+    });
+
+    test('uses data distribution for auto legends when enough values exist', () => {
+      const dataValues = [1, 2, 3, 4, 5, 100];
+      const colorScale = getColorScale(
+        'fire',
+        1,
+        100,
+        5,
+        false,
+        'sequential',
+        undefined,
+        undefined,
+        undefined,
+        'auto',
+        dataValues,
+      );
+
+      expect(colorScale(1)).not.toBe(colorScale(5));
+    });
+
+    test('builds data-driven legend entries for auto mode', () => {
+      const entries = buildLegendEntries({
+        schemeName: 'fire',
+        min: 1,
+        max: 100,
+        classes: 5,
+        legendType: 'auto',
+        dataValues: [1, 2, 3, 4, 5, 100],
+      });
+
+      expect(entries).toHaveLength(5);
+      expect(entries[0].max).toBeLessThan(20);
+      expect(entries[4].max).toBe(100);
     });
   });
 

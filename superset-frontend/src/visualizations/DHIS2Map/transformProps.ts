@@ -46,6 +46,18 @@ type StagedOrgUnitLevel = {
   name?: string;
 };
 
+type StagedLegendColumnDefinition = {
+  columnName: string;
+  definition: DHIS2LegendDefinition;
+};
+
+type StagedLegendSetMetadata = {
+  id?: string;
+  displayName?: string;
+  name?: string;
+  legendDefinition?: unknown;
+};
+
 function generateLevelBorderColors(
   levels: number[],
   customColors?: Record<number, RGBAColor>,
@@ -216,6 +228,138 @@ function resolveMetricLegendDefinition(
   return parseLegendDefinition(extra?.dhis2_legend ?? extra?.dhis2Legend);
 }
 
+function collectStagedLegendDefinitions(
+  datasourceColumns: DatasourceColumn[],
+): StagedLegendColumnDefinition[] {
+  return datasourceColumns.reduce<StagedLegendColumnDefinition[]>(
+    (result, column) => {
+      const columnName = String(column.column_name || '').trim();
+      if (!columnName) {
+        return result;
+      }
+
+      const extra = parseColumnExtra(column.extra);
+      const definition = parseLegendDefinition(
+        extra?.dhis2_legend ?? extra?.dhis2Legend,
+      );
+      if (definition) {
+        result.push({
+          columnName,
+          definition,
+        });
+      }
+      return result;
+    },
+    [],
+  );
+}
+
+function readCachedLegendSets(databaseId?: number): StagedLegendSetMetadata[] {
+  if (!databaseId || typeof window === 'undefined') {
+    return [];
+  }
+
+  try {
+    const cached = window.localStorage.getItem(
+      `dhis2_legend_sets_db${databaseId}`,
+    );
+    if (!cached) {
+      return [];
+    }
+
+    const parsed = JSON.parse(cached);
+    if (!Array.isArray(parsed?.data)) {
+      return [];
+    }
+
+    return parsed.data.filter(
+      (item: unknown): item is StagedLegendSetMetadata =>
+        Boolean(item) && typeof item === 'object',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function resolveCachedLegendSetDefinition(
+  stagedLegendSets: StagedLegendSetMetadata[],
+  selectedLegendColumn?: string,
+): DHIS2LegendDefinition | undefined {
+  if (
+    !selectedLegendColumn ||
+    !selectedLegendColumn.startsWith('legendset:') ||
+    !stagedLegendSets.length
+  ) {
+    return undefined;
+  }
+
+  const requestedLegendIdentity = selectedLegendColumn
+    .slice('legendset:'.length)
+    .trim();
+  if (!requestedLegendIdentity) {
+    return undefined;
+  }
+
+  const matchedLegendSet = stagedLegendSets.find(legendSet => {
+    const legendSetId = String(legendSet.id || '').trim();
+    const legendSetName = String(
+      legendSet.displayName || legendSet.name || '',
+    ).trim();
+    return (
+      legendSetId === requestedLegendIdentity ||
+      legendSetName === requestedLegendIdentity
+    );
+  });
+
+  if (!matchedLegendSet) {
+    return undefined;
+  }
+
+  return parseLegendDefinition(
+    matchedLegendSet.legendDefinition || matchedLegendSet,
+  );
+}
+
+function resolveSelectedStagedLegendDefinition(
+  datasourceColumns: DatasourceColumn[],
+  metricColumnName: string,
+  selectedLegendColumn?: string,
+  stagedLegendSets: StagedLegendSetMetadata[] = [],
+): DHIS2LegendDefinition | undefined {
+  const availableDefinitions = collectStagedLegendDefinitions(datasourceColumns);
+
+  const cachedLegendSetDefinition = resolveCachedLegendSetDefinition(
+    stagedLegendSets,
+    selectedLegendColumn,
+  );
+  if (cachedLegendSetDefinition) {
+    return cachedLegendSetDefinition;
+  }
+
+  if (!availableDefinitions.length) {
+    return undefined;
+  }
+
+  if (
+    selectedLegendColumn &&
+    selectedLegendColumn !== '__metric__' &&
+    !selectedLegendColumn.startsWith('legendset:') &&
+    selectedLegendColumn.trim()
+  ) {
+    const matched = availableDefinitions.find(
+      definition => definition.columnName === selectedLegendColumn,
+    );
+    if (matched) {
+      return matched.definition;
+    }
+  }
+
+  return (
+    resolveMetricLegendDefinition(datasourceColumns, metricColumnName) ||
+    availableDefinitions[0]?.definition
+  );
+}
+
 function readCachedOrgUnitLevels(databaseId?: number): StagedOrgUnitLevel[] {
   if (!databaseId || typeof window === 'undefined') {
     return [];
@@ -366,6 +510,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   const legend_classes =
     formDataAny?.legendClasses ?? formDataAny?.legend_classes;
   const legend_type = formDataAny?.legendType || formDataAny?.legend_type;
+  const staged_legend_column =
+    formDataAny?.stagedLegendColumn || formDataAny?.staged_legend_column;
   const legend_min = formDataAny?.legendMin ?? formDataAny?.legend_min;
   const legend_max = formDataAny?.legendMax ?? formDataAny?.legend_max;
   const manual_breaks = formDataAny?.manualBreaks || formDataAny?.manual_breaks;
@@ -429,6 +575,12 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     extraParsed?.dhis2_source_database_id ??
     extraParsed?.source_database_id ??
     extraParsed?.dhis2SourceDatabaseId;
+  const stagedDatasetId =
+    coercePositiveInteger(extraParsed?.dhis2_staged_dataset_id) ||
+    coercePositiveInteger(extraParsed?.dhis2StagedDatasetId);
+  const isStagedLocalDataset =
+    extraParsed?.dhis2_staged_local === true ||
+    extraParsed?.dhis2StagedLocal === true;
   const sourceInstanceIdsFromExtra = Array.isArray(
     extraParsed?.dhis2_source_instance_ids,
   )
@@ -460,6 +612,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] Database ID extraction:', {
     databaseId,
+    isStagedLocalDataset,
     sourceDatabaseIdFromExtra,
     sourceInstanceIdsFromExtra,
     servingDatabaseId: datasourceAny?.database?.id || datasourceAny?.database_id,
@@ -468,6 +621,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   });
 
   const cachedOrgUnitLevels = readCachedOrgUnitLevels(databaseId);
+  const cachedLegendSets = readCachedLegendSets(databaseId);
   const datasourceHierarchyLevels = getDatasourceBoundaryLevels(
     datasourceColumns,
     cachedOrgUnitLevels,
@@ -707,14 +861,24 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     metricColumn = 'value';
   }
 
-  const stagedLegendDefinition = resolveMetricLegendDefinition(
+  const stagedLegendDefinition = resolveSelectedStagedLegendDefinition(
     datasourceColumns,
     metricColumn,
+    staged_legend_column,
+    cachedLegendSets,
   );
   const boundaryLevelLabels = buildBoundaryLevelLabelMap(
     datasourceColumns,
     cachedOrgUnitLevels,
   );
+  const boundaryLevelColumns = datasourceHierarchyLevels.reduce<
+    Record<number, string>
+  >((result, definition) => {
+    if (definition.columnName) {
+      result[definition.level] = definition.columnName;
+    }
+    return result;
+  }, {});
 
   const primaryBoundaryLevel = hierarchyLevelColumn
     ? resolveHierarchyLevelFromDatasourceColumn(
@@ -882,6 +1046,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] FINAL PROPS:', {
     databaseId,
+    isStagedLocalDataset,
     sourceInstanceIds: sourceInstanceIdsFromExtra,
     primaryBoundaryLevel,
     boundaryLevels: selectedLevels,
@@ -916,14 +1081,18 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     height,
     data,
     databaseId,
+    isStagedLocalDataset,
+    stagedDatasetId,
     sourceInstanceIds: sourceInstanceIdsFromExtra,
     datasetId,
+    datasourceColumns,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
     aggregationMethod: aggregation_method || 'sum',
     primaryBoundaryLevel,
     boundaryLevels: selectedLevels,
     boundaryLevelLabels,
+    boundaryLevelColumns,
     levelBorderColors,
     enableDrill: enable_drill !== false,
     colorScheme: color_scheme || 'supersetColors',

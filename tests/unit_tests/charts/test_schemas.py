@@ -135,6 +135,24 @@ def test_chart_data_query_object_schema_time_grain_sqla_validation(
     assert result["extras"]["time_grain_sqla"] is None
 
 
+def test_chart_data_query_object_schema_allows_dhis2_selected_org_unit_extra(
+    app_context: None,
+) -> None:
+    schema = ChartDataQueryObjectSchema()
+
+    data = {
+        "datasource": {"type": "table", "id": 1},
+        "groupby": ["region", "district_city"],
+        "metrics": [],
+        "extras": {
+            "dhis2_selected_org_unit_column": "region",
+        },
+    }
+
+    result = schema.load(data)
+    assert result["extras"]["dhis2_selected_org_unit_column"] == "region"
+
+
 @pytest.mark.parametrize(
     "app",
     [{"TIME_GRAIN_ADDONS": {"PT10M": "10 minutes"}}],

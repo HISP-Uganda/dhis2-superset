@@ -83,11 +83,26 @@ export interface DHIS2LegendDefinition {
   items: DHIS2LegendItem[];
 }
 
+export interface DHIS2DatasourceColumn {
+  column_name?: string;
+  verbose_name?: string;
+  extra?: unknown;
+}
+
+export interface DHIS2LoaderColumnDefinition {
+  dataIndex?: string;
+  key?: string;
+  title?: string;
+  de_id?: string;
+}
+
 export interface DHIS2MapProps {
   width: number;
   height: number;
   data: Record<string, any>[];
   databaseId: number;
+  isStagedLocalDataset?: boolean;
+  stagedDatasetId?: number;
   sourceInstanceIds?: number[];
   orgUnitColumn: string;
   metric: string;
@@ -95,6 +110,7 @@ export interface DHIS2MapProps {
   aggregationMethod?: AggregationMethod;
   boundaryLevels: number[];
   boundaryLevelLabels?: Record<number, string>;
+  boundaryLevelColumns?: Record<number, string>;
   enableDrill: boolean;
   colorScheme: string;
   linearColorScheme?: string;
@@ -140,6 +156,7 @@ export interface DHIS2MapProps {
   datasetId?: number;
   chartId?: number;
   dashboardId?: number;
+  datasourceColumns?: DHIS2DatasourceColumn[];
   // Boundary loading method: 'geoFeatures' (default) or 'geoJSON'
   boundaryLoadMethod?: 'geoFeatures' | 'geoJSON';
 }

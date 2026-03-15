@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { forwardRef } from 'react';
 import { css, useTheme, getFontSize } from '../..';
 import { AntdIconType, BaseIconProps, CustomIconType, IconType } from './types';
 
@@ -35,65 +36,75 @@ const genAriaLabel = (fileName: string) => {
   return name.toLowerCase();
 };
 
-export const BaseIconComponent: React.FC<
+export const BaseIconComponent = forwardRef<
+  HTMLSpanElement,
   BaseIconProps & Omit<IconType, 'component'>
-> = ({
-  component: Component,
-  iconColor,
-  iconSize,
-  viewBox,
-  customIcons,
-  fileName,
-  ...rest
-}) => {
-  const theme = useTheme();
-  const whatRole = rest?.onClick ? 'button' : 'img';
-  const ariaLabel = genAriaLabel(fileName || '');
-  const style = {
-    color: iconColor,
-    fontSize: iconSize
-      ? `${getFontSize(theme, iconSize)}px`
-      : `${theme.fontSize}px`,
-    cursor: rest?.onClick ? 'pointer' : undefined,
-  };
+>(
+  (
+    {
+      component: Component,
+      iconColor,
+      iconSize,
+      viewBox,
+      customIcons,
+      fileName,
+      ...rest
+    },
+    ref,
+  ) => {
+    const theme = useTheme();
+    const whatRole = rest?.onClick ? 'button' : 'img';
+    const ariaLabel = genAriaLabel(fileName || '');
+    const style = {
+      color: iconColor,
+      fontSize: iconSize
+        ? `${getFontSize(theme, iconSize)}px`
+        : `${theme.fontSize}px`,
+      cursor: rest?.onClick ? 'pointer' : undefined,
+    };
 
-  return customIcons ? (
-    <span
-      role={whatRole}
-      aria-label={ariaLabel}
-      data-test={ariaLabel}
-      css={[
-        css`
-          display: inline-flex;
-          align-items: center;
-          line-height: 0;
-          vertical-align: middle;
-        `,
-      ]}
-    >
+    return customIcons ? (
+      <span
+        ref={ref}
+        role={whatRole}
+        aria-label={ariaLabel}
+        data-test={ariaLabel}
+        css={[
+          css`
+            display: inline-flex;
+            align-items: center;
+            line-height: 0;
+            vertical-align: middle;
+          `,
+        ]}
+      >
+        <Component
+          viewBox={viewBox || '0 0 24 24'}
+          style={style}
+          width={
+            iconSize
+              ? `${getFontSize(theme, iconSize) || theme.fontSize}px`
+              : `${theme.fontSize}px`
+          }
+          height={
+            iconSize
+              ? `${getFontSize(theme, iconSize) || theme.fontSize}px`
+              : `${theme.fontSize}px`
+          }
+          {...(rest as CustomIconType)}
+        />
+      </span>
+    ) : (
       <Component
-        viewBox={viewBox || '0 0 24 24'}
+        ref={ref}
+        role={whatRole}
         style={style}
-        width={
-          iconSize
-            ? `${getFontSize(theme, iconSize) || theme.fontSize}px`
-            : `${theme.fontSize}px`
-        }
-        height={
-          iconSize
-            ? `${getFontSize(theme, iconSize) || theme.fontSize}px`
-            : `${theme.fontSize}px`
-        }
-        {...(rest as CustomIconType)}
+        aria-label={ariaLabel}
+        data-test={ariaLabel}
+        {...(rest as AntdIconType)}
       />
-    </span>
-  ) : (
-    <Component
-      role={whatRole}
-      style={style}
-      aria-label={ariaLabel}
-      data-test={ariaLabel}
-      {...(rest as AntdIconType)}
-    />
-  );
-};
+    );
+  },
+);
+
+BaseIconComponent.displayName = 'BaseIconComponent';

@@ -254,6 +254,120 @@ def test_build_serving_query_supports_in_operator(monkeypatch) -> None:
     assert safe_page == 1
 
 
+def test_build_serving_query_supports_empty_operators(monkeypatch) -> None:
+    from superset.dhis2 import staging_engine as module
+
+    monkeypatch.setattr(
+        module,
+        "db",
+        SimpleNamespace(engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.DHIS2StagingEngine,
+        "get_serving_table_columns",
+        lambda self, dataset: ["region", "district_city", "dlg_municipality_city_council"],
+    )
+
+    (
+        select_sql,
+        count_sql,
+        preview_sql,
+        params,
+        resolved_columns,
+        safe_page,
+    ) = DHIS2StagingEngine(database_id=2)._build_serving_query(
+        _dataset(),
+        selected_columns=["region", "district_city"],
+        filters=[
+            {"column": "district_city", "operator": "not_empty"},
+            {
+                "column": "dlg_municipality_city_council",
+                "operator": "is_empty",
+            },
+        ],
+        limit=100,
+        page=1,
+    )
+
+    empty_expression = (
+        "NULLIF(TRIM(COALESCE(CAST(\"district_city\" AS TEXT), '')), '') IS NOT NULL"
+    )
+    deeper_empty_expression = (
+        "NULLIF(TRIM(COALESCE(CAST(\"dlg_municipality_city_council\" AS TEXT), '')), '') IS NULL"
+    )
+
+    assert empty_expression in select_sql
+    assert deeper_empty_expression in select_sql
+    assert empty_expression in count_sql
+    assert deeper_empty_expression in preview_sql
+    assert params["limit"] == 100
+    assert resolved_columns == ["region", "district_city"]
+    assert safe_page == 1
+
+
+def test_build_serving_query_supports_grouped_aggregation(monkeypatch) -> None:
+    from superset.dhis2 import staging_engine as module
+
+    monkeypatch.setattr(
+        module,
+        "db",
+        SimpleNamespace(engine=SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.DHIS2StagingEngine,
+        "get_serving_table_columns",
+        lambda self, dataset: [
+            "region",
+            "district_city",
+            "period",
+            "c_105_ep01b_malaria_tested_b_s_rdt",
+        ],
+    )
+
+    (
+        select_sql,
+        count_sql,
+        preview_sql,
+        params,
+        resolved_columns,
+        safe_page,
+    ) = DHIS2StagingEngine(database_id=2)._build_serving_query(
+        _dataset(),
+        filters=[{"column": "region", "operator": "eq", "value": "Acholi"}],
+        limit=250,
+        page=2,
+        group_by_columns=["district_city"],
+        metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
+        metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+        aggregation_method="sum",
+    )
+
+    assert (
+        'SELECT "district_city", SUM(COALESCE("c_105_ep01b_malaria_tested_b_s_rdt", 0)) '
+        'AS "SUM(c_105_ep01b_malaria_tested_b_s_rdt)" '
+        'FROM sv_7_test_multiple_sources WHERE "region" = :filter_0 GROUP BY "district_city"'
+    ) in select_sql
+    assert (
+        'SELECT COUNT(*) FROM (SELECT "district_city" FROM sv_7_test_multiple_sources '
+        'WHERE "region" = :filter_0 GROUP BY "district_city") AS grouped_rows'
+    ) == count_sql
+    assert (
+        'SELECT "district_city", SUM(COALESCE("c_105_ep01b_malaria_tested_b_s_rdt", 0)) '
+        'AS "SUM(c_105_ep01b_malaria_tested_b_s_rdt)" '
+        'FROM sv_7_test_multiple_sources WHERE "region" = \'Acholi\' GROUP BY "district_city"'
+    ) in preview_sql
+    assert params["filter_0"] == "Acholi"
+    assert params["limit"] == 250
+    assert params["offset"] == 250
+    assert resolved_columns == [
+        "district_city",
+        "SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+    ]
+    assert safe_page == 2
+
+
 def test_get_serving_filter_options_uses_scoped_filters(monkeypatch) -> None:
     from superset.dhis2 import staging_engine as module
 

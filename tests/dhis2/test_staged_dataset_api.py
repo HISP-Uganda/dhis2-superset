@@ -159,6 +159,9 @@ def test_query_preview_returns_filtered_local_rows():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
     app = Flask(__name__)
+    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
+        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
+    )
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -194,15 +197,84 @@ def test_query_preview_returns_filtered_local_rows():
         filters=[{"column": "period", "operator": "eq", "value": "2024Q1"}],
         limit=25,
         page=2,
+        group_by_columns=None,
+        metric_column=None,
+        metric_alias=None,
+        aggregation_method=None,
     )
-    assert response["status"] == 200
-    assert response["result"]["rows"][0]["anc_1st_visit"] == 12
+    assert response.status_code == 200
+    assert response.json["result"]["rows"][0]["anc_1st_visit"] == 12
+
+
+def test_query_preview_forwards_grouped_aggregation():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = Flask(__name__)
+    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
+        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
+    )
+    dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/11/query",
+        method="POST",
+        json={
+            "filters": [{"column": "region", "operator": "eq", "value": "Acholi"}],
+            "limit": 500,
+            "page": 1,
+            "group_by": ["district_city"],
+            "metric_column": "c_105_ep01b_malaria_tested_b_s_rdt",
+            "metric_alias": "SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+            "aggregation_method": "sum",
+        },
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.query_serving_data",
+        return_value={
+            "columns": [
+                "district_city",
+                "SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+            ],
+            "rows": [
+                {
+                    "district_city": "Kitgum District",
+                    "SUM(c_105_ep01b_malaria_tested_b_s_rdt)": 1205,
+                }
+            ],
+            "limit": 500,
+            "page": 1,
+            "total_pages": 1,
+            "total_rows": 1,
+            "serving_table_ref": "dhis2_staging.sv_11_anc",
+            "sql_preview": 'SELECT "district_city" FROM dhis2_staging.sv_11_anc LIMIT 500',
+        },
+    ) as query_mock:
+        response = DHIS2StagedDatasetApi().query_preview(11)
+
+    query_mock.assert_called_once_with(
+        11,
+        selected_columns=None,
+        filters=[{"column": "region", "operator": "eq", "value": "Acholi"}],
+        limit=500,
+        page=1,
+        group_by_columns=["district_city"],
+        metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
+        metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+        aggregation_method="sum",
+    )
+    assert response.status_code == 200
+    assert response.json["result"]["rows"][0]["district_city"] == "Kitgum District"
 
 
 def test_get_local_filter_options_returns_hierarchy_and_period_choices():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
     app = Flask(__name__)
+    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
+        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
+    )
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -242,9 +314,46 @@ def test_get_local_filter_options_returns_hierarchy_and_period_choices():
         11,
         filters=[{"column": "region", "operator": "eq", "value": "Acholi"}],
     )
-    assert response["status"] == 200
-    assert response["result"]["org_unit_filters"][0]["options"][0]["value"] == "Acholi"
-    assert response["result"]["period_filter"]["options"][0]["value"] == "2024Q1"
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result"]["org_unit_filters"][0]["options"][0]["value"] == "Acholi"
+    assert payload["result"]["period_filter"]["options"][0]["value"] == "2024Q1"
+
+
+def test_get_local_filter_options_accepts_get_requests():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = Flask(__name__)
+    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
+        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
+    )
+    dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/11/filters",
+        method="GET",
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_local_filter_options",
+        return_value={
+            "org_unit_filters": [],
+            "period_filter": {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "options": [
+                    {"label": "2024Q1", "value": "2024Q1", "row_count": 12}
+                ],
+            },
+        },
+    ) as filter_mock:
+        response = DHIS2StagedDatasetApi().get_local_filter_options(11)
+
+    filter_mock.assert_called_once_with(11, filters=None)
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result"]["period_filter"]["options"][0]["value"] == "2024Q1"
 
 
 def test_download_query_returns_csv_attachment():

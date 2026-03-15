@@ -54,7 +54,15 @@ export const datasourceAndVizType: ControlPanelSectionConfig = {
           description: t('Extra parameters for use in jinja templated queries'),
         },
       },
+      {
+        name: 'dhis2_period_column',
+        config: {
+          type: 'HiddenControl',
+          hidden: true,
+        },
+      },
     ],
+    ['dhis2_period_filter_values'],
   ],
 };
 

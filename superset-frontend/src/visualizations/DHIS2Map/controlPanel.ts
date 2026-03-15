@@ -28,6 +28,182 @@ import {
 } from '@superset-ui/chart-controls';
 import { getDatasourceBoundaryLevels } from './boundaryLevels';
 
+type DatasourceColumn = {
+  column_name?: string;
+  verbose_name?: string;
+  extra?: unknown;
+};
+
+type StagedLegendSet = {
+  id?: string;
+  displayName?: string;
+  name?: string;
+  legendDefinition?: {
+    items?: Array<unknown>;
+    setName?: string;
+  };
+};
+
+type CachedLegendSetEnvelope = {
+  data: StagedLegendSet[];
+  timestamp: number;
+  status?: string;
+};
+
+function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
+  if (!extra) {
+    return undefined;
+  }
+  if (typeof extra === 'string') {
+    try {
+      return JSON.parse(extra);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof extra === 'object') {
+    return extra as Record<string, any>;
+  }
+  return undefined;
+}
+
+function getLegendSetsCacheKey(databaseId?: number): string | null {
+  if (!databaseId || !Number.isFinite(databaseId) || databaseId <= 0) {
+    return null;
+  }
+  return `dhis2_legend_sets_db${databaseId}`;
+}
+
+function readCachedLegendSetEnvelope(
+  databaseId?: number,
+): CachedLegendSetEnvelope | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const cacheKey = getLegendSetsCacheKey(databaseId);
+  if (!cacheKey) {
+    return null;
+  }
+
+  try {
+    const cached = window.localStorage.getItem(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    const parsed = JSON.parse(cached) as CachedLegendSetEnvelope;
+    if (!Array.isArray(parsed?.data)) {
+      return null;
+    }
+    return {
+      data: parsed.data.filter(
+        (item: unknown): item is StagedLegendSet =>
+          Boolean(item) && typeof item === 'object',
+      ),
+      timestamp: Number(parsed.timestamp || 0),
+      status: String(parsed.status || '').trim() || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readCachedLegendSets(databaseId?: number): StagedLegendSet[] {
+  return readCachedLegendSetEnvelope(databaseId)?.data || [];
+}
+
+function shouldFetchLegendSets(databaseId?: number): boolean {
+  const envelope = readCachedLegendSetEnvelope(databaseId);
+  if (!envelope) {
+    return true;
+  }
+
+  if (envelope.status === 'pending' || envelope.status === 'failed') {
+    return Date.now() - envelope.timestamp > 30000;
+  }
+
+  return false;
+}
+
+function getDhis2SourceDatabaseId(datasource: any): number | undefined {
+  const extra = parseColumnExtra(datasource?.extra);
+  const sourceDatabaseId = Number(
+    extra?.dhis2_source_database_id ??
+      extra?.source_database_id ??
+      extra?.dhis2SourceDatabaseId ??
+      datasource?.database?.id ??
+      datasource?.database_id ??
+      NaN,
+  );
+  if (Number.isFinite(sourceDatabaseId) && sourceDatabaseId > 0) {
+    return sourceDatabaseId;
+  }
+  return undefined;
+}
+
+function getLegendSetSelectionValue(legendSet: StagedLegendSet): string | null {
+  const legendSetId = String(legendSet.id || '').trim();
+  const legendSetName = String(
+    legendSet.displayName || legendSet.name || '',
+  ).trim();
+  const identity = legendSetId || legendSetName;
+  return identity ? `legendset:${identity}` : null;
+}
+
+function getStagedLegendChoices(
+  columns: DatasourceColumn[] = [],
+  legendSets: StagedLegendSet[] = [],
+) {
+  const seenValues = new Set<string>();
+  const choices: Array<[string, string]> = [['__metric__', t('Selected metric legend')]];
+
+  const pushChoice = (value: string | null | undefined, label: string) => {
+    if (!value || !label || seenValues.has(value)) {
+      return;
+    }
+    seenValues.add(value);
+    choices.push([value, label]);
+  };
+
+  columns.forEach(column => {
+    const columnName = String(column.column_name || '').trim();
+    if (!columnName) {
+      return;
+    }
+    const extra = parseColumnExtra(column.extra);
+    const legendDefinition = extra?.dhis2_legend ?? extra?.dhis2Legend;
+    if (!Array.isArray(legendDefinition?.items) || !legendDefinition.items.length) {
+      return;
+    }
+
+    const legendLabel = String(
+      legendDefinition?.setName || column.verbose_name || columnName,
+    ).trim();
+    const columnLabel = String(column.verbose_name || columnName).trim();
+    pushChoice(columnName, `${legendLabel} (${columnLabel})`);
+  });
+
+  legendSets.forEach(legendSet => {
+    const legendDefinition = legendSet.legendDefinition;
+    if (!Array.isArray(legendDefinition?.items) || !legendDefinition.items.length) {
+      return;
+    }
+    const selectionValue = getLegendSetSelectionValue(legendSet);
+    const legendLabel = String(
+      legendDefinition?.setName ||
+        legendSet.displayName ||
+        legendSet.name ||
+        legendSet.id ||
+        '',
+    ).trim();
+    pushChoice(
+      selectionValue,
+      `${legendLabel} (${t('DHIS2 legend set')})`,
+    );
+  });
+
+  return choices;
+}
+
 const sequentialSchemeRegistry = getSequentialSchemeRegistry();
 
 const config: ControlPanelConfig = {
@@ -36,6 +212,33 @@ const config: ControlPanelConfig = {
       label: t('Map Configuration'),
       expanded: true,
       controlSetRows: [
+        [
+          {
+            name: 'dhis2_staged_local_dataset',
+            config: {
+              type: 'HiddenControl',
+              hidden: true,
+              mapStateToProps: (state: any) => ({
+                value: String(
+                  parseColumnExtra(state.datasource?.extra)?.dhis2_staged_local ===
+                    true,
+                ),
+              }),
+            },
+          },
+          {
+            name: 'dhis2_hierarchy_columns',
+            config: {
+              type: 'HiddenControl',
+              hidden: true,
+              mapStateToProps: (state: any) => ({
+                value: getDatasourceBoundaryLevels(state.datasource?.columns)
+                  .map(level => level.columnName)
+                  .filter(Boolean),
+              }),
+            },
+          },
+        ],
         [
           {
             name: 'org_unit_column',
@@ -648,6 +851,66 @@ const config: ControlPanelConfig = {
         ],
         [
           {
+            name: 'staged_legend_column',
+            config: {
+              type: 'SelectControl',
+              label: t('DHIS2 Staged Legend'),
+              description: t(
+                'Choose which staged DHIS2 legend set to apply. "Selected metric legend" keeps the legend attached to the current metric column.',
+              ),
+              default: '__metric__',
+              clearable: false,
+              renderTrigger: true,
+              mapStateToProps: (state: any) => {
+                const datasourceColumns = Array.isArray(state.datasource?.columns)
+                  ? state.datasource.columns
+                  : [];
+                const databaseId = getDhis2SourceDatabaseId(state.datasource);
+                const cachedLegendSets = readCachedLegendSets(databaseId);
+                const cacheKey = getLegendSetsCacheKey(databaseId);
+
+                if (
+                  databaseId &&
+                  cacheKey &&
+                  typeof window !== 'undefined' &&
+                  shouldFetchLegendSets(databaseId)
+                ) {
+                  import('@superset-ui/core').then(({ SupersetClient }) => {
+                    SupersetClient.get({
+                      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=legendSets&staged=true`,
+                    })
+                      .then(response => {
+                        if (Array.isArray(response.json?.result)) {
+                          window.localStorage.setItem(
+                            cacheKey,
+                            JSON.stringify({
+                              data: response.json.result,
+                              timestamp: Date.now(),
+                              status: response.json?.status || 'success',
+                            }),
+                          );
+                        }
+                      })
+                      .catch(() => {
+                        // Fallback to column-attached legends until staged legend sets arrive.
+                      });
+                  });
+                }
+
+                return {
+                  choices: getStagedLegendChoices(
+                    datasourceColumns,
+                    cachedLegendSets,
+                  ),
+                };
+              },
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value === 'staged',
+            },
+          },
+        ],
+        [
+          {
             name: 'legend_classes',
             config: {
               type: 'SliderControl',
@@ -660,6 +923,9 @@ const config: ControlPanelConfig = {
               max: 9,
               step: 1,
               renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value !== 'staged' &&
+                controls?.legend_type?.value !== 'manual',
             },
           },
         ],

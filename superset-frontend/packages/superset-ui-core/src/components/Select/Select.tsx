@@ -169,6 +169,9 @@ const Select = forwardRef(
     const openTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     );
+    const dropdownVisibilityTimeoutRef = useRef<ReturnType<
+      typeof setTimeout
+    > | null>(null);
 
     useEffect(() => {
       if (openTransitionTimeoutRef.current) {
@@ -204,6 +207,16 @@ const Select = forwardRef(
         }
       };
     }, [maxTagCount, isDropdownVisible, oneLine]);
+
+    useEffect(
+      () => () => {
+        if (dropdownVisibilityTimeoutRef.current) {
+          clearTimeout(dropdownVisibilityTimeoutRef.current);
+          dropdownVisibilityTimeoutRef.current = null;
+        }
+      },
+      [],
+    );
 
     const mappedMode = isSingleMode ? undefined : 'multiple';
 
@@ -474,23 +487,46 @@ const Select = forwardRef(
 
     useEffect(() => () => handleOnSearch.cancel(), [handleOnSearch]);
 
-    const handleOnDropdownVisibleChange = (isDropdownVisible: boolean) => {
-      setIsDropdownVisible(isDropdownVisible);
+    const applyDropdownVisibleChange = useCallback(
+      (isDropdownVisible: boolean) => {
+        dropdownVisibilityTimeoutRef.current = null;
 
-      setVisibleOptions(fullSelectOptions);
-      // if no search input value, force sort options because it won't be sorted by
-      // `filterSort`.
-      if (isDropdownVisible && !inputValue && selectOptions.length > 1) {
-        if (!isEqual(initialOptionsSorted, selectOptions)) {
+        // rc-select can fire this while SelectTrigger is still rendering.
+        // Defer local state updates to the next task so List virtualization
+        // does not see a render-phase state mutation.
+        setIsDropdownVisible(isDropdownVisible);
+
+        setVisibleOptions(fullSelectOptions);
+        // if no search input value, force sort options because it won't be sorted by
+        // `filterSort`.
+        if (isDropdownVisible && !inputValue && selectOptions.length > 1) {
+          if (!isEqual(initialOptionsSorted, selectOptions)) {
+            setSelectOptions(initialOptionsSorted);
+          }
+        }
+        if (!isDropdownVisible) {
           setSelectOptions(initialOptionsSorted);
         }
+        if (onOpenChange) {
+          onOpenChange(isDropdownVisible);
+        }
+      },
+      [
+        fullSelectOptions,
+        initialOptionsSorted,
+        inputValue,
+        onOpenChange,
+        selectOptions,
+      ],
+    );
+
+    const handleOnDropdownVisibleChange = (isDropdownVisible: boolean) => {
+      if (dropdownVisibilityTimeoutRef.current) {
+        clearTimeout(dropdownVisibilityTimeoutRef.current);
       }
-      if (!isDropdownVisible) {
-        setSelectOptions(initialOptionsSorted);
-      }
-      if (onOpenChange) {
-        onOpenChange(isDropdownVisible);
-      }
+      dropdownVisibilityTimeoutRef.current = setTimeout(() => {
+        applyDropdownVisibleChange(isDropdownVisible);
+      }, 0);
     };
 
     const handleSelectAll = useCallback(() => {

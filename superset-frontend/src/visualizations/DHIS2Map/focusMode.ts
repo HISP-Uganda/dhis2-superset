@@ -25,6 +25,20 @@ export type FocusedBoundaryRequest = {
   selectedParents: BoundaryFeature[];
 };
 
+export function resolveFocusedDataLevel(
+  currentLevel: number,
+  focusedRequest?: FocusedBoundaryRequest | null,
+): number {
+  if (
+    focusedRequest?.childLevel &&
+    Number.isFinite(focusedRequest.childLevel) &&
+    focusedRequest.parentIds.length > 0
+  ) {
+    return focusedRequest.childLevel;
+  }
+  return currentLevel;
+}
+
 /**
  * Focus mode only advances one level down from the selected thematic boundary.
  * The helper stays conservative: if there is no selected parent with data, or

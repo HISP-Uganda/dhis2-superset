@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { ReactNode } from 'react';
+import { forwardRef, ReactNode } from 'react';
 import { styled } from '@superset-ui/core';
 
 export type FormLabelProps = {
@@ -40,15 +40,17 @@ const Label = styled.label<{ required?: boolean }>`
     `}
 `;
 
-export function FormLabel({
-  children,
-  htmlFor,
-  required = false,
-  className,
-}: FormLabelProps) {
-  return (
-    <Label htmlFor={htmlFor} className={className} required={required}>
+export const FormLabel = forwardRef<HTMLLabelElement, FormLabelProps>(
+  ({ children, htmlFor, required = false, className }, ref) => (
+    <Label
+      ref={ref}
+      htmlFor={htmlFor}
+      className={className}
+      required={required}
+    >
       {children}
     </Label>
-  );
-}
+  ),
+);
+
+FormLabel.displayName = 'FormLabel';

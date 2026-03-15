@@ -150,7 +150,11 @@ import {
   HistoryOutlined,
   SlackOutlined,
 } from '@ant-design/icons';
-import { FC } from 'react';
+import {
+  forwardRef,
+  type ForwardRefExoticComponent,
+  type RefAttributes,
+} from 'react';
 import { IconType } from './types';
 import { BaseIconComponent } from './BaseIcon';
 
@@ -293,19 +297,26 @@ type AntdIconNames = keyof typeof AntdIcons;
 
 export const antdEnhancedIcons: Record<
   AntdIconNames,
-  FC<IconType>
+  ForwardRefExoticComponent<IconType & RefAttributes<HTMLSpanElement>>
 > = Object.keys(AntdIcons)
   .filter(key => !EXCLUDED_ICONS.some(excluded => key.includes(excluded)))
   .reduce(
     (acc, key) => {
-      acc[key as AntdIconNames] = (props: IconType) => (
-        <BaseIconComponent
-          component={AntdIcons[key as AntdIconNames]}
-          fileName={key}
-          {...props}
-        />
+      acc[key as AntdIconNames] = forwardRef<HTMLSpanElement, IconType>(
+        (props, ref) => (
+          <BaseIconComponent
+            ref={ref}
+            component={AntdIcons[key as AntdIconNames]}
+            fileName={key}
+            {...props}
+          />
+        ),
       );
+      acc[key as AntdIconNames].displayName = key;
       return acc;
     },
-    {} as Record<AntdIconNames, FC<IconType>>,
+    {} as Record<
+      AntdIconNames,
+      ForwardRefExoticComponent<IconType & RefAttributes<HTMLSpanElement>>
+    >,
   );

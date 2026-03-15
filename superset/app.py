@@ -91,8 +91,9 @@ class SupersetApp(Flask):
         """Override to prevent webpack hot-update 404s from spamming logs.
 
         Webpack HMR can create race conditions where the browser requests
-        hot-update files that no longer exist. Return 204 instead of 404
-        for these files to keep logs clean.
+        hot-update files that no longer exist. Return an empty but valid
+        HMR payload instead of a blank 204 so the dev client does not try
+        to parse an empty response body as JSON.
         """
         if ".hot-update." in filename:
             # First try to serve it normally - it might exist
@@ -103,7 +104,17 @@ class SupersetApp(Flask):
                     "Webpack hot-update file not found (likely HMR race condition): %s",
                     filename,
                 )
-                return Response("", status=204)  # No Content
+                if filename.endswith(".hot-update.json"):
+                    return Response(
+                        '{"c":[],"r":[],"m":[]}',
+                        status=200,
+                        mimetype="application/json",
+                    )
+                return Response(
+                    "// missing hot update chunk\n",
+                    status=200,
+                    mimetype="application/javascript",
+                )
         return super().send_static_file(filename)
 
     def _is_database_up_to_date(self) -> bool:

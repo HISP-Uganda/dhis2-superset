@@ -211,6 +211,11 @@ def test_get_metadata_status_summarizes_snapshot_health(mocker):
             },
             {
                 "status": "success",
+                "count": 0,
+                "cache_refreshed_at": "2026-03-13T10:01:00",
+            },
+            {
+                "status": "success",
                 "count": 3,
                 "cache_refreshed_at": "2026-03-13T10:01:00",
             },
@@ -240,11 +245,13 @@ def test_get_metadata_status_summarizes_snapshot_health(mocker):
 
     result = DHIS2DiagnosticsService().get_metadata_status(7)
 
-    assert cache_lookup.call_count == 11
+    assert cache_lookup.call_count == 12
     assert result["overall_status"] == "ready"
     assert result["active_instance_count"] == 1
     assert result["variables"]["status"] == "ready"
     assert result["variables"]["count"] == 273
+    assert result["legend_sets"]["status"] == "ready"
+    assert result["legend_sets"]["count"] == 0
     assert result["org_units"]["status"] == "ready"
     assert result["org_units"]["count"] == 40
     assert result["last_refreshed_at"] == "2026-03-13T10:01:00"
@@ -300,6 +307,11 @@ def test_get_metadata_status_treats_unsupported_snapshots_as_ready(mocker):
             },
             {
                 "status": "success",
+                "count": 5,
+                "cache_refreshed_at": "2026-03-13T10:01:00",
+            },
+            {
+                "status": "success",
                 "count": 250,
                 "cache_refreshed_at": "2026-03-13T10:01:00",
             },
@@ -330,6 +342,8 @@ def test_get_metadata_status_treats_unsupported_snapshots_as_ready(mocker):
     result = DHIS2DiagnosticsService().get_metadata_status(7)
 
     assert result["variables"]["status"] == "ready"
+    assert result["legend_sets"]["status"] == "ready"
+    assert result["legend_sets"]["count"] == 5
     assert result["variables"]["instances"][0]["status"] == "ready"
     assert result["overall_status"] == "ready"
 
@@ -360,6 +374,7 @@ def test_get_metadata_status_includes_refresh_progress(mocker):
             {"status": "success", "count": 1, "cache_refreshed_at": "2026-03-13T10:00:00"},
             {"status": "success", "count": 6, "cache_refreshed_at": "2026-03-13T10:00:00"},
             {"status": "success", "count": 2, "cache_refreshed_at": "2026-03-13T10:00:00"},
+            {"status": "success", "count": 12, "cache_refreshed_at": "2026-03-13T10:00:00"},
             {"status": "success", "count": 15, "cache_refreshed_at": "2026-03-13T10:00:00"},
             {"status": "success", "count": 3, "cache_refreshed_at": "2026-03-13T10:00:00"},
             {"status": "success", "count": 1, "cache_refreshed_at": "2026-03-13T10:00:00"},

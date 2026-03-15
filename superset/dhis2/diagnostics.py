@@ -30,6 +30,7 @@ from typing import Any
 from superset import db
 from superset.dhis2 import instance_service
 from superset.dhis2.metadata_staging_service import (
+    LEGEND_SET_METADATA_TYPE,
     ORG_UNIT_METADATA_TYPES,
     SUPPORTED_METADATA_TYPES,
     VARIABLE_METADATA_TYPES,
@@ -46,6 +47,8 @@ from superset.models.core import Database
 from superset.staging import metadata_cache_service
 
 logger = logging.getLogger(__name__)
+
+LEGEND_SET_METADATA_TYPES = (LEGEND_SET_METADATA_TYPE,)
 
 
 class DHIS2DiagnosticsService:
@@ -247,6 +250,11 @@ class DHIS2DiagnosticsService:
             metadata_types=list(VARIABLE_METADATA_TYPES),
             instances=instances,
         )
+        legend_sets = self._get_metadata_family_status(
+            database_id=database_id,
+            metadata_types=list(LEGEND_SET_METADATA_TYPES),
+            instances=instances,
+        )
         org_units = self._get_metadata_family_status(
             database_id=database_id,
             metadata_types=list(ORG_UNIT_METADATA_TYPES),
@@ -254,13 +262,14 @@ class DHIS2DiagnosticsService:
         )
 
         overall_status = self._summarize_metadata_statuses(
-            [variables["status"], org_units["status"]]
+            [variables["status"], legend_sets["status"], org_units["status"]]
         )
 
         refreshed_candidates = [
             candidate
             for candidate in (
                 self._parse_datetime(variables.get("last_refreshed_at")),
+                self._parse_datetime(legend_sets.get("last_refreshed_at")),
                 self._parse_datetime(org_units.get("last_refreshed_at")),
             )
             if candidate is not None
@@ -275,6 +284,7 @@ class DHIS2DiagnosticsService:
                 max(refreshed_candidates).isoformat() if refreshed_candidates else None
             ),
             "variables": variables,
+            "legend_sets": legend_sets,
             "org_units": org_units,
             "refresh_progress": get_metadata_refresh_progress(database_id),
         }

@@ -287,6 +287,67 @@ def test_query_serving_data_uses_local_serving_engine():
         filters=[{"column": "period", "operator": "eq", "value": "2024Q1"}],
         limit=100,
         page=2,
+        group_by_columns=None,
+        metric_column=None,
+        metric_alias=None,
+        aggregation_method=None,
+    )
+
+
+def test_query_serving_data_forwards_grouped_aggregation():
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(database_id=10)
+    query_result = {
+        "columns": ["district_city", "SUM(c_105_ep01b_malaria_tested_b_s_rdt)"],
+        "rows": [
+            {
+                "district_city": "Kitgum District",
+                "SUM(c_105_ep01b_malaria_tested_b_s_rdt)": 1205,
+            }
+        ],
+        "limit": 500,
+        "page": 1,
+        "total_pages": 1,
+        "total_rows": 1,
+        "serving_table_ref": "dhis2_staging.sv_1_dataset",
+        "sql_preview": 'SELECT "district_city" FROM dhis2_staging.sv_1_dataset LIMIT 500',
+    }
+    engine = MagicMock()
+    engine.query_serving_table.return_value = query_result
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_staging.sv_1_dataset", []),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=engine,
+    ):
+        result = svc.query_serving_data(
+            dataset.id,
+            filters=[{"column": "region", "operator": "eq", "value": "Acholi"}],
+            limit=500,
+            page=1,
+            group_by_columns=["district_city"],
+            metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
+            metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+            aggregation_method="sum",
+        )
+
+    assert result == query_result
+    engine.query_serving_table.assert_called_once_with(
+        dataset,
+        selected_columns=None,
+        filters=[{"column": "region", "operator": "eq", "value": "Acholi"}],
+        limit=500,
+        page=1,
+        group_by_columns=["district_city"],
+        metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
+        metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
+        aggregation_method="sum",
     )
 
 

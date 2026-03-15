@@ -789,7 +789,12 @@ def get_dhis2_period_column_name(columns: Sequence[Any]) -> str | None:
 def resolve_terminal_hierarchy_column(
     selected_columns: Sequence[str],
     hierarchy_column_names: Sequence[str],
+    preferred_selected_column: str | None = None,
 ) -> str | None:
+    normalized_preferred = str(preferred_selected_column or "").strip()
+    if normalized_preferred and normalized_preferred in hierarchy_column_names:
+        return normalized_preferred
+
     hierarchy_positions = {
         column_name: index for index, column_name in enumerate(hierarchy_column_names)
     }

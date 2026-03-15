@@ -17,9 +17,12 @@
  * under the License.
  */
 import {
+  getStagedDatasetIdFromSql,
   hasDHIS2SqlComment,
+  hasStagedLocalServingSql,
   resolveDisplayedBoundaries,
   resolveDHIS2MapData,
+  shouldLoadStagedLocalFocusData,
   shouldResolveDHIS2DatasetSql,
   shouldUseDHIS2LoaderData,
 } from './dataMode';
@@ -30,6 +33,14 @@ describe('DHIS2Map dataMode', () => {
       hasDHIS2SqlComment('SELECT * FROM table /* DHIS2: dx=a&pe=b&ou=c */'),
     ).toBe(true);
     expect(hasDHIS2SqlComment('SELECT * FROM table')).toBe(false);
+  });
+
+  test('detects staged-local serving SQL and extracts the staged dataset id', () => {
+    const sql = 'SELECT * FROM sv_4_test_test_ds';
+    expect(hasStagedLocalServingSql(sql)).toBe(true);
+    expect(getStagedDatasetIdFromSql(sql)).toBe(4);
+    expect(hasStagedLocalServingSql('SELECT * FROM table')).toBe(false);
+    expect(getStagedDatasetIdFromSql('SELECT * FROM table')).toBeUndefined();
   });
 
   test('prefers loader mode only when the SQL already carries DHIS2 params', () => {
@@ -51,6 +62,14 @@ describe('DHIS2Map dataMode', () => {
       shouldUseDHIS2LoaderData({
         databaseId: 2,
         datasetSql: '',
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldUseDHIS2LoaderData({
+        databaseId: 2,
+        datasetSql: 'SELECT * FROM table /* DHIS2: dx=a&pe=b&ou=c */',
+        isStagedLocalDataset: true,
       }),
     ).toBe(false);
   });
@@ -84,6 +103,17 @@ describe('DHIS2Map dataMode', () => {
         sourceInstanceIds: [101, 102],
       }),
     ).toBe(false);
+
+    expect(
+      shouldResolveDHIS2DatasetSql({
+        datasetId: 7,
+        datasetSql: '',
+        isDHIS2Dataset: true,
+        isStagedLocalDataset: true,
+        databaseId: 2,
+        sourceInstanceIds: [101, 102],
+      }),
+    ).toBe(false);
   });
 
   test('ignores placeholder chart rows when loader mode is active', () => {
@@ -113,5 +143,72 @@ describe('DHIS2Map dataMode', () => {
         showAllBoundaries: false,
       }),
     ).toEqual([{ id: 'b' }]);
+  });
+
+  test('loads staged-local focus rows when the saved chart payload lacks child columns', () => {
+    expect(
+      shouldLoadStagedLocalFocusData({
+        isStagedLocalDataset: true,
+        stagedDatasetId: 4,
+        focusSelectedBoundaryWithChildren: true,
+        focusedChildLevel: 4,
+        chartRows: [{ region: 'Acholi', c_cases: 10 }],
+        requestedChildColumn: 'district_city',
+        requestedMetric: 'c_cases',
+        datasourceColumns: [
+          { column_name: 'region' },
+          { column_name: 'district_city' },
+          { column_name: 'c_cases' },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  test('skips staged-local focus fallback when chart rows already contain child data', () => {
+    expect(
+      shouldLoadStagedLocalFocusData({
+        isStagedLocalDataset: true,
+        stagedDatasetId: 4,
+        focusSelectedBoundaryWithChildren: true,
+        focusedChildLevel: 4,
+        chartRows: [{ region: 'Acholi', district_city: 'Gulu City', c_cases: 10 }],
+        requestedChildColumn: 'district_city',
+        requestedMetric: 'c_cases',
+        datasourceColumns: [
+          { column_name: 'region' },
+          { column_name: 'district_city' },
+          { column_name: 'c_cases' },
+        ],
+        hierarchyColumns: ['region', 'district_city', 'dlg_municipality_city_council'],
+      }),
+    ).toBe(false);
+  });
+
+  test('loads staged-local focus rows when chart rows still include deeper hierarchy values', () => {
+    expect(
+      shouldLoadStagedLocalFocusData({
+        isStagedLocalDataset: true,
+        stagedDatasetId: 4,
+        focusSelectedBoundaryWithChildren: true,
+        focusedChildLevel: 3,
+        chartRows: [
+          {
+            region: 'Acholi',
+            district_city: 'Kitgum District',
+            dlg_municipality_city_council: 'Kitgum Municipality',
+            c_cases: 10,
+          },
+        ],
+        requestedChildColumn: 'district_city',
+        requestedMetric: 'c_cases',
+        datasourceColumns: [
+          { column_name: 'region' },
+          { column_name: 'district_city' },
+          { column_name: 'dlg_municipality_city_council' },
+          { column_name: 'c_cases' },
+        ],
+        hierarchyColumns: ['region', 'district_city', 'dlg_municipality_city_council'],
+      }),
+    ).toBe(true);
   });
 });

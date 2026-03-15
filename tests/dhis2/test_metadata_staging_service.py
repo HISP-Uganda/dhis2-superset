@@ -95,6 +95,58 @@ def test_prepare_metadata_item_normalizes_dhis2_legend_definition() -> None:
     }
 
 
+def test_prepare_metadata_item_normalizes_top_level_legend_set() -> None:
+    from superset.dhis2.metadata_staging_service import _prepare_metadata_item
+
+    prepared = _prepare_metadata_item(
+        "legendSets",
+        {
+            "id": "legend_set_2",
+            "displayName": "Admissions Legend",
+            "legends": [
+                {
+                    "id": "legend_1",
+                    "displayName": "Low",
+                    "startValue": 0,
+                    "endValue": 10,
+                    "color": "#2ca25f",
+                },
+                {
+                    "id": "legend_2",
+                    "displayName": "High",
+                    "startValue": 10,
+                    "endValue": 100,
+                    "color": "#de2d26",
+                },
+            ],
+        },
+    )
+
+    assert prepared["legendDefinition"] == {
+        "source": "dhis2",
+        "setId": "legend_set_2",
+        "setName": "Admissions Legend",
+        "min": 0.0,
+        "max": 100.0,
+        "items": [
+            {
+                "id": "legend_1",
+                "label": "Low",
+                "startValue": 0.0,
+                "endValue": 10.0,
+                "color": "#2ca25f",
+            },
+            {
+                "id": "legend_2",
+                "label": "High",
+                "startValue": 10.0,
+                "endValue": 100.0,
+                "color": "#de2d26",
+            },
+        ],
+    }
+
+
 def test_refresh_database_metadata_stores_snapshots(mocker) -> None:
     from superset.dhis2 import metadata_staging_service as svc
 
@@ -250,6 +302,109 @@ def test_get_staged_metadata_payload_returns_pending_and_schedules_refresh(mocke
         }
     ]
     schedule.assert_called_once()
+
+
+def test_get_staged_metadata_payload_live_rehydrates_legend_sets(mocker) -> None:
+    from superset.dhis2 import metadata_staging_service as svc
+
+    database = _database()
+    context = MetadataContext(
+        instance_id=101,
+        instance_name="National eHMIS DHIS2",
+        base_url="https://national.example.org/api",
+        auth=None,
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.metadata_staging_service._resolve_staged_contexts",
+        return_value=[context],
+    )
+    get_cached_payload = mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        return_value=None,
+    )
+    set_cached_payload = mocker.patch(
+        "superset.staging.metadata_cache_service.set_cached_metadata_payload"
+    )
+    fetch_items = mocker.patch(
+        "superset.dhis2.metadata_staging_service._fetch_context_metadata_items",
+        return_value=[
+            {
+                "id": "legend_set_1",
+                "displayName": "Malaria Burden",
+                "legendDefinition": {
+                    "source": "dhis2",
+                    "setId": "legend_set_1",
+                    "setName": "Malaria Burden",
+                    "min": 0.0,
+                    "max": 100.0,
+                    "items": [
+                        {
+                            "id": "legend_1",
+                            "label": "Low",
+                            "startValue": 0.0,
+                            "endValue": 100.0,
+                            "color": "#2ca25f",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    schedule = mocker.patch(
+        "superset.dhis2.metadata_staging_service.schedule_database_metadata_refresh"
+    )
+
+    payload = svc.get_staged_metadata_payload(
+        database=database,
+        metadata_type="legendSets",
+        requested_instance_ids=[101],
+        federated=True,
+    )
+
+    assert payload["status"] == "success"
+    assert payload["result"] == [
+        {
+            "id": "legend_set_1",
+            "displayName": "Malaria Burden",
+            "legendDefinition": {
+                "source": "dhis2",
+                "setId": "legend_set_1",
+                "setName": "Malaria Burden",
+                "min": 0.0,
+                "max": 100.0,
+                "items": [
+                    {
+                        "id": "legend_1",
+                        "label": "Low",
+                        "startValue": 0.0,
+                        "endValue": 100.0,
+                        "color": "#2ca25f",
+                    }
+                ],
+            },
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+        }
+    ]
+    assert payload["instance_results"] == [
+        {
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+            "count": 1,
+            "load_source": "live_fallback",
+        }
+    ]
+    fetch_items.assert_called_once_with(
+        context=context,
+        metadata_type="legendSets",
+    )
+    assert get_cached_payload.call_count >= 1
+    set_cached_payload.assert_called_once()
+    schedule.assert_not_called()
 
 
 def test_schedule_database_metadata_refresh_after_commit_uses_current_session(
@@ -418,6 +573,7 @@ def test_refresh_all_dhis2_metadata_includes_boundary_metadata_types(mocker) -> 
         assert "dataElements" in metadata_types
         assert "organisationUnitLevels" in metadata_types
         assert "organisationUnits" in metadata_types
+        assert "legendSets" in metadata_types
         assert "geoJSON" in metadata_types
         assert "orgUnitHierarchy" in metadata_types
 

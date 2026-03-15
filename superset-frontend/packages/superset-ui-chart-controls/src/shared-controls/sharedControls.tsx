@@ -85,6 +85,11 @@ import {
   dndTooltipColumnsControl,
   dndTooltipMetricsControl,
 } from './dndControls';
+import {
+  buildDhis2PeriodFilterEndpoint,
+  getDhis2PeriodFilterChoices,
+  resolveDhis2PeriodColumnName,
+} from './dhis2PeriodControls';
 import { matrixifyControls } from './matrixifyControls';
 
 const categoricalSchemeRegistry = getCategoricalSchemeRegistry();
@@ -221,6 +226,39 @@ const time_range: SharedControlConfig<'DateFilterControl'> = {
       "using the engine's local timezone. Note one can explicitly set the timezone " +
       'per the ISO 8601 format if specifying either the start and/or end time.',
   ),
+};
+
+const dhis2_period_column: SharedControlConfig<'HiddenControl'> = {
+  type: 'HiddenControl',
+  hidden: true,
+  mapStateToProps: ({ datasource }) => ({
+    value: resolveDhis2PeriodColumnName(datasource as Dataset),
+  }),
+};
+
+const dhis2_period_filter_values: SharedControlConfig<'SelectAsyncControl'> = {
+  type: 'SelectAsyncControl',
+  multi: true,
+  allowClear: true,
+  label: t('DHIS2 Periods'),
+  default: [],
+  description: t(
+    'Filter DHIS2 staged-local charts by one or more periods from the local serving table.',
+  ),
+  visibility: ({ datasource }) =>
+    Boolean(
+      resolveDhis2PeriodColumnName(datasource as Dataset) &&
+        buildDhis2PeriodFilterEndpoint(datasource as Dataset),
+    ),
+  mutator: response => getDhis2PeriodFilterChoices(response),
+  mapStateToProps: ({ datasource }) => {
+    const dataEndpoint = buildDhis2PeriodFilterEndpoint(
+      datasource as Dataset,
+    );
+    return {
+      dataEndpoint,
+    };
+  },
 };
 
 const row_limit: SharedControlConfig<'SelectControl'> = {
@@ -444,6 +482,8 @@ const sharedControls: Record<string, SharedControlConfig<any>> = {
   granularity_sqla: dndGranularitySqlaControl,
   time_grain_sqla,
   time_range,
+  dhis2_period_column,
+  dhis2_period_filter_values,
   row_limit,
   limit,
   timeseries_limit_metric: dndSortByControl,

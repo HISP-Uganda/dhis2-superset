@@ -18,7 +18,12 @@
  */
 
 import L from 'leaflet';
-import { scaleQuantize, scaleThreshold, scaleSqrt } from 'd3-scale';
+import {
+  scaleQuantize,
+  scaleQuantile,
+  scaleThreshold,
+  scaleSqrt,
+} from 'd3-scale';
 import { interpolateRgbBasis } from 'd3-interpolate';
 import {
   getSequentialSchemeRegistry,
@@ -28,6 +33,7 @@ import {
   BoundaryFeature,
   DHIS2LegendDefinition,
   DHIS2LegendItem,
+  LegendType,
 } from './types';
 
 const ORG_UNIT_SUFFIX_PATTERNS = [
@@ -117,6 +123,111 @@ export interface ColorScaleOptions {
   schemeType?: string;
   manualBreaks?: number[];
   manualColors?: string[];
+}
+
+export interface ComputedLegendEntry {
+  key: string;
+  color: string;
+  label: string;
+  min?: number;
+  max?: number;
+}
+
+function getFiniteLegendValues(dataValues?: number[]): number[] {
+  if (!Array.isArray(dataValues)) {
+    return [];
+  }
+  return dataValues.filter(
+    value => typeof value === 'number' && Number.isFinite(value),
+  );
+}
+
+function hasEnoughVariationForQuantiles(
+  dataValues: number[],
+  classes: number,
+  requireDenseDistribution: boolean,
+): boolean {
+  const uniqueValues = new Set(dataValues.map(value => `${value}`)).size;
+  if (uniqueValues < 2) {
+    return false;
+  }
+  if (requireDenseDistribution) {
+    return dataValues.length >= classes;
+  }
+  return true;
+}
+
+function resolveColorRange(
+  schemeName: string,
+  classes: number,
+  reverseColors: boolean,
+  schemeType: string,
+): string[] {
+  let colors: string[] | undefined;
+
+  if (schemeType === 'categorical') {
+    const schemeRegistry = getCategoricalSchemeRegistry();
+    const scheme = schemeRegistry.get(schemeName);
+    colors = scheme?.colors ? [...scheme.colors] : undefined;
+
+    if (!colors) {
+      const allSchemes = schemeRegistry.keys();
+      const matchingKey = allSchemes.find(
+        key =>
+          key.toLowerCase().includes(schemeName.toLowerCase()) ||
+          schemeName.toLowerCase().includes(key.toLowerCase()),
+      );
+
+      if (matchingKey) {
+        const matchedScheme = schemeRegistry.get(matchingKey);
+        colors = matchedScheme?.colors ? [...matchedScheme.colors] : undefined;
+      } else {
+        const defaultKey = schemeRegistry.getDefaultKey();
+        if (defaultKey) {
+          const defaultScheme = schemeRegistry.get(defaultKey);
+          colors = defaultScheme?.colors
+            ? [...defaultScheme.colors]
+            : undefined;
+        }
+      }
+    }
+  } else {
+    const schemeRegistry = getSequentialSchemeRegistry();
+    const scheme = schemeRegistry.get(schemeName);
+    colors = scheme?.colors ? [...scheme.colors] : undefined;
+
+    if (!colors) {
+      const allSchemes = schemeRegistry.keys();
+      const matchingKey = allSchemes.find(
+        key =>
+          key.toLowerCase().includes(schemeName.toLowerCase()) ||
+          schemeName.toLowerCase().includes(key.toLowerCase()),
+      );
+
+      if (matchingKey) {
+        const matchedScheme = schemeRegistry.get(matchingKey);
+        colors = matchedScheme?.colors ? [...matchedScheme.colors] : undefined;
+      } else {
+        const defaultKey = schemeRegistry.getDefaultKey();
+        if (defaultKey) {
+          const defaultScheme = schemeRegistry.get(defaultKey);
+          colors = defaultScheme?.colors
+            ? [...defaultScheme.colors]
+            : undefined;
+        }
+      }
+    }
+  }
+
+  if (!colors || colors.length === 0) {
+    colors = generateDefaultColors(classes);
+  }
+
+  let colorRange = interpolateColors(colors, classes);
+  if (reverseColors) {
+    colorRange = colorRange.reverse();
+  }
+  return colorRange;
 }
 
 function hasLegendItems(
@@ -247,6 +358,195 @@ export function getLegendColorFromDefinition(
   return legendItems[0].color;
 }
 
+function formatLegendRangeLabel(
+  startValue?: number,
+  endValue?: number,
+): string {
+  if (
+    typeof startValue === 'number' &&
+    Number.isFinite(startValue) &&
+    typeof endValue === 'number' &&
+    Number.isFinite(endValue)
+  ) {
+    if (startValue === endValue) {
+      return formatValue(startValue);
+    }
+    return `${formatValue(startValue)} - ${formatValue(endValue)}`;
+  }
+  if (typeof startValue === 'number' && Number.isFinite(startValue)) {
+    return `>= ${formatValue(startValue)}`;
+  }
+  if (typeof endValue === 'number' && Number.isFinite(endValue)) {
+    return `<= ${formatValue(endValue)}`;
+  }
+  return 'Legend item';
+}
+
+function buildEqualIntervalLegendEntries(
+  min: number,
+  max: number,
+  colorRange: string[],
+): ComputedLegendEntry[] {
+  if (!colorRange.length || !Number.isFinite(min) || !Number.isFinite(max)) {
+    return [];
+  }
+
+  if (min === max) {
+    const collapsedColor = getCollapsedRangeColor(colorRange);
+    return [
+      {
+        key: 'collapsed',
+        color: collapsedColor,
+        min,
+        max,
+        label: formatLegendRangeLabel(min, max),
+      },
+    ];
+  }
+
+  const step = (max - min) / colorRange.length;
+  return colorRange.map((color, index) => {
+    const startValue = min + step * index;
+    const endValue =
+      index === colorRange.length - 1 ? max : min + step * (index + 1);
+    return {
+      key: `equal-${index}`,
+      color,
+      min: startValue,
+      max: endValue,
+      label: formatLegendRangeLabel(startValue, endValue),
+    };
+  });
+}
+
+function buildQuantileLegendEntries(
+  dataValues: number[],
+  colorRange: string[],
+): ComputedLegendEntry[] {
+  if (!dataValues.length || !colorRange.length) {
+    return [];
+  }
+
+  const scale = scaleQuantile<string>().domain(dataValues).range(colorRange);
+  const thresholds = scale.quantiles();
+  const minValue = Math.min(...dataValues);
+  const maxValue = Math.max(...dataValues);
+
+  return colorRange.map((color, index) => {
+    const startValue = index === 0 ? minValue : thresholds[index - 1];
+    const endValue =
+      index === colorRange.length - 1 ? maxValue : thresholds[index];
+
+    return {
+      key: `quantile-${index}`,
+      color,
+      min: startValue,
+      max: endValue,
+      label: formatLegendRangeLabel(startValue, endValue),
+    };
+  });
+}
+
+function buildManualLegendEntries(
+  manualBreaks: number[],
+  manualColors: string[],
+  reverseColors: boolean,
+): ComputedLegendEntry[] {
+  const sortedBreaks = [...manualBreaks].sort((left, right) => left - right);
+  if (sortedBreaks.length < 2 || !manualColors.length) {
+    return [];
+  }
+
+  let colorRange = interpolateColors(manualColors, Math.max(sortedBreaks.length - 1, 1));
+  if (reverseColors) {
+    colorRange = colorRange.reverse();
+  }
+
+  return sortedBreaks.slice(0, -1).map((startValue, index) => ({
+    key: `manual-${index}`,
+    color: colorRange[index] ?? colorRange[colorRange.length - 1],
+    min: startValue,
+    max: sortedBreaks[index + 1],
+    label: formatLegendRangeLabel(startValue, sortedBreaks[index + 1]),
+  }));
+}
+
+export function buildLegendEntries(options: {
+  schemeName: string;
+  min: number;
+  max: number;
+  classes: number;
+  reverseColors?: boolean;
+  schemeType?: string;
+  legendType?: LegendType;
+  manualBreaks?: number[];
+  manualColors?: string[];
+  stagedLegendDefinition?: DHIS2LegendDefinition;
+  dataValues?: number[];
+}): ComputedLegendEntry[] {
+  const {
+    schemeName,
+    min,
+    max,
+    classes,
+    reverseColors = false,
+    schemeType = 'sequential',
+    legendType = 'auto',
+    manualBreaks,
+    manualColors,
+    stagedLegendDefinition,
+    dataValues,
+  } = options;
+
+  if (hasLegendItems(stagedLegendDefinition)) {
+    return normalizeLegendItems(stagedLegendDefinition).map((item, index) => ({
+      key: item.id || `staged-${index}`,
+      color: item.color,
+      min: item.startValue ?? undefined,
+      max: item.endValue ?? undefined,
+      label:
+        item.label ||
+        formatLegendRangeLabel(
+          item.startValue ?? undefined,
+          item.endValue ?? undefined,
+        ),
+    }));
+  }
+
+  if (
+    legendType === 'manual' &&
+    Array.isArray(manualBreaks) &&
+    manualBreaks.length > 1 &&
+    Array.isArray(manualColors) &&
+    manualColors.length > 0
+  ) {
+    return buildManualLegendEntries(
+      manualBreaks,
+      manualColors,
+      reverseColors,
+    );
+  }
+
+  const colorRange = resolveColorRange(
+    schemeName,
+    classes,
+    reverseColors,
+    schemeType,
+  );
+  const finiteValues = getFiniteLegendValues(dataValues);
+  const shouldUseQuantiles =
+    (legendType === 'quantile' &&
+      hasEnoughVariationForQuantiles(finiteValues, classes, false)) ||
+    (legendType === 'auto' &&
+      hasEnoughVariationForQuantiles(finiteValues, classes, true));
+
+  if (shouldUseQuantiles) {
+    return buildQuantileLegendEntries(finiteValues, colorRange);
+  }
+
+  return buildEqualIntervalLegendEntries(min, max, colorRange);
+}
+
 export function getColorScale(
   schemeName: string,
   min: number,
@@ -257,6 +557,8 @@ export function getColorScale(
   manualBreaks?: number[],
   manualColors?: string[],
   stagedLegendDefinition?: DHIS2LegendDefinition,
+  legendType: LegendType = 'auto',
+  dataValues?: number[],
 ): (value: number) => string {
   // eslint-disable-next-line no-console
   console.log(
@@ -271,6 +573,7 @@ export function getColorScale(
 
   // If manual breaks and colors are provided, use them
   if (
+    legendType === 'manual' &&
     manualBreaks &&
     manualBreaks.length > 1 &&
     manualColors &&
@@ -308,109 +611,12 @@ export function getColorScale(
     return (value: number): string => scale(value) ?? colors[0];
   }
 
-  // Get colors from scheme
-  let colors: string[] | undefined;
-
-  // Get color scheme based on type
-  if (schemeType === 'categorical') {
-    const schemeRegistry = getCategoricalSchemeRegistry();
-    const scheme = schemeRegistry.get(schemeName);
-    colors = scheme?.colors ? [...scheme.colors] : undefined;
-
-    // If not found, try to find by partial match or get default
-    if (!colors) {
-      const allSchemes = schemeRegistry.keys();
-      // eslint-disable-next-line no-console
-      console.log(
-        `[getColorScale] Categorical scheme "${schemeName}" not found. Available: ${allSchemes.join(', ')}`,
-      );
-
-      // Try to find a matching scheme
-      const matchingKey = allSchemes.find(
-        key =>
-          key.toLowerCase().includes(schemeName.toLowerCase()) ||
-          schemeName.toLowerCase().includes(key.toLowerCase()),
-      );
-
-      if (matchingKey) {
-        const matchedScheme = schemeRegistry.get(matchingKey);
-        colors = matchedScheme?.colors ? [...matchedScheme.colors] : undefined;
-        // eslint-disable-next-line no-console
-        console.log(`[getColorScale] Found matching scheme: ${matchingKey}`);
-      } else {
-        // Use default categorical scheme
-        const defaultKey = schemeRegistry.getDefaultKey();
-        if (defaultKey) {
-          const defaultScheme = schemeRegistry.get(defaultKey);
-          colors = defaultScheme?.colors
-            ? [...defaultScheme.colors]
-            : undefined;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[getColorScale] Using default categorical scheme: ${defaultKey}`,
-          );
-        }
-      }
-    }
-  } else {
-    // Sequential scheme
-    const schemeRegistry = getSequentialSchemeRegistry();
-    const scheme = schemeRegistry.get(schemeName);
-    colors = scheme?.colors ? [...scheme.colors] : undefined;
-
-    // If not found, try to find by partial match or get default
-    if (!colors) {
-      const allSchemes = schemeRegistry.keys();
-      // eslint-disable-next-line no-console
-      console.log(
-        `[getColorScale] Sequential scheme "${schemeName}" not found. Available: ${allSchemes.join(', ')}`,
-      );
-
-      // Try to find a matching scheme
-      const matchingKey = allSchemes.find(
-        key =>
-          key.toLowerCase().includes(schemeName.toLowerCase()) ||
-          schemeName.toLowerCase().includes(key.toLowerCase()),
-      );
-
-      if (matchingKey) {
-        const matchedScheme = schemeRegistry.get(matchingKey);
-        colors = matchedScheme?.colors ? [...matchedScheme.colors] : undefined;
-        // eslint-disable-next-line no-console
-        console.log(`[getColorScale] Found matching scheme: ${matchingKey}`);
-      } else {
-        // Use default sequential scheme
-        const defaultKey = schemeRegistry.getDefaultKey();
-        if (defaultKey) {
-          const defaultScheme = schemeRegistry.get(defaultKey);
-          colors = defaultScheme?.colors
-            ? [...defaultScheme.colors]
-            : undefined;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[getColorScale] Using default sequential scheme: ${defaultKey}`,
-          );
-        }
-      }
-    }
-  }
-
-  if (!colors || colors.length === 0) {
-    // eslint-disable-next-line no-console
-    console.warn(`[getColorScale] No colors found, using default colors`);
-    colors = generateDefaultColors(classes);
-  }
-
-  // eslint-disable-next-line no-console
-  console.log(`[getColorScale] Using ${colors.length} colors from scheme`);
-
-  // Interpolate colors to match the exact number of classes
-  let colorRange = interpolateColors(colors, classes);
-
-  // Reverse colors if requested
-  if (reverseColors) {
-    colorRange = colorRange.reverse();
-  }
+  const colorRange = resolveColorRange(
+    schemeName,
+    classes,
+    reverseColors,
+    schemeType,
+  );
 
   // eslint-disable-next-line no-console
   console.log(
@@ -425,6 +631,18 @@ export function getColorScale(
       `[getColorScale] Collapsed range detected. Using constant color: ${collapsedColor}`,
     );
     return () => collapsedColor;
+  }
+
+  const finiteValues = getFiniteLegendValues(dataValues);
+  const shouldUseQuantiles =
+    (legendType === 'quantile' &&
+      hasEnoughVariationForQuantiles(finiteValues, classes, false)) ||
+    (legendType === 'auto' &&
+      hasEnoughVariationForQuantiles(finiteValues, classes, true));
+
+  if (shouldUseQuantiles) {
+    const scale = scaleQuantile<string>().domain(finiteValues).range(colorRange);
+    return (value: number): string => scale(value) ?? colorRange[0];
   }
 
   const scale = scaleQuantize<string>().domain([min, max]).range(colorRange);

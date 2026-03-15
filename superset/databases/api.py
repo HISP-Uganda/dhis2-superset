@@ -3088,6 +3088,14 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 "fields": "id,displayName,members",
                 "paging": "false",
             }
+        elif metadata_type == "legendSets":
+            params = {
+                "fields": (
+                    "id,displayName,name,"
+                    "legends[id,displayName,name,startValue,endValue,color]"
+                ),
+                "paging": "false",
+            }
         else:
             params = {
                 "fields": "id,displayName,level,parent,path",

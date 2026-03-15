@@ -25,6 +25,7 @@ SNAPSHOT_NAMESPACE_PREFIX = "dhis2_snapshot:"
 REFRESH_PROGRESS_NAMESPACE = "dhis2_progress:metadata_refresh"
 GEOJSON_METADATA_TYPE = "geoJSON"
 ORG_UNIT_HIERARCHY_METADATA_TYPE = "orgUnitHierarchy"
+LEGEND_SET_METADATA_TYPE = "legendSets"
 SUPPORTED_METADATA_TYPES = (
     "dataElements",
     "indicators",
@@ -42,6 +43,7 @@ SUPPORTED_METADATA_TYPES = (
     "organisationUnits",
     "organisationUnitLevels",
     "organisationUnitGroups",
+    LEGEND_SET_METADATA_TYPE,
     GEOJSON_METADATA_TYPE,
     ORG_UNIT_HIERARCHY_METADATA_TYPE,
 )
@@ -67,6 +69,7 @@ VARIABLE_PROGRESS_METADATA_TYPES = (
     "indicatorGroups",
     "indicatorGroupSets",
 )
+LEGEND_SET_PROGRESS_METADATA_TYPES = (LEGEND_SET_METADATA_TYPE,)
 ORG_UNIT_METADATA_TYPES = (
     "organisationUnits",
     "organisationUnitLevels",
@@ -74,7 +77,10 @@ ORG_UNIT_METADATA_TYPES = (
     GEOJSON_METADATA_TYPE,
     ORG_UNIT_HIERARCHY_METADATA_TYPE,
 )
-BACKGROUND_REQUIRED_METADATA_TYPES = ORG_UNIT_METADATA_TYPES
+BACKGROUND_REQUIRED_METADATA_TYPES = (
+    *ORG_UNIT_METADATA_TYPES,
+    LEGEND_SET_METADATA_TYPE,
+)
 _SEARCH_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9]{10}$")
 _ANALYTICS_NUMERIC_TYPES = {
     "NUMBER",
@@ -119,6 +125,8 @@ def _refresh_progress_key_parts() -> dict[str, Any]:
 def _progress_family_for_metadata_type(metadata_type: str) -> str | None:
     if metadata_type in VARIABLE_PROGRESS_METADATA_TYPES:
         return "variables"
+    if metadata_type in LEGEND_SET_PROGRESS_METADATA_TYPES:
+        return "legend_sets"
     if metadata_type in ORG_UNIT_METADATA_TYPES:
         return "org_units"
     return None
@@ -211,6 +219,7 @@ def _build_refresh_progress_state(
 
     for family_name, family_types in (
         ("variables", VARIABLE_PROGRESS_METADATA_TYPES),
+        ("legend_sets", LEGEND_SET_PROGRESS_METADATA_TYPES),
         ("org_units", ORG_UNIT_METADATA_TYPES),
     ):
         active_family_types = [
@@ -285,6 +294,7 @@ def _build_refresh_progress_state(
             "percent_complete": 0 if overall_total_units > 0 else 100,
         },
         "variables": families["variables"],
+        "legend_sets": families["legend_sets"],
         "org_units": families["org_units"],
     }
 
@@ -985,6 +995,42 @@ def _load_snapshot_result(
     )
 
 
+def _load_or_fetch_metadata_snapshot_for_context(
+    *,
+    database_id: int,
+    metadata_type: str,
+    context: MetadataContext,
+) -> tuple[dict[str, Any] | None, bool]:
+    snapshot = _load_snapshot_result(
+        database_id,
+        metadata_type=metadata_type,
+        context=context,
+    )
+    snapshot_status = (
+        snapshot.get("status") if isinstance(snapshot, dict) else None
+    ) or ("pending" if snapshot is None else "success")
+    if snapshot_status == "success":
+        return snapshot, False
+
+    result_payload = _fetch_context_metadata_items(
+        context=context,
+        metadata_type=metadata_type,
+    )
+    payload = _build_snapshot_payload(
+        context=context,
+        metadata_type=metadata_type,
+        status="success",
+        result_payload=result_payload,
+    )
+    _persist_snapshot_payload(
+        database_id,
+        metadata_type=metadata_type,
+        context=context,
+        payload=payload,
+    )
+    return payload, True
+
+
 def _load_or_fetch_org_units_for_context(
     *,
     database: Database,
@@ -1357,6 +1403,18 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                 "paging": "false",
             },
         )
+    if metadata_type == LEGEND_SET_METADATA_TYPE:
+        return (
+            LEGEND_SET_METADATA_TYPE,
+            LEGEND_SET_METADATA_TYPE,
+            {
+                "fields": (
+                    "id,displayName,name,"
+                    "legends[id,displayName,name,startValue,endValue,color]"
+                ),
+                "paging": "false",
+            },
+        )
 
     raise ValueError(f"Unsupported DHIS2 metadata type: {metadata_type}")
 
@@ -1527,6 +1585,11 @@ def _normalize_legend_definition(item: dict[str, Any]) -> dict[str, Any] | None:
         legend_set_id = str(legend_set.get("id") or "").strip() or None
         legend_set_name = str(
             legend_set.get("displayName") or legend_set.get("name") or ""
+        ).strip() or None
+    elif isinstance(item.get("legends"), list):
+        legend_set_id = str(item.get("id") or "").strip() or None
+        legend_set_name = str(
+            item.get("displayName") or item.get("name") or ""
         ).strip() or None
 
     return {
@@ -2666,11 +2729,45 @@ def get_staged_metadata_payload(
     refresh_needed = False
 
     for context in contexts:
+        loaded_via_live_fallback = False
+        fallback_error: str | None = None
         snapshot = metadata_cache_service.get_cached_metadata_payload(
             database.id,
             _snapshot_namespace(metadata_type),
             _snapshot_key_parts(context.instance_id),
         )
+        snapshot_status = (
+            snapshot.get("status") if isinstance(snapshot, dict) else None
+        ) or ("pending" if snapshot is None else "success")
+
+        # Legend sets back map/chart styling controls. If staged cache is
+        # missing or stale-failed, rehydrate directly from DHIS2 once and
+        # persist the snapshot so subsequent chart editing stays local.
+        if metadata_type == LEGEND_SET_METADATA_TYPE and snapshot_status in {
+            None,
+            "pending",
+            "failed",
+        }:
+            try:
+                snapshot, loaded_via_live_fallback = (
+                    _load_or_fetch_metadata_snapshot_for_context(
+                        database_id=database.id,
+                        metadata_type=metadata_type,
+                        context=context,
+                    )
+                )
+                snapshot_status = (
+                    snapshot.get("status") if isinstance(snapshot, dict) else None
+                ) or "success"
+            except Exception as ex:  # pylint: disable=broad-except
+                fallback_error = str(ex)
+                logger.warning(
+                    "Failed staged legend-set rehydrate for database id=%s instance=%s",
+                    database.id,
+                    context.instance_id,
+                    exc_info=True,
+                )
+
         if snapshot is None:
             pending_count += 1
             refresh_needed = True
@@ -2685,7 +2782,6 @@ def get_staged_metadata_payload(
             )
             continue
 
-        snapshot_status = snapshot.get("status") or "success"
         if snapshot_status == "unsupported":
             success_count += 1
             instance_results.append(
@@ -2710,7 +2806,7 @@ def get_staged_metadata_payload(
                     "name": context.instance_name,
                     "status": "failed" if snapshot_status == "failed" else "pending",
                     "count": int(snapshot.get("count") or 0),
-                    "error": snapshot.get("message"),
+                    "error": fallback_error or snapshot.get("message"),
                 }
             )
             continue
@@ -2759,6 +2855,11 @@ def get_staged_metadata_payload(
                 "name": context.instance_name,
                 "status": "success",
                 "count": len(items),
+                **(
+                    {"load_source": "live_fallback"}
+                    if loaded_via_live_fallback
+                    else {}
+                ),
             }
         )
         if federated or requested_instance_ids:

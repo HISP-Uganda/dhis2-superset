@@ -68,6 +68,24 @@ beforeEach(() => {
           },
         ],
       },
+      legend_sets: {
+        status: 'ready',
+        count: 14,
+        last_refreshed_at: '2026-03-13T11:15:00',
+        ready_instances: 1,
+        pending_instances: 0,
+        failed_instances: 0,
+        partial_instances: 0,
+        missing_instances: 0,
+        instances: [
+          {
+            id: 301,
+            name: 'National eHMIS',
+            status: 'ready',
+            count: 14,
+          },
+        ],
+      },
       org_units: {
         status: 'partial',
         count: 44,
@@ -109,6 +127,7 @@ test('shows local metadata staging status in the database UI', async () => {
   expect(await screen.findByText(/Local metadata staging/i)).toBeVisible();
   expect(screen.getByText(/Status: Ready/i)).toBeVisible();
   expect(screen.getByText(/Variables: Ready/i)).toBeVisible();
+  expect(screen.getByText(/Legend sets: Ready/i)).toBeVisible();
   expect(screen.getByText(/Org units: Partially ready/i)).toBeVisible();
   expect(screen.getByText(/Last refreshed/i)).toBeVisible();
 });

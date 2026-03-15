@@ -67,7 +67,6 @@ const DashboardBuilder = lazy(
   () =>
     import(
       /* webpackChunkName: "DashboardContainer" */
-      /* webpackPreload: true */
       'src/dashboard/components/DashboardBuilder/DashboardBuilder'
     ),
 );

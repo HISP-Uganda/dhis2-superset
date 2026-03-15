@@ -65,6 +65,18 @@ describe('createLoadableRenderer', () => {
       expect(loadChartSuccess).toHaveBeenCalledTimes(1);
     });
 
+    it('renames legacy react-loadable lifecycle hooks', () => {
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          LoadableRenderer.prototype,
+          'componentWillMount',
+        ),
+      ).toBe(false);
+      expect(LoadableRenderer.prototype.UNSAFE_componentWillMount).toBeInstanceOf(
+        Function,
+      );
+    });
+
     it('calls onRenderSuccess when succeeds', async () => {
       const onRenderSuccess = jest.fn();
       const onRenderFailure = jest.fn();

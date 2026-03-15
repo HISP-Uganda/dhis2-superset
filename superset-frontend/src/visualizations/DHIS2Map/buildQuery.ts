@@ -20,7 +20,25 @@
 import { buildQueryContext, QueryFormData } from '@superset-ui/core';
 import { sanitizeDHIS2ColumnName } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
 
+function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
+  if (!extra) {
+    return undefined;
+  }
+  if (typeof extra === 'string') {
+    try {
+      return JSON.parse(extra);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof extra === 'object') {
+    return extra as Record<string, any>;
+  }
+  return undefined;
+}
+
 export default function buildQuery(formData: QueryFormData) {
+  const formDataAny = formData as any;
   const {
     metric,
     tooltip_columns = [],
@@ -28,8 +46,30 @@ export default function buildQuery(formData: QueryFormData) {
     org_unit_column,
     boundary_levels,
     boundary_level,
-    viz_type,
+    aggregation_method,
   } = formData;
+  const focusSelectedBoundaryWithChildren = Boolean(
+    formDataAny?.focusSelectedBoundaryWithChildren ??
+      formDataAny?.focus_selected_boundary_with_children,
+  );
+
+  const hierarchyColumnsValue = formDataAny?.dhis2_hierarchy_columns;
+  const rawHierarchyColumns = Array.isArray(hierarchyColumnsValue)
+    ? hierarchyColumnsValue
+    : typeof hierarchyColumnsValue === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(hierarchyColumnsValue);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })()
+      : [];
+
+  const sanitizedHierarchyColumns = rawHierarchyColumns
+    .map((column: unknown) => sanitizeDHIS2ColumnName(String(column || '')))
+    .filter(Boolean);
 
   return buildQueryContext(formData, baseQueryObject => {
     // Check if this is a DHIS2 dataset by looking at the datasource SQL
@@ -37,33 +77,66 @@ export default function buildQuery(formData: QueryFormData) {
     // Instead, DHIS2Map will fetch data via DHIS2DataLoader
     const datasourceAny = (baseQueryObject as any)?.datasource || {};
     const datasourceSql = datasourceAny?.sql || '';
+    const extraRaw = datasourceAny?.extra;
+    let extraParsed: any;
+    try {
+      extraParsed =
+        typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
+    } catch {
+      extraParsed = null;
+    }
+    const hierarchyColumnsFromDatasource = Array.isArray(datasourceAny?.columns)
+      ? datasourceAny.columns
+          .filter((column: any) => {
+            const extra = parseColumnExtra(column?.extra);
+            return (
+              extra?.dhis2_is_ou_hierarchy === true ||
+              extra?.dhis2IsOuHierarchy === true ||
+              Number.isFinite(
+                Number(extra?.dhis2_ou_level ?? extra?.dhis2OuLevel ?? NaN),
+              )
+            );
+          })
+          .sort((left: any, right: any) => {
+            const leftExtra = parseColumnExtra(left?.extra);
+            const rightExtra = parseColumnExtra(right?.extra);
+            const leftLevel = Number(
+              leftExtra?.dhis2_ou_level ?? leftExtra?.dhis2OuLevel ?? 0,
+            );
+            const rightLevel = Number(
+              rightExtra?.dhis2_ou_level ?? rightExtra?.dhis2OuLevel ?? 0,
+            );
+            return leftLevel - rightLevel;
+          })
+          .map((column: any) => String(column?.column_name || '').trim())
+          .filter(Boolean)
+      : [];
+    const effectiveHierarchyColumns =
+      sanitizedHierarchyColumns.length > 0
+        ? sanitizedHierarchyColumns
+        : hierarchyColumnsFromDatasource.map((column: string) =>
+            sanitizeDHIS2ColumnName(column),
+          );
+    const isStagedLocalDataset =
+      extraParsed?.dhis2_staged_local === true ||
+      extraParsed?.dhis2StagedLocal === true ||
+      formDataAny?.dhis2_staged_local_dataset === true ||
+      formDataAny?.dhis2_staged_local_dataset === 'true' ||
+      formDataAny?.dhis2StagedLocalDataset === true;
     let isDHIS2Dataset =
       datasourceSql.includes('/* DHIS2:') ||
       datasourceSql.includes('-- DHIS2:');
 
     if (!isDHIS2Dataset) {
-      const extraRaw = datasourceAny?.extra;
-      let extraParsed: any;
-      try {
-        extraParsed =
-          typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
-      } catch {
-        extraParsed = null;
-      }
       if (extraParsed?.dhis2_params) {
         isDHIS2Dataset = true;
       }
     }
 
-    // Fallback: for DHIS2 Map viz, treat as DHIS2 dataset even if SQL is not present.
-    // This prevents running a normal chart query and lets DHIS2Map fetch data via DHIS2 loader.
-    if (!isDHIS2Dataset && viz_type === 'dhis2_map' && !datasourceSql) {
-      isDHIS2Dataset = true;
-    }
-
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map buildQuery] Dataset type:', {
       isDHIS2Dataset,
+      isStagedLocalDataset,
       hasSQL: !!datasourceSql,
       sqlPreview: datasourceSql.substring(0, 100),
     });
@@ -71,7 +144,7 @@ export default function buildQuery(formData: QueryFormData) {
     // For DHIS2 datasets, return a minimal safe query.
     // Explore still calls /api/v1/chart/data; an empty query triggers a 400.
     // We keep it tiny to avoid heavy backend work while letting DHIS2Map fetch via DHIS2DataLoader.
-    if (isDHIS2Dataset) {
+    if (isDHIS2Dataset && !isStagedLocalDataset) {
       // Determine the selected boundary level for hierarchy column selection
       let selectedLevel = 2;
       if (Array.isArray(boundary_levels) && boundary_levels.length > 0) {
@@ -97,7 +170,13 @@ export default function buildQuery(formData: QueryFormData) {
       console.log(
         '[DHIS2Map buildQuery] DHIS2 dataset detected - ' +
           'returning minimal query for component-level data fetching',
-        { selectedLevel, boundary_levels, boundary_level, minimalGroupby },
+        {
+          selectedLevel,
+          boundary_levels,
+          boundary_level,
+          minimalGroupby,
+          isStagedLocalDataset,
+        },
       );
       return [
         {
@@ -141,6 +220,38 @@ export default function buildQuery(formData: QueryFormData) {
     const sanitizedOrgUnitColumn = org_unit_column
       ? sanitizeDHIS2ColumnName(org_unit_column)
       : undefined;
+    const selectedFocusOrgUnitColumn = (() => {
+      if (
+        !focusSelectedBoundaryWithChildren ||
+        !sanitizedOrgUnitColumn ||
+        effectiveHierarchyColumns.length === 0
+      ) {
+        return sanitizedOrgUnitColumn;
+      }
+
+      const currentIndex = effectiveHierarchyColumns.indexOf(
+        sanitizedOrgUnitColumn,
+      );
+      if (
+        currentIndex >= 0 &&
+        currentIndex < effectiveHierarchyColumns.length - 1
+      ) {
+        // Focus mode colors the next hierarchy level down, so the terminal OU
+        // restriction must also target that child column rather than the
+        // original parent selection.
+        return effectiveHierarchyColumns[currentIndex + 1];
+      }
+
+      return sanitizedOrgUnitColumn;
+    })();
+    const dhis2QueryExtras = {
+      ...(baseQueryObject.extras || {}),
+      ...(selectedFocusOrgUnitColumn
+        ? {
+            dhis2_selected_org_unit_column: selectedFocusOrgUnitColumn,
+          }
+        : {}),
+    };
 
     // Sanitize tooltip columns
     const sanitizedTooltipColumns = (tooltip_columns || []).map((col: any) => {
@@ -151,50 +262,89 @@ export default function buildQuery(formData: QueryFormData) {
 
     // Build columns array - request all needed columns as dimensions
     const columns: string[] = [];
+    const addColumn = (columnName?: string) => {
+      if (columnName && !columns.includes(columnName)) {
+        columns.push(columnName);
+      }
+    };
 
-    // Always include OrgUnit column if specified (for location mapping)
-    if (sanitizedOrgUnitColumn) {
-      columns.push(sanitizedOrgUnitColumn);
+    // Staged-local maps need the full staged OU path in the query results so
+    // focused "one level down" rendering can still color child boundaries from
+    // serving-table rows without reloading from the live DHIS2 preview path.
+    if (isStagedLocalDataset && effectiveHierarchyColumns.length > 0) {
+      effectiveHierarchyColumns.forEach(addColumn);
+    } else {
+      addColumn(sanitizedOrgUnitColumn);
     }
 
     // Always include Period if available (time/granularity column)
     if (granularity_sqla) {
-      columns.push(sanitizeDHIS2ColumnName(granularity_sqla));
+      addColumn(sanitizeDHIS2ColumnName(granularity_sqla));
     }
 
     // Add tooltip columns
     if (sanitizedTooltipColumns && sanitizedTooltipColumns.length > 0) {
-      columns.push(...sanitizedTooltipColumns);
+      sanitizedTooltipColumns.forEach(addColumn);
     }
 
-    // Add the metric column to columns (for DHIS2 we want raw data, not aggregated)
-    if (sanitizedMetric && !columns.includes(sanitizedMetric)) {
-      columns.push(sanitizedMetric);
+    const isLatestAggregation =
+      String(aggregation_method || '').toLowerCase() === 'latest';
+    const aggregateFunction = (() => {
+      switch (String(aggregation_method || '').toLowerCase()) {
+        case 'average':
+          return 'AVG';
+        case 'max':
+          return 'MAX';
+        case 'min':
+          return 'MIN';
+        case 'count':
+          return 'COUNT';
+        default:
+          return 'SUM';
+      }
+    })();
+    const aggregatedMetric =
+      sanitizedMetric && !isLatestAggregation
+        ? {
+            expressionType: 'SQL' as const,
+            sqlExpression: `${aggregateFunction}(${sanitizedMetric})`,
+            label: `${aggregateFunction}(${sanitizedMetric})`,
+          }
+        : undefined;
+
+    if (isLatestAggregation) {
+      // Latest needs the raw metric rows so the map can resolve the final
+      // value client-side after the focused-parent filter is applied.
+      addColumn(sanitizedMetric);
     }
 
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map buildQuery] Building query with:', {
+      isDHIS2Dataset,
+      isStagedLocalDataset,
       originalMetric: metricColumn,
       sanitizedMetric,
       sanitizedOrgUnitColumn,
+      selectedFocusOrgUnitColumn,
+      focusSelectedBoundaryWithChildren,
+      aggregationMethod: aggregation_method,
+      isLatestAggregation,
+      aggregatedMetricLabel: aggregatedMetric?.label,
       columns,
       granularity: granularity_sqla,
       tooltip_columns: sanitizedTooltipColumns,
       row_limit: baseQueryObject.row_limit,
     });
 
-    // For DHIS2 datasets, request raw data with proper column names
-    // Use groupby/columns for dimension-based queries
-    // IMPORTANT: Don't add metric to both groupby AND metrics - this causes
-    // "Duplicate column/metric labels" error in query validation
+    // For staged serving-table datasets, aggregate on the backend whenever
+    // possible so the map receives one row per displayed OU instead of one row
+    // per raw metric value. Only "latest" keeps raw rows.
     return [
       {
         ...baseQueryObject,
-        // Request all needed columns as groupby dimensions (includes metric)
+        extras: dhis2QueryExtras,
         groupby: columns,
-        // Don't duplicate metric in metrics array - it's already in groupby
-        // Setting metrics to empty array for raw data retrieval
-        metrics: [],
+        metrics: aggregatedMetric ? [aggregatedMetric] : [],
         // Use a reasonable row limit (0 means unlimited which can cause issues)
         row_limit: baseQueryObject.row_limit || 10000,
         // Disable time range filtering if not needed for DHIS2

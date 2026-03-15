@@ -181,6 +181,7 @@ export interface DHIS2MetadataRefreshProgress {
     percent_complete: number;
   };
   variables: DHIS2MetadataRefreshFamilyProgress;
+  legend_sets?: DHIS2MetadataRefreshFamilyProgress;
   org_units: DHIS2MetadataRefreshFamilyProgress;
 }
 
@@ -191,6 +192,7 @@ export interface DHIS2MetadataStatus {
   overall_status: 'ready' | 'pending' | 'partial' | 'failed' | 'missing';
   last_refreshed_at?: string | null;
   variables: DHIS2MetadataFamilyStatus;
+  legend_sets?: DHIS2MetadataFamilyStatus;
   org_units: DHIS2MetadataFamilyStatus;
   refresh_progress?: DHIS2MetadataRefreshProgress | null;
 }

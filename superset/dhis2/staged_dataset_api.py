@@ -916,6 +916,10 @@ class DHIS2StagedDatasetApi(BaseApi):
         filters = body.get("filters")
         limit = body.get("limit", 100)
         page = body.get("page", 1)
+        group_by_columns = body.get("group_by")
+        metric_column = body.get("metric_column")
+        metric_alias = body.get("metric_alias")
+        aggregation_method = body.get("aggregation_method")
 
         try:
             result = svc.query_serving_data(
@@ -926,6 +930,18 @@ class DHIS2StagedDatasetApi(BaseApi):
                 filters=filters if isinstance(filters, list) else None,
                 limit=int(limit or 100),
                 page=int(page or 1),
+                group_by_columns=group_by_columns
+                if isinstance(group_by_columns, list)
+                else None,
+                metric_column=str(metric_column).strip()
+                if metric_column is not None and str(metric_column).strip()
+                else None,
+                metric_alias=str(metric_alias).strip()
+                if metric_alias is not None and str(metric_alias).strip()
+                else None,
+                aggregation_method=str(aggregation_method).strip()
+                if aggregation_method is not None
+                else None,
             )
         except ValueError as exc:
             return self.response_400(message=str(exc))
@@ -937,7 +953,7 @@ class DHIS2StagedDatasetApi(BaseApi):
 
         return self.response(200, result=result)
 
-    @expose("/<int:pk>/filters", methods=["POST"])
+    @expose("/<int:pk>/filters", methods=["GET", "POST"])
     @protect()
     @safe
     @permission_name("read")
@@ -947,7 +963,7 @@ class DHIS2StagedDatasetApi(BaseApi):
         if dataset is None:
             return self.response_404()
 
-        body: dict[str, Any] = request.get_json() or {}
+        body: dict[str, Any] = request.get_json(silent=True) or {}
         filters = body.get("filters")
 
         try:

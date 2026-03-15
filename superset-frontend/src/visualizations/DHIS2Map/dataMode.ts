@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import {
+  resolveQueryDimensionColumnName,
+  resolveQueryMetricColumnName,
+} from './loaderColumns';
+import { DHIS2DatasourceColumn } from './types';
+
 export function hasDHIS2SqlComment(sql?: string | null): boolean {
   if (!sql) {
     return false;
@@ -27,19 +33,50 @@ export function hasDHIS2SqlComment(sql?: string | null): boolean {
   );
 }
 
+export function hasStagedLocalServingSql(sql?: string | null): boolean {
+  if (!sql) {
+    return false;
+  }
+  return /select\s+\*\s+from\s+(?:[a-z_][\w]*\.)?sv_\d+_/i.test(sql);
+}
+
+export function getStagedDatasetIdFromSql(
+  sql?: string | null,
+): number | undefined {
+  if (!sql) {
+    return undefined;
+  }
+  const match = sql.match(
+    /select\s+\*\s+from\s+(?:[a-z_][\w]*\.)?sv_(\d+)_/i,
+  );
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const parsedValue = Number(match[1]);
+  return Number.isFinite(parsedValue) && parsedValue > 0
+    ? parsedValue
+    : undefined;
+}
+
 export function shouldResolveDHIS2DatasetSql({
   datasetId,
   datasetSql,
   isDHIS2Dataset,
+  isStagedLocalDataset,
   databaseId,
   sourceInstanceIds,
 }: {
   datasetId?: number;
   datasetSql?: string | null;
   isDHIS2Dataset?: boolean;
+  isStagedLocalDataset?: boolean;
   databaseId?: number;
   sourceInstanceIds?: number[];
 }): boolean {
+  if (isStagedLocalDataset) {
+    return false;
+  }
+
   const hasSourceContext =
     Boolean(databaseId) &&
     Array.isArray(sourceInstanceIds) &&
@@ -59,11 +96,16 @@ export function shouldResolveDHIS2DatasetSql({
 export function shouldUseDHIS2LoaderData({
   databaseId,
   datasetSql,
+  isStagedLocalDataset,
 }: {
   databaseId?: number;
   datasetSql?: string | null;
   isDHIS2Dataset?: boolean;
+  isStagedLocalDataset?: boolean;
 }): boolean {
+  if (isStagedLocalDataset) {
+    return false;
+  }
   return Boolean(databaseId && datasetSql && hasDHIS2SqlComment(datasetSql));
 }
 
@@ -76,6 +118,114 @@ export function resolveDHIS2MapData(
     return Array.isArray(chartRows) ? chartRows : [];
   }
   return Array.isArray(loaderRows) ? loaderRows : [];
+}
+
+/**
+ * Saved staged-local charts can still carry an older placeholder query context
+ * that only returns the thematic parent level. Focus mode needs child-level
+ * rows from the staged serving table, so fall back to the local query API when
+ * the chart payload cannot resolve the child org-unit column or metric.
+ */
+export function shouldLoadStagedLocalFocusData({
+  isStagedLocalDataset,
+  stagedDatasetId,
+  focusSelectedBoundaryWithChildren,
+  focusedChildLevel,
+  chartRows = [],
+  chartColumns,
+  requestedChildColumn,
+  requestedMetric,
+  datasourceColumns = [],
+  hierarchyColumns = [],
+}: {
+  isStagedLocalDataset?: boolean;
+  stagedDatasetId?: number;
+  focusSelectedBoundaryWithChildren?: boolean;
+  focusedChildLevel?: number;
+  chartRows?: Record<string, any>[];
+  chartColumns?: string[];
+  requestedChildColumn?: string;
+  requestedMetric?: string;
+  datasourceColumns?: DHIS2DatasourceColumn[];
+  hierarchyColumns?: string[];
+}): boolean {
+  if (
+    !isStagedLocalDataset ||
+    !stagedDatasetId ||
+    !focusSelectedBoundaryWithChildren ||
+    !focusedChildLevel
+  ) {
+    return false;
+  }
+
+  if (!Array.isArray(chartRows) || chartRows.length === 0) {
+    return true;
+  }
+
+  const availableColumns =
+    Array.isArray(chartColumns) && chartColumns.length > 0
+      ? chartColumns
+      : Array.from(
+          new Set(chartRows.flatMap(row => Object.keys(row || {})).filter(Boolean)),
+        );
+
+  if (requestedChildColumn) {
+    const resolvedChildColumn = resolveQueryDimensionColumnName({
+      requestedColumn: requestedChildColumn,
+      datasourceColumns,
+      availableColumns,
+    });
+    if (!resolvedChildColumn) {
+      return true;
+    }
+
+    const hasChildValues = chartRows.some(row => {
+      const value = row?.[resolvedChildColumn];
+      return value !== undefined && value !== null && String(value).trim() !== '';
+    });
+    if (!hasChildValues) {
+      return true;
+    }
+
+    const hierarchyColumnIndex = hierarchyColumns.indexOf(requestedChildColumn);
+    if (hierarchyColumnIndex >= 0) {
+      const deeperColumns = hierarchyColumns
+        .slice(hierarchyColumnIndex + 1)
+        .map(column =>
+          resolveQueryDimensionColumnName({
+            requestedColumn: column,
+            datasourceColumns,
+            availableColumns,
+          }),
+        )
+        .filter((column): column is string => Boolean(column));
+
+      const hasDeeperHierarchyValues = deeperColumns.some(columnName =>
+        chartRows.some(row => {
+          const value = row?.[columnName];
+          return value !== undefined && value !== null && String(value).trim() !== '';
+        }),
+      );
+
+      if (hasDeeperHierarchyValues) {
+        return true;
+      }
+    }
+  }
+
+  if (requestedMetric) {
+    const resolvedMetricColumn = resolveQueryMetricColumnName({
+      metric: requestedMetric,
+      datasourceColumns,
+      availableColumns,
+      rows: chartRows,
+    });
+    if (!resolvedMetricColumn) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function resolveDisplayedBoundaries<T extends { id: string }>({

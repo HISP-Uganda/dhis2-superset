@@ -35,6 +35,32 @@ import extractQueryFields from './extractQueryFields';
 import { overrideExtraFormData } from './processExtraFormData';
 import { isDefined } from '../utils';
 
+function getDhis2PeriodFilterClauses(
+  periodColumn?: string,
+  periodValues?: (string | number)[],
+): QueryObjectFilterClause[] {
+  const normalizedColumn = String(periodColumn || '').trim();
+  const normalizedValues = Array.from(
+    new Set(
+      (Array.isArray(periodValues) ? periodValues : [])
+        .map(value => String(value ?? '').trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (!normalizedColumn || normalizedValues.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      col: normalizedColumn,
+      op: 'IN',
+      val: normalizedValues,
+    },
+  ];
+}
+
 /**
  * Build the common segments of all query objects (e.g. the granularity field derived from
  * SQLAlchemy). The segments specific to each viz type is constructed in the
@@ -58,6 +84,8 @@ export default function buildQueryObject<T extends QueryFormData>(
     limit,
     timeseries_limit_metric,
     granularity,
+    dhis2_period_column,
+    dhis2_period_filter_values,
     url_params = {},
     custom_params = {},
     series_columns,
@@ -87,7 +115,14 @@ export default function buildQueryObject<T extends QueryFormData>(
     filters: QueryObjectFilterClause[];
     adhoc_filters: AdhocFilter[];
   } = {
-    filters: [...extraFilters, ...appendFilters],
+    filters: [
+      ...extraFilters,
+      ...appendFilters,
+      ...getDhis2PeriodFilterClauses(
+        dhis2_period_column,
+        dhis2_period_filter_values,
+      ),
+    ],
     adhoc_filters: [...(formData.adhoc_filters || []), ...appendAdhocFilters],
   };
   const extrasAndfilters = processFilters({

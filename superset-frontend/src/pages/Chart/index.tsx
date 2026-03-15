@@ -130,10 +130,12 @@ const getDashboardContextFormData = () => {
 export default function ExplorePage() {
   const [isLoaded, setIsLoaded] = useState(false);
   const isExploreInitialized = useRef(false);
+  const isMounted = useRef(true);
   const dispatch = useDispatch();
   const location = useLocation();
 
   useEffect(() => {
+    isMounted.current = true;
     const exploreUrlParams = getParsedExploreURLParams(location);
     const saveAction = getUrlParam(
       URL_PARAMS.saveAction,
@@ -242,11 +244,17 @@ export default function ExplorePage() {
           return Promise.resolve();
         })
         .finally(() => {
-          setIsLoaded(true);
-          isExploreInitialized.current = true;
+          if (isMounted.current) {
+            setIsLoaded(true);
+            isExploreInitialized.current = true;
+          }
         });
     }
     getLabelsColorMap().source = LabelsColorMapSource.Explore;
+
+    return () => {
+      isMounted.current = false;
+    };
   }, [dispatch, location]);
 
   if (!isLoaded) {

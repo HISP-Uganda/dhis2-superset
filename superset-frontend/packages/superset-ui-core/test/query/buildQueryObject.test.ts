@@ -84,6 +84,32 @@ describe('buildQueryObject', () => {
     expect(query.extras?.where).toEqual('(a = b) AND ((1 = 1))');
   });
 
+  it('should append a DHIS2 period IN filter when periods are selected', () => {
+    query = buildQueryObject({
+      datasource: '5__table',
+      granularity_sqla: 'ds',
+      viz_type: VizType.Table,
+      dhis2_period_column: 'period',
+      dhis2_period_filter_values: ['202503', '202502', '202503'],
+    });
+
+    expect(query.filters).toEqual([
+      { col: 'period', op: 'IN', val: ['202503', '202502'] },
+    ]);
+  });
+
+  it('should ignore empty DHIS2 period selections', () => {
+    query = buildQueryObject({
+      datasource: '5__table',
+      granularity_sqla: 'ds',
+      viz_type: VizType.Table,
+      dhis2_period_column: 'period',
+      dhis2_period_filter_values: [],
+    });
+
+    expect(query.filters).toEqual([]);
+  });
+
   it('should group custom metric control', () => {
     query = buildQueryObject(
       {
