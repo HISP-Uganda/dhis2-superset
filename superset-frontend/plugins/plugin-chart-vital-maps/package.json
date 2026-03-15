@@ -1,0 +1,23 @@
+{
+  "name": "@superset-ui/plugin-chart-vital-maps",
+  "version": "0.1.0",
+  "description": "Vital Maps — High-visibility thematic and geographic analysis maps for public-health spatial reporting",
+  "keywords": ["superset", "map", "maplibre", "geo", "choropleth", "health"],
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "main": "src/index.ts",
+  "dependencies": {
+    "maplibre-gl": "^4.7.1",
+    "lodash": "^4.17.21"
+  },
+  "peerDependencies": {
+    "@superset-ui/core": "*",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.14.200",
+    "@types/jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  }
+}
