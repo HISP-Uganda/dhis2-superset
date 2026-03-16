@@ -54,11 +54,27 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of DHIS2 variable UIDs to include in a single analytics request.
 # Larger batches risk exceeding URL length limits on some DHIS2 deployments.
+# Override per-dataset via dataset_config["var_chunk_size"].
 _MAX_VARS_PER_REQUEST = 50
 
+# Maximum number of org-unit UIDs to include in a single analytics request.
+# DHIS2 can time out or fail when asked to aggregate data across too many org units
+# at once, even when using POST.  Chunking keeps individual requests manageable.
+# Override per-dataset via dataset_config["ou_chunk_size"].
+_MAX_OUS_PER_REQUEST = 200
+
 # Page size for DHIS2 analytics pagination.
+# Override per-dataset via dataset_config["analytics_page_size"].
 _ANALYTICS_PAGE_SIZE = 1000
 _MIN_ANALYTICS_PAGE_SIZE = 100
+
+# Allowed bounds for user-supplied chunk sizes (prevents foot-guns).
+_OU_CHUNK_SIZE_MIN = 1
+_OU_CHUNK_SIZE_MAX = 500
+_VAR_CHUNK_SIZE_MIN = 1
+_VAR_CHUNK_SIZE_MAX = 200
+_ANALYTICS_PAGE_SIZE_MIN = 100
+_ANALYTICS_PAGE_SIZE_MAX = 10000
 
 # HTTP request timeout in seconds for analytics calls.
 _REQUEST_TIMEOUT = 300
@@ -487,6 +503,22 @@ def _normalize_org_unit_scope(scope: Any) -> str:
     }:
         return candidate
     return _ORG_UNIT_SCOPE_SELECTED
+
+
+def _clamp_chunk_size(
+    value: Any,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Return *value* clamped to [*minimum*, *maximum*], or *default* if invalid."""
+    if value is None:
+        return default
+    try:
+        clamped = max(minimum, min(maximum, int(value)))
+    except (TypeError, ValueError):
+        return default
+    return clamped
 
 
 def _node_level(node: dict[str, Any]) -> int | None:
@@ -1413,6 +1445,12 @@ class DHIS2SyncService:
 
                 - ``periods`` (list[str] | str): e.g. ``["LAST_12_MONTHS"]``
                 - ``org_units`` (list[str]): e.g. ``["LEVEL-3"]``
+                - ``ou_chunk_size`` (int, optional): max org-unit UIDs per analytics
+                  request.  Default: ``200``.  Clamped to [1, 500].
+                - ``var_chunk_size`` (int, optional): max variable UIDs per request.
+                  Default: ``50``.  Clamped to [1, 200].
+                - ``analytics_page_size`` (int, optional): rows per analytics page.
+                  Default: ``1000``.  Clamped to [100, 10000].
 
         Returns:
             A flat list of row dicts suitable for insertion into the staging
@@ -1424,26 +1462,90 @@ class DHIS2SyncService:
 
         org_units_cfg = self._resolve_org_units_for_instance(instance, dataset_config)
 
+        # Allow per-dataset overrides for chunk / page sizes.  Values are
+        # clamped to safe bounds so a misconfiguration can't OOM the worker.
+        max_ous_per_request = _clamp_chunk_size(
+            dataset_config.get("ou_chunk_size"),
+            _MAX_OUS_PER_REQUEST,
+            _OU_CHUNK_SIZE_MIN,
+            _OU_CHUNK_SIZE_MAX,
+        )
+        max_vars_per_request = _clamp_chunk_size(
+            dataset_config.get("var_chunk_size"),
+            _MAX_VARS_PER_REQUEST,
+            _VAR_CHUNK_SIZE_MIN,
+            _VAR_CHUNK_SIZE_MAX,
+        )
+        analytics_page_size = _clamp_chunk_size(
+            dataset_config.get("analytics_page_size"),
+            _ANALYTICS_PAGE_SIZE,
+            _ANALYTICS_PAGE_SIZE_MIN,
+            _ANALYTICS_PAGE_SIZE_MAX,
+        )
+
         # Build a map of variable_id -> DHIS2DatasetVariable for metadata lookup.
         variable_map: dict[str, DHIS2DatasetVariable] = {
             var.variable_id: var for var in variables
         }
-        dx_ids = list(variable_map.keys())
+
+        # Build dx_ids respecting per-variable disaggregation settings.
+        # - "total" / "all" → pass the bare variable_id (DHIS2 returns the aggregated row
+        #   when no COC filter is applied; staging captures co_uid from the response).
+        # - "selected" → add "variable_id.coc_uid" dotted entries for each chosen COC.
+        dx_ids: list[str] = []
+        for var in variables:
+            ep = var.get_extra_params() if hasattr(var, "get_extra_params") else {}
+            disagg_mode = ep.get("disaggregation") or "total"
+            if disagg_mode == "selected":
+                selected_uids = ep.get("selected_coc_uids") or []
+                if selected_uids:
+                    for coc_uid in selected_uids:
+                        dx_ids.append(f"{var.variable_id}.{coc_uid}")
+                else:
+                    # Fall back to bare ID if no UIDs configured
+                    dx_ids.append(var.variable_id)
+            else:
+                dx_ids.append(var.variable_id)
 
         all_rows: list[dict[str, Any]] = []
 
-        # Split dx_ids into batches.
-        for batch_start in range(0, len(dx_ids), _MAX_VARS_PER_REQUEST):
-            batch = dx_ids[batch_start : batch_start + _MAX_VARS_PER_REQUEST]
-            batch_rows = self._fetch_analytics_batch(
-                instance=instance,
-                batch=batch,
-                periods=periods_cfg,
-                org_units=org_units_cfg,
-                variable_map=variable_map,
-                page_size=_ANALYTICS_PAGE_SIZE,
-            )
-            all_rows.extend(batch_rows)
+        # Chunk org units to avoid sending too many OUs in a single request.
+        # DHIS2 can time out or return errors when a single query spans hundreds of
+        # org units, even via POST.  We iterate over chunks and merge the results.
+        ou_chunks: list[list[str]] = (
+            [
+                org_units_cfg[ou_start : ou_start + max_ous_per_request]
+                for ou_start in range(0, len(org_units_cfg), max_ous_per_request)
+            ]
+            if org_units_cfg
+            else [[]]  # empty list means DHIS2 will use the requesting user's org units
+        )
+        logger.info(
+            "Sync: instance '%s' — %d org unit(s) split into %d chunk(s) of up to %d "
+            "(var_chunk=%d, page_size=%d)",
+            instance.name,
+            len(org_units_cfg),
+            len(ou_chunks),
+            max_ous_per_request,
+            max_vars_per_request,
+            analytics_page_size,
+        )
+
+        for ou_chunk in ou_chunks:
+            # Split dx_ids into variable batches within each OU chunk.
+            for batch_start in range(0, max(1, len(dx_ids)), max_vars_per_request):
+                batch = dx_ids[batch_start : batch_start + max_vars_per_request]
+                if not batch:
+                    break
+                batch_rows = self._fetch_analytics_batch(
+                    instance=instance,
+                    batch=batch,
+                    periods=periods_cfg,
+                    org_units=ou_chunk,
+                    variable_map=variable_map,
+                    page_size=analytics_page_size,
+                )
+                all_rows.extend(batch_rows)
 
         return all_rows
 
@@ -1610,32 +1712,36 @@ class DHIS2SyncService:
         base_url = instance.url.rstrip("/")
         url = f"{base_url}/api/analytics.json"
 
-        params: dict[str, Any] = {
-            "dimension": [
-                f"dx:{';'.join(dx_ids)}",
-                f"pe:{';'.join(periods)}",
-                f"ou:{';'.join(org_units)}",
-            ],
-            "displayProperty": "NAME",
-            "skipMeta": "false",
-            "paging": "true",
-            "page": page,
-            "pageSize": page_size,
-        }
+        # Build form-encoded body for POST to avoid 414 Request-URI Too Long when
+        # many org-unit UIDs are included.  DHIS2 analytics accepts identical
+        # parameters via POST (application/x-www-form-urlencoded).
+        # ``requests`` sends a list value as repeated keys: dimension=dx:…&dimension=pe:…
+        form_data: list[tuple[str, str]] = [
+            ("dimension", f"dx:{';'.join(dx_ids)}"),
+            ("dimension", f"pe:{';'.join(periods)}"),
+            ("dimension", f"ou:{';'.join(org_units)}"),
+            ("displayProperty", "NAME"),
+            ("skipMeta", "false"),
+            ("paging", "true"),
+            ("page", str(page)),
+            ("pageSize", str(page_size)),
+        ]
 
         headers = {
             "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
             **instance.get_auth_headers(),
         }
 
         logger.debug(
-            "Sync: GET %s page=%d (dx count=%d)",
+            "Sync: POST %s page=%d (dx count=%d, ou count=%d)",
             url,
             page,
             len(dx_ids),
+            len(org_units),
         )
 
-        resp = requests.get(url, params=params, headers=headers, timeout=_REQUEST_TIMEOUT)
+        resp = requests.post(url, data=form_data, headers=headers, timeout=_REQUEST_TIMEOUT)
         if not resp.ok:
             reason = str(getattr(resp, "reason", "") or "").strip() or None
             if resp.status_code == 524:
@@ -1724,13 +1830,24 @@ class DHIS2SyncService:
                 v = raw_row[idx]
                 return v if v != "" else None
 
-            dx_uid = _get(dx_col)
+            dx_uid_raw = _get(dx_col)
             pe = _get(pe_col)
             ou = _get(ou_col)
             raw_value = _get(value_col)
 
+            # DHIS2 may return dotted "varId.cocUid" in the dx column when
+            # a specific category option combo was requested.  Split it out.
+            dx_uid: str | None
+            coc_uid_from_dx: str | None = None
+            if dx_uid_raw and "." in dx_uid_raw:
+                parts = dx_uid_raw.split(".", 1)
+                dx_uid = parts[0]
+                coc_uid_from_dx = parts[1]
+            else:
+                dx_uid = dx_uid_raw
+
             # Resolve names from metaData.
-            dx_meta = meta_items.get(dx_uid or "", {})
+            dx_meta = meta_items.get(dx_uid_raw or "", {}) or meta_items.get(dx_uid or "", {})
             dx_name = dx_meta.get("name")
 
             ou_meta = meta_items.get(ou or "", {})
@@ -1755,7 +1872,7 @@ class DHIS2SyncService:
                 except (ValueError, TypeError):
                     pass
 
-            co_uid = _get(co_col)
+            co_uid = _get(co_col) or coc_uid_from_dx
             co_meta = meta_items.get(co_uid or "", {})
             co_name = co_meta.get("name")
 
@@ -1847,7 +1964,8 @@ class DHIS2SyncService:
 
     def _materialize_serving_table(self, dataset: DHIS2StagedDataset) -> None:
         staging_engine = DHIS2StagingEngine(dataset.database_id)
-        raw_rows = staging_engine.fetch_staging_rows(dataset)
+        ou_filter = _build_ou_filter_for_dataset(dataset)
+        raw_rows = staging_engine.fetch_staging_rows(dataset, ou_filter=ou_filter)
         serving_columns, serving_rows = materialize_serving_rows(dataset, raw_rows)
         staging_engine.create_or_replace_serving_table(
             dataset,
@@ -2098,3 +2216,68 @@ def _run_sync_job_thread(
             )
     finally:
         db.session.remove()
+
+
+# ---------------------------------------------------------------------------
+# OU scope filter helper (Phase 8)
+# ---------------------------------------------------------------------------
+
+
+def _build_ou_filter_for_dataset(
+    dataset: DHIS2StagedDataset,
+) -> "dict[int, frozenset[str] | None] | None":
+    """Build a per-instance OU allowlist for serving-table materialization.
+
+    When the serving table is (re-)materialized we should only include staging
+    rows for org units that are currently in the dataset's OU configuration.
+    This prevents stale rows for removed OUs from showing up in charts.
+
+    Returns
+    -------
+    None
+        No filtering — all rows included (e.g. no instances configured).
+    dict mapping instance_id to:
+        ``None``           → user-relative markers only; include ALL rows for this instance.
+        ``frozenset[str]`` → concrete OU UIDs; only include rows whose ``ou`` matches.
+
+    If every instance resolves to user-relative markers only, returns ``None``
+    (no OU filtering is possible).
+    """
+    instances = get_instances_with_legacy_fallback(dataset.database_id)
+    if not instances:
+        return None
+
+    dataset_config = dataset.get_dataset_config() if hasattr(dataset, "get_dataset_config") else {}
+
+    _USER_MARKERS = {
+        "USER_ORGUNIT",
+        "USER_ORGUNIT_CHILDREN",
+        "USER_ORGUNIT_GRANDCHILDREN",
+    }
+
+    result: dict[int, frozenset[str] | None] = {}
+    for instance in instances:
+        try:
+            resolved = DHIS2SyncService._resolve_org_units_for_instance(instance, dataset_config)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "_build_ou_filter_for_dataset: could not resolve OUs for instance id=%d",
+                instance.id,
+                exc_info=True,
+            )
+            # Fallback: include all rows for this instance
+            result[instance.id] = None
+            continue
+
+        concrete = frozenset(u for u in resolved if u not in _USER_MARKERS)
+        user_only = all(u in _USER_MARKERS for u in resolved)
+
+        if user_only or not concrete:
+            result[instance.id] = None
+        else:
+            result[instance.id] = concrete
+
+    # If ALL instances are user-relative-only, no OU filtering is meaningful
+    if all(v is None for v in result.values()):
+        return None
+    return result

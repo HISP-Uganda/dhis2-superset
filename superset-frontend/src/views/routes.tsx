@@ -130,6 +130,13 @@ const DHIS2LocalData = lazy(
     ),
 );
 
+const DHIS2Downloads = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "DHIS2Downloads" */ 'src/pages/DHIS2Downloads'
+    ),
+);
+
 const Chart = lazy(
   () => import(/* webpackChunkName: "Chart" */ 'src/pages/Chart'),
 );
@@ -339,6 +346,10 @@ export const routes: Routes = [
   {
     path: '/superset/dhis2/local-data/',
     Component: DHIS2LocalData,
+  },
+  {
+    path: '/superset/dhis2/downloads/',
+    Component: DHIS2Downloads,
   },
   {
     path: '/rowlevelsecurity/list',

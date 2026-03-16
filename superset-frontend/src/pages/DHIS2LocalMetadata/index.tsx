@@ -16,7 +16,7 @@ import {
   Tag,
   Tooltip,
 } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, StopOutlined } from '@ant-design/icons';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
@@ -81,6 +81,8 @@ export default function DHIS2LocalMetadata() {
   const [submittedSearch, setSubmittedSearch] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeMetadataJobId, setActiveMetadataJobId] = useState<number | null>(null);
+  const [cancellingJob, setCancellingJob] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewRows, setPreviewRows] = useState<MetadataPreviewRow[]>([]);
   const [previewStatus, setPreviewStatus] = useState<string>('idle');
@@ -212,9 +214,14 @@ export default function DHIS2LocalMetadata() {
     }
     setRefreshing(true);
     try {
-      await SupersetClient.post({
+      const resp = await SupersetClient.post({
         endpoint: `/api/v1/dhis2/diagnostics/metadata-refresh/${selectedDatabaseId}`,
       });
+      const result = resp.json?.result as { refresh?: { job_id?: number }; job_id?: number } | undefined;
+      const jobId = result?.refresh?.job_id ?? result?.job_id;
+      if (jobId) {
+        setActiveMetadataJobId(jobId);
+      }
       addSuccessToast(t('Local metadata refresh started.'));
       // Fetch status immediately then start polling
       const status = await fetchMetadataStatus(selectedDatabaseId);
@@ -228,6 +235,26 @@ export default function DHIS2LocalMetadata() {
       );
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleCancelMetadataJob = async () => {
+    if (!activeMetadataJobId) return;
+    setCancellingJob(true);
+    try {
+      await SupersetClient.post({
+        endpoint: `/api/v1/dhis2/jobs/metadata/${activeMetadataJobId}/cancel`,
+      });
+      addSuccessToast(t('Metadata refresh job #%s cancelled', String(activeMetadataJobId)));
+      setActiveMetadataJobId(null);
+      stopPolling();
+      if (selectedDatabaseId) {
+        void fetchMetadataStatus(selectedDatabaseId);
+      }
+    } catch (error) {
+      addDangerToast(getErrorMessage(error, t('Failed to cancel metadata job')));
+    } finally {
+      setCancellingJob(false);
     }
   };
 
@@ -354,36 +381,54 @@ export default function DHIS2LocalMetadata() {
         'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables, legend sets, or organisation units without waiting on live DHIS2 responses.',
       )}
       extra={
-        <Tooltip
-          title={
+        <Space>
+          {activeMetadataJobId &&
             metadataStatus?.refresh_progress &&
             (metadataStatus.refresh_progress.status === 'running' ||
-              metadataStatus.refresh_progress.status === 'queued')
-              ? t('Refresh in progress…')
-              : t('Fetch latest metadata from all active DHIS2 instances')
-          }
-        >
-          <Button
-            disabled={
-              refreshing ||
-              !!(
-                metadataStatus?.refresh_progress &&
-                (metadataStatus.refresh_progress.status === 'running' ||
-                  metadataStatus.refresh_progress.status === 'queued')
-              )
+              metadataStatus.refresh_progress.status === 'queued') ? (
+            <Tooltip title={t('Stop the running metadata refresh job')}>
+              <Button
+                danger
+                icon={<StopOutlined />}
+                loading={cancellingJob}
+                size="small"
+                onClick={() => void handleCancelMetadataJob()}
+              >
+                {t('Cancel')}
+              </Button>
+            </Tooltip>
+          ) : null}
+          <Tooltip
+            title={
+              metadataStatus?.refresh_progress &&
+              (metadataStatus.refresh_progress.status === 'running' ||
+                metadataStatus.refresh_progress.status === 'queued')
+                ? t('Refresh in progress…')
+                : t('Fetch latest metadata from all active DHIS2 instances')
             }
-            icon={
-              refreshing ? (
-                <Spin size="small" />
-              ) : (
-                <ReloadOutlined spin={false} />
-              )
-            }
-            onClick={() => void handleRefresh()}
           >
-            {t('Refresh local metadata')}
-          </Button>
-        </Tooltip>
+            <Button
+              disabled={
+                refreshing ||
+                !!(
+                  metadataStatus?.refresh_progress &&
+                  (metadataStatus.refresh_progress.status === 'running' ||
+                    metadataStatus.refresh_progress.status === 'queued')
+                )
+              }
+              icon={
+                refreshing ? (
+                  <Spin size="small" />
+                ) : (
+                  <ReloadOutlined spin={false} />
+                )
+              }
+              onClick={() => void handleRefresh()}
+            >
+              {t('Refresh local metadata')}
+            </Button>
+          </Tooltip>
+        </Space>
       }
       loadingDatabases={loadingDatabases}
       selectedDatabaseId={selectedDatabaseId}

@@ -1180,20 +1180,145 @@ class DHIS2StagingEngine:
             writer.writerow({column: row.get(column) for column in resolved_columns})
         return output.getvalue(), full_name
 
-    def fetch_staging_rows(self, staged_dataset: DHIS2StagedDataset) -> list[dict[str, Any]]:
+    def export_serving_table_tsv(
+        self,
+        staged_dataset: DHIS2StagedDataset,
+        *,
+        selected_columns: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, str]:
+        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.serving_table_exists(staged_dataset):
+            return "", full_name
+
+        (
+            select_sql,
+            _count_sql,
+            _preview_sql,
+            params,
+            resolved_columns,
+            _safe_page,
+        ) = self._build_serving_query(
+            staged_dataset,
+            selected_columns=selected_columns,
+            filters=filters,
+            limit=self._coerce_query_limit(limit, for_download=True),
+            for_download=True,
+        )
+
+        with db.engine.connect() as conn:
+            result = conn.execute(text(select_sql), params)
+            rows = [dict(row._mapping) for row in result]
+
+        output = StringIO()
+        writer = csv.DictWriter(
+            output, fieldnames=resolved_columns, delimiter="\t"
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column) for column in resolved_columns})
+        return output.getvalue(), full_name
+
+    def export_serving_table_json(
+        self,
+        staged_dataset: DHIS2StagedDataset,
+        *,
+        selected_columns: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, str]:
+        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.serving_table_exists(staged_dataset):
+            return json.dumps([]), full_name
+
+        (
+            select_sql,
+            _count_sql,
+            _preview_sql,
+            params,
+            resolved_columns,
+            _safe_page,
+        ) = self._build_serving_query(
+            staged_dataset,
+            selected_columns=selected_columns,
+            filters=filters,
+            limit=self._coerce_query_limit(limit, for_download=True),
+            for_download=True,
+        )
+
+        with db.engine.connect() as conn:
+            result = conn.execute(text(select_sql), params)
+            rows = [
+                {col: row._mapping.get(col) for col in resolved_columns}
+                for row in result
+            ]
+
+        return json.dumps(rows, default=str), full_name
+
+    def fetch_staging_rows(
+        self,
+        staged_dataset: DHIS2StagedDataset,
+        ou_filter: "dict[int, frozenset[str] | None] | None" = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch raw staging rows for serving-table materialization.
+
+        Parameters
+        ----------
+        staged_dataset:
+            The DHIS2StagedDataset whose staging table to read.
+        ou_filter:
+            Optional per-instance OU allowlist built by
+            ``_build_ou_filter_for_dataset()``.  When supplied, rows for OUs
+            outside the current dataset configuration are excluded so stale
+            staging rows do not pollute the serving table.
+
+            * ``None``            → no filtering (backward-compatible default)
+            * ``{inst_id: None}`` → user-relative markers only; include ALL rows
+              for this instance
+            * ``{inst_id: frozenset}`` → include only rows whose ``ou`` value
+              is in the frozenset for that instance.  Instances NOT present in
+              the dict are excluded entirely.
+        """
         full_name = self.get_superset_sql_table_ref(staged_dataset)
         if not self.table_exists(staged_dataset):
             return []
 
+        base_select = (
+            f"SELECT source_instance_id, source_instance_name, dx_uid, pe, ou, "  # noqa: S608
+            f"ou_name, value, value_numeric, co_uid, co_name "
+            f"FROM {full_name}"
+        )
+
+        params: dict[str, Any] = {}
+        where_sql = ""
+
+        if ou_filter is not None:
+            where_parts: list[str] = []
+            for idx, (inst_id, allowed_ous) in enumerate(ou_filter.items()):
+                params[f"inst_{idx}"] = inst_id
+                if allowed_ous is None:
+                    # User-relative only — include all rows for this instance
+                    where_parts.append(f"source_instance_id = :inst_{idx}")
+                elif allowed_ous:
+                    keys = [f"ou_{idx}_{i}" for i in range(len(allowed_ous))]
+                    for k, v in zip(keys, allowed_ous):
+                        params[k] = v
+                    placeholders = ", ".join(f":{k}" for k in keys)
+                    where_parts.append(
+                        f"(source_instance_id = :inst_{idx} AND ou IN ({placeholders}))"
+                    )
+                # empty frozenset → exclude this instance entirely (don't add a clause)
+            if where_parts:
+                where_sql = " WHERE " + " OR ".join(where_parts)
+            else:
+                # All instances were empty-frozenset → return nothing
+                return []
+
+        full_sql = f"{base_select}{where_sql} ORDER BY source_instance_id, pe, ou, dx_uid"
+
         with db.engine.connect() as conn:
-            result = conn.execute(
-                text(
-                    f"SELECT source_instance_id, source_instance_name, dx_uid, pe, ou, "
-                    f"ou_name, value, value_numeric "  # noqa: S608
-                    f"FROM {full_name} "
-                    f"ORDER BY source_instance_id, pe, ou, dx_uid"
-                )
-            )
+            result = conn.execute(text(full_sql), params)
             return [dict(row._mapping) for row in result]
 
     def create_or_replace_serving_table(

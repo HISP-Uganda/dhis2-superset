@@ -24,6 +24,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 import sqlalchemy as sa
+from sqlalchemy import text
 from sqlalchemy.sql.elements import ColumnElement
 
 from superset import db
@@ -483,6 +484,46 @@ def _build_variable_column_extra(
     return cleaned_extra or None
 
 
+def _load_distinct_cocs_for_variable(
+    dataset: DHIS2StagedDataset,
+    variable_id: str,
+) -> list[dict[str, str]]:
+    """Return distinct ``(co_uid, co_name)`` pairs present in the staging table.
+
+    Queries the staging table for all distinct category option combo UIDs and
+    names for a given ``dx_uid``.  Results are sorted by ``co_name`` so column
+    ordering is deterministic across re-materializations.
+
+    Returns a list of ``{"co_uid": str, "co_name": str}`` dicts, excluding rows
+    where ``co_uid`` is NULL or empty.
+    """
+    from superset.dhis2.staging_engine import DHIS2StagingEngine
+
+    engine = DHIS2StagingEngine(dataset.database_id)
+    if not engine.table_exists(dataset):
+        return []
+
+    full_name = engine.get_superset_sql_table_ref(dataset)
+    sql = (
+        f"SELECT DISTINCT co_uid, co_name "  # noqa: S608
+        f"FROM {full_name} "
+        f"WHERE dx_uid = :dx_uid AND co_uid IS NOT NULL AND co_uid != '' "
+        f"ORDER BY co_name"
+    )
+    try:
+        with db.engine.connect() as conn:
+            rows = conn.execute(text(sql), {"dx_uid": variable_id})
+            return [
+                {"co_uid": str(row._mapping["co_uid"]), "co_name": str(row._mapping["co_name"] or "")}
+                for row in rows
+            ]
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "_load_distinct_cocs_for_variable: query failed for variable_id=%s", variable_id
+        )
+        return []
+
+
 def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     variables = _dataset_variables(dataset)
     dataset_config = dataset.get_dataset_config()
@@ -585,31 +626,79 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     )
 
     variable_columns: list[dict[str, Any]] = []
-    variable_lookup: dict[str, dict[str, Any]] = {}
+    # New: key is (dx_uid, coc_uid | None) so COC-expanded columns can be looked up.
+    variable_lookup: dict[tuple[str, str | None], dict[str, Any]] = {}
+
     for variable in variables:
-        label = (
+        base_label = (
             variable.alias or variable.variable_name or variable.variable_id or "Variable"
         ).strip()
-        if label_counts[label.lower()] > 1 and variable.instance is not None:
-            label = f"{label} ({variable.instance.name})"
+        if label_counts[base_label.lower()] > 1 and variable.instance is not None:
+            base_label = f"{base_label} ({variable.instance.name})"
+
         metadata_item = _lookup_variable_metadata_item(dataset, variable)
         column_type = _column_python_type(dataset, variable, metadata_item)
-        column_name = _dedupe_identifier(label, used_identifiers)
-        column = {
-            "column_name": column_name,
-            "verbose_name": label,
-            "type": column_type,
-            "sql_type": "REAL" if column_type == "FLOAT" else "TEXT",
-            "is_dttm": False,
-            "is_dimension": False,
-            "variable_id": variable.variable_id,
-        }
         column_extra = _build_variable_column_extra(variable, metadata_item)
-        if column_extra:
-            column["extra"] = column_extra
-        variable_columns.append(column)
-        columns.append(column)
-        variable_lookup[str(variable.variable_id)] = column
+
+        # Determine disaggregation mode from extra_params
+        extra_params = variable.get_extra_params()
+        disagg_mode: str = extra_params.get("disaggregation") or "total"
+        selected_coc_uids: list[str] = extra_params.get("selected_coc_uids") or []
+
+        def _make_variable_column(
+            col_label: str,
+            coc_uid: str | None,
+            var_id: str,
+        ) -> dict[str, Any]:
+            col_name = _dedupe_identifier(col_label, used_identifiers)
+            col: dict[str, Any] = {
+                "column_name": col_name,
+                "verbose_name": col_label,
+                "type": column_type,
+                "sql_type": "REAL" if column_type == "FLOAT" else "TEXT",
+                "is_dttm": False,
+                "is_dimension": False,
+                "variable_id": var_id,
+                "coc_uid": coc_uid,
+            }
+            if column_extra:
+                col["extra"] = column_extra
+            return col
+
+        if disagg_mode == "all":
+            # One column per distinct COC in staging + a Total column
+            coc_list = _load_distinct_cocs_for_variable(dataset, variable.variable_id)
+            for coc in coc_list:
+                col_label = f"{base_label} ({coc['co_name']})" if coc["co_name"] else base_label
+                col = _make_variable_column(col_label, coc["co_uid"], variable.variable_id)
+                variable_columns.append(col)
+                columns.append(col)
+                variable_lookup[(str(variable.variable_id), coc["co_uid"])] = col
+            # Always add a Total column (aggregated; no COC filter)
+            total_label = f"{base_label} (Total)"
+            total_col = _make_variable_column(total_label, None, variable.variable_id)
+            variable_columns.append(total_col)
+            columns.append(total_col)
+            variable_lookup[(str(variable.variable_id), None)] = total_col
+
+        elif disagg_mode == "selected" and selected_coc_uids:
+            # One column per selected COC UID; look up names from staging
+            coc_list = _load_distinct_cocs_for_variable(dataset, variable.variable_id)
+            coc_name_map = {c["co_uid"]: c["co_name"] for c in coc_list}
+            for coc_uid in selected_coc_uids:
+                co_name = coc_name_map.get(coc_uid, coc_uid)
+                col_label = f"{base_label} ({co_name})" if co_name else base_label
+                col = _make_variable_column(col_label, coc_uid, variable.variable_id)
+                variable_columns.append(col)
+                columns.append(col)
+                variable_lookup[(str(variable.variable_id), coc_uid)] = col
+
+        else:
+            # "total" (default) — one column, no COC filter
+            col = _make_variable_column(base_label, None, variable.variable_id)
+            variable_columns.append(col)
+            columns.append(col)
+            variable_lookup[(str(variable.variable_id), None)] = col
 
     hierarchy_lookup = _build_hierarchy_lookup(dataset, selected_instance_ids, hierarchy_columns)
 
@@ -679,7 +768,12 @@ def materialize_serving_rows(
         )
         current.update(row_values)
 
-        variable_spec = variable_lookup.get(str(raw_row.get("dx_uid") or ""))
+        dx_uid_key = str(raw_row.get("dx_uid") or "")
+        co_uid_key = raw_row.get("co_uid") or None
+        # Try exact (dx_uid, co_uid) first; fall back to (dx_uid, None) for total/aggregated rows
+        variable_spec = variable_lookup.get((dx_uid_key, co_uid_key)) or variable_lookup.get(
+            (dx_uid_key, None)
+        )
         if not variable_spec:
             continue
 

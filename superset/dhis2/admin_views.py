@@ -80,6 +80,12 @@ class DHIS2AdminView(BaseView):
         """Redirect to the React local staged data page."""
         return redirect(self._frontend_path("/superset/dhis2/local-data/"))
 
+    @expose("/downloads/")
+    @has_access
+    def downloads(self) -> object:
+        """Redirect to the React download datasets page."""
+        return redirect(self._frontend_path("/superset/dhis2/downloads/"))
+
 dhis2_frontend_blueprint = Blueprint(
     "dhis2_frontend",
     __name__,
@@ -121,4 +127,9 @@ def dhis2_local_metadata() -> FlaskResponse:
 
 @dhis2_frontend_blueprint.route("/local-data/")
 def dhis2_local_data() -> FlaskResponse:
+    return _render_authenticated_shell()
+
+
+@dhis2_frontend_blueprint.route("/downloads/")
+def dhis2_downloads() -> FlaskResponse:
     return _render_authenticated_shell()

@@ -694,6 +694,48 @@ def export_serving_data_csv(
     )
 
 
+def export_serving_data_tsv(
+    dataset_id: int,
+    *,
+    selected_columns: list[str] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    limit: int | None = None,
+) -> tuple[str, str]:
+    dataset = get_staged_dataset(dataset_id)
+    if dataset is None:
+        raise ValueError(f"Dataset with id={dataset_id} not found")
+
+    ensure_serving_table(dataset.id)
+    engine = _get_engine(dataset.database_id)
+    return engine.export_serving_table_tsv(
+        dataset,
+        selected_columns=selected_columns,
+        filters=filters,
+        limit=limit,
+    )
+
+
+def export_serving_data_json(
+    dataset_id: int,
+    *,
+    selected_columns: list[str] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    limit: int | None = None,
+) -> tuple[str, str]:
+    dataset = get_staged_dataset(dataset_id)
+    if dataset is None:
+        raise ValueError(f"Dataset with id={dataset_id} not found")
+
+    ensure_serving_table(dataset.id)
+    engine = _get_engine(dataset.database_id)
+    return engine.export_serving_table_json(
+        dataset,
+        selected_columns=selected_columns,
+        filters=filters,
+        limit=limit,
+    )
+
+
 def get_staging_table_name(dataset_id: int) -> str | None:
     """Return the stored staging table name for a dataset, or ``None``.
 
@@ -792,7 +834,10 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
     manifest = build_serving_manifest(dataset)
     serving_columns = dataset_columns_payload(manifest["columns"])
     if _serving_table_needs_rebuild(engine, dataset, manifest):
-        raw_rows = engine.fetch_staging_rows(dataset)
+        from superset.dhis2.sync_service import _build_ou_filter_for_dataset
+
+        ou_filter = _build_ou_filter_for_dataset(dataset)
+        raw_rows = engine.fetch_staging_rows(dataset, ou_filter=ou_filter)
         serving_rows_columns, serving_rows = materialize_serving_rows(
             dataset,
             raw_rows,

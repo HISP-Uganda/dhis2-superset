@@ -59,7 +59,8 @@ type ActiveTab =
   | 'health'
   | 'sync-history'
   | 'local-metadata'
-  | 'local-data';
+  | 'local-data'
+  | 'downloads';
 
 interface DHIS2PageLayoutProps {
   activeTab: ActiveTab;
@@ -113,6 +114,12 @@ export default function DHIS2PageLayout({
       label: t('Data Workspace'),
       name: 'local-data',
       url: getDHIS2Route('/superset/dhis2/local-data/', selectedDatabaseId),
+      usesRouter: true,
+    },
+    {
+      label: t('Download Datasets'),
+      name: 'downloads',
+      url: getDHIS2Route('/superset/dhis2/downloads/', selectedDatabaseId),
       usesRouter: true,
     },
   ] as const;

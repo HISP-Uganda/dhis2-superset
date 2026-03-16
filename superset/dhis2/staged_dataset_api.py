@@ -982,6 +982,64 @@ class DHIS2StagedDatasetApi(BaseApi):
 
         return self.response(200, result=result)
 
+    @expose("/<int:pk>/export", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def export_dataset(self, pk: int) -> Response:
+        """Export the full serving table in the requested format.
+
+        Accepts ``format`` query parameter: ``csv`` (default), ``tsv``, ``json``.
+        Returns the full serving table without additional filters.
+        """
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        fmt = (request.args.get("format") or "csv").lower().strip()
+        if fmt not in ("csv", "tsv", "json"):
+            return self.response_400(message="format must be csv, tsv, or json")
+
+        filename_base = re.sub(
+            r"[^a-zA-Z0-9]+",
+            "_",
+            str(dataset.name or "dhis2_dataset").strip().lower(),
+        ).strip("_") or "dhis2_dataset"
+
+        try:
+            if fmt == "tsv":
+                data, _ref = svc.export_serving_data_tsv(pk)
+                response = make_response(data)
+                response.headers["Content-Type"] = "text/tab-separated-values; charset=utf-8"
+                response.headers["Content-Disposition"] = (
+                    f'attachment; filename="{filename_base}.tsv"'
+                )
+            elif fmt == "json":
+                data, _ref = svc.export_serving_data_json(pk)
+                response = make_response(data)
+                response.headers["Content-Type"] = "application/json; charset=utf-8"
+                response.headers["Content-Disposition"] = (
+                    f'attachment; filename="{filename_base}.json"'
+                )
+            else:
+                data, _ref = svc.export_serving_data_csv(pk)
+                response = make_response(data)
+                response.headers["Content-Type"] = "text/csv; charset=utf-8"
+                response.headers["Content-Disposition"] = (
+                    f'attachment; filename="{filename_base}.csv"'
+                )
+        except ValueError as exc:
+            return self.response_400(message=str(exc))
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Unexpected error exporting staged data for dataset id=%s format=%s",
+                pk,
+                fmt,
+            )
+            return self.response_500(message="Failed to export data")
+
+        return response
+
     @expose("/<int:pk>/download", methods=["POST"])
     @protect()
     @safe

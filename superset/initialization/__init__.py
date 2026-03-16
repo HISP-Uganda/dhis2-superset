@@ -374,6 +374,14 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category="Settings",
             category_label=_("Settings"),
         )
+        appbuilder.add_link(
+            "DHIS2 Download Datasets",
+            label=_("DHIS2 Download Datasets"),
+            href=f"{app_root}/dhis2admin/downloads/",
+            icon="fa-download",
+            category="Settings",
+            category_label=_("Settings"),
+        )
         appbuilder.add_view(
             DashboardModelView,
             "Dashboards",
