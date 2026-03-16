@@ -40,6 +40,7 @@ import setupCodeOverrides from 'src/setup/setupCodeOverrides';
 import { logEvent } from 'src/logger/actions';
 import { store } from 'src/views/store';
 import ExtensionsStartup from 'src/extensions/ExtensionsStartup';
+import { AppGlobalStyles } from 'src/AppGlobalStyles';
 import { RootContextProviders } from './RootContextProviders';
 import { ScrollToTop } from './ScrollToTop';
 
@@ -76,6 +77,7 @@ const App = () => (
     <ScrollToTop />
     <LocationPathnameLogger />
     <RootContextProviders>
+      <AppGlobalStyles />
       <ExtensionsStartup />
       <Menu
         data={bootstrapData.common.menu_data}
@@ -90,7 +92,8 @@ const App = () => (
                   css={css`
                     display: flex;
                     flex-direction: column;
-                    padding-top: 48px;
+                    padding-top: 46px;
+                    min-height: 100vh;
                   `}
                 >
                   <ErrorBoundary

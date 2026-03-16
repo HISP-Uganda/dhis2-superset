@@ -12,10 +12,10 @@ const { Title, Paragraph, Text } = Typography;
 
 const PageContainer = styled.div`
   ${({ theme }) => css`
-    padding: 0 ${theme.sizeUnit * 6}px ${theme.sizeUnit * 6}px;
+    padding: 0 ${theme.sizeUnit * 5}px ${theme.sizeUnit * 5}px;
     display: flex;
     flex-direction: column;
-    gap: ${theme.sizeUnit * 4}px;
+    gap: ${theme.sizeUnit * 3}px;
 
     @media (max-width: 768px) {
       padding: 0 ${theme.sizeUnit * 4}px ${theme.sizeUnit * 4}px;
@@ -28,7 +28,7 @@ const HeaderCard = styled.div`
     background: ${theme.colorBgElevated};
     border: 1px solid ${theme.colorBorder};
     border-radius: ${theme.borderRadius}px;
-    padding: ${theme.sizeUnit * 5}px;
+    padding: ${theme.sizeUnit * 4}px;
     display: flex;
     justify-content: space-between;
     gap: ${theme.sizeUnit * 4}px;
@@ -138,11 +138,11 @@ export default function DHIS2PageLayout({
       <PageContainer>
         <HeaderCard>
           <HeaderBody>
-            <Title level={3} style={{ margin: 0 }}>
+            <Title level={4} style={{ margin: 0 }}>
               {title}
             </Title>
             <Paragraph
-              style={{ marginBottom: 0, marginTop: 8, maxWidth: 720 }}
+              style={{ marginBottom: 0, marginTop: 4, maxWidth: 720 }}
               type="secondary"
             >
               {description}
