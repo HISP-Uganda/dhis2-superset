@@ -63,7 +63,7 @@ class TabStateView(BaseSupersetView):
                 label=query_editor.get("name")
                 or query_editor.get("title", __("Untitled Query")),
                 active=True,
-                database_id=query_editor["dbId"],
+                database_id=query_editor.get("dbId"),
                 catalog=query_editor.get("catalog"),
                 schema=query_editor.get("schema"),
                 sql=query_editor.get("sql", "SELECT ..."),
