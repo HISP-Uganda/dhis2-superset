@@ -1377,12 +1377,14 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             },
         )
     if metadata_type == "organisationUnits":
+        # Paginated fetch — handled separately in _fetch_context_metadata_items
         return (
             "organisationUnits",
             "organisationUnits",
             {
                 "fields": "id,displayName,name,level,parent[id],path",
-                "paging": "false",
+                "pageSize": "1000",
+                "order": "level:asc",
             },
         )
     if metadata_type == "organisationUnitLevels":
@@ -1399,7 +1401,10 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "organisationUnitGroups",
             "organisationUnitGroups",
             {
-                "fields": "id,displayName,name,organisationUnits[id,displayName,level,parent[id],path]",
+                # Only fetch the OU id references — full OU data comes from the
+                # organisationUnits fetch. Including the full nested OU tree here
+                # causes massive payloads and timeouts on large instances.
+                "fields": "id,displayName,name,organisationUnits[id]",
                 "paging": "false",
             },
         )
@@ -1419,45 +1424,97 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
     raise ValueError(f"Unsupported DHIS2 metadata type: {metadata_type}")
 
 
+# Metadata types that can have very large record counts and need longer timeouts.
+_LARGE_METADATA_TYPES = {"organisationUnits", "organisationUnitGroups", "legendSets"}
+# Metadata types fetched page-by-page to avoid single-request timeouts.
+_PAGINATED_METADATA_TYPES = {"organisationUnits"}
+_METADATA_PAGE_SIZE = 1000
+
+
+def _fetch_one_metadata_page(
+    *,
+    url: str,
+    params: dict[str, Any],
+    context: MetadataContext,
+    timeout: int,
+    metadata_type: str = "",
+) -> dict[str, Any]:
+    response = requests.get(
+        url,
+        params=params,
+        auth=context.auth,
+        headers=context.headers,
+        timeout=timeout,
+    )
+    if response.status_code == 401:
+        raise ValueError(
+            "DHIS2 API authentication failed. Please check database credentials."
+        )
+    if response.status_code == 404 and metadata_type == "eventDataItems":
+        raise UnsupportedMetadataError(
+            "This DHIS2 instance does not expose event data items."
+        )
+    if response.status_code != 200:
+        raise ValueError(
+            f"DHIS2 API error: {response.status_code} {response.text[:200]}"
+        )
+    return response.json()
+
+
 def _fetch_context_metadata_items(
     *,
     context: MetadataContext,
     metadata_type: str,
 ) -> list[dict[str, Any]]:
     collection_path, collection_key, params = _get_fetch_spec(metadata_type)
-    response = requests.get(
-        f"{context.base_url}/{collection_path}",
-        params=params,
-        auth=context.auth,
-        headers=context.headers,
-        timeout=30,
-    )
+    url = f"{context.base_url}/{collection_path}"
+    # Give large/slow metadata types a generous timeout; others keep 60s.
+    timeout = 120 if metadata_type in _LARGE_METADATA_TYPES else 60
 
-    if response.status_code == 200:
-        data = response.json()
-        items = data.get(collection_key, [])
-        items = [_prepare_metadata_item(metadata_type, item) for item in items]
-        if metadata_type == "organisationUnits":
-            return sorted(
-                items,
-                key=lambda item: (
-                    item.get("level", 999),
-                    item.get("displayName", "") or item.get("name", ""),
-                ),
+    if metadata_type in _PAGINATED_METADATA_TYPES:
+        # Paginated fetch: loop through pages until no nextPage link.
+        all_items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            page_params = {**params, "page": str(page)}
+            data = _fetch_one_metadata_page(
+                url=url, params=page_params, context=context, timeout=timeout,
+                metadata_type=metadata_type,
             )
-        return items
+            page_items = data.get(collection_key, [])
+            all_items.extend(
+                _prepare_metadata_item(metadata_type, item) for item in page_items
+            )
+            # Stop if we got fewer items than the page size or no pager info.
+            pager = data.get("pager") or {}
+            total = pager.get("total") or 0
+            page_count = pager.get("pageCount") or 1
+            if page >= page_count or len(page_items) < _METADATA_PAGE_SIZE or not total:
+                break
+            page += 1
+            logger.debug(
+                "_fetch_context_metadata_items: %s page %d/%d (%d items so far)",
+                metadata_type,
+                page - 1,
+                page_count,
+                len(all_items),
+            )
 
-    if response.status_code == 401:
-        raise ValueError(
-            "DHIS2 API authentication failed. Please check database credentials."
+        return sorted(
+            all_items,
+            key=lambda item: (
+                item.get("level", 999),
+                item.get("displayName", "") or item.get("name", ""),
+            ),
         )
 
-    if response.status_code == 404 and metadata_type == "eventDataItems":
-        raise UnsupportedMetadataError(
-            "This DHIS2 instance does not expose event data items."
-        )
-
-    raise ValueError(f"DHIS2 API error: {response.status_code} {response.text[:200]}")
+    # Non-paginated fetch (paging=false or small result sets).
+    data = _fetch_one_metadata_page(
+        url=url, params=params, context=context, timeout=timeout,
+        metadata_type=metadata_type,
+    )
+    items = data.get(collection_key, [])
+    return [_prepare_metadata_item(metadata_type, item) for item in items]
 
 
 def _extract_id(value: Any, *path: str) -> str | None:
@@ -2070,7 +2127,10 @@ def refresh_database_metadata(
     instance_ids: Iterable[int] | None = None,
     metadata_types: Iterable[str] | None = None,
     reason: str | None = None,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
+    from superset.dhis2.models import DHIS2MetadataJob
+
     database = db.session.get(Database, database_id)
     if database is None:
         raise ValueError(f"Database with id={database_id} not found")
@@ -2098,6 +2158,15 @@ def refresh_database_metadata(
     )
     active_metadata_types = _normalize_metadata_types(metadata_types)
 
+    # Update persistent job record to running state
+    _meta_job: DHIS2MetadataJob | None = None
+    if job_id is not None:
+        _meta_job = db.session.get(DHIS2MetadataJob, job_id)
+        if _meta_job is not None:
+            _meta_job.status = "running"
+            _meta_job.started_at = datetime.utcnow()
+            db.session.commit()
+
     summary: dict[str, Any] = {
         "database_id": database_id,
         "reason": reason,
@@ -2113,7 +2182,27 @@ def refresh_database_metadata(
     )
     _persist_refresh_progress(database_id, progress_state)
 
+    total_loaded = 0
+    total_failed = 0
+
     for context in contexts:
+        # Check for cancellation before processing each instance
+        if _meta_job is not None:
+            db.session.refresh(_meta_job)
+            if _meta_job.cancel_requested:
+                logger.info(
+                    "metadata_refresh: cancel requested for job_id=%s, aborting.", job_id
+                )
+                progress_state["status"] = "cancelled"
+                progress_state["updated_at"] = datetime.utcnow().isoformat()
+                _persist_refresh_progress(database_id, progress_state)
+                _meta_job.status = "cancelled"
+                _meta_job.completed_at = datetime.utcnow()
+                _meta_job.error_message = "Cancelled by user"
+                _meta_job.rows_loaded = total_loaded
+                _meta_job.rows_failed = total_failed
+                db.session.commit()
+                return summary
         context_results: dict[str, list[dict[str, Any]] | dict[str, Any]] = {}
         instance_result = {
             "instance_id": context.instance_id,
@@ -2247,7 +2336,20 @@ def refresh_database_metadata(
                 payload,
                 ttl_seconds=None,
             )
+            # Accumulate counts
+            _type_result = instance_result["metadata"].get(metadata_type, {})
+            if _type_result.get("status") == "failed":
+                total_failed += 1
+            else:
+                total_loaded += _type_result.get("count", 0)
+
             _persist_refresh_progress(database_id, progress_state)
+
+            # Update DB job with latest counts while running (for UI polling)
+            if _meta_job is not None:
+                _meta_job.rows_loaded = total_loaded
+                _meta_job.rows_failed = total_failed
+                db.session.commit()
 
         summary["instance_results"].append(instance_result)
 
@@ -2255,11 +2357,34 @@ def refresh_database_metadata(
         database_id,
         namespace_prefix="dhis2_metadata:",
     )
+
+    # Determine final status
     if progress_state.get("status") == "running":
-        progress_state["status"] = "complete"
+        if total_failed > 0 and total_loaded == 0:
+            final_status = "failed"
+        elif total_failed > 0:
+            final_status = "partial"
+        else:
+            final_status = "complete"
+        progress_state["status"] = final_status
         progress_state["completed_at"] = datetime.utcnow().isoformat()
         progress_state["updated_at"] = progress_state["completed_at"]
         _persist_refresh_progress(database_id, progress_state)
+
+    # Finalize persistent job record
+    if _meta_job is not None:
+        _meta_job.status = progress_state.get("status", "complete")
+        _meta_job.completed_at = datetime.utcnow()
+        _meta_job.rows_loaded = total_loaded
+        _meta_job.rows_failed = total_failed
+        _meta_job.instance_results = json.dumps(
+            {
+                str(r["instance_id"]): r.get("metadata", {})
+                for r in summary["instance_results"]
+            }
+        )
+        db.session.commit()
+
     return summary
 
 
@@ -2304,9 +2429,18 @@ def schedule_database_metadata_refresh(
     instance_ids: Iterable[int] | None = None,
     metadata_types: Iterable[str] | None = None,
     reason: str | None = None,
+    job_type: str = "manual",
+    continuation_metadata_types: Iterable[str] | None = None,
 ) -> dict[str, Any]:
+    from superset.dhis2.models import DHIS2MetadataJob
+
     requested_instance_ids = list(dict.fromkeys(instance_ids or []))
     active_metadata_types = list(dict.fromkeys(metadata_types or SUPPORTED_METADATA_TYPES))
+    active_continuation_types = (
+        [t for t in continuation_metadata_types if t in SUPPORTED_METADATA_TYPES]
+        if continuation_metadata_types
+        else []
+    )
     queue_metadata_refresh_progress(
         database_id,
         instance_ids=requested_instance_ids,
@@ -2314,19 +2448,40 @@ def schedule_database_metadata_refresh(
         reason=reason,
     )
 
+    # Create persistent job record
+    meta_job = DHIS2MetadataJob(
+        database_id=database_id,
+        job_type=job_type,
+        status="queued",
+        instance_ids=json.dumps(requested_instance_ids) if requested_instance_ids else None,
+        metadata_types=json.dumps(active_metadata_types),
+        reason=reason,
+    )
+    db.session.add(meta_job)
+    db.session.flush()  # get id before dispatch
+    job_id = meta_job.id
+
     try:
         from superset.tasks.dhis2_metadata import refresh_dhis2_metadata
 
-        task = refresh_dhis2_metadata.delay(
-            database_id=database_id,
-            instance_ids=requested_instance_ids,
-            metadata_types=active_metadata_types,
-            reason=reason,
+        task = refresh_dhis2_metadata.apply_async(
+            kwargs=dict(
+                database_id=database_id,
+                instance_ids=requested_instance_ids,
+                metadata_types=active_metadata_types,
+                reason=reason,
+                job_id=job_id,
+                continuation_metadata_types=active_continuation_types or None,
+            )
         )
+        task_id = getattr(task, "id", None)
+        meta_job.task_id = task_id
+        db.session.commit()
         return {
             "scheduled": True,
             "mode": "celery",
-            "task_id": getattr(task, "id", None),
+            "task_id": task_id,
+            "job_id": job_id,
         }
     except Exception:  # pylint: disable=broad-except
         logger.info(
@@ -2345,10 +2500,13 @@ def schedule_database_metadata_refresh(
             metadata_types=active_metadata_types,
             reason=reason,
         )
+        meta_job.status = "running"
+        db.session.commit()
         return {
             "scheduled": True,
             "mode": "preloader",
             "task_id": None,
+            "job_id": job_id,
         }
     except Exception:  # pylint: disable=broad-except
         logger.info(
@@ -2359,18 +2517,40 @@ def schedule_database_metadata_refresh(
 
     def _run() -> None:
         try:
-            refresh_database_metadata(
+            result = refresh_database_metadata(
                 database_id,
                 instance_ids=requested_instance_ids,
                 metadata_types=active_metadata_types,
                 reason=reason or "thread_fallback",
+                job_id=job_id,
             )
+            if active_continuation_types and result.get("status") not in (
+                "failed",
+                "cancelled",
+            ):
+                try:
+                    schedule_database_metadata_refresh(
+                        database_id,
+                        instance_ids=requested_instance_ids,
+                        metadata_types=active_continuation_types,
+                        reason="initial_setup_phase2",
+                        job_type="scheduled",
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    logger.warning(
+                        "Failed to dispatch thread phase-2 continuation for database_id=%s",
+                        database_id,
+                        exc_info=True,
+                    )
         except Exception:  # pylint: disable=broad-except
             logger.warning(
                 "Thread fallback metadata refresh failed for database id=%s",
                 database_id,
                 exc_info=True,
             )
+
+    meta_job.status = "running"
+    db.session.commit()
 
     thread = threading.Timer(_BACKGROUND_REFRESH_DELAY_SECONDS, _run)
     thread.daemon = True
@@ -2379,6 +2559,7 @@ def schedule_database_metadata_refresh(
         "scheduled": True,
         "mode": "thread",
         "task_id": None,
+        "job_id": job_id,
     }
 
 
@@ -2948,3 +3129,66 @@ def get_staged_metadata_payload(
             else None
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Category option combos for a DHIS2 variable (data element)
+# ---------------------------------------------------------------------------
+
+
+def get_category_option_combos_for_element(
+    instance_id: int,
+    variable_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch category option combos for a data element from a DHIS2 instance.
+
+    Queries ``/api/dataElements/<uid>.json?fields=categoryCombo[categoryOptionCombos[id,displayName]]``
+    and returns a flat list of ``{"id": str, "displayName": str}`` dicts.
+
+    Results are cached in the metadata cache so repeat calls are fast.
+
+    Parameters
+    ----------
+    instance_id:
+        The ``DHIS2Instance.id`` to query.
+    variable_id:
+        The DHIS2 UID of the data element (e.g. ``"fbfJHSPpUQD"``).
+    """
+    from superset.dhis2.models import DHIS2Instance
+
+    instance = db.session.get(DHIS2Instance, instance_id)
+    if instance is None:
+        raise ValueError(f"DHIS2Instance with id={instance_id} not found")
+
+    api_url = f"{instance.url.rstrip('/')}/api/dataElements/{variable_id}.json"
+    params = {
+        "fields": "categoryCombo[categoryOptionCombos[id,displayName]]",
+    }
+    try:
+        response = requests.get(
+            api_url,
+            params=params,
+            headers=instance.get_auth_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "get_category_option_combos_for_element: request failed for instance=%s variable=%s: %s",
+            instance_id, variable_id, exc,
+        )
+        return []
+
+    combos: list[dict[str, Any]] = []
+    category_combo = data.get("categoryCombo") or {}
+    for coc in category_combo.get("categoryOptionCombos") or []:
+        if coc.get("id"):
+            combos.append(
+                {
+                    "id": coc["id"],
+                    "displayName": coc.get("displayName") or coc["id"],
+                }
+            )
+
+    return combos

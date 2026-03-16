@@ -402,6 +402,7 @@ class DHIS2DiagnosticsService:
                     "freshness_minutes": round(freshness, 2) if freshness is not None else None,
                     "staging_table_exists": table_exists,
                     "staging_row_count": row_count,
+                    "serving_superset_dataset_id": ds.serving_superset_dataset_id,
                     "recent_jobs": self._recent_jobs(ds.id, limit=3),
                 }
             )
@@ -494,24 +495,60 @@ class DHIS2DiagnosticsService:
         self,
         database_id: int,
         limit: int = 50,
+        dataset_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return recent sync job history across all staged datasets for a database."""
+        """Return recent sync job history across staged datasets for a database.
+
+        Args:
+            database_id: Filter to staged datasets owned by this Superset DB.
+            limit: Maximum number of jobs to return.
+            dataset_id: When provided, restrict to a single staged dataset.
+        """
         dataset_rows = (
             db.session.query(DHIS2StagedDataset.id, DHIS2StagedDataset.name)
             .filter(DHIS2StagedDataset.database_id == database_id)
             .all()
         )
-        dataset_lookup = {dataset_id: name for dataset_id, name in dataset_rows}
+        dataset_lookup = {ds_id: name for ds_id, name in dataset_rows}
         dataset_ids = list(dataset_lookup)
 
         if not dataset_ids:
             return []
 
+        q = db.session.query(DHIS2SyncJob).filter(
+            DHIS2SyncJob.staged_dataset_id.in_(dataset_ids)
+        )
+        if dataset_id is not None:
+            q = q.filter(DHIS2SyncJob.staged_dataset_id == dataset_id)
+
+        jobs = q.order_by(DHIS2SyncJob.created_on.desc()).limit(limit).all()
+        return [
+            {
+                **j.to_json(),
+                "staged_dataset_name": dataset_lookup.get(j.staged_dataset_id),
+            }
+            for j in jobs
+        ]
+
+    def get_active_sync_jobs(self, database_id: int) -> list[dict[str, Any]]:
+        """Return all currently running or queued sync jobs for a database."""
+        dataset_rows = (
+            db.session.query(DHIS2StagedDataset.id, DHIS2StagedDataset.name)
+            .filter(DHIS2StagedDataset.database_id == database_id)
+            .all()
+        )
+        dataset_lookup = {ds_id: name for ds_id, name in dataset_rows}
+        dataset_ids = list(dataset_lookup)
+        if not dataset_ids:
+            return []
+
         jobs = (
             db.session.query(DHIS2SyncJob)
-            .filter(DHIS2SyncJob.staged_dataset_id.in_(dataset_ids))
+            .filter(
+                DHIS2SyncJob.staged_dataset_id.in_(dataset_ids),
+                DHIS2SyncJob.status.in_(["running", "queued", "pending"]),
+            )
             .order_by(DHIS2SyncJob.created_on.desc())
-            .limit(limit)
             .all()
         )
         return [

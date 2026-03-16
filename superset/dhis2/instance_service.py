@@ -150,11 +150,42 @@ def _sync_compat_instance(instance: DHIS2Instance) -> None:
         )
 
 
+_PHASE1_METADATA_TYPES = [
+    # Variables – these are needed before datasets can be created
+    "dataElements",
+    "indicators",
+    "indicatorTypes",
+    "dataSets",
+    "programIndicators",
+    "eventDataItems",
+    "programs",
+    "programStages",
+    "trackedEntityTypes",
+    "dataElementGroups",
+    "dataElementGroupSets",
+    "indicatorGroups",
+    "indicatorGroupSets",
+    # Org units (lightweight, needed for variable selection)
+    "organisationUnits",
+    "organisationUnitLevels",
+    "organisationUnitGroups",
+]
+_PHASE2_METADATA_TYPES = [
+    # Background types – slower, loaded after Phase 1 completes
+    "legendSets",
+    "geoJSON",
+    "orgUnitHierarchy",
+]
+
+
 def _schedule_metadata_refresh(database_id: int) -> None:
     try:
         schedule_database_metadata_refresh(
             database_id,
-            reason="configured_connection_changed",
+            metadata_types=_PHASE1_METADATA_TYPES,
+            reason="initial_setup_phase1",
+            job_type="scheduled",
+            continuation_metadata_types=_PHASE2_METADATA_TYPES,
         )
     except Exception:  # pylint: disable=broad-except
         logger.warning(

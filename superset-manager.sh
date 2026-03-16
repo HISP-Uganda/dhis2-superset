@@ -621,6 +621,32 @@ clear_logs() {
   ok "Logs cleared"
 }
 
+install_deps() {
+  header "Installing Python Dependencies"
+
+  validate_project
+  require_dir "$VENV_DIR"
+
+  cd "$BACKEND_DIR"
+  venv_activate
+
+  # Install base requirements into the venv
+  if [[ -f "$BACKEND_DIR/requirements/base.txt" ]]; then
+    info "Installing base requirements..."
+    "$VENV_DIR/bin/pip" install --quiet -r "$BACKEND_DIR/requirements/base.txt"
+    ok "Base requirements installed"
+  else
+    warn "No requirements/base.txt found — skipping"
+  fi
+
+  # Install the superset package itself in editable mode if setup.py/pyproject.toml exists
+  if [[ -f "$BACKEND_DIR/setup.py" || -f "$BACKEND_DIR/pyproject.toml" ]]; then
+    info "Installing superset package (editable)..."
+    "$VENV_DIR/bin/pip" install --quiet -e "$BACKEND_DIR" --no-deps
+    ok "Superset package installed"
+  fi
+}
+
 db_upgrade() {
   header "Running Superset DB Upgrade"
 
@@ -629,10 +655,20 @@ db_upgrade() {
   venv_activate
   set_backend_env
 
+  info "Running migrations..."
   "$VENV_DIR/bin/superset" db upgrade
+  info "Running superset init..."
   "$VENV_DIR/bin/superset" init
 
   ok "Database upgrade/init completed"
+}
+
+setup() {
+  header "Full Setup: Install → Migrate → Create Admin"
+  install_deps
+  db_upgrade
+  create_admin
+  ok "Setup complete — run './superset-manager.sh start-all' to launch"
 }
 
 create_admin() {
@@ -735,6 +771,7 @@ restart_all() {
   sleep 1
   clear_all_cache || true
   sleep 1
+  db_upgrade
   start_all
 }
 
@@ -774,6 +811,8 @@ Commands:
   redis-status          Redis status
 
   db-upgrade            Run superset db upgrade && superset init
+  install               Install Python requirements into venv
+  setup                 Full first-time setup: install + migrate + create admin
   create-admin          Create/update local admin user
 
   cache                 Clear backend cache
@@ -786,11 +825,11 @@ Commands:
   help
 
 Examples:
-  ./superset-manager.sh start
-  ./superset-manager.sh start-frontend
-  ./superset-manager.sh start-all
+  ./superset-manager.sh setup              # First-time setup
+  ./superset-manager.sh restart-all        # Stop → migrate → restart everything
+  ./superset-manager.sh start-all          # Start backend + frontend + redis
+  ./superset-manager.sh db-upgrade         # Run migrations only
   ./superset-manager.sh logs backend follow
-  ./superset-manager.sh build-frontend
 EOF
 }
 
@@ -820,6 +859,8 @@ main() {
     redis-status) redis_status ;;
 
     db-upgrade) db_upgrade ;;
+    install) install_deps ;;
+    setup) setup ;;
     create-admin) create_admin ;;
 
     cache) clear_backend_cache ;;

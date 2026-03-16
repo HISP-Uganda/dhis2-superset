@@ -179,6 +179,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.dhis2.data_values_api import DHIS2DataValuesRestApi
         from superset.dhis2.diagnostics_api import DHIS2DiagnosticsApi
         from superset.dhis2.instance_api import DHIS2InstanceApi
+        from superset.dhis2.jobs_api import DHIS2JobsApi
         from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
         from superset.dhis2.sync_api import DHIS2SyncApi
         from superset.embedded.api import EmbeddedDashboardRestApi
@@ -284,6 +285,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(DHIS2DataValuesRestApi)
         appbuilder.add_api(DHIS2DiagnosticsApi)
         appbuilder.add_api(DHIS2InstanceApi)
+        appbuilder.add_api(DHIS2JobsApi)
         appbuilder.add_api(DHIS2StagedDatasetApi)
         appbuilder.add_api(DHIS2SyncApi)
         appbuilder.add_api(EmbeddedDashboardRestApi)

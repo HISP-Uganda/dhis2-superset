@@ -1190,6 +1190,32 @@ class DHIS2SyncService:
             )
 
         for instance_id, inst_vars in instance_vars.items():
+            # Check for cancellation before each instance fetch
+            if job_id is not None:
+                _cancel_job = db.session.get(DHIS2SyncJob, job_id)
+                if _cancel_job is not None:
+                    db.session.refresh(_cancel_job)
+                    if _cancel_job.cancel_requested:
+                        logger.info(
+                            "Sync: cancel requested for job_id=%s dataset=%d, aborting.",
+                            job_id,
+                            staged_dataset_id,
+                        )
+                        _cancel_job.status = "cancelled"
+                        _cancel_job.completed_at = datetime.utcnow()
+                        _cancel_job.error_message = "Cancelled by user"
+                        _cancel_job.rows_loaded = total_rows
+                        _cancel_job.instance_results = json.dumps(instance_results)
+                        db.session.commit()
+                        dataset.last_sync_status = "cancelled"
+                        db.session.commit()
+                        return {
+                            "status": "cancelled",
+                            "total_rows": total_rows,
+                            "instances": instance_results,
+                            "duration_seconds": round(time.monotonic() - started_at, 3),
+                        }
+
             instance = instance_lookup.get(instance_id)
             if instance is None:
                 logger.warning(
@@ -1270,6 +1296,14 @@ class DHIS2SyncService:
                 dataset.last_sync_status = "running"
                 dataset.last_sync_rows = total_rows
                 _sync_compat_dataset(dataset)
+                # Write interim progress to the job record so the UI can poll it.
+                if job_id is not None:
+                    _interim_job: DHIS2SyncJob | None = (
+                        db.session.query(DHIS2SyncJob).get(job_id)
+                    )
+                    if _interim_job is not None:
+                        _interim_job.rows_loaded = total_rows
+                        _interim_job.instance_results = json.dumps(instance_results)
                 db.session.commit()
             except Exception as exc:  # pylint: disable=broad-except
                 any_failure = True
@@ -1983,6 +2017,10 @@ def schedule_staged_dataset_sync(
                     "incremental": incremental,
                 },
             )
+            task_id = getattr(task, "id", None)
+            # Persist task_id so cancel/revoke works later
+            job.task_id = task_id
+            db.session.commit()
             service.update_dataset_sync_state(
                 staged_dataset_id,
                 status="queued",
@@ -1992,7 +2030,7 @@ def schedule_staged_dataset_sync(
                 "scheduled": True,
                 "mode": "celery",
                 "job_id": job.id,
-                "task_id": getattr(task, "id", None),
+                "task_id": task_id,
                 "status": "queued",
             }
         except Exception:  # pylint: disable=broad-except

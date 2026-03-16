@@ -6,17 +6,16 @@ set -euo pipefail
 # Clean, deploy, update Apache Superset on a remote LXD host
 # ==============================================================================
 #
-# Key behaviors:
-#   - Preserves /etc/superset/superset.env
-#   - Preserves /opt/superset/config/superset_config.py by default
-#   - Rejects SQLite metadata DB
-#   - Syncs repo into container workdir
-#   - Rebuilds frontend with heartbeat + timeout
-#   - Installs backend into venv
-#   - Syncs migrations into installed package
-#   - Handles missing Alembic revisions
-#   - Handles MULTIPLE HEADS by upgrading/stamping "heads"
-#   - Restarts Gunicorn and verifies /health
+# Final runtime model:
+#   - Source code runtime comes from: /opt/superset/work/src
+#   - Python dependencies come from:  /opt/superset/venv
+#   - Gunicorn/Celery are started with nohup, not systemd
+#   - Existing systemd Superset services are stopped/disabled/masked
+#
+# Preserved:
+#   - /etc/superset/superset.env
+#   - /opt/superset/config/superset_config.py   (unless forced config sync)
+#   - /opt/superset/backups
 # ==============================================================================
 
 TARGET="${TARGET:-socaya@209.145.54.74}"
@@ -52,6 +51,14 @@ SUPERSET_CONFIG_FILE="${SUPERSET_CONFIG_FILE:-$CONFIG_DIR/superset_config.py}"
 
 GUNICORN_CONF="${GUNICORN_CONF:-$CONFIG_DIR/gunicorn.conf.py}"
 GUNICORN_LOG="${GUNICORN_LOG:-$LOG_DIR/gunicorn.log}"
+GUNICORN_PID_FILE="${GUNICORN_PID_FILE:-$SUPERSET_HOME/gunicorn.pid}"
+
+CELERY_LOG="${CELERY_LOG:-$LOG_DIR/celery.log}"
+CELERY_PID_FILE="${CELERY_PID_FILE:-$SUPERSET_HOME/celery.pid}"
+
+CELERY_BEAT_LOG="${CELERY_BEAT_LOG:-$LOG_DIR/celery-beat.log}"
+CELERY_BEAT_PID_FILE="${CELERY_BEAT_PID_FILE:-$SUPERSET_HOME/celery-beat.pid}"
+
 DEPLOY_LOG_IN_CT="${DEPLOY_LOG_IN_CT:-$LOG_DIR/deploy.log}"
 FRONTEND_LOG_IN_CT="${FRONTEND_LOG_IN_CT:-$LOG_DIR/frontend-build.log}"
 
@@ -64,6 +71,10 @@ FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-90}"
 DB_SYNC="${DB_SYNC:-1}"
 PATCH_MIGRATIONS="${PATCH_MIGRATIONS:-1}"
 APACHE_CACHE_FIX="${APACHE_CACHE_FIX:-1}"
+
+ENABLE_CELERY_WORKER="${ENABLE_CELERY_WORKER:-1}"
+ENABLE_CELERY_BEAT="${ENABLE_CELERY_BEAT:-1}"
+CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-4}"
 
 WIPE_METADATA="${WIPE_METADATA:-0}"
 CONFIRM_WIPE_METADATA="${CONFIRM_WIPE_METADATA:-0}"
@@ -125,6 +136,10 @@ OPTIONS:
   --force-config-sync
   --no-config-sync
   --config-candidate <repo-relative-path>
+
+  --no-celery-worker
+  --celery-beat
+  --celery-concurrency <N>
 EOF
 }
 
@@ -157,9 +172,13 @@ write_remote_env_file() {
     UPSTREAM_REPO_URL USE_UPSTREAM_MIGRATIONS
     HOST_SRC_DIR CT_SRC_DIR LEGACY_SRC_DEVICE_NAME
     SUPERSET_HOME CONFIG_DIR BACKUP_DIR LOG_DIR WORK_DIR WORK_SRC VENV
-    ENV_FILE SUPERSET_CONFIG_FILE GUNICORN_CONF GUNICORN_LOG DEPLOY_LOG_IN_CT FRONTEND_LOG_IN_CT
+    ENV_FILE SUPERSET_CONFIG_FILE
+    GUNICORN_CONF GUNICORN_LOG GUNICORN_PID_FILE
+    CELERY_LOG CELERY_PID_FILE CELERY_BEAT_LOG CELERY_BEAT_PID_FILE
+    DEPLOY_LOG_IN_CT FRONTEND_LOG_IN_CT
     FRONTEND FRONTEND_CLEAN NPM_LEGACY_PEER_DEPS NODE_OPTIONS_VALUE FRONTEND_TIMEOUT_MINUTES
     DB_SYNC PATCH_MIGRATIONS APACHE_CACHE_FIX
+    ENABLE_CELERY_WORKER ENABLE_CELERY_BEAT CELERY_CONCURRENCY
     WIPE_METADATA CONFIRM_WIPE_METADATA DO_BACKUP
     CONFIG_SYNC FORCE_CONFIG_SYNC CONFIG_CANDIDATE_PATH
     ALEMBIC_FIX_MODE ALEMBIC_AUTO_FALLBACK
@@ -221,12 +240,32 @@ remote_worker() {
     lxc exec "$ct" -- bash -lc "hostname -I 2>/dev/null | awk '{print \$1}'" | tr -d '\r'
   }
 
+  normalize_secret_env_snippet() {
+    cat <<'EOS'
+if [ -z "${SECRET_KEY:-}" ] && [ -n "${SUPERSET_SECRET_KEY:-}" ]; then
+  export SECRET_KEY="${SUPERSET_SECRET_KEY}"
+fi
+EOS
+  }
+
   ensure_env_exists() {
     exec_in_ct "$CT_SUP" "test -f '$ENV_FILE' || { echo 'ERROR: missing $ENV_FILE'; exit 2; }"
   }
 
   ensure_superset_config_exists() {
     exec_in_ct "$CT_SUP" "test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }"
+  }
+
+  disable_systemd_superset_services() {
+    log "[supersets] stop/disable/mask systemd superset services"
+    exec_in_ct "$CT_SUP" "
+      for svc in superset.service superset-worker.service superset-beat.service; do
+        systemctl stop \$svc >/dev/null 2>&1 || true
+        systemctl disable \$svc >/dev/null 2>&1 || true
+        systemctl mask \$svc >/dev/null 2>&1 || true
+      done
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    " || true
   }
 
   ensure_host_tools() {
@@ -336,7 +375,7 @@ remote_worker() {
         python3 python3-venv python3-dev build-essential \
         libffi-dev libssl-dev libsasl2-dev libldap2-dev libpq-dev \
         libjpeg-dev zlib1g-dev pkg-config ca-certificates curl \
-        netcat-openbsd procps rsync git tar util-linux coreutils
+        netcat-openbsd procps rsync git tar util-linux coreutils psmisc
     "
   }
 
@@ -359,18 +398,24 @@ remote_worker() {
 
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+
       cfg=\${SUPERSET_CONFIG_PATH:-}
       [ -n \"\$cfg\" ] || { echo 'ERROR: SUPERSET_CONFIG_PATH missing in superset.env'; exit 4; }
       [ \"\$cfg\" = '$SUPERSET_CONFIG_FILE' ] || { echo 'ERROR: SUPERSET_CONFIG_PATH must be $SUPERSET_CONFIG_FILE'; exit 5; }
       [ -f \"\$cfg\" ] || { echo 'ERROR: config file not found: '\$cfg; exit 6; }
       python3 -m py_compile \"\$cfg\"
+
       [ -n \"\${SUPERSET_DB_URI:-}\" ] || { echo 'ERROR: SUPERSET_DB_URI missing in superset.env'; exit 7; }
+      [ -n \"\${SECRET_KEY:-}\" ] || { echo 'ERROR: SECRET_KEY / SUPERSET_SECRET_KEY missing in superset.env'; exit 9; }
+
       case \"\$SUPERSET_DB_URI\" in
         sqlite:*|*superset.db*)
           echo 'ERROR: SQLite/superset.db is not allowed for deployed metadata'
           exit 8
           ;;
       esac
+
       echo \"CONFIG_OK \$cfg\"
     "
   }
@@ -457,7 +502,7 @@ SQL"
       test -f '$SUPERSET_CONFIG_FILE'
 
       pkill -f '[g]unicorn.*superset' || true
-      pkill -f '[c]elery.*superset' || true
+      pkill -f '[c]elery.*superset.tasks.celery_app' || true
       sleep 1
 
       mkdir -p '$SUPERSET_HOME' '$CONFIG_DIR' '$BACKUP_DIR'
@@ -617,7 +662,6 @@ PY
       fi
 
       apt-get install -y coreutils >/dev/null 2>&1 || true
-
       cd '$repo_root/superset-frontend'
 
       if [ '$FRONTEND_CLEAN' = '1' ]; then
@@ -702,6 +746,162 @@ PY
     "
   }
 
+  cleanup_installed_runtime_artifacts() {
+    log "[supersets] cleanup stale installed runtime artifacts"
+
+    exec_in_ct "$CT_SUP" "
+      rm -rf /tmp/webpack-* /tmp/.webpack-* 2>/dev/null || true
+      rm -rf /root/.cache/pip 2>/dev/null || true
+      rm -rf /root/.npm/_cacache 2>/dev/null || true
+      rm -f '$GUNICORN_LOG' '$GUNICORN_PID_FILE' '$CELERY_LOG' '$CELERY_PID_FILE' '$CELERY_BEAT_LOG' '$CELERY_BEAT_PID_FILE' '$DEPLOY_LOG_IN_CT' '$FRONTEND_LOG_IN_CT' 2>/dev/null || true
+
+      '$VENV/bin/pip' uninstall -y apache-superset >/dev/null 2>&1 || true
+      find '$VENV/lib' -maxdepth 4 \\( -name 'apache_superset*.dist-info' -o -name 'apache_superset*.egg-info' \\) -exec rm -rf {} + 2>/dev/null || true
+
+      find '$VENV/lib' -type d -path '*/site-packages/superset' -prune -exec rm -rf {} + 2>/dev/null || true
+      find '$VENV/lib' -type d -path '*/site-packages/superset-frontend' -prune -exec rm -rf {} + 2>/dev/null || true
+    " || true
+  }
+
+  ensure_venv_and_install_backend_from_workdir() {
+    local repo_root
+    repo_root="$(resolve_work_repo_root)"
+    [[ -n "$repo_root" ]] || die "Could not detect repository root for backend install"
+
+    log "[supersets] install backend dependencies from $repo_root and use repo as runtime"
+
+    exec_in_ct "$CT_SUP" "
+      mkdir -p '$CONFIG_DIR' '$LOG_DIR'
+      [ -x '$VENV/bin/python3' ] || python3 -m venv '$VENV'
+      '$VENV/bin/pip' install -U pip setuptools wheel
+
+      cd '$repo_root'
+
+      '$VENV/bin/pip' uninstall -y apache-superset >/dev/null 2>&1 || true
+      find '$VENV/lib' -maxdepth 4 \\( -name 'apache_superset*.dist-info' -o -name 'apache_superset*.egg-info' \\) -exec rm -rf {} + 2>/dev/null || true
+      find '$VENV/lib' -type d -path '*/site-packages/superset' -prune -exec rm -rf {} + 2>/dev/null || true
+
+      [ -f requirements/base.txt ] && '$VENV/bin/pip' install -r requirements/base.txt || true
+      [ -f requirements/local.txt ] && '$VENV/bin/pip' install -r requirements/local.txt || true
+
+      [ -f setup.py ] || [ -f pyproject.toml ] || {
+        echo 'ERROR: repo root is not installable'
+        ls -la '$repo_root'
+        exit 12
+      }
+
+      # Install package metadata/dependencies but runtime will come from PYTHONPATH=$WORK_SRC
+      '$VENV/bin/pip' install -U .
+      '$VENV/bin/pip' install -U 'gunicorn>=22.0.0'
+      '$VENV/bin/pip' install -U 'redis>=4.6,<5.0'
+      '$VENV/bin/pip' install -U 'celery>=5.3,<5.6'
+
+      set -a; . '$ENV_FILE'; set +a
+      DBURI=\${SUPERSET_DB_URI:-}
+      case \"\$DBURI\" in
+        postgresql*|postgres* )
+          '$VENV/bin/pip' install -U 'psycopg2-binary>=2.9,<3.0'
+          ;;
+      esac
+
+      '$VENV/bin/python' - <<PY
+from importlib.metadata import version, PackageNotFoundError
+import inspect, sys
+sys.path.insert(0, '$WORK_SRC')
+import superset
+
+for name in ['apache-superset', 'celery', 'redis', 'psycopg2-binary', 'gunicorn']:
+    try:
+        print(name, version(name))
+    except PackageNotFoundError:
+        print(name, 'NOT_FOUND')
+
+print('USING_SUPERSET_FROM=', inspect.getfile(superset))
+PY
+    "
+  }
+
+  install_runtime_db_drivers() {
+    log "[supersets] validate DB driver required by SUPERSET_DB_URI"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      DBURI=\${SUPERSET_DB_URI:-}
+      [ -n \"\$DBURI\" ] || { echo 'ERROR: SUPERSET_DB_URI missing'; exit 13; }
+
+      case \"\$DBURI\" in
+        postgresql*|postgres* )
+          '$VENV/bin/pip' install -U 'psycopg2-binary>=2.9,<3.0'
+          '$VENV/bin/python' - <<'PY'
+import psycopg2
+print('DB_DRIVER_OK psycopg2', psycopg2.__version__)
+PY
+          ;;
+        mysql* )
+          '$VENV/bin/pip' install -U 'mysqlclient>=2.2'
+          '$VENV/bin/python' - <<'PY'
+import MySQLdb
+print('DB_DRIVER_OK mysqlclient')
+PY
+          ;;
+        sqlite* )
+          echo 'ERROR: SQLite metadata backend is not allowed'
+          exit 14
+          ;;
+        * )
+          echo \"WARN: no explicit driver rule for \$DBURI\"
+          ;;
+      esac
+    "
+  }
+
+  validate_metadata_source() {
+    log "[supersets] validate metadata source from superset.env via superset_config.py"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+
+      [ -n \"\${SUPERSET_CONFIG_PATH:-}\" ] || { echo 'ERROR: SUPERSET_CONFIG_PATH missing'; exit 30; }
+      [ \"\$SUPERSET_CONFIG_PATH\" = '$SUPERSET_CONFIG_FILE' ] || {
+        echo 'ERROR: SUPERSET_CONFIG_PATH does not point to $SUPERSET_CONFIG_FILE'
+        exit 31
+      }
+
+      [ -n \"\${SUPERSET_DB_URI:-}\" ] || { echo 'ERROR: SUPERSET_DB_URI missing'; exit 32; }
+      [ -n \"\${SECRET_KEY:-}\" ] || { echo 'ERROR: SECRET_KEY / SUPERSET_SECRET_KEY missing'; exit 34; }
+
+      case \"\$SUPERSET_DB_URI\" in
+        sqlite:*|*superset.db*)
+          echo 'ERROR: Refusing SQLite/superset.db metadata source in deployment'
+          exit 33
+          ;;
+      esac
+
+      PYTHONPATH='$WORK_SRC' '$VENV/bin/python' - <<'PY'
+import importlib.util
+import os
+
+cfg = os.environ['SUPERSET_CONFIG_PATH']
+spec = importlib.util.spec_from_file_location('superset_config', cfg)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+uri = getattr(mod, 'SQLALCHEMY_DATABASE_URI', '')
+secret = getattr(mod, 'SECRET_KEY', '') or os.environ.get('SECRET_KEY') or os.environ.get('SUPERSET_SECRET_KEY', '')
+print('CONFIG_DB_URI=' + uri)
+print('SECRET_KEY_SET=' + ('yes' if bool(secret) else 'no'))
+
+if not uri:
+    raise SystemExit('Missing SQLALCHEMY_DATABASE_URI in loaded superset_config.py')
+if uri.startswith('sqlite:') or 'superset.db' in uri:
+    raise SystemExit('Refusing SQLite/superset.db metadata source from loaded config')
+if not secret:
+    raise SystemExit('Missing SECRET_KEY in loaded superset_config.py')
+PY
+    "
+  }
+
   sitepkg_superset_dir() {
     exec_in_ct "$CT_SUP" "
       python3 - <<'PY'
@@ -746,154 +946,25 @@ PY
     "
   }
 
-  cleanup_installed_runtime_artifacts() {
-    log "[supersets] cleanup stale installed runtime artifacts"
-
-    exec_in_ct "$CT_SUP" "
-      rm -rf /tmp/webpack-* /tmp/.webpack-* 2>/dev/null || true
-      rm -rf /root/.cache/pip 2>/dev/null || true
-      rm -rf /root/.npm/_cacache 2>/dev/null || true
-      rm -f '$GUNICORN_LOG' '$DEPLOY_LOG_IN_CT' '$FRONTEND_LOG_IN_CT' 2>/dev/null || true
-    "
-
-    if exec_in_ct "$CT_SUP" "test -x '$VENV/bin/python'"; then
-      local sitepkg_dir static_dir templates_dir
-      sitepkg_dir="$(sitepkg_superset_dir || true)"
-      static_dir="$(sitepkg_static_dir || true)"
-      templates_dir="$(sitepkg_templates_dir || true)"
-
-      exec_in_ct "$CT_SUP" "
-        '$VENV/bin/pip' uninstall -y apache-superset >/dev/null 2>&1 || true
-        find '$VENV/lib' -maxdepth 4 \\( -name 'apache_superset*.dist-info' -o -name 'apache_superset*.egg-info' \\) -exec rm -rf {} + 2>/dev/null || true
-      "
-
-      [[ -n "${sitepkg_dir:-}" ]] && exec_in_ct "$CT_SUP" "rm -rf '$sitepkg_dir'" || true
-      [[ -n "${static_dir:-}" ]] && exec_in_ct "$CT_SUP" "rm -rf '$static_dir'" || true
-      [[ -n "${templates_dir:-}" ]] && exec_in_ct "$CT_SUP" "rm -rf '$templates_dir'" || true
-    fi
-  }
-
-  ensure_venv_and_install_backend_from_workdir() {
-    local repo_root
-    repo_root="$(resolve_work_repo_root)"
-    [[ -n "$repo_root" ]] || die "Could not detect repository root for backend install"
-
-    log "[supersets] install backend into venv from $repo_root"
-
-    exec_in_ct "$CT_SUP" "
-      mkdir -p '$CONFIG_DIR' '$LOG_DIR'
-      [ -x '$VENV/bin/python3' ] || python3 -m venv '$VENV'
-      '$VENV/bin/pip' install -U pip setuptools wheel
-
-      cd '$repo_root'
-
-      '$VENV/bin/pip' uninstall -y apache-superset >/dev/null 2>&1 || true
-      find '$VENV/lib' -maxdepth 4 \\( -name 'apache_superset*.dist-info' -o -name 'apache_superset*.egg-info' \\) -exec rm -rf {} + 2>/dev/null || true
-
-      [ -f requirements/base.txt ] && '$VENV/bin/pip' install -r requirements/base.txt || true
-      [ -f requirements/local.txt ] && '$VENV/bin/pip' install -r requirements/local.txt || true
-
-      [ -f setup.py ] || [ -f pyproject.toml ] || {
-        echo 'ERROR: repo root is not installable'
-        ls -la '$repo_root'
-        exit 12
-      }
-
-      '$VENV/bin/pip' install -U .
-
-      set -a; . '$ENV_FILE'; set +a
-      DBURI=\${SUPERSET_DB_URI:-}
-      case \"\$DBURI\" in
-        postgresql*|postgres* )
-          '$VENV/bin/pip' install -U 'psycopg2-binary>=2.9,<3.0'
-          ;;
-      esac
-    "
-  }
-
-  install_runtime_db_drivers() {
-    log "[supersets] validate DB driver required by SUPERSET_DB_URI"
-
-    exec_in_ct "$CT_SUP" "
-      set -a; . '$ENV_FILE'; set +a
-      DBURI=\${SUPERSET_DB_URI:-}
-      [ -n \"\$DBURI\" ] || { echo 'ERROR: SUPERSET_DB_URI missing'; exit 13; }
-
-      case \"\$DBURI\" in
-        postgresql*|postgres* )
-          '$VENV/bin/pip' install -U 'psycopg2-binary>=2.9,<3.0'
-          '$VENV/bin/python' - <<'PY'
-import psycopg2
-print('DB_DRIVER_OK psycopg2', psycopg2.__version__)
-PY
-          ;;
-        mysql* )
-          '$VENV/bin/pip' install -U 'mysqlclient>=2.2'
-          '$VENV/bin/python' - <<'PY'
-import MySQLdb
-print('DB_DRIVER_OK mysqlclient')
-PY
-          ;;
-        sqlite* )
-          echo 'ERROR: SQLite metadata backend is not allowed'
-          exit 14
-          ;;
-        * )
-          echo \"WARN: no explicit driver rule for \$DBURI\"
-          ;;
-      esac
-    "
-  }
-
-  validate_metadata_source() {
-    log "[supersets] validate metadata source from superset.env via superset_config.py"
-
-    exec_in_ct "$CT_SUP" "
-      set -a; . '$ENV_FILE'; set +a
-
-      [ -n \"\${SUPERSET_CONFIG_PATH:-}\" ] || { echo 'ERROR: SUPERSET_CONFIG_PATH missing'; exit 30; }
-      [ \"\$SUPERSET_CONFIG_PATH\" = '$SUPERSET_CONFIG_FILE' ] || {
-        echo 'ERROR: SUPERSET_CONFIG_PATH does not point to $SUPERSET_CONFIG_FILE'
-        exit 31
-      }
-
-      [ -n \"\${SUPERSET_DB_URI:-}\" ] || { echo 'ERROR: SUPERSET_DB_URI missing'; exit 32; }
-
-      case \"\$SUPERSET_DB_URI\" in
-        sqlite:*|*superset.db*)
-          echo 'ERROR: Refusing SQLite/superset.db metadata source in deployment'
-          exit 33
-          ;;
-      esac
-
-      '$VENV/bin/python' - <<'PY'
-import importlib.util
-import os
-
-cfg = os.environ['SUPERSET_CONFIG_PATH']
-spec = importlib.util.spec_from_file_location('superset_config', cfg)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-
-uri = getattr(mod, 'SQLALCHEMY_DATABASE_URI', '')
-print('CONFIG_DB_URI=' + uri)
-
-if not uri:
-    raise SystemExit('Missing SQLALCHEMY_DATABASE_URI in loaded superset_config.py')
-if uri.startswith('sqlite:') or 'superset.db' in uri:
-    raise SystemExit('Refusing SQLite/superset.db metadata source from loaded config')
-PY
-    "
-  }
-
   sync_repo_migrations_to_site_packages() {
-    log "[supersets] sync repo migrations into installed package"
+    log "[supersets] sync repo migrations into installed package path"
 
     local sitepkg_dir repo_root
-    sitepkg_dir="$(sitepkg_superset_dir)"
+    sitepkg_dir="$(sitepkg_superset_dir || true)"
     repo_root="$(resolve_work_repo_root)"
 
-    [[ -n "$sitepkg_dir" ]] || die "Cannot resolve installed superset package dir"
+    if [[ -z "$sitepkg_dir" ]]; then
+      sitepkg_dir="$(exec_in_ct "$CT_SUP" "python3 - <<'PY'
+import glob, os
+base='${VENV}/lib/python3.'
+for p in glob.glob(base+'*/site-packages'):
+    if os.path.isdir(p):
+        print(p + '/superset')
+        break
+PY")"
+      exec_in_ct "$CT_SUP" "mkdir -p '$sitepkg_dir'"
+    fi
+
     [[ -n "$repo_root" ]] || die "Cannot detect repo root for migrations sync"
 
     exec_in_ct "$CT_SUP" "
@@ -915,12 +986,30 @@ PY
     log "[supersets] fully replace installed frontend-facing files from repo"
 
     local static_dir templates_dir repo_root
-    static_dir="$(sitepkg_static_dir)"
-    templates_dir="$(sitepkg_templates_dir)"
+    static_dir="$(sitepkg_static_dir || true)"
+    templates_dir="$(sitepkg_templates_dir || true)"
     repo_root="$(resolve_work_repo_root)"
 
-    [[ -n "$static_dir" ]] || die "Cannot resolve installed static directory"
-    [[ -n "$templates_dir" ]] || die "Cannot resolve installed templates directory"
+    if [[ -z "$static_dir" ]]; then
+      static_dir="$(exec_in_ct "$CT_SUP" "python3 - <<'PY'
+import glob, os
+for p in glob.glob('${VENV}/lib/python3.*/site-packages'):
+    if os.path.isdir(p):
+        print(p + '/superset/static')
+        break
+PY")"
+    fi
+
+    if [[ -z "$templates_dir" ]]; then
+      templates_dir="$(exec_in_ct "$CT_SUP" "python3 - <<'PY'
+import glob, os
+for p in glob.glob('${VENV}/lib/python3.*/site-packages'):
+    if os.path.isdir(p):
+        print(p + '/superset/templates')
+        break
+PY")"
+    fi
+
     [[ -n "$repo_root" ]] || die "Cannot detect repo root for frontend replacement"
 
     exec_in_ct "$CT_SUP" "
@@ -946,7 +1035,7 @@ PY
 
   patch_dhis2_migrations_in_site_packages() {
     [[ "$PATCH_MIGRATIONS" == "1" ]] || return 0
-    log "[supersets] patch DHIS2/custom migrations in installed site-packages"
+    log "[supersets] patch DHIS2/custom migrations in installed package path"
 
     exec_in_ct "$CT_SUP" "
       python3 - <<'PY'
@@ -1075,7 +1164,7 @@ PY
       die "Refusing wipe: SUPERSET_DB_URI host=$host does not match postgres container/IP"
     fi
 
-    exec_in_ct "$CT_SUP" "pkill -f '[g]unicorn.*superset' || true; sleep 1"
+    exec_in_ct "$CT_SUP" "pkill -f '[g]gunicorn.*superset' || true; sleep 1"
 
     exec_in_ct_as_postgres "$CT_PG" "psql -v ON_ERROR_STOP=1 -v db=$(printf '%q' "$db") -v usr=$(printf '%q' "$user") -v pwd=$(printf '%q' "$pw") <<'SQL'
 SELECT pg_terminate_backend(pid)
@@ -1115,29 +1204,30 @@ SQL"
         touch '$DEPLOY_LOG_IN_CT'
         exec > >(tee -a '$DEPLOY_LOG_IN_CT') 2>&1
         set -a; . '$ENV_FILE'; set +a
+        $(normalize_secret_env_snippet)
 
         set +e
-        '$VENV/bin/superset' db upgrade
+        PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' db upgrade
         rc=\$?
         set -e
 
         if [ \$rc -ne 0 ]; then
           if grep -q 'Multiple head revisions are present' '$DEPLOY_LOG_IN_CT'; then
             echo '[alembic] multiple heads detected; retrying with heads'
-            '$VENV/bin/superset' db upgrade heads
+            PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' db upgrade heads
           else
             exit \$rc
           fi
         fi
 
-        '$VENV/bin/superset' fab create-admin \
+        PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' fab create-admin \
           --username '$ADMIN_USER' \
           --firstname '$ADMIN_FIRST' \
           --lastname '$ADMIN_LAST' \
           --email '$ADMIN_EMAIL' \
           --password '$ADMIN_PASS' || true
 
-        '$VENV/bin/superset' init
+        PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' init
       " 2>&1)"
       rc=$?
       set -e
@@ -1163,7 +1253,11 @@ SQL"
           case "$ALEMBIC_AUTO_FALLBACK" in
             stamp-head)
               backup_metadata_db
-              exec_in_ct "$CT_SUP" "set -a; . '$ENV_FILE'; set +a; '$VENV/bin/superset' db stamp heads"
+              exec_in_ct "$CT_SUP" "
+                set -a; . '$ENV_FILE'; set +a
+                $(normalize_secret_env_snippet)
+                PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' db stamp heads
+              "
               ;;
             wipe)
               WIPE_METADATA=1
@@ -1180,7 +1274,11 @@ SQL"
           ;;
         stamp-head)
           backup_metadata_db
-          exec_in_ct "$CT_SUP" "set -a; . '$ENV_FILE'; set +a; '$VENV/bin/superset' db stamp heads"
+          exec_in_ct "$CT_SUP" "
+            set -a; . '$ENV_FILE'; set +a
+            $(normalize_secret_env_snippet)
+            PYTHONPATH='$WORK_SRC' '$VENV/bin/superset' db stamp heads
+          "
           ;;
         wipe)
           WIPE_METADATA=1
@@ -1194,10 +1292,13 @@ SQL"
   }
 
   restart_gunicorn() {
-    log "[supersets] restart Gunicorn and verify /health"
+    log "[supersets] restart Gunicorn with nohup and verify /health"
 
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+      [ -n \"\${SECRET_KEY:-}\" ] || { echo 'ERROR: SECRET_KEY / SUPERSET_SECRET_KEY missing for gunicorn'; exit 35; }
+
       PORT=\${SUPERSET_WEBSERVER_PORT:-8088}
       ADDR=\${SUPERSET_WEBSERVER_ADDRESS:-0.0.0.0}
 
@@ -1211,27 +1312,152 @@ threads = 4
 timeout = 300
 graceful_timeout = 60
 keepalive = 5
-accesslog = "-"
-errorlog = "-"
+accesslog = \"-\"
+errorlog = \"-\"
+capture_output = True
 PY
+      python3 -m py_compile '$GUNICORN_CONF'
 
-      pkill -f '[g]unicorn.*superset.app:create_app' || pkill -f '[g]unicorn.*superset' || true
-      : > '$GUNICORN_LOG' || true
-      nohup '$VENV/bin/gunicorn' -c '$GUNICORN_CONF' 'superset.app:create_app()' >> '$GUNICORN_LOG' 2>&1 &
-      sleep 3
+      if [ -f '$GUNICORN_PID_FILE' ]; then
+        oldpid=\$(cat '$GUNICORN_PID_FILE' 2>/dev/null || true)
+        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
+          kill \"\$oldpid\" || true
+          sleep 2
+        fi
+        rm -f '$GUNICORN_PID_FILE'
+      fi
+
+      pkill -f '[g]gunicorn.*superset.app:create_app' || pkill -f '[g]gunicorn.*superset' || true
+      sleep 2
+      fuser -k \${PORT}/tcp >/dev/null 2>&1 || true
+      sleep 1
+
+      touch '$GUNICORN_LOG'
+      chmod 664 '$GUNICORN_LOG' || true
+
+      set +e
+      PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/gunicorn' -c '$GUNICORN_CONF' 'superset.app:create_app()' >> '$GUNICORN_LOG' 2>&1 &
+      gunicorn_pid=\$!
+      echo \$gunicorn_pid > '$GUNICORN_PID_FILE'
+      sleep 5
+
+      if ! kill -0 \$gunicorn_pid 2>/dev/null; then
+        echo 'ERROR: gunicorn exited immediately'
+        tail -n 200 '$GUNICORN_LOG' || true
+        exit 21
+      fi
 
       ok=0
-      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         code=\$(curl -s -o /dev/null -w '%{http_code}' \"http://127.0.0.1:\${PORT}/health\" || true)
         if [ \"\$code\" = '200' ]; then ok=1; break; fi
         sleep 2
       done
+      set -e
 
       echo \"health_ok=\$ok\"
       if [ \"\$ok\" != '1' ]; then
-        tail -n 120 '$GUNICORN_LOG' || true
+        echo 'ERROR: Superset health check failed'
+        tail -n 200 '$GUNICORN_LOG' || true
         exit 20
       fi
+    "
+  }
+
+  restart_celery_worker() {
+    [[ "$ENABLE_CELERY_WORKER" == "1" ]] || { log "[supersets] celery worker skipped"; return 0; }
+
+    log "[supersets] restart Celery worker with nohup"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+      [ -n \"\${SECRET_KEY:-}\" ] || { echo 'ERROR: SECRET_KEY / SUPERSET_SECRET_KEY missing for celery'; exit 40; }
+      [ -n \"\${SUPERSET_CONFIG_PATH:-}\" ] || { echo 'ERROR: SUPERSET_CONFIG_PATH missing for celery'; exit 41; }
+
+      mkdir -p '$LOG_DIR'
+      touch '$CELERY_LOG'
+      chmod 664 '$CELERY_LOG' || true
+
+      if [ -f '$CELERY_PID_FILE' ]; then
+        oldpid=\$(cat '$CELERY_PID_FILE' 2>/dev/null || true)
+        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
+          kill \"\$oldpid\" || true
+          sleep 2
+        fi
+        rm -f '$CELERY_PID_FILE'
+      fi
+
+      pkill -f '[c]elery.*superset.tasks.celery_app' || true
+      sleep 2
+
+      set +e
+      PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/celery' --app=superset.tasks.celery_app:app worker \
+        --pool=prefork -O fair -c '$CELERY_CONCURRENCY' \
+        >> '$CELERY_LOG' 2>&1 &
+      celery_pid=\$!
+      echo \$celery_pid > '$CELERY_PID_FILE'
+      sleep 5
+
+      if ! kill -0 \$celery_pid 2>/dev/null; then
+        echo 'ERROR: celery worker exited immediately'
+        tail -n 200 '$CELERY_LOG' || true
+        exit 42
+      fi
+
+      if ! pgrep -f '[c]elery.*superset.tasks.celery_app' >/dev/null 2>&1; then
+        echo 'ERROR: celery worker process not found after start'
+        tail -n 200 '$CELERY_LOG' || true
+        exit 43
+      fi
+      set -e
+
+      echo 'celery_worker_ok=1'
+    "
+  }
+
+  restart_celery_beat() {
+    [[ "$ENABLE_CELERY_BEAT" == "1" ]] || return 0
+
+    log "[supersets] restart Celery beat with nohup"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+      [ -n \"\${SECRET_KEY:-}\" ] || { echo 'ERROR: SECRET_KEY / SUPERSET_SECRET_KEY missing for celery beat'; exit 44; }
+      [ -n \"\${SUPERSET_CONFIG_PATH:-}\" ] || { echo 'ERROR: SUPERSET_CONFIG_PATH missing for celery beat'; exit 45; }
+
+      mkdir -p '$LOG_DIR'
+      touch '$CELERY_BEAT_LOG'
+      chmod 664 '$CELERY_BEAT_LOG' || true
+
+      if [ -f '$CELERY_BEAT_PID_FILE' ]; then
+        oldpid=\$(cat '$CELERY_BEAT_PID_FILE' 2>/dev/null || true)
+        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
+          kill \"\$oldpid\" || true
+          sleep 2
+        fi
+        rm -f '$CELERY_BEAT_PID_FILE'
+      fi
+
+      pkill -f '[c]celery.*superset.tasks.celery_app.*beat' || true
+      sleep 2
+
+      set +e
+      PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/celery' --app=superset.tasks.celery_app:app beat \
+        >> '$CELERY_BEAT_LOG' 2>&1 &
+      beat_pid=\$!
+      echo \$beat_pid > '$CELERY_BEAT_PID_FILE'
+      sleep 5
+
+      if ! kill -0 \$beat_pid 2>/dev/null; then
+        echo 'ERROR: celery beat exited immediately'
+        tail -n 200 '$CELERY_BEAT_LOG' || true
+        exit 46
+      fi
+      set -e
+
+      echo 'celery_beat_ok=1'
     "
   }
 
@@ -1285,8 +1511,8 @@ AP
     ensure_superset_config_exists
 
     exec_in_ct "$CT_SUP" "
-      pkill -f '[g]unicorn.*superset' || true
-      pkill -f '[c]elery.*superset' || true
+      pkill -f '[g]gunicorn.*superset' || true
+      pkill -f '[c]celery.*superset.tasks.celery_app' || true
       sleep 2
 
       test -f '$SUPERSET_CONFIG_FILE'
@@ -1295,6 +1521,7 @@ AP
       rm -rf '$WORK_DIR'
       rm -rf '$VENV'
       rm -rf '$LOG_DIR'
+      rm -f '$GUNICORN_PID_FILE' '$CELERY_PID_FILE' '$CELERY_BEAT_PID_FILE'
       mkdir -p '$CONFIG_DIR' '$BACKUP_DIR'
 
       test -f '$SUPERSET_CONFIG_FILE'
@@ -1313,6 +1540,7 @@ AP
     cleanup)
       ensure_env_exists
       ensure_superset_config_exists
+      disable_systemd_superset_services
       detach_legacy_src_mount_if_present
       cleanup_host_src_dir
       cleanup_container_opt_layout
@@ -1320,6 +1548,7 @@ AP
     reset)
       ensure_env_exists
       ensure_superset_config_exists
+      disable_systemd_superset_services
       detach_legacy_src_mount_if_present
       reset_deployment_artifacts
       cleanup_container_opt_layout
@@ -1327,6 +1556,7 @@ AP
     deploy|update)
       ensure_env_exists
       ensure_superset_config_exists
+      disable_systemd_superset_services
       detach_legacy_src_mount_if_present
       git_clone_or_update
       install_supersets_base_tools
@@ -1346,6 +1576,8 @@ AP
       patch_dhis2_migrations_in_site_packages
       run_db_upgrade_init_with_alembic_fix
       restart_gunicorn
+      restart_celery_worker
+      restart_celery_beat
       apache_cache_fix
       proxy_verify
       ;;
@@ -1392,6 +1624,10 @@ main() {
       --no-config-sync) CONFIG_SYNC=0; FORCE_CONFIG_SYNC=0; shift ;;
       --config-candidate) CONFIG_CANDIDATE_PATH="$2"; shift 2 ;;
 
+      --no-celery-worker) ENABLE_CELERY_WORKER=0; shift ;;
+      --celery-beat) ENABLE_CELERY_BEAT=1; shift ;;
+      --celery-concurrency) CELERY_CONCURRENCY="$2"; shift 2 ;;
+
       -h|--help) usage; exit 0 ;;
       *) die "Unknown option: $1" ;;
     esac
@@ -1406,6 +1642,10 @@ main() {
 
   case "$FRONTEND_TIMEOUT_MINUTES" in
     ''|*[!0-9]*) die "--frontend-timeout-minutes must be an integer" ;;
+  esac
+
+  case "$CELERY_CONCURRENCY" in
+    ''|*[!0-9]*) die "--celery-concurrency must be an integer" ;;
   esac
 
   if is_local_lxd_host; then

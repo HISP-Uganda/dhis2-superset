@@ -803,4 +803,32 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
             columns=serving_rows_columns,
             rows=serving_rows,
         )
-    return engine.get_serving_sql_table_ref(dataset), serving_columns
+    serving_table_ref = engine.get_serving_sql_table_ref(dataset)
+
+    # Auto-register the serving table as a Superset virtual dataset
+    try:
+        from superset.dhis2.superset_dataset_service import (
+            register_serving_table_as_superset_dataset,
+        )
+        from superset import db as _db
+
+        # The staging engine's database_id IS the serving database id
+        serving_db_id = getattr(engine, "database_id", None)
+        if serving_db_id is not None:
+            sqla_id = register_serving_table_as_superset_dataset(
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                serving_table_ref=serving_table_ref,
+                serving_columns=serving_columns,
+                serving_database_id=serving_db_id,
+            )
+            if dataset.serving_superset_dataset_id != sqla_id:
+                dataset.serving_superset_dataset_id = sqla_id
+                _db.session.commit()
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "ensure_serving_table: auto-register as Superset dataset failed for dataset_id=%s",
+            dataset_id,
+        )
+
+    return serving_table_ref, serving_columns

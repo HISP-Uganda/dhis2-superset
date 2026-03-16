@@ -198,11 +198,47 @@ class DHIS2DiagnosticsApi(BaseApi):
         """
         try:
             limit = int(request.args.get("limit", 50))
-            jobs = _svc.get_sync_history(database_id, limit=limit)
+            dataset_id = request.args.get("dataset_id", type=int)
+            jobs = _svc.get_sync_history(database_id, limit=limit, dataset_id=dataset_id)
             return self.response(200, result=jobs, count=len(jobs))
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception(
                 "diagnostics: get_sync_history failed for database_id=%s", database_id
+            )
+            return self.response_500(message=str(exc))
+
+    # ------------------------------------------------------------------
+    # Active (in-flight) sync jobs – for UI polling
+    # ------------------------------------------------------------------
+
+    @expose("/active-jobs/<int:database_id>", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def active_jobs(self, database_id: int) -> Response:
+        """Return running/queued sync jobs for a database (for UI polling).
+
+        ---
+        get:
+          summary: Active sync jobs for a database
+          parameters:
+            - in: path
+              name: database_id
+              schema:
+                type: integer
+              required: true
+          responses:
+            200:
+              description: Active jobs list
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            jobs = _svc.get_active_sync_jobs(database_id)
+            return self.response(200, result=jobs, count=len(jobs))
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception(
+                "diagnostics: get_active_sync_jobs failed for database_id=%s", database_id
             )
             return self.response_500(message=str(exc))
 

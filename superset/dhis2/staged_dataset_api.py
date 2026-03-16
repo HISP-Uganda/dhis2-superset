@@ -50,7 +50,7 @@ from flask_appbuilder.security.decorators import permission_name, protect
 from superset.dhis2 import staged_dataset_service as svc
 from superset.dhis2.staging_database_service import get_staging_database
 from superset.dhis2.staging_engine import DHIS2StagingEngine
-from superset.dhis2.sync_service import schedule_staged_dataset_sync
+from superset.dhis2.sync_service import schedule_staged_dataset_sync, DHIS2SyncService
 
 logger = logging.getLogger(__name__)
 
@@ -1031,6 +1031,108 @@ class DHIS2StagedDatasetApi(BaseApi):
     # Ensure staging table
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Per-dataset sync job history
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/jobs", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def list_jobs(self, pk: int) -> Response:
+        """Return recent sync jobs for a staged dataset.
+
+        Accepts optional ``limit`` query parameter (default 20).
+
+        ---
+        get:
+          summary: Sync job history for a staged dataset
+          parameters:
+            - in: path
+              name: pk
+              required: true
+              schema:
+                type: integer
+            - in: query
+              name: limit
+              schema:
+                type: integer
+                default: 20
+          responses:
+            200:
+              description: List of sync jobs ordered newest first
+            404:
+              description: Dataset not found
+        """
+        from superset import db
+        from superset.dhis2.models import DHIS2SyncJob
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        limit = request.args.get("limit", 20, type=int)
+        jobs = (
+            db.session.query(DHIS2SyncJob)
+            .filter_by(staged_dataset_id=pk)
+            .order_by(DHIS2SyncJob.created_on.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return self.response(
+            200,
+            result=[j.to_json() for j in jobs],
+            count=len(jobs),
+        )
+
+    # ------------------------------------------------------------------
+    # Latest job (for UI polling during active sync)
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/jobs/latest", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def latest_job(self, pk: int) -> Response:
+        """Return the most recent sync job for a staged dataset.
+
+        Intended for UI polling while a sync is in progress.
+
+        ---
+        get:
+          summary: Latest sync job for a staged dataset
+          parameters:
+            - in: path
+              name: pk
+              required: true
+              schema:
+                type: integer
+          responses:
+            200:
+              description: Latest job or null if none exists
+            404:
+              description: Dataset not found
+        """
+        from superset import db
+        from superset.dhis2.models import DHIS2SyncJob
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        job = (
+            db.session.query(DHIS2SyncJob)
+            .filter_by(staged_dataset_id=pk)
+            .order_by(DHIS2SyncJob.created_on.desc())
+            .first()
+        )
+        return self.response(
+            200,
+            result=job.to_json() if job else None,
+            dataset_sync_status=dataset.last_sync_status,
+            dataset_sync_rows=dataset.last_sync_rows,
+        )
+
     @expose("/<int:pk>/ensure-table", methods=["POST"])
     @protect()
     @safe
@@ -1075,5 +1177,297 @@ class DHIS2StagedDatasetApi(BaseApi):
             result={
                 "dataset": payload,
                 "staging_table_ref": staging_table_ref,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Register serving table as Superset virtual dataset
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/register-dataset", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def register_dataset(self, pk: int) -> Response:
+        """Force (re-)registration of the serving table as a Superset virtual dataset.
+
+        Useful when auto-registration failed or column definitions have changed.
+
+        ---
+        post:
+          summary: Register DHIS2 serving table as Superset dataset
+          parameters:
+            - in: path
+              name: pk
+              required: true
+              schema:
+                type: integer
+          responses:
+            200:
+              description: Dataset registered or updated
+            404:
+              description: Dataset not found
+            500:
+              description: Internal server error
+        """
+        from superset.dhis2.staged_dataset_service import ensure_serving_table
+        from superset.dhis2.superset_dataset_service import (
+            register_serving_table_as_superset_dataset,
+        )
+        from superset.dhis2.staging_engine import DHIS2StagingEngine
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        try:
+            serving_table_ref, serving_columns = ensure_serving_table(pk)
+            engine = DHIS2StagingEngine(dataset.database_id)
+            serving_db_id = getattr(engine, "database_id", None)
+
+            if not serving_db_id:
+                return self.response_500(message="Could not determine serving database")
+
+            sqla_id = register_serving_table_as_superset_dataset(
+                dataset_id=pk,
+                dataset_name=dataset.name,
+                serving_table_ref=serving_table_ref,
+                serving_columns=serving_columns,
+                serving_database_id=serving_db_id,
+            )
+            if dataset.serving_superset_dataset_id != sqla_id:
+                dataset.serving_superset_dataset_id = sqla_id
+                db.session.commit()
+
+            explore_url = f"/explore/?datasource_id={sqla_id}&datasource_type=table"
+            return self.response(
+                200,
+                result={
+                    "superset_dataset_id": sqla_id,
+                    "explore_url": explore_url,
+                    "serving_table_ref": serving_table_ref,
+                },
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception(
+                "register_dataset: failed for dataset_id=%s", pk
+            )
+            return self.response_500(message=str(exc))
+
+    # ------------------------------------------------------------------
+    # Category option combos for a variable
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/variables/<string:variable_id>/category-option-combos", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def variable_category_option_combos(self, pk: int, variable_id: str) -> Response:
+        """Return available category option combos for a variable from DHIS2 metadata.
+
+        Query params
+        ------------
+        instance_id : int  (required — which DHIS2 instance to query)
+
+        ---
+        get:
+          summary: Category option combos for a DHIS2 variable
+          parameters:
+            - in: path
+              name: pk
+              schema:
+                type: integer
+            - in: path
+              name: variable_id
+              schema:
+                type: string
+            - in: query
+              name: instance_id
+              schema:
+                type: integer
+              required: true
+          responses:
+            200:
+              description: List of category option combos
+            400:
+              description: Missing parameters
+            404:
+              description: Dataset not found
+        """
+        from superset.dhis2.metadata_staging_service import (
+            get_category_option_combos_for_element,
+        )
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        instance_id = request.args.get("instance_id", type=int)
+        if not instance_id:
+            return self.response_400(message="instance_id query parameter is required")
+
+        try:
+            combos = get_category_option_combos_for_element(
+                instance_id=instance_id,
+                variable_id=variable_id,
+            )
+            return self.response(200, result=combos, count=len(combos))
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception(
+                "variable_category_option_combos: failed for dataset=%s variable=%s instance=%s",
+                pk, variable_id, instance_id,
+            )
+            return self.response_500(message=str(exc))
+
+    # ------------------------------------------------------------------
+    # Sync Now (manual trigger)
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/sync", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def sync_now(self, pk: int) -> Response:
+        """Trigger an immediate manual sync for a staged dataset.
+
+        Resets any stuck ``running`` state first, then dispatches a new sync
+        job via Celery (if available) or a background thread.
+
+        ---
+        post:
+          summary: Trigger immediate sync for a staged dataset
+          parameters:
+            - in: path
+              name: pk
+              required: true
+              schema:
+                type: integer
+          requestBody:
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    incremental:
+                      type: boolean
+                      default: true
+                      description: >
+                        When true only missing/changed periods are fetched.
+                        When false a full replacement sync is performed.
+          responses:
+            200:
+              description: Sync dispatched
+            404:
+              description: Dataset not found
+            500:
+              description: Internal server error
+        """
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        body: dict[str, Any] = request.get_json(silent=True) or {}
+        incremental: bool = bool(body.get("incremental", True))
+
+        try:
+            # Reset any stuck running status so the new job can proceed.
+            service = DHIS2SyncService()
+            if dataset.last_sync_status == "running":
+                service.update_dataset_sync_state(pk, status="pending")
+                logger.info(
+                    "sync_now: reset stuck running status for dataset id=%s", pk
+                )
+
+            svc.ensure_serving_table(pk)
+            sync_result = schedule_staged_dataset_sync(
+                pk,
+                job_type="manual",
+                prefer_immediate=False,
+                incremental=incremental,
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Unexpected error triggering manual sync for dataset id=%s", pk
+            )
+            return self.response_500(message="Failed to trigger sync")
+
+        return self.response(200, result=sync_result)
+
+    # ------------------------------------------------------------------
+    # Reset stuck sync status
+    # ------------------------------------------------------------------
+
+    @expose("/<int:pk>/reset-sync", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def reset_sync_status(self, pk: int) -> Response:
+        """Reset a stuck ``running`` sync status back to ``pending``.
+
+        Use this when a sync job is stuck in ``running`` state (e.g. after a
+        server restart killed an in-flight background thread or Celery task).
+
+        ---
+        post:
+          summary: Reset stuck sync status for a staged dataset
+          parameters:
+            - in: path
+              name: pk
+              required: true
+              schema:
+                type: integer
+          responses:
+            200:
+              description: Sync status reset successfully
+            404:
+              description: Dataset not found
+            500:
+              description: Internal server error
+        """
+        from superset import db
+        from superset.dhis2.models import DHIS2SyncJob
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        try:
+            service = DHIS2SyncService()
+
+            # Reset the dataset-level sync state.
+            old_status = dataset.last_sync_status
+            service.update_dataset_sync_state(pk, status="pending")
+
+            # Mark any stuck running jobs as failed so the history is clean.
+            stuck_jobs = (
+                db.session.query(DHIS2SyncJob)
+                .filter_by(staged_dataset_id=pk, status="running")
+                .all()
+            )
+            for job in stuck_jobs:
+                service.update_job_status(
+                    job,
+                    status="failed",
+                    error_message="Manually reset (was stuck in running state)",
+                )
+
+            logger.info(
+                "reset_sync_status: dataset id=%s old_status=%s stuck_jobs=%d",
+                pk,
+                old_status,
+                len(stuck_jobs),
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Unexpected error resetting sync status for dataset id=%s", pk
+            )
+            return self.response_500(message="Failed to reset sync status")
+
+        return self.response(
+            200,
+            result={
+                "message": "Sync status reset",
+                "previous_status": old_status,
+                "stuck_jobs_reset": len(stuck_jobs),
             },
         )

@@ -23,7 +23,6 @@ from flask import current_app, Response
 from flask_appbuilder.api import BaseApi, expose
 
 from superset.extensions import event_logger
-from superset.views.base_api import statsd_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +89,6 @@ class PublicPageRestApi(BaseApi):
     allow_browser_login = True
 
     @expose("/config", methods=("GET",))
-    @statsd_metrics
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.get_config",
         log_to_statsd=False,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SupersetClient, t } from '@superset-ui/core';
 import { Typography } from '@superset-ui/core/components';
 import {
@@ -7,12 +7,16 @@ import {
   Card,
   Empty,
   Input,
+  Progress,
   Select,
   Space,
+  Spin,
   Statistic,
   Table,
   Tag,
+  Tooltip,
 } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
@@ -58,6 +62,8 @@ const LEGEND_SET_TYPE_OPTIONS = [
   { label: t('Legend Sets'), value: 'legendSets' },
 ];
 
+const POLL_INTERVAL_MS = 3000;
+
 export default function DHIS2LocalMetadata() {
   const { addDangerToast, addSuccessToast } = useToasts();
   const {
@@ -74,10 +80,12 @@ export default function DHIS2LocalMetadata() {
   const [searchValue, setSearchValue] = useState('');
   const [submittedSearch, setSubmittedSearch] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewRows, setPreviewRows] = useState<MetadataPreviewRow[]>([]);
   const [previewStatus, setPreviewStatus] = useState<string>('idle');
   const [previewMessage, setPreviewMessage] = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const typeOptions = useMemo(
     () =>
@@ -96,27 +104,58 @@ export default function DHIS2LocalMetadata() {
     }
   }, [metadataType, typeOptions]);
 
-  const loadMetadataStatus = async () => {
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const fetchMetadataStatus = useCallback(async (dbId: number) => {
+    try {
+      const response = await SupersetClient.get({
+        endpoint: `/api/v1/dhis2/diagnostics/metadata-status/${dbId}`,
+      });
+      const status = (response.json.result || null) as DHIS2MetadataStatus | null;
+      setMetadataStatus(status);
+      return status;
+    } catch (error) {
+      addDangerToast(
+        getErrorMessage(error, t('Failed to load local metadata status')),
+      );
+      setMetadataStatus(null);
+      return null;
+    }
+  }, [addDangerToast]);
+
+  const scheduleNextPoll = useCallback((dbId: number) => {
+    stopPolling();
+    pollTimerRef.current = setTimeout(async () => {
+      const status = await fetchMetadataStatus(dbId);
+      const prog = status?.refresh_progress;
+      if (prog && (prog.status === 'running' || prog.status === 'queued')) {
+        scheduleNextPoll(dbId);
+      } else {
+        pollTimerRef.current = null;
+      }
+    }, POLL_INTERVAL_MS);
+  }, [fetchMetadataStatus, stopPolling]);
+
+  const loadMetadataStatus = useCallback(async () => {
     if (!selectedDatabaseId) {
       setMetadataStatus(null);
       return;
     }
 
     setLoadingStatus(true);
-    try {
-      const response = await SupersetClient.get({
-        endpoint: `/api/v1/dhis2/diagnostics/metadata-status/${selectedDatabaseId}`,
-      });
-      setMetadataStatus((response.json.result || null) as DHIS2MetadataStatus | null);
-    } catch (error) {
-      addDangerToast(
-        getErrorMessage(error, t('Failed to load local metadata status')),
-      );
-      setMetadataStatus(null);
-    } finally {
-      setLoadingStatus(false);
+    const status = await fetchMetadataStatus(selectedDatabaseId);
+    setLoadingStatus(false);
+
+    const prog = status?.refresh_progress;
+    if (prog && (prog.status === 'running' || prog.status === 'queued')) {
+      scheduleNextPoll(selectedDatabaseId);
     }
-  };
+  }, [selectedDatabaseId, fetchMetadataStatus, scheduleNextPoll]);
 
   const loadPreview = async () => {
     if (!selectedDatabaseId || !metadataType) {
@@ -158,8 +197,10 @@ export default function DHIS2LocalMetadata() {
   };
 
   useEffect(() => {
+    stopPolling();
     void loadMetadataStatus();
-  }, [selectedDatabaseId]);
+    return () => stopPolling();
+  }, [selectedDatabaseId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void loadPreview();
@@ -169,17 +210,24 @@ export default function DHIS2LocalMetadata() {
     if (!selectedDatabaseId) {
       return;
     }
+    setRefreshing(true);
     try {
       await SupersetClient.post({
         endpoint: `/api/v1/dhis2/diagnostics/metadata-refresh/${selectedDatabaseId}`,
       });
-      addSuccessToast(t('Local metadata refresh requested.'));
-      await loadMetadataStatus();
-      await loadPreview();
+      addSuccessToast(t('Local metadata refresh started.'));
+      // Fetch status immediately then start polling
+      const status = await fetchMetadataStatus(selectedDatabaseId);
+      const prog = status?.refresh_progress;
+      if (prog && (prog.status === 'running' || prog.status === 'queued')) {
+        scheduleNextPoll(selectedDatabaseId);
+      }
     } catch (error) {
       addDangerToast(
         getErrorMessage(error, t('Failed to request local metadata refresh')),
       );
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -306,9 +354,36 @@ export default function DHIS2LocalMetadata() {
         'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables, legend sets, or organisation units without waiting on live DHIS2 responses.',
       )}
       extra={
-        <Button onClick={() => void handleRefresh()}>
-          {t('Refresh local metadata')}
-        </Button>
+        <Tooltip
+          title={
+            metadataStatus?.refresh_progress &&
+            (metadataStatus.refresh_progress.status === 'running' ||
+              metadataStatus.refresh_progress.status === 'queued')
+              ? t('Refresh in progress…')
+              : t('Fetch latest metadata from all active DHIS2 instances')
+          }
+        >
+          <Button
+            disabled={
+              refreshing ||
+              !!(
+                metadataStatus?.refresh_progress &&
+                (metadataStatus.refresh_progress.status === 'running' ||
+                  metadataStatus.refresh_progress.status === 'queued')
+              )
+            }
+            icon={
+              refreshing ? (
+                <Spin size="small" />
+              ) : (
+                <ReloadOutlined spin={false} />
+              )
+            }
+            onClick={() => void handleRefresh()}
+          >
+            {t('Refresh local metadata')}
+          </Button>
+        </Tooltip>
       }
       loadingDatabases={loadingDatabases}
       selectedDatabaseId={selectedDatabaseId}
@@ -348,19 +423,114 @@ export default function DHIS2LocalMetadata() {
         <Card loading={loadingStatus} title={t('Local staging status')}>
           {metadataStatus ? (
             <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-              {metadataStatus.refresh_progress ? (
-                <Alert
-                  message={t('Refresh progress')}
-                  description={t(
-                    '%s%% complete (%s of %s work units).',
-                    metadataStatus.refresh_progress.overall.percent_complete,
-                    metadataStatus.refresh_progress.overall.completed_units,
-                    metadataStatus.refresh_progress.overall.total_units,
-                  )}
-                  showIcon
-                  type="info"
-                />
-              ) : null}
+              {(() => {
+                const prog = metadataStatus.refresh_progress;
+                if (!prog) return null;
+                const isActive = prog.status === 'running' || prog.status === 'queued';
+                const pct = Math.round(prog.overall.percent_complete ?? 0);
+                const antStatus =
+                  prog.status === 'complete'
+                    ? 'success'
+                    : prog.status === 'failed'
+                      ? 'exception'
+                      : 'active';
+
+                return (
+                  <Card
+                    size="small"
+                    style={{ background: '#fafafa', borderRadius: 8 }}
+                    title={
+                      <Space>
+                        {isActive && <Spin size="small" />}
+                        <span>
+                          {isActive
+                            ? t('Metadata refresh in progress…')
+                            : t('Last refresh result: %s', prog.status)}
+                        </span>
+                      </Space>
+                    }
+                  >
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {t('Overall — %s / %s units',
+                            prog.overall.completed_units,
+                            prog.overall.total_units)}
+                          {prog.overall.failed_units
+                            ? t(' (%s failed)', prog.overall.failed_units)
+                            : ''}
+                        </Text>
+                        <Progress
+                          percent={pct}
+                          status={antStatus}
+                          strokeWidth={10}
+                        />
+                      </div>
+
+                      {/* Per-family progress bars */}
+                      {(['variables', 'legend_sets', 'org_units'] as const).map(fam => {
+                        const fp =
+                          fam === 'variables'
+                            ? prog.variables
+                            : fam === 'legend_sets'
+                              ? prog.legend_sets
+                              : prog.org_units;
+                        if (!fp) return null;
+                        const famPct = Math.round(fp.percent_complete ?? 0);
+                        const famStatus =
+                          fp.status === 'complete'
+                            ? 'success'
+                            : fp.status === 'failed'
+                              ? 'exception'
+                              : 'active';
+                        const label =
+                          fam === 'variables'
+                            ? t('Variables')
+                            : fam === 'legend_sets'
+                              ? t('Legend Sets')
+                              : t('Org Units');
+                        return (
+                          <div key={fam}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {label}
+                              {fp.current_metadata_type
+                                ? ` — ${fp.current_metadata_type}`
+                                : ''}
+                              {fp.current_instance_name
+                                ? ` (${fp.current_instance_name})`
+                                : ''}
+                            </Text>
+                            <Progress
+                              percent={famPct}
+                              size="small"
+                              status={famStatus}
+                              strokeWidth={6}
+                            />
+                          </div>
+                        );
+                      })}
+
+                      {prog.variables?.last_error && (
+                        <Alert
+                          message={t('Last error')}
+                          description={prog.variables.last_error}
+                          showIcon
+                          type="error"
+                        />
+                      )}
+                      {prog.org_units?.last_error && (
+                        <Alert
+                          message={t('Org units error')}
+                          description={prog.org_units.last_error}
+                          showIcon
+                          type="error"
+                        />
+                      )}
+                    </Space>
+                  </Card>
+                );
+              })()}
+
               <Space wrap>
                 <Tag color={getStatusColor(metadataStatus.variables.status)}>
                   {t('Variables: %s', metadataStatus.variables.status)}

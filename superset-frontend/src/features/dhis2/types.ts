@@ -41,10 +41,13 @@ export interface DHIS2SyncJobInstanceResult {
 
 export interface DHIS2SyncJob {
   id: number;
+  job_category: 'sync';
   staged_dataset_id: number;
   staged_dataset_name?: string | null;
   job_type: string;
   status: string;
+  task_id?: string | null;
+  cancel_requested?: boolean;
   started_at?: string | null;
   completed_at?: string | null;
   created_on?: string | null;
@@ -53,7 +56,41 @@ export interface DHIS2SyncJob {
   rows_failed?: number | null;
   error_message?: string | null;
   instance_results: Record<string, DHIS2SyncJobInstanceResult>;
+  /** Dataset-level sync status at the time this job was polled. */
+  dataset_sync_status?: string | null;
+  /** Dataset-level rows loaded at the time this job was polled. */
+  dataset_sync_rows?: number | null;
 }
+
+export interface DHIS2MetadataJob {
+  id: number;
+  job_category: 'metadata';
+  database_id: number;
+  job_type: string;
+  status: string;
+  instance_ids?: number[];
+  metadata_types?: string[];
+  reason?: string | null;
+  task_id?: string | null;
+  cancel_requested?: boolean;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_on?: string | null;
+  duration_seconds?: number | null;
+  rows_loaded?: number | null;
+  rows_failed?: number | null;
+  error_message?: string | null;
+  instance_results?: Record<string, unknown>;
+}
+
+export type DHIS2AnyJob = DHIS2SyncJob | DHIS2MetadataJob;
+
+export interface DHIS2CategoryOptionCombo {
+  id: string;
+  displayName: string;
+}
+
+export type DHIS2DisaggregationMode = 'total' | 'all' | 'selected';
 
 export interface DHIS2HealthInstanceSummary {
   id: number;
@@ -74,6 +111,7 @@ export interface DHIS2HealthDatasetSummary {
   staging_table_exists: boolean;
   staging_row_count?: number | null;
   recent_jobs: DHIS2SyncJob[];
+  serving_superset_dataset_id?: number | null;
 }
 
 export interface DHIS2FederationSummary {

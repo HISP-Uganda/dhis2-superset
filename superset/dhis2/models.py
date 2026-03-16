@@ -347,6 +347,15 @@ class DHIS2StagedDataset(Model):
     last_sync_rows = sa.Column(sa.Integer, nullable=True)
 
     # ------------------------------------------------------------------
+    # Superset virtual dataset linkage (auto-registered after first sync)
+    # ------------------------------------------------------------------
+    serving_superset_dataset_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("tables.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # ------------------------------------------------------------------
     # Configuration blob
     # ------------------------------------------------------------------
     dataset_config = sa.Column(Text, nullable=True)
@@ -432,6 +441,7 @@ class DHIS2StagedDataset(Model):
             ),
             "last_sync_status": self.last_sync_status,
             "last_sync_rows": self.last_sync_rows,
+            "serving_superset_dataset_id": self.serving_superset_dataset_id,
             "dataset_config": self.get_dataset_config(),
             "created_by_fk": self.created_by_fk,
             "changed_by_fk": self.changed_by_fk,
@@ -650,6 +660,12 @@ class DHIS2SyncJob(Model):
     instance_results = sa.Column(Text, nullable=True)
 
     # ------------------------------------------------------------------
+    # Job control
+    # ------------------------------------------------------------------
+    task_id = sa.Column(sa.String(255), nullable=True)
+    cancel_requested = sa.Column(sa.Boolean, default=False, nullable=False)
+
+    # ------------------------------------------------------------------
     # Audit timestamps
     # ------------------------------------------------------------------
     created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
@@ -705,10 +721,13 @@ class DHIS2SyncJob(Model):
         """Serialise this sync job to a plain dict."""
         return {
             "id": self.id,
+            "job_category": "sync",
             "staged_dataset_id": self.staged_dataset_id,
             "generic_sync_job_id": self.generic_sync_job_id,
             "job_type": self.job_type,
             "status": self.status,
+            "task_id": self.task_id,
+            "cancel_requested": self.cancel_requested,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": (
                 self.completed_at.isoformat() if self.completed_at else None
@@ -726,4 +745,153 @@ class DHIS2SyncJob(Model):
         return (
             f"<DHIS2SyncJob id={self.id} status={self.status!r} "
             f"staged_dataset_id={self.staged_dataset_id}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# DHIS2MetadataJob — persistent tracking for metadata refresh operations
+# ---------------------------------------------------------------------------
+
+
+class DHIS2MetadataJob(Model):
+    """Tracks a single metadata refresh operation for a DHIS2 federation database.
+
+    Mirrors the lifecycle of :class:`DHIS2SyncJob` (pending → running → terminal)
+    but applies to metadata refreshes rather than dataset data syncs.  Having a
+    persistent record allows the job history UI to show both job types in a
+    unified view and enables cancel/restart/delete operations on metadata jobs.
+    """
+
+    __tablename__ = "dhis2_metadata_jobs"
+
+    __table_args__ = (
+        sa.Index("ix_dhis2_metadata_jobs_database_id", "database_id"),
+        sa.Index("ix_dhis2_metadata_jobs_status", "status"),
+        sa.Index("ix_dhis2_metadata_jobs_task_id", "task_id"),
+    )
+
+    # ------------------------------------------------------------------
+    # Primary key
+    # ------------------------------------------------------------------
+    id = sa.Column(sa.Integer, primary_key=True)
+
+    # ------------------------------------------------------------------
+    # Scope
+    # ------------------------------------------------------------------
+    database_id = sa.Column(sa.Integer, nullable=False)
+    job_type = sa.Column(sa.String(50), nullable=False, default="manual")
+    status = sa.Column(sa.String(50), nullable=False, default="pending")
+
+    # ------------------------------------------------------------------
+    # Scope details (JSON arrays)
+    # ------------------------------------------------------------------
+    instance_ids = sa.Column(Text, nullable=True)   # JSON list[int] or null = all
+    metadata_types = sa.Column(Text, nullable=True)  # JSON list[str] or null = all
+    reason = sa.Column(Text, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Job control
+    # ------------------------------------------------------------------
+    task_id = sa.Column(sa.String(255), nullable=True)
+    cancel_requested = sa.Column(sa.Boolean, default=False, nullable=False)
+
+    # ------------------------------------------------------------------
+    # Timing
+    # ------------------------------------------------------------------
+    started_at = sa.Column(sa.DateTime, nullable=True)
+    completed_at = sa.Column(sa.DateTime, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Result counts
+    # ------------------------------------------------------------------
+    rows_loaded = sa.Column(sa.Integer, nullable=True)   # total metadata items loaded
+    rows_failed = sa.Column(sa.Integer, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+    error_message = sa.Column(Text, nullable=True)
+    instance_results = sa.Column(Text, nullable=True)    # JSON dict per-instance summary
+
+    # ------------------------------------------------------------------
+    # Audit timestamps
+    # ------------------------------------------------------------------
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+    changed_on = sa.Column(
+        sa.DateTime,
+        onupdate=datetime.utcnow,
+        nullable=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def get_instance_ids(self) -> list[int]:
+        """Parse and return ``instance_ids`` as a list of ints."""
+        raw = self.__dict__.get("instance_ids")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_metadata_types(self) -> list[str]:
+        """Parse and return ``metadata_types`` as a list of strings."""
+        raw = self.__dict__.get("metadata_types")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_instance_results(self) -> dict[str, Any]:
+        """Parse and return ``instance_results`` as a Python dict."""
+        raw = self.__dict__.get("instance_results")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """Elapsed seconds between ``started_at`` and ``completed_at``."""
+        if self.started_at and self.completed_at:
+            return (self.completed_at - self.started_at).total_seconds()
+        return None
+
+    def to_json(self) -> dict[str, Any]:
+        """Serialise this metadata job to a plain dict."""
+        return {
+            "id": self.id,
+            "job_category": "metadata",
+            "database_id": self.database_id,
+            "job_type": self.job_type,
+            "status": self.status,
+            "instance_ids": self.get_instance_ids(),
+            "metadata_types": self.get_metadata_types(),
+            "reason": self.reason,
+            "task_id": self.task_id,
+            "cancel_requested": self.cancel_requested,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
+            "duration_seconds": self.duration_seconds,
+            "rows_loaded": self.rows_loaded,
+            "rows_failed": self.rows_failed,
+            "error_message": self.error_message,
+            "instance_results": self.get_instance_results(),
+            "created_on": self.created_on.isoformat() if self.created_on else None,
+            "changed_on": self.changed_on.isoformat() if self.changed_on else None,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<DHIS2MetadataJob id={self.id} status={self.status!r} "
+            f"database_id={self.database_id}>"
         )

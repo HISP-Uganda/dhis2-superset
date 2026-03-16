@@ -205,6 +205,11 @@ export default function DHIS2Instances() {
             jsonPayload: payload,
           });
           addSuccessToast(t('Created DHIS2 instance: %s', values.name));
+          addInfoToast(
+            t(
+              'Metadata sync started (Phase 1: Variables + Org Units). Phase 2 (Legend Sets, GeoJSON) will run automatically after. Track progress in Local Metadata.',
+            ),
+          );
         }
         closeModal();
         await loadInstances();
