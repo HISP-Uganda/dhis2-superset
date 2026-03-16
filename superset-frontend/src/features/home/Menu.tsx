@@ -399,13 +399,13 @@ export function Menu({
 export default function MenuWrapper({ data, ...rest }: MenuProps) {
   const dataWorkspaceChildren: MenuObjectChildProps[] = [
     {
-      name: 'DHIS2',
-      label: 'DHIS2',
-      url: '/superset/dhis2/instances/',
+      name: 'DHIS2 Health',
+      label: 'DHIS2 Health',
+      url: '/superset/dhis2/health/',
     },
     {
-      name: 'Data Workspace',
-      label: 'Data Workspace',
+      name: 'Staged Datasets',
+      label: 'Staged Datasets',
       url: '/superset/dhis2/local-data/',
     },
     {
@@ -419,10 +419,11 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
       url: '/superset/dhis2/sync-history/',
     },
     {
-      name: 'SQL',
-      label: 'SQL',
-      url: '/sqllab/',
+      name: 'DHIS2 Instances',
+      label: 'DHIS2 Instances',
+      url: '/superset/dhis2/instances/',
     },
+    // SQL Lab is moved here automatically by isSqlMenu — no hardcoded duplicate needed
   ];
 
   const newMenuData = {
@@ -485,17 +486,7 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
       );
     });
 
-  const toDataChild = (item: MenuObjectChildProps): MenuObjectChildProps => ({
-    ...item,
-    name:
-      item.name === 'SQL Lab' || item.label === 'SQL Lab'
-        ? 'SQL'
-        : item.name,
-    label:
-      item.label === 'SQL Lab'
-        ? 'SQL'
-        : item.label,
-  });
+  const toDataChild = (item: MenuObjectChildProps): MenuObjectChildProps => item;
 
   // Cycle through menu.menu to build out cleanedMenu and settings
   const cleanedMenu: MenuObjectProps[] = [];
