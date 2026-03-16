@@ -49,8 +49,8 @@ const StyledHeader = styled.header`
       top: 0;
       left: 0;
       right: 0;
-      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
-      border-bottom: 1px solid ${theme.colorBorderSecondary};
+      background: #1e2d45;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
       z-index: 1000;
 
       &:nth-last-of-type(2) nav {
@@ -72,7 +72,7 @@ const StyledHeader = styled.header`
         flex-direction: column;
         justify-content: center;
         /* must be exactly the height of the Antd navbar */
-        min-height: 50px;
+        min-height: 46px;
         padding: ${theme.sizeUnit}px
           ${theme.sizeUnit * 2}px
           ${theme.sizeUnit}px
@@ -92,12 +92,12 @@ const StyledHeader = styled.header`
       .navbar-brand-text {
         height: 100%;
         color: #ffffff;
-        padding-left: ${theme.sizeUnit * 6}px;
-        padding-right: ${theme.sizeUnit * 8}px;
+        padding-left: ${theme.sizeUnit * 4}px;
+        padding-right: ${theme.sizeUnit * 4}px;
         margin-right: ${theme.sizeUnit * 4}px;
         font-size: 20px;
         font-weight: 700;
-        letter-spacing: 0.3px;
+        letter-spacing: -0.2px;
         float: left;
         display: flex;
         flex-direction: column;
@@ -140,7 +140,9 @@ const StyledHeader = styled.header`
 
           &.ant-menu-item-selected {
             color: #ffffff;
-            background: rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.06);
+            border-bottom: 2px solid #2b6a6a;
+            border-radius: 0;
 
             a {
               color: #ffffff;
@@ -149,7 +151,7 @@ const StyledHeader = styled.header`
         }
 
         .ant-menu-submenu {
-          padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 4}px;
+          padding: ${theme.sizeUnit * 1.5}px ${theme.sizeUnit * 4}px;
           display: flex;
           align-items: center;
           height: 100%;

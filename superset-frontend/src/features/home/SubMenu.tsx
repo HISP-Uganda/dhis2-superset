@@ -35,26 +35,26 @@ import { MenuObjectProps } from 'src/types/bootstrapTypes';
 import { Typography } from '@superset-ui/core/components/Typography';
 
 const StyledHeader = styled.div<{ backgroundColor?: string }>`
-  background-color: ${({ theme, backgroundColor }) =>
-    backgroundColor || theme.colorBgContainer};
+  background-color: ${({ backgroundColor }) => backgroundColor || '#ffffff'};
+  border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   align-items: center;
   position: relative;
-  padding: ${({ theme }) => theme.sizeUnit * 4}px
-    ${({ theme }) => theme.sizeUnit * 5}px;
-  margin-top: ${({ theme }) => theme.sizeUnit * 6}px;
-  margin-bottom: ${({ theme }) => theme.sizeUnit * 4}px;
+  padding: 0 ${({ theme }) => theme.sizeUnit * 5}px;
+  margin-top: 0;
+  margin-bottom: 0;
   .header {
     font-weight: ${({ theme }) => theme.fontWeightStrong};
     margin-right: ${({ theme }) => theme.sizeUnit * 3}px;
     text-align: left;
-    font-size: 18px;
+    font-size: 16px;
+    color: ${({ theme }) => theme.colorTextHeading};
     display: inline-block;
     line-height: ${({ theme }) => theme.sizeUnit * 9}px;
   }
   .nav-right {
     display: flex;
     align-items: center;
-    margin-right: ${({ theme }) => theme.sizeUnit * 3}px;
+    margin-right: ${({ theme }) => theme.sizeUnit * 2}px;
     float: right;
     position: absolute;
     right: 0;
@@ -89,16 +89,17 @@ const StyledHeader = styled.div<{ backgroundColor?: string }>`
     line-height: ${({ theme }) => theme.sizeUnit * 5}px;
 
     .ant-menu-item {
-      border-radius: ${({ theme }) => theme.borderRadius}px;
+      border-radius: 0;
       font-size: ${({ theme }) => theme.fontSizeSM}px;
-      padding: ${({ theme }) => theme.sizeUnit}px
-        ${({ theme }) => theme.sizeUnit * 4}px;
+      padding: ${({ theme }) => theme.sizeUnit * 2}px
+        ${({ theme }) => theme.sizeUnit * 3}px;
       margin-right: ${({ theme }) => theme.sizeUnit}px;
     }
     .ant-menu-item:hover,
     .ant-menu-item:has(> span > .active) {
-      background-color: ${({ theme }) => theme.colorPrimaryBgHover};
-      color: ${({ theme }) => theme.colorText};
+      background-color: transparent;
+      color: #2b6a6a;
+      border-bottom: 2px solid #2b6a6a;
     }
   }
 

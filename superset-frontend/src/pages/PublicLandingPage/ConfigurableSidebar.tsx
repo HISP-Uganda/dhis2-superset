@@ -60,9 +60,9 @@ const StyledSidebar = styled.div<{
     $layoutMode === 'top'
       ? `
         width: 100%;
-        min-height: auto;
+        min-height: 36px;
         background: var(--public-page-sidebar-background, ${$backgroundColor});
-        border-bottom: var(--public-page-sidebar-border, ${$borderStyle});
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
         position: sticky;
         top: ${$navbarHeight}px;
         left: 0;
@@ -85,6 +85,11 @@ const StyledSidebar = styled.div<{
         top: ${$navbarHeight}px;
         z-index: 5;
         overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+        &::-webkit-scrollbar { width: 4px; }
+        &::-webkit-scrollbar-track { background: transparent; }
+        &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 2px; }
       `}
   transition: all 0.3s ease;
 
@@ -106,18 +111,22 @@ const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
   ${({ theme, $layoutMode }) => `
     background: transparent;
     border-right: none;
-    padding: ${$layoutMode === 'top' ? `${theme.sizeUnit * 2}px` : `${theme.sizeUnit * 2}px 0`};
+    padding: ${$layoutMode === 'top' ? '0' : `${theme.sizeUnit * 2}px 0`};
+    height: ${$layoutMode === 'top' ? '36px' : 'auto'};
+    line-height: ${$layoutMode === 'top' ? '36px' : 'inherit'};
 
     .ant-menu-item {
-      height: auto;
-      line-height: 1.4;
-      padding: ${theme.sizeUnit * 3}px ${theme.sizeUnit * 4}px !important;
-      margin: 0 ${$layoutMode === 'top' ? `${theme.sizeUnit}px` : '0'};
+      height: ${$layoutMode === 'top' ? '36px' : 'auto'};
+      line-height: ${$layoutMode === 'top' ? '36px' : '1.4'};
+      padding: ${$layoutMode === 'top'
+        ? `0 ${theme.sizeUnit * 3}px`
+        : `${theme.sizeUnit * 2}px ${theme.sizeUnit * 3}px`} !important;
+      margin: 0 ${$layoutMode === 'top' ? '1px' : '0'};
       display: flex;
       align-items: center;
       color: var(--public-page-sidebar-text-color, ${theme.colorText});
-      font-size: 14px;
-      border-radius: ${$layoutMode === 'top' ? `${theme.borderRadius}px` : '0'};
+      font-size: 13px;
+      border-radius: 0;
       white-space: nowrap;
 
       &:hover {
@@ -126,15 +135,22 @@ const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
       }
 
       &.ant-menu-item-selected {
-        background: var(--public-page-primary-bg, ${theme.colorPrimaryBg});
         color: var(--public-page-primary-color, ${theme.colorPrimary});
         font-weight: 600;
+        ${$layoutMode === 'top'
+          ? `
+          border-bottom: 2px solid var(--public-page-primary-color, ${theme.colorPrimary});
+          background: rgba(255,255,255,0.06);
+        `
+          : `
+          background: var(--public-page-primary-bg, ${theme.colorPrimaryBg});
+        `}
       }
 
       .ant-menu-item-icon {
-        font-size: 18px;
-        min-width: 24px;
-        margin-right: ${theme.sizeUnit * 2}px;
+        font-size: ${$layoutMode === 'top' ? '13px' : '16px'};
+        min-width: ${$layoutMode === 'top' ? '14px' : '20px'};
+        margin-right: ${theme.sizeUnit}px;
       }
     }
 
@@ -163,15 +179,18 @@ const SidebarTitle = styled.div`
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    margin-bottom: ${theme.sizeUnit}px;
   `}
 `;
 
 const TopBarInner = styled.div`
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 0;
   min-width: max-content;
-  padding: 8px 12px;
+  padding: 0 12px;
+  height: 36px;
 `;
 
 const TopBarTitle = styled.div`
@@ -190,7 +209,7 @@ const LoadingContainer = styled.div`
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: ${theme.sizeUnit * 8}px;
+    padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 4}px;
   `}
 `;
 
@@ -258,7 +277,6 @@ export default function ConfigurableSidebar({
     >
       {layoutMode === 'top' ? (
         <TopBarInner>
-          <TopBarTitle>{t(config.title)}</TopBarTitle>
           {loading ? (
             <LoadingContainer>
               <Loading />

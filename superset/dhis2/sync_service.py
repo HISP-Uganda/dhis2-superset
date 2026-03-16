@@ -799,6 +799,14 @@ class DHIS2SyncService:
     leaves previously loaded data for the failed instance intact.
     """
 
+    def __init__(self) -> None:
+        # Tracks instance IDs for which POST /api/analytics.json returned 405
+        # Method Not Allowed.  Once an instance is recorded here, all
+        # subsequent analytics requests for that instance use GET instead of
+        # POST.  This handles DHIS2 deployments (or reverse-proxy
+        # configurations) that only allow GET on the analytics endpoint.
+        self._post_not_allowed: set[int] = set()
+
     # ------------------------------------------------------------------
     # Public entrypoint
     # ------------------------------------------------------------------
@@ -1727,21 +1735,55 @@ class DHIS2SyncService:
             ("pageSize", str(page_size)),
         ]
 
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            **instance.get_auth_headers(),
-        }
+        use_get = instance.id in self._post_not_allowed
 
-        logger.debug(
-            "Sync: POST %s page=%d (dx count=%d, ou count=%d)",
-            url,
-            page,
-            len(dx_ids),
-            len(org_units),
-        )
+        if use_get:
+            logger.debug(
+                "Sync: GET %s page=%d (dx count=%d, ou count=%d) [POST not allowed]",
+                url,
+                page,
+                len(dx_ids),
+                len(org_units),
+            )
+            resp = requests.get(
+                url,
+                params=form_data,
+                headers={"Accept": "application/json", **instance.get_auth_headers()},
+                timeout=_REQUEST_TIMEOUT,
+            )
+        else:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                **instance.get_auth_headers(),
+            }
+            logger.debug(
+                "Sync: POST %s page=%d (dx count=%d, ou count=%d)",
+                url,
+                page,
+                len(dx_ids),
+                len(org_units),
+            )
+            resp = requests.post(url, data=form_data, headers=headers, timeout=_REQUEST_TIMEOUT)
 
-        resp = requests.post(url, data=form_data, headers=headers, timeout=_REQUEST_TIMEOUT)
+            if resp.status_code == 405:
+                # This DHIS2 instance (or its reverse proxy) does not accept
+                # POST on the analytics endpoint.  Record it so future pages
+                # and batches use GET directly, then retry this request.
+                logger.warning(
+                    "Sync: POST to %s returned 405 Method Not Allowed for instance '%s'; "
+                    "falling back to GET for all subsequent requests to this instance",
+                    url,
+                    instance.name,
+                )
+                self._post_not_allowed.add(instance.id)
+                resp = requests.get(
+                    url,
+                    params=form_data,
+                    headers={"Accept": "application/json", **instance.get_auth_headers()},
+                    timeout=_REQUEST_TIMEOUT,
+                )
+
         if not resp.ok:
             reason = str(getattr(resp, "reason", "") or "").strip() or None
             if resp.status_code == 524:

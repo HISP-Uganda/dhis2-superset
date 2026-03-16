@@ -173,14 +173,15 @@ const NavLinks = styled.div`
 `;
 
 const NavLink = styled.a`
-  ${({ theme }) => `
-    color: var(--public-page-text-color, ${theme.colorText});
-    text-decoration: none;
-    font-size: 14px;
-    &:hover {
-      color: var(--public-page-link-hover-color, ${theme.colorPrimary});
-    }
-  `}
+  color: var(--public-page-navbar-text-color, #ffffff);
+  text-decoration: none;
+  font-size: 14px;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+  &:hover {
+    opacity: 1;
+    color: var(--public-page-navbar-text-color, #ffffff);
+  }
 `;
 
 const ContentWrapper = styled.div<{
@@ -231,27 +232,35 @@ const WelcomeContainer = styled.div`
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 100%;
+    width: calc(100% - ${theme.sizeUnit * 8}px);
     min-height: 400px;
-    padding: ${theme.sizeUnit * 8}px;
+    padding: ${theme.sizeUnit * 10}px ${theme.sizeUnit * 8}px;
     text-align: center;
+    background: var(--public-page-welcome-bg, ${theme.colorBgContainer});
+    border: 1px solid var(--public-page-welcome-border, ${theme.colorBorderSecondary});
+    border-radius: ${theme.borderRadius}px;
+    margin: ${theme.sizeUnit * 4}px;
   `}
 `;
 
 const WelcomeTitle = styled.h1`
   ${({ theme }) => `
-    font-size: 28px;
-    font-weight: 600;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.2;
     color: var(--public-page-text-color, ${theme.colorText});
-    margin-bottom: ${theme.sizeUnit * 2}px;
+    margin-bottom: ${theme.sizeUnit * 3}px;
   `}
 `;
 
 const WelcomeDescription = styled.p`
   ${({ theme }) => `
-    font-size: 16px;
+    font-size: 15px;
+    line-height: 1.6;
+    margin-top: 0;
     color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
-    max-width: 500px;
+    max-width: 560px;
   `}
 `;
 
@@ -325,7 +334,7 @@ export default function PublicLandingPage({
   >(undefined);
   const [themeMode, setThemeMode] = useState<PublicPageTheme>(getStoredTheme);
   const [sidebarLayout, setSidebarLayout] = useState<PublicPageSidebarLayout>(
-    getStoredSidebarLayout() || 'side',
+    getStoredSidebarLayout() || 'top',
   );
 
   // Merge override config if provided
@@ -361,48 +370,55 @@ export default function PublicLandingPage({
   const themeVariables = useMemo<CSSProperties>(
     () =>
       ({
-        '--public-page-page-background': isDarkMode ? '#0f2238' : '#ffffff',
+        '--public-page-page-background': isDarkMode ? '#0d111c' : '#ffffff',
         '--public-page-navbar-background': isDarkMode
-          ? '#102a43'
+          ? '#161b2d'
           : navbar.backgroundColor,
         '--public-page-navbar-shadow': isDarkMode
-          ? '0 2px 10px rgba(8, 18, 32, 0.6)'
+          ? '0 1px 0 rgba(255,255,255,0.06)'
           : navbar.boxShadow,
         '--public-page-content-background': isDarkMode
-          ? '#13263d'
+          ? '#0b0f1a'
           : content.backgroundColor,
         '--public-page-sidebar-background': isDarkMode
-          ? '#0f2238'
+          ? '#161b2d'
           : sidebar.backgroundColor,
         '--public-page-sidebar-text-color': isDarkMode
-          ? '#e6edf3'
+          ? '#c9d1d9'
           : sidebar.textColor || theme.colorText,
         '--public-page-sidebar-border': isDarkMode
-          ? '1px solid #1f3a57'
+          ? '1px solid rgba(255,255,255,0.08)'
           : sidebar.borderStyle,
         '--public-page-footer-background': isDarkMode
-          ? '#102a43'
+          ? '#0d111c'
           : footer.backgroundColor,
-        '--public-page-footer-text': isDarkMode ? '#9fb3c8' : footer.textColor,
+        '--public-page-footer-text': isDarkMode ? '#8b949e' : footer.textColor,
         '--public-page-text-color': isDarkMode ? '#e6edf3' : theme.colorText,
         '--public-page-text-secondary-color': isDarkMode
-          ? '#9fb3c8'
+          ? '#8b949e'
           : theme.colorTextSecondary,
-        '--public-page-primary-color': isDarkMode ? '#74b3ff' : accentColor,
+        '--public-page-primary-color': isDarkMode ? '#79b8ff' : accentColor,
         '--public-page-primary-bg': isDarkMode
-          ? 'rgba(116, 179, 255, 0.2)'
+          ? 'rgba(121, 184, 255, 0.15)'
           : accentBg,
-        '--public-page-link-hover-color': isDarkMode
-          ? '#74b3ff'
-          : accentColor,
-        '--public-page-hover-bg': isDarkMode ? '#1b3553' : theme.colorBgLayout,
+        '--public-page-link-hover-color': isDarkMode ? '#79b8ff' : accentColor,
+        '--public-page-hover-bg': isDarkMode
+          ? 'rgba(255,255,255,0.06)'
+          : theme.colorBgLayout,
         '--public-page-toggle-bg': isDarkMode
-          ? '#15324f'
+          ? 'rgba(255,255,255,0.08)'
           : theme.colorBgContainer,
         '--public-page-toggle-border': isDarkMode
-          ? '#2a4b6a'
+          ? 'rgba(255,255,255,0.15)'
           : theme.colorBorder,
-        '--public-page-toggle-color': isDarkMode ? '#e6edf3' : theme.colorText,
+        '--public-page-toggle-color': isDarkMode ? '#c9d1d9' : theme.colorText,
+        '--public-page-navbar-text-color': isDarkMode ? '#e6edf3' : '#ffffff',
+        '--public-page-welcome-bg': isDarkMode
+          ? 'rgba(255,255,255,0.03)'
+          : theme.colorBgContainer,
+        '--public-page-welcome-border': isDarkMode
+          ? 'rgba(255,255,255,0.08)'
+          : theme.colorBorderSecondary,
       }) as CSSProperties,
     [
       accentBg,

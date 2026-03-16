@@ -1,64 +1,464 @@
-<!-- extend base layout -->
 {% extends "appbuilder/base.html" %}
 
 {% block content %}
+<style>
+  /* ── Sentinel Login Page — Uganda MoH Malaria Analytics ── */
 
-<div class="container">
-    <div id="loginbox" style="margin-top:50px;" class="mainbox col-md-6 col-md-offset-3 col-sm-8 col-sm-offset-2">
-        <div class="panel panel-primary" >
-            <div class="panel-heading">
-                <div class="panel-title">{{ title }}</div>
-            </div>
-            <div style="padding-top:30px" class="panel-body" >
+  /* Hide FAB default chrome on this page */
+  .navbar,
+  .footer,
+  #back-to-top { display: none !important; }
 
-                <form class="form" action="" method="post" name="login">
-                    {{form.hidden_tag()}}
-                    <div class="help-block">{{_("Enter your login and password below")}}:</div>
-                    <div class="control-group{% if form.errors.username is defined %} error{% endif %}">
-                        <label class="control-label" for="username">{{_("Username")}}:</label>
+  body {
+    background: #f4f6f9;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
 
-                        <div class="controls">
-                            <div class="input-group">
-                                <span class="input-group-addon"><i class="fa fa-user"></i></span>
-                                {{ form.username(size = 80, class = "form-control", autofocus = true) }}
-                            </div>
-                            {% for error in form.errors.get('username', []) %}
-                            <span class="help-inline">[{{error}}]</span><br>
-                            {% endfor %}
-                            <label class="control-label" for="password">{{_("Password")}}:</label>
+  .sentinel-login-shell {
+    display: flex;
+    min-height: 100vh;
+  }
 
-                            <div class="input-group">
-                                <span class="input-group-addon"><i class="fa fa-key"></i></span>
-                                {{ form.password(size = 80, class = "form-control") }}
-                            </div>
-                            {% for error in form.errors.get('password', []) %}
-                            <span class="help-inline">[{{error}}]</span><br>
-                            {% endfor %}
-                        </div>
-                    </div>
+  /* ── LEFT BRAND PANEL ── */
+  .sentinel-brand-panel {
+    width: 420px;
+    flex-shrink: 0;
+    background: #1e2d45;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 48px 40px 32px;
+    position: relative;
+    overflow: hidden;
+  }
 
-                    <div class="control-group">
-                        <div class="controls">
-                            <br>
-                            <div>
-                                <input class="btn btn-primary btn-block" type="submit" value="{{_('Sign In')}}">
-                                {% if appbuilder.sm.auth_user_registration %}
-                                <a href="{{appbuilder.sm.get_url_for_registeruser}}" class="btn btn-block btn-primary" data-toggle="tooltip" rel="tooltip"
-                                title="{{_('If you are not already a user, please register')}}">
-                                    {{_('Register')}}
-                                </a>
-                                {% endif %}
-                                <!-- Add Back to Public Dashboards Button -->
-                                <a href="/public/" class="btn btn-block btn-default" style="margin-top: 10px;">
-                                    <i class="fa fa-arrow-left"></i> {{_('Back to Public Dashboards')}}
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </form>
+  .sentinel-brand-panel::after {
+    content: '';
+    position: absolute;
+    bottom: -80px;
+    right: -60px;
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
+    background: rgba(43, 106, 106, 0.12);
+    pointer-events: none;
+  }
 
-            </div>
+  .sentinel-brand-top {
+    position: relative;
+    z-index: 1;
+  }
+
+  .sentinel-brand-seal {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+
+  .sentinel-seal-circle {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 18px;
+    color: #a8d4c8;
+  }
+
+  .sentinel-seal-text {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.5);
+    line-height: 1.4;
+  }
+
+  .sentinel-brand-headline {
+    font-size: 28px;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.2;
+    letter-spacing: -0.5px;
+    margin: 0 0 16px;
+  }
+
+  .sentinel-brand-tagline {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.55);
+    line-height: 1.6;
+    max-width: 300px;
+    margin: 0;
+  }
+
+  .sentinel-brand-indicators {
+    position: relative;
+    z-index: 1;
+    margin-top: 48px;
+  }
+
+  .sentinel-brand-indicators-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.3);
+    margin-bottom: 12px;
+  }
+
+  .sentinel-indicator-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sentinel-indicator-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  .sentinel-indicator-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #2b6a6a;
+    flex-shrink: 0;
+  }
+
+  .sentinel-brand-footer {
+    position: relative;
+    z-index: 1;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 20px;
+  }
+
+  .sentinel-brand-footer-text {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.28);
+    line-height: 1.5;
+  }
+
+  /* ── RIGHT FORM PANEL ── */
+  .sentinel-form-panel {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 40px;
+    background: #f4f6f9;
+  }
+
+  .sentinel-form-card {
+    width: 100%;
+    max-width: 400px;
+  }
+
+  .sentinel-form-header {
+    margin-bottom: 32px;
+  }
+
+  .sentinel-form-kicker {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 8px;
+  }
+
+  .sentinel-form-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1e2d45;
+    letter-spacing: -0.4px;
+    margin: 0 0 4px;
+  }
+
+  .sentinel-form-subtitle {
+    font-size: 13px;
+    color: #64748b;
+    margin: 0;
+  }
+
+  /* Form fields */
+  .sentinel-field {
+    margin-bottom: 16px;
+  }
+
+  .sentinel-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    color: #64748b;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .sentinel-input-wrap {
+    position: relative;
+  }
+
+  .sentinel-input-icon {
+    position: absolute;
+    left: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b0;
+    font-size: 13px;
+    pointer-events: none;
+  }
+
+  .sentinel-input {
+    width: 100%;
+    height: 38px;
+    padding: 0 12px 0 34px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #1e2d45;
+    background: #ffffff;
+    border: 1px solid #cbd5e0;
+    border-radius: 4px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    box-sizing: border-box;
+  }
+
+  .sentinel-input::placeholder {
+    color: #94a3b0;
+  }
+
+  .sentinel-input:hover {
+    border-color: #2b6a6a;
+  }
+
+  .sentinel-input:focus {
+    border-color: #2b6a6a;
+    box-shadow: 0 0 0 2px rgba(43, 106, 106, 0.12);
+  }
+
+  /* Error state */
+  .sentinel-field-error .sentinel-input {
+    border-color: #a83232;
+  }
+
+  .sentinel-field-error .sentinel-input:focus {
+    box-shadow: 0 0 0 2px rgba(168, 50, 50, 0.12);
+  }
+
+  .sentinel-error-text {
+    font-size: 12px;
+    color: #a83232;
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* Buttons */
+  .sentinel-btn-primary {
+    width: 100%;
+    height: 40px;
+    background: #2b6a6a;
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: background 0.15s ease;
+    letter-spacing: 0.1px;
+  }
+
+  .sentinel-btn-primary:hover {
+    background: #245858;
+  }
+
+  .sentinel-btn-primary:active {
+    background: #1d4a4a;
+  }
+
+  .sentinel-btn-secondary {
+    width: 100%;
+    height: 38px;
+    background: #ffffff;
+    border: 1px solid #cbd5e0;
+    border-radius: 4px;
+    color: #374151;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    margin-top: 10px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-decoration: none;
+  }
+
+  .sentinel-btn-secondary:hover {
+    border-color: #94a3b0;
+    background: #f8fafc;
+    color: #374151;
+    text-decoration: none;
+  }
+
+  /* Divider */
+  .sentinel-divider {
+    border: none;
+    border-top: 1px solid #e2e8f0;
+    margin: 20px 0;
+  }
+
+  /* Auth note */
+  .sentinel-auth-note {
+    font-size: 11px;
+    color: #94a3b0;
+    text-align: center;
+    margin-top: 16px;
+    line-height: 1.5;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .sentinel-brand-panel {
+      display: none;
+    }
+    .sentinel-form-panel {
+      padding: 32px 24px;
+      background: #ffffff;
+      align-items: flex-start;
+      padding-top: 60px;
+    }
+  }
+</style>
+
+<div class="sentinel-login-shell">
+
+  <!-- Brand Panel -->
+  <div class="sentinel-brand-panel">
+    <div class="sentinel-brand-top">
+      <div class="sentinel-brand-seal">
+        <div class="sentinel-seal-circle">⚕</div>
+        <div class="sentinel-seal-text">Ministry of Health<br>Republic of Uganda</div>
+      </div>
+
+      <h1 class="sentinel-brand-headline">
+        Malaria Elimination<br>&amp; Response<br>Analytics
+      </h1>
+      <p class="sentinel-brand-tagline">
+        Transforming surveillance data into evidence-based decisions
+        for malaria elimination across Uganda.
+      </p>
+
+      <div class="sentinel-brand-indicators">
+        <div class="sentinel-brand-indicators-label">Data sources</div>
+        <div class="sentinel-indicator-list">
+          <div class="sentinel-indicator-item">
+            <div class="sentinel-indicator-dot"></div>
+            HMIS / DHIS2 — National health information
+          </div>
+          <div class="sentinel-indicator-item">
+            <div class="sentinel-indicator-dot"></div>
+            NMCP — Programme surveillance data
+          </div>
+          <div class="sentinel-indicator-item">
+            <div class="sentinel-indicator-dot"></div>
+            Community case management systems
+          </div>
+          <div class="sentinel-indicator-item">
+            <div class="sentinel-indicator-dot"></div>
+            Entomology &amp; vector surveillance
+          </div>
         </div>
+      </div>
     </div>
+
+    <div class="sentinel-brand-footer">
+      <p class="sentinel-brand-footer-text">
+        Authorized access only. All activity is logged and monitored.<br>
+        Powered by Apache Superset — Uganda Malaria Data Repository.
+      </p>
+    </div>
+  </div>
+
+  <!-- Form Panel -->
+  <div class="sentinel-form-panel">
+    <div class="sentinel-form-card">
+
+      <div class="sentinel-form-header">
+        <div class="sentinel-form-kicker">Secure portal</div>
+        <h2 class="sentinel-form-title">Sign in to your account</h2>
+        <p class="sentinel-form-subtitle">Enter your credentials to access the analytics platform</p>
+      </div>
+
+      <form action="" method="post" name="login" autocomplete="on">
+        {{ form.hidden_tag() }}
+
+        <!-- Username -->
+        <div class="sentinel-field {% if form.errors.username is defined %}sentinel-field-error{% endif %}">
+          <label class="sentinel-label" for="username">{{_("Username")}}</label>
+          <div class="sentinel-input-wrap">
+            <span class="sentinel-input-icon"><i class="fa fa-user"></i></span>
+            {{ form.username(size=80, class="sentinel-input", autofocus=true, placeholder=_("Enter your username")) }}
+          </div>
+          {% for error in form.errors.get('username', []) %}
+          <div class="sentinel-error-text"><i class="fa fa-exclamation-circle"></i> {{ error }}</div>
+          {% endfor %}
+        </div>
+
+        <!-- Password -->
+        <div class="sentinel-field {% if form.errors.password is defined %}sentinel-field-error{% endif %}">
+          <label class="sentinel-label" for="password">{{_("Password")}}</label>
+          <div class="sentinel-input-wrap">
+            <span class="sentinel-input-icon"><i class="fa fa-lock"></i></span>
+            {{ form.password(size=80, class="sentinel-input", placeholder=_("Enter your password")) }}
+          </div>
+          {% for error in form.errors.get('password', []) %}
+          <div class="sentinel-error-text"><i class="fa fa-exclamation-circle"></i> {{ error }}</div>
+          {% endfor %}
+        </div>
+
+        <!-- Sign In -->
+        <input class="sentinel-btn-primary" type="submit" value="{{ _('Sign In') }}">
+
+        {% if appbuilder.sm.auth_user_registration %}
+        <a href="{{ appbuilder.sm.get_url_for_registeruser }}" class="sentinel-btn-secondary">
+          <i class="fa fa-user-plus"></i> {{ _('Create an account') }}
+        </a>
+        {% endif %}
+
+        <hr class="sentinel-divider">
+
+        <!-- Back to public portal -->
+        <a href="/public/" class="sentinel-btn-secondary">
+          <i class="fa fa-arrow-left"></i> {{ _('Back to Public Dashboards') }}
+        </a>
+
+        <p class="sentinel-auth-note">
+          Access is restricted to authorized Ministry of Health personnel.<br>
+          Contact your system administrator for account assistance.
+        </p>
+
+      </form>
+    </div>
+  </div>
+
 </div>
 {% endblock %}
