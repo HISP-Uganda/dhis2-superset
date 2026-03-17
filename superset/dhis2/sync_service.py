@@ -449,6 +449,10 @@ def _analytics_error_status_code(exc: Exception) -> int | None:
 
 
 def _is_retryable_analytics_error(exc: Exception) -> bool:
+    # RuntimeError is raised for non-retryable DHIS2 server-side conditions
+    # (e.g. E7144 — analytics tables not built).  Never retry these.
+    if isinstance(exc, RuntimeError):
+        return False
     if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
         return True
     status_code = _analytics_error_status_code(exc)
@@ -800,12 +804,7 @@ class DHIS2SyncService:
     """
 
     def __init__(self) -> None:
-        # Tracks instance IDs for which POST /api/analytics returned 405
-        # Method Not Allowed.  Once an instance is recorded here, all
-        # subsequent analytics requests for that instance use GET instead of
-        # POST.  This handles DHIS2 deployments (or reverse-proxy
-        # configurations) that only allow GET on the analytics endpoint.
-        self._post_not_allowed: set[int] = set()
+        pass
 
     # ------------------------------------------------------------------
     # Public entrypoint
@@ -1698,7 +1697,11 @@ class DHIS2SyncService:
         page: int = 1,
         page_size: int = _ANALYTICS_PAGE_SIZE,
     ) -> dict[str, Any]:
-        """Execute a single ``/api/analytics`` request against *instance*.
+        """Execute a single ``GET /api/analytics`` request against *instance*.
+
+        Uses the DHIS2 2.39+ recommended approach: GET with ``Accept:
+        application/json``.  Falls back to POST (form-encoded) automatically
+        when GET returns 414 URI Too Long (very large org-unit sets).
 
         Args:
             instance: Source DHIS2 instance (provides base URL and auth headers).
@@ -1713,21 +1716,21 @@ class DHIS2SyncService:
             Raw DHIS2 analytics JSON response as a Python dict.
 
         Raises:
-            :class:`requests.HTTPError`: For non-2xx responses.
+            :class:`RuntimeError`: For DHIS2 error codes that indicate a
+                server-side configuration problem (e.g. E7144 — analytics
+                tables not built).  These are non-retryable.
+            :class:`requests.HTTPError`: For other non-2xx HTTP responses.
             :class:`requests.RequestException`: For network-level failures.
             :class:`ValueError`: If the response body is not valid JSON.
         """
         base_url = instance.url.rstrip("/")
-        # Use /api/analytics without the .json suffix — several DHIS2 versions
-        # and reverse-proxy configurations return 405 on /api/analytics.json
-        # but accept /api/analytics (which also supports JSON via Accept header).
+        # DHIS2 2.39+ recommends GET /api/analytics with Accept: application/json.
+        # The .json suffix URL variant is deprecated and may return 405 on some
+        # reverse-proxy configurations.
         url = f"{base_url}/api/analytics"
 
-        # Build form-encoded body for POST to avoid 414 Request-URI Too Long when
-        # many org-unit UIDs are included.  DHIS2 analytics accepts identical
-        # parameters via POST (application/x-www-form-urlencoded).
-        # ``requests`` sends a list value as repeated keys: dimension=dx:…&dimension=pe:…
-        form_data: list[tuple[str, str]] = [
+        # Build the parameter list (repeated keys produce dimension=dx:…&dimension=pe:…)
+        params: list[tuple[str, str]] = [
             ("dimension", f"dx:{';'.join(dx_ids)}"),
             ("dimension", f"pe:{';'.join(periods)}"),
             ("dimension", f"ou:{';'.join(org_units)}"),
@@ -1738,57 +1741,66 @@ class DHIS2SyncService:
             ("pageSize", str(page_size)),
         ]
 
-        use_get = instance.id in self._post_not_allowed
+        auth_headers = instance.get_auth_headers()
 
-        if use_get:
+        logger.debug(
+            "Sync: GET %s page=%d (dx count=%d, ou count=%d)",
+            url,
+            page,
+            len(dx_ids),
+            len(org_units),
+        )
+        resp = requests.get(
+            url,
+            params=params,
+            headers={"Accept": "application/json", **auth_headers},
+            timeout=_REQUEST_TIMEOUT,
+        )
+
+        if resp.status_code == 414:
+            # URI Too Long — fall back to POST with form-encoded body so that
+            # very large org-unit sets don't hit query-string length limits.
             logger.debug(
-                "Sync: GET %s page=%d (dx count=%d, ou count=%d) [POST not allowed]",
-                url,
-                page,
-                len(dx_ids),
-                len(org_units),
+                "Sync: GET returned 414 for instance '%s'; retrying as POST form-encoded",
+                instance.name,
             )
-            resp = requests.get(
+            resp = requests.post(
                 url,
-                params=form_data,
-                headers={"Accept": "application/json", **instance.get_auth_headers()},
+                data=params,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    **auth_headers,
+                },
                 timeout=_REQUEST_TIMEOUT,
             )
-        else:
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                **instance.get_auth_headers(),
-            }
-            logger.debug(
-                "Sync: POST %s page=%d (dx count=%d, ou count=%d)",
-                url,
-                page,
-                len(dx_ids),
-                len(org_units),
-            )
-            resp = requests.post(url, data=form_data, headers=headers, timeout=_REQUEST_TIMEOUT)
-
-            if resp.status_code == 405:
-                # This DHIS2 instance (or its reverse proxy) does not accept
-                # POST on the analytics endpoint.  Record it so future pages
-                # and batches use GET directly, then retry this request.
-                logger.warning(
-                    "Sync: POST to %s returned 405 Method Not Allowed for instance '%s'; "
-                    "falling back to GET for all subsequent requests to this instance",
-                    url,
-                    instance.name,
-                )
-                self._post_not_allowed.add(instance.id)
-                resp = requests.get(
-                    url,
-                    params=form_data,
-                    headers={"Accept": "application/json", **instance.get_auth_headers()},
-                    timeout=_REQUEST_TIMEOUT,
-                )
 
         if not resp.ok:
-            reason = str(getattr(resp, "reason", "") or "").strip() or None
+            # Attempt to extract a structured DHIS2 error from the response body.
+            dhis2_error_code: str | None = None
+            dhis2_message: str | None = None
+            try:
+                error_body = resp.json()
+                dhis2_error_code = error_body.get("errorCode")
+                dhis2_message = (
+                    error_body.get("message")
+                    or error_body.get("devMessage")
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+            # E7144: Analytics aggregation tables have not been built on this
+            # DHIS2 instance.  This is a server-side prerequisite — retrying
+            # will not help.  Raise a RuntimeError so that the caller does not
+            # apply the normal retryable-error handling.
+            if dhis2_error_code == "E7144":
+                raise RuntimeError(
+                    f"DHIS2 analytics tables not available on '{instance.name}' (E7144). "
+                    "The DHIS2 Analytics aggregation job must be run via Data Administration "
+                    f"before data can be exported. DHIS2 message: {dhis2_message}"
+                )
+
+            reason = dhis2_message or str(getattr(resp, "reason", "") or "").strip() or None
             if resp.status_code == 524:
                 reason = "Gateway Timeout from the upstream DHIS2 server"
             elif resp.status_code == 504:
@@ -1799,6 +1811,10 @@ class DHIS2SyncService:
                 reason = reason or "Unknown upstream error"
             elif reason is None:
                 reason = "Upstream server error"
+
+            if dhis2_error_code:
+                reason = f"[{dhis2_error_code}] {reason}"
+
             raise requests.HTTPError(
                 f"{resp.status_code} Server Error: {reason} for url: {resp.url}",
                 response=resp,
