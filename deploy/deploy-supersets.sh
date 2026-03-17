@@ -222,8 +222,11 @@ remote_worker() {
     local ct="$1"
     shift || true
     local payload
-    payload=$'set -e\nset +u\n'"$*"
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "$payload"
+    # Do NOT use bash -lc (login shell): sourcing /etc/profile.d/* can set
+    # ERR traps that fire even through '|| true', silently closing the
+    # SSH session.  Set PATH explicitly so system tools are always found.
+    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$*"
+    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
   }
 
   exec_in_ct_as_postgres() {
@@ -231,8 +234,8 @@ remote_worker() {
     shift || true
     local inner="$*"
     local payload
-    payload=$'set -e\nset +u\n'"su - postgres -s /bin/bash -c $(printf '%q' "$inner")"
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "$payload"
+    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"su - postgres -s /bin/bash -c $(printf '%q' "$inner")"
+    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
   }
 
   ct_ip() {
@@ -503,10 +506,12 @@ SQL"
       test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }
 
       echo 'cleanup: stopping services'
-      pkill -f '[g]unicorn.*superset' || true
-      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null || true
-      pkill -f '[c]elery.*superset.tasks.celery_app' || true
+      set +e
+      pkill -f '[g]unicorn.*superset'       2>/dev/null
+      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null
+      pkill -f '[c]elery.*superset.tasks.celery_app' 2>/dev/null
       sleep 1
+      set -e
 
       echo 'cleanup: making base dirs'
       mkdir -p '$SUPERSET_HOME' '$CONFIG_DIR' '$BACKUP_DIR'
@@ -1591,10 +1596,12 @@ AP
     ensure_superset_config_exists
 
     exec_in_ct "$CT_SUP" "
-      pkill -f '[g]unicorn.*superset' || true
-      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null || true
-      pkill -f '[c]elery.*superset.tasks.celery_app' || true
+      set +e
+      pkill -f '[g]unicorn.*superset'       2>/dev/null
+      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null
+      pkill -f '[c]elery.*superset.tasks.celery_app' 2>/dev/null
       sleep 2
+      set -e
 
       test -f '$SUPERSET_CONFIG_FILE'
       test -f '$ENV_FILE'
