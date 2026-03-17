@@ -194,7 +194,7 @@ const ChartContextMenu = (
     formData.datasource,
     dashboardId,
     formData,
-    !canDrillToDetail && !canDrillBy,
+    (!canDrillToDetail && !canDrillBy) || !formData.datasource,
   );
 
   const isLoadingDataset = datasetResource.status === ResourceStatus.Loading;

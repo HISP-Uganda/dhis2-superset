@@ -90,6 +90,14 @@ export const useDatasetDrillInfo = (
     const fetchDataset = async () => {
       try {
         const numericDatasetId = getDatasetId(datasetId);
+
+        // Guard: if the dataset ID is not yet resolved, skip the fetch.
+        // This prevents /api/v1/dataset/NaN/drill_info/ 404s that occur
+        // when datasource is undefined while the chart is still loading.
+        if (!numericDatasetId || !Number.isFinite(numericDatasetId)) {
+          return;
+        }
+
         const loadDrillByOptionsExtension = getExtensionsRegistry().get(
           'load.drillby.options',
         );
