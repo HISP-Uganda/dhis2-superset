@@ -800,7 +800,7 @@ class DHIS2SyncService:
     """
 
     def __init__(self) -> None:
-        # Tracks instance IDs for which POST /api/analytics.json returned 405
+        # Tracks instance IDs for which POST /api/analytics returned 405
         # Method Not Allowed.  Once an instance is recorded here, all
         # subsequent analytics requests for that instance use GET instead of
         # POST.  This handles DHIS2 deployments (or reverse-proxy
@@ -1698,7 +1698,7 @@ class DHIS2SyncService:
         page: int = 1,
         page_size: int = _ANALYTICS_PAGE_SIZE,
     ) -> dict[str, Any]:
-        """Execute a single ``/api/analytics.json`` request against *instance*.
+        """Execute a single ``/api/analytics`` request against *instance*.
 
         Args:
             instance: Source DHIS2 instance (provides base URL and auth headers).
@@ -1718,7 +1718,10 @@ class DHIS2SyncService:
             :class:`ValueError`: If the response body is not valid JSON.
         """
         base_url = instance.url.rstrip("/")
-        url = f"{base_url}/api/analytics.json"
+        # Use /api/analytics without the .json suffix — several DHIS2 versions
+        # and reverse-proxy configurations return 405 on /api/analytics.json
+        # but accept /api/analytics (which also supports JSON via Accept header).
+        url = f"{base_url}/api/analytics"
 
         # Build form-encoded body for POST to avoid 414 Request-URI Too Long when
         # many org-unit UIDs are included.  DHIS2 analytics accepts identical

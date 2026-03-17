@@ -1,6 +1,7 @@
 # Superset specific config
 import os
 from datetime import timedelta
+from celery.schedules import crontab
 
 # ============================================================================
 # TIMEOUT CONFIGURATION FOR DHIS2
@@ -330,44 +331,30 @@ class CeleryConfig:
     timezone = 'UTC'
     enable_utc = True
 
-    # Task routing
+    # Task routing — route DHIS2 sync tasks to the 'dhis2' queue so the
+    # worker can be targeted with -Q dhis2 independently if needed.
     task_routes = {
-        'dhis2.*': {'queue': 'dhis2'},
+        'superset.tasks.dhis2_sync.*': {'queue': 'dhis2'},
+        'superset.tasks.dhis2_cache.*': {'queue': 'dhis2'},
+        'superset.tasks.dhis2_metadata.*': {'queue': 'dhis2'},
     }
 
-    # Beat schedule for automatic cache warming
+    # Beat schedule — must use celery.schedules.crontab objects, not raw dicts.
     beat_schedule = {
-        # Warm DHIS2 cache every 6 hours (adjust based on your DHIS2 analytics schedule)
-        'dhis2-cache-warm-6hourly': {
-            'task': 'dhis2.warm_cache',
-            'schedule': 21600.0,  # 6 hours in seconds
-            'kwargs': {
-                'database_id': 1,  # TODO: Update with your DHIS2 database ID
-                'dataset_configs': None,  # Use default configs
-            },
-        },
-        # Warm cache after typical DHIS2 analytics completion (5 AM daily)
-        'dhis2-cache-warm-daily': {
-            'task': 'dhis2.warm_cache',
-            'schedule': {
-                'type': 'crontab',
-                'hour': 5,
-                'minute': 0,
-            },
-            'kwargs': {
-                'database_id': 1,  # TODO: Update with your DHIS2 database ID
-                'dataset_configs': None,
-            },
-        },
-        # Check every 15 minutes which staged datasets are due for a sync and
-        # dispatch individual sync tasks for each one that has elapsed its cron
-        # schedule since the last successful sync.
+        # Every 15 minutes: check which staged datasets are due for a sync
+        # and dispatch individual sync_staged_dataset tasks for each one.
         'dhis2-sync-scheduled': {
             'task': 'superset.tasks.dhis2_sync.sync_all_scheduled_datasets',
-            'schedule': {
-                'type': 'crontab',
-                'minute': '*/15',
-            },
+            'schedule': crontab(minute='*/15'),
+        },
+        # Standard Superset report scheduler (required for alerts/reports).
+        'reports.scheduler': {
+            'task': 'reports.scheduler',
+            'schedule': crontab(minute='*', hour='*'),
+        },
+        'reports.prune_log': {
+            'task': 'reports.prune_log',
+            'schedule': crontab(minute=0, hour=0),
         },
     }
 

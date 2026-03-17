@@ -1394,6 +1394,7 @@ PY
       set +e
       PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/celery' --app=superset.tasks.celery_app:app worker \
         --pool=prefork -O fair -c '$CELERY_CONCURRENCY' \
+        -Q celery,dhis2 \
         >> '$CELERY_LOG' 2>&1 &
       celery_pid=\$!
       echo \$celery_pid > '$CELERY_PID_FILE'
@@ -1410,8 +1411,24 @@ PY
         tail -n 200 '$CELERY_LOG' || true
         exit 43
       fi
-      set -e
 
+      # Wait until the Celery worker responds to status checks.  This ensures
+      # tasks will be accepted before the deployment completes.  We retry
+      # status for up to 30 seconds.  If the command returns a non-zero
+      # exit code, it means no worker is accepting tasks yet.
+      tries=0
+      while true; do
+        PYTHONPATH='$WORK_SRC' '$VENV/bin/celery' --app=superset.tasks.celery_app:app status >/dev/null 2>&1 && break
+        tries=$((tries + 1))
+        if [ "$tries" -ge 30 ]; then
+          echo 'ERROR: celery worker not ready after 30 seconds'
+          tail -n 200 '$CELERY_LOG' || true
+          exit 47
+        fi
+        sleep 1
+      done
+
+      set -e
       echo 'celery_worker_ok=1'
     "
   }
@@ -1455,8 +1472,30 @@ PY
         tail -n 200 '$CELERY_BEAT_LOG' || true
         exit 46
       fi
-      set -e
 
+      # Wait until the beat process is fully running.  Since celery beat
+      # does not have a status command like workers do, we simply check
+      # that the process remains alive for up to 30 seconds.  If the
+      # process dies or fails to appear in `pgrep` output during this
+      # window, treat it as a startup failure.  This loop prevents the
+      # deployment from completing if the beat scheduler cannot start.
+      tries=0
+      while true; do
+        # Use pgrep with the same pattern used by pkill to locate the beat
+        # process.  It returns 0 when a matching process is found.
+        if pgrep -f '[c]elery.*superset.tasks.celery_app.*beat' >/dev/null 2>&1; then
+          break
+        fi
+        tries=$((tries + 1))
+        if [ "$tries" -ge 30 ]; then
+          echo 'ERROR: celery beat not ready after 30 seconds'
+          tail -n 200 '$CELERY_BEAT_LOG' || true
+          exit 48
+        fi
+        sleep 1
+      done
+
+      set -e
       echo 'celery_beat_ok=1'
     "
   }
