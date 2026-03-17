@@ -516,7 +516,12 @@ SQL"
       rmdir '$CT_SRC_DIR' 2>/dev/null || true
 
       mkdir -p '$CONFIG_DIR' '$BACKUP_DIR' '$LOG_DIR' '$WORK_DIR'
-      rm -rf '$WORK_SRC'
+      # Use find -depth -delete first so deeply-nested node_modules (which
+      # can cause 'Directory not empty' on rm -rf due to inode limits or
+      # overlay FS quirks) is removed bottom-up before the final rm.
+      if [ -d '$WORK_SRC' ]; then
+        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' || true
+      fi
       mkdir -p '$WORK_SRC'
     "
   }
@@ -526,7 +531,9 @@ SQL"
     verify_host_repo_checkout
 
     exec_in_ct "$CT_SUP" "
-      rm -rf '$WORK_SRC'
+      if [ -d '$WORK_SRC' ]; then
+        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' || true
+      fi
       mkdir -p '$WORK_SRC'
     "
 
