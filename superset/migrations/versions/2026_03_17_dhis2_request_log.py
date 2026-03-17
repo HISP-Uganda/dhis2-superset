@@ -29,7 +29,7 @@ from sqlalchemy import inspect
 
 
 revision = "dhis2_request_log_v1"
-down_revision = "dhis2_job_control_v1"
+down_revision = "2026_03_16_merge_heads"
 
 
 def _table_exists(table_name: str) -> bool:
