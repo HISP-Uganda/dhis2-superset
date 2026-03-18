@@ -31,6 +31,11 @@ import {
   subtitleControl,
   showMetricNameControl,
   metricNameFontSizeWithVisibility,
+  cardVariantControl,
+  cardShadowControl,
+  cardBorderRadiusControl,
+  valueColorControl,
+  textAlignControl,
 } from '../sharedControls';
 
 export default {
@@ -123,6 +128,17 @@ export default {
             },
           },
         ],
+      ],
+    },
+    {
+      label: t('Appearance'),
+      expanded: false,
+      controlSetRows: [
+        [textAlignControl],
+        [cardVariantControl],
+        [cardShadowControl],
+        [cardBorderRadiusControl],
+        [valueColorControl],
       ],
     },
   ],

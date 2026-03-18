@@ -906,26 +906,20 @@ const config: ControlPanelConfig = {
                   typeof window !== 'undefined' &&
                   shouldFetchLegendSets(databaseId)
                 ) {
-                  import('@superset-ui/core').then(({ SupersetClient }) => {
-                    SupersetClient.get({
-                      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=legendSets&staged=true`,
-                    })
-                      .then(response => {
-                        if (Array.isArray(response.json?.result)) {
-                          window.localStorage.setItem(
-                            cacheKey,
-                            JSON.stringify({
-                              data: response.json.result,
-                              timestamp: Date.now(),
-                              status: response.json?.status || 'success',
-                            }),
-                          );
-                        }
-                      })
-                      .catch(() => {
-                        // Fallback to column-attached legends until staged legend sets arrive.
-                      });
-                  });
+                  // Defer out of the render/mapStateToProps cycle so we never
+                  // trigger a synchronous state update while React is rendering
+                  // (causes "Cannot update a component while rendering" warning).
+                  setTimeout(() => {
+                    import('src/utils/dhis2LegendColorSchemes').then(
+                      ({ syncDHIS2LegendSchemesForDatabase }) => {
+                        syncDHIS2LegendSchemesForDatabase(databaseId).catch(
+                          () => {
+                            // Fallback to column-attached legends until staged legend sets arrive.
+                          },
+                        );
+                      },
+                    );
+                  }, 0);
                 }
 
                 return {
@@ -1013,6 +1007,37 @@ const config: ControlPanelConfig = {
               description: t('Color for areas with no data'),
               default: { r: 204, g: 204, b: 204, a: 1 },
               renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
+      label: t('Filters'),
+      expanded: true,
+      controlSetRows: [
+        // DHIS2ColumnFilterControl — unified column filter for staged datasets.
+        // Pick any dataset column; its distinct values are fetched immediately
+        // from the backend so users can select from real data (not free-form).
+        // Multiple column filters are supported simultaneously.
+        // buildQuery.ts translates each {column, values} entry to WHERE col IN (...).
+        // For non-staged datasets, standard adhoc_filters is still available below.
+        [
+          {
+            name: 'dhis2_column_filters',
+            config: {
+              type: 'DHIS2ColumnFilterControl',
+              label: t('Data Filters'),
+              description: t(
+                'Add one or more column filters. ' +
+                  'Select a column, then choose from its actual values in the data. ' +
+                  'Period column: values like 2024Q1, 2024, 202401. ' +
+                  'Multiple filters are combined with AND.',
+              ),
+              default: [],
+              mapStateToProps: (state: any) => ({
+                datasource: state.datasource,
+              }),
             },
           },
         ],

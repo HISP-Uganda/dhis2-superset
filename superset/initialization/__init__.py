@@ -170,10 +170,12 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.datasets.columns.api import DatasetColumnsRestApi
         from superset.datasets.metrics.api import DatasetMetricRestApi
         from superset.datasource.api import DatasourceRestApi
+        from superset.local_staging.api import LocalStagingRestApi
         from superset.dhis2.api import DHIS2RestApi, DHIS2CacheApi
         from superset.dhis2.admin_views import (
             DHIS2AdminView,
             dhis2_frontend_blueprint,
+            local_staging_blueprint,
         )
         from superset.dhis2.boundaries import DHIS2BoundariesRestApi
         from superset.dhis2.data_values_api import DHIS2DataValuesRestApi
@@ -255,6 +257,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
 
         self.superset_app.register_blueprint(health_blueprint)
         self.superset_app.register_blueprint(dhis2_frontend_blueprint)
+        self.superset_app.register_blueprint(local_staging_blueprint)
 
         #
         # Setup API views
@@ -279,6 +282,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(DatasetColumnsRestApi)
         appbuilder.add_api(DatasetMetricRestApi)
         appbuilder.add_api(DatasourceRestApi)
+        appbuilder.add_api(LocalStagingRestApi)
         appbuilder.add_api(DHIS2RestApi)
         appbuilder.add_api(DHIS2CacheApi)
         appbuilder.add_api(DHIS2BoundariesRestApi)
@@ -667,6 +671,14 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         if feature_flag_manager.is_feature_enabled("ENABLE_EXTENSIONS"):
             self.init_core_api()
             self.init_extensions()
+
+        # Bring existing DHIS2 staging/serving tables up-to-date with the
+        # current code without any data loss or table rebuilds.
+        try:
+            from superset.dhis2.backfill import run_compatibility_backfill  # pylint: disable=import-outside-toplevel
+            run_compatibility_backfill()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("DHIS2 compat backfill failed — non-fatal", exc_info=True)
 
     def check_secret_key(self) -> None:
         def log_default_secret_key_warning() -> None:

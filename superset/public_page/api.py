@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from flask import current_app, request, Response
@@ -27,6 +28,12 @@ from sqlalchemy import func, text
 from superset.extensions import db, event_logger
 
 logger = logging.getLogger(__name__)
+
+# Simple in-process cache for indicator highlights.
+# Avoids hitting the DB on every public page load; 3-minute TTL balances
+# freshness with performance for a public read-only endpoint.
+_HIGHLIGHTS_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+_HIGHLIGHTS_CACHE_TTL = 180  # seconds
 
 
 # Default configuration for public landing page
@@ -166,7 +173,14 @@ class PublicPageRestApi(BaseApi):
         """
         try:
             limit = min(int(request.args.get("limit", 20)), 100)
-            highlights = self._fetch_indicator_highlights(limit)
+            now = time.monotonic()
+            cached = _HIGHLIGHTS_CACHE
+            if cached["data"] is not None and (now - cached["ts"]) < _HIGHLIGHTS_CACHE_TTL:
+                highlights = cached["data"]
+            else:
+                highlights = self._fetch_indicator_highlights(limit)
+                cached["data"] = highlights
+                cached["ts"] = now
             return self.response(200, result=highlights, count=len(highlights))
         except Exception as ex:
             logger.warning("indicator_highlights error: %s", ex)

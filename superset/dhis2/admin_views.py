@@ -133,3 +133,15 @@ def dhis2_local_data() -> FlaskResponse:
 @dhis2_frontend_blueprint.route("/downloads/")
 def dhis2_downloads() -> FlaskResponse:
     return _render_authenticated_shell()
+
+
+local_staging_blueprint = Blueprint(
+    "local_staging_frontend",
+    __name__,
+    url_prefix="/superset/local-staging",
+)
+
+
+@local_staging_blueprint.route("/")
+def local_staging_settings() -> FlaskResponse:
+    return _render_authenticated_shell()

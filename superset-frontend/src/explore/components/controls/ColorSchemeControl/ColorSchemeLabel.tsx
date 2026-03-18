@@ -79,7 +79,7 @@ export default function ColorSchemeLabel(props: ColorSchemeLabelProps) {
   return (
     <Tooltip
       data-testid="tooltip"
-      overlayClassName="color-scheme-tooltip"
+      classNames={{ root: 'color-scheme-tooltip' }}
       title={tooltipContent}
       key={id}
       open={showTooltip}

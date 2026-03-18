@@ -448,7 +448,9 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
             # for legacy dashboard imports which have the wrong query_context in them
             try:
                 query_context = slc.get_query_context()
-            except DatasetNotFoundError:
+            except Exception:  # pylint: disable=broad-except
+                # Guard against DatasetNotFoundError, DatasourceNotFound, or any
+                # other error from stale query_context datasource references.
                 query_context = None
 
             # legacy charts don't have query_context charts
@@ -2444,6 +2446,13 @@ class SqlaTable(
         return None
 
     def cleanup_linked_dhis2_staged_dataset(self, connection: Connection) -> None:
+        """Delete the DHIS2StagedDataset and drop its DuckDB tables when this
+        SqlaTable is deleted.
+
+        The ``connection`` argument is the SQLAlchemy connection to the Superset
+        *metadata* database (SQLite/Postgres).  DuckDB DDL must be executed via
+        the staging engine's own connection — never via ``connection``.
+        """
         staged_dataset_id = self._get_linked_dhis2_staged_dataset_id()
         if staged_dataset_id is None:
             return
@@ -2467,25 +2476,33 @@ class SqlaTable(
         if staged_dataset is None:
             return
 
-        from superset.dhis2.staging_engine import DHIS2StagingEngine
+        logger.info(
+            "cleanup_linked_dhis2_staged_dataset: dropping DuckDB tables for "
+            "staged dataset id=%s (SqlaTable id=%s deleted)",
+            staged_dataset_id,
+            self.id,
+        )
 
+        # Drop the physical DuckDB tables through the staging engine so that
+        # the DDL runs on the DuckDB connection, not the SQLite metadata conn.
         staging_dataset_ref = SimpleNamespace(
             id=staged_dataset["id"],
             name=staged_dataset["name"],
             staging_table_name=staged_dataset["staging_table_name"],
         )
-        engine = DHIS2StagingEngine(int(staged_dataset["database_id"]))
-        staging_table_ref = engine.get_superset_sql_table_ref(staging_dataset_ref)
-        serving_table_ref = engine.get_serving_sql_table_ref(staging_dataset_ref)
+        try:
+            from superset.local_staging.engine_factory import get_active_staging_engine
+            duckdb_engine = get_active_staging_engine(int(staged_dataset["database_id"]))
+            duckdb_engine.drop_staging_table(staging_dataset_ref)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "cleanup_linked_dhis2_staged_dataset: failed to drop DuckDB "
+                "tables for staged dataset id=%s — proceeding with metadata "
+                "cleanup anyway",
+                staged_dataset_id,
+            )
 
-        logger.info(
-            "Cleaning up linked DHIS2 staged dataset id=%s for deleted dataset id=%s",
-            staged_dataset_id,
-            self.id,
-        )
-        connection.execute(sa.text(f"DROP TABLE IF EXISTS {staging_table_ref}"))
-        connection.execute(sa.text(f"DROP TABLE IF EXISTS {serving_table_ref}"))
-
+        # Remove metadata rows from the Superset metadata DB (SQLite).
         generic_dataset_id = staged_dataset.get("generic_dataset_id")
         if isinstance(generic_dataset_id, int):
             connection.execute(
@@ -2496,6 +2513,11 @@ class SqlaTable(
         connection.execute(
             sa.text("DELETE FROM dhis2_staged_datasets WHERE id = :dataset_id"),
             {"dataset_id": staged_dataset_id},
+        )
+        logger.info(
+            "cleanup_linked_dhis2_staged_dataset: removed staged dataset id=%s "
+            "and its DuckDB tables",
+            staged_dataset_id,
         )
 
     def load_database(self: SqlaTable) -> None:

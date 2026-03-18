@@ -86,6 +86,17 @@ export default function buildQuery(formData: QueryFormData) {
     } catch {
       extraParsed = null;
     }
+    // Find the period column name from datasource columns (marked with dhis2_is_period)
+    const periodColumnName = Array.isArray(datasourceAny?.columns)
+      ? (() => {
+          const col = datasourceAny.columns.find((c: any) => {
+            const extra = parseColumnExtra(c?.extra);
+            return extra?.dhis2_is_period === true || extra?.dhis2IsPeriod === true;
+          });
+          return col ? String(col?.column_name || '').trim() : null;
+        })()
+      : null;
+
     const hierarchyColumnsFromDatasource = Array.isArray(datasourceAny?.columns)
       ? datasourceAny.columns
           .filter((column: any) => {
@@ -134,14 +145,6 @@ export default function buildQuery(formData: QueryFormData) {
       }
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map buildQuery] Dataset type:', {
-      isDHIS2Dataset,
-      isStagedLocalDataset,
-      hasSQL: !!datasourceSql,
-      sqlPreview: datasourceSql.substring(0, 100),
-    });
-
     // For DHIS2 datasets, return a minimal safe query.
     // Explore still calls /api/v1/chart/data; an empty query triggers a 400.
     // We keep it tiny to avoid heavy backend work while letting DHIS2Map fetch via DHIS2DataLoader.
@@ -167,18 +170,6 @@ export default function buildQuery(formData: QueryFormData) {
               label: '__count',
             };
 
-      // eslint-disable-next-line no-console
-      console.log(
-        '[DHIS2Map buildQuery] DHIS2 dataset detected - ' +
-          'returning minimal query for component-level data fetching',
-        {
-          selectedLevel,
-          boundary_levels,
-          boundary_level,
-          minimalGroupby,
-          isStagedLocalDataset,
-        },
-      );
       return [
         {
           ...baseQueryObject,
@@ -196,14 +187,23 @@ export default function buildQuery(formData: QueryFormData) {
     }
 
     // For non-DHIS2 datasets, use standard query building
-    // Get the metric - could be a string column name or a metric object
+    // Get the metric - could be a string column name or a metric object.
+    // Notes on the fallback chain:
+    //  • column?.column_name – for simple column metrics
+    //  • label – for SQL expression metrics where label carries the column name
+    //    (e.g. label='SUM(malaria_cases)' → sqlAggPattern strips the wrapper)
+    //  • expressionType is NOT a useful fallback ('SQL' is not a column name)
+    //  • Final fallback is '' (not 'value'): 'value' is the raw PostgreSQL
+    //    staging-table column that does NOT exist in DuckDB/ClickHouse serving
+    //    tables.  Falling back to it generates a DuckDB Binder Error.  An empty
+    //    string causes sanitizedMetric to be falsy → aggregatedMetric = undefined
+    //    → safeMetrics uses COUNT(*) so the chart renders without crashing.
     let metricColumn =
       typeof metric === 'string'
         ? metric
         : (metric as any)?.column?.column_name ||
           (metric as any)?.label ||
-          (metric as any)?.expressionType ||
-          'value';
+          '';
 
     // Extract column name from SQL aggregate functions like SUM(column_name)
     const sqlAggPattern =
@@ -214,8 +214,18 @@ export default function buildQuery(formData: QueryFormData) {
       metricColumn = sqlMatch[2].trim();
     }
 
-    // Sanitize the metric name to match backend column naming
-    const sanitizedMetric = sanitizeDHIS2ColumnName(metricColumn);
+    // Sanitize the metric name to match backend column naming.
+    // Guard: 'value' and 'value_numeric' are raw PostgreSQL staging-table
+    // columns that do NOT exist in DuckDB/ClickHouse serving tables.  If a
+    // saved chart references them on a staged-local dataset, treat the metric
+    // as unset so we fall back to COUNT(*) rather than crashing with a Binder
+    // Error.
+    const _rawSanitized = sanitizeDHIS2ColumnName(metricColumn);
+    const sanitizedMetric =
+      isStagedLocalDataset &&
+      (_rawSanitized === 'value' || _rawSanitized === 'value_numeric')
+        ? ''
+        : _rawSanitized;
 
     // Sanitize org_unit_column if provided
     const sanitizedOrgUnitColumn = org_unit_column
@@ -262,6 +272,9 @@ export default function buildQuery(formData: QueryFormData) {
     });
 
     // Build columns array - request all needed columns as dimensions
+    const isLatestAggregation =
+      String(aggregation_method || '').toLowerCase() === 'latest';
+
     const columns: string[] = [];
     const addColumn = (columnName?: string) => {
       if (columnName && !columns.includes(columnName)) {
@@ -273,14 +286,36 @@ export default function buildQuery(formData: QueryFormData) {
     // focused "one level down" rendering can still color child boundaries from
     // serving-table rows without reloading from the live DHIS2 preview path.
     if (isStagedLocalDataset && effectiveHierarchyColumns.length > 0) {
-      effectiveHierarchyColumns.forEach(addColumn);
+      // Only GROUP BY up to the target hierarchy level so that SUM/AVG/etc.
+      // properly aggregates leaf-level data up to the requested display level.
+      // In focus mode the terminal is one level below the selected column so
+      // child boundaries are visible within the focused parent.
+      const terminalColumn = focusSelectedBoundaryWithChildren
+        ? selectedFocusOrgUnitColumn  // one level below selected
+        : sanitizedOrgUnitColumn;    // the selected display level
+
+      if (!isLatestAggregation && terminalColumn) {
+        const terminalIdx = effectiveHierarchyColumns.indexOf(terminalColumn);
+        const colsToGroup =
+          terminalIdx >= 0
+            ? effectiveHierarchyColumns.slice(0, terminalIdx + 1)
+            : effectiveHierarchyColumns;
+        colsToGroup.forEach(addColumn);
+      } else {
+        // Latest aggregation needs all columns for client-side latest selection.
+        effectiveHierarchyColumns.forEach(addColumn);
+      }
     } else {
       addColumn(sanitizedOrgUnitColumn);
     }
 
-    // Always include Period if available (time/granularity column)
-    if (granularity_sqla) {
-      addColumn(sanitizeDHIS2ColumnName(granularity_sqla));
+    // Always include the period column if available so the map can show it in
+    // tooltips and the user can apply period filters.
+    // Use the datasource-derived period column name first; fall back to
+    // granularity_sqla (user-selected time column).
+    const effectivePeriodColumn = periodColumnName || (granularity_sqla ? sanitizeDHIS2ColumnName(granularity_sqla) : null);
+    if (effectivePeriodColumn) {
+      addColumn(effectivePeriodColumn);
     }
 
     // Add tooltip columns
@@ -288,8 +323,6 @@ export default function buildQuery(formData: QueryFormData) {
       sanitizedTooltipColumns.forEach(addColumn);
     }
 
-    const isLatestAggregation =
-      String(aggregation_method || '').toLowerCase() === 'latest';
     const aggregateFunction = (() => {
       switch (String(aggregation_method || '').toLowerCase()) {
         case 'average':
@@ -319,30 +352,81 @@ export default function buildQuery(formData: QueryFormData) {
           }
         : undefined;
 
+    // Fallback metric so the backend never receives an empty metrics array
+    // (which causes a 500). When no user metric is selected we aggregate
+    // a non-null constant so the GROUP BY still returns one row per OU.
+    const safeMetrics = aggregatedMetric
+      ? [aggregatedMetric]
+      : [{ expressionType: 'SQL' as const, sqlExpression: 'COUNT(*)', label: '__count' }];
+
     if (isLatestAggregation) {
       // Latest needs the raw metric rows so the map can resolve the final
       // value client-side after the focused-parent filter is applied.
       addColumn(sanitizedMetric);
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map buildQuery] Building query with:', {
-      isDHIS2Dataset,
-      isStagedLocalDataset,
-      originalMetric: metricColumn,
-      sanitizedMetric,
-      sanitizedOrgUnitColumn,
-      selectedFocusOrgUnitColumn,
-      focusSelectedBoundaryWithChildren,
-      aggregationMethod: aggregation_method,
-      isLatestAggregation,
-      metricLabel,
-      aggregatedMetricLabel: aggregatedMetric?.label,
-      columns,
-      granularity: granularity_sqla,
-      tooltip_columns: sanitizedTooltipColumns,
-      row_limit: baseQueryObject.row_limit,
-    });
+    // When the serving table carries data at multiple OU levels (ou_level column
+    // present), filter to the target level to prevent double-counting aggregation
+    // across levels.
+    const ouLevelColumn = Array.isArray(datasourceAny?.columns)
+      ? datasourceAny.columns.find((c: any) => {
+          const ex = parseColumnExtra(c?.extra);
+          return ex?.dhis2_is_ou_level === true;
+        })
+      : null;
+
+    const ouLevelFilter = (() => {
+      if (!ouLevelColumn || !effectiveHierarchyColumns.length) return null;
+      // Find the target OU level from the terminal column's extra metadata
+      const terminalCol = focusSelectedBoundaryWithChildren
+        ? selectedFocusOrgUnitColumn
+        : sanitizedOrgUnitColumn;
+      if (!terminalCol) return null;
+      const colMeta = Array.isArray(datasourceAny?.columns)
+        ? datasourceAny.columns.find(
+            (c: any) =>
+              String(c?.column_name || '').trim() === terminalCol,
+          )
+        : null;
+      const colExtra = parseColumnExtra(colMeta?.extra);
+      const targetLevel = colExtra?.dhis2_ou_level;
+      if (!targetLevel || !Number.isFinite(Number(targetLevel))) return null;
+      return {
+        col: String(ouLevelColumn.column_name),
+        op: '==' as const,
+        val: Number(targetLevel),
+      };
+    })();
+
+    // Build filters from the DHIS2ColumnFilterControl (dhis2_column_filters).
+    // Each entry is {column: string, values: string[]} and maps to a SQL
+    // WHERE col IN (...) clause.  This replaces the old dhis2_filter_periods
+    // + adhoc_filters split and works for any column in the dataset.
+    interface Dhis2ColFilter { column: string; values: string[] }
+    const columnFilters: Dhis2ColFilter[] = Array.isArray(formDataAny?.dhis2_column_filters)
+      ? (formDataAny.dhis2_column_filters as Dhis2ColFilter[]).filter(
+          f => f?.column && Array.isArray(f.values) && f.values.length > 0,
+        )
+      : [];
+
+    const columnExtraFilters = columnFilters.map(f => ({
+      col: f.column,
+      op: 'IN' as const,
+      val: f.values,
+    }));
+
+    // Combine existing adhoc filters with the column filters.
+    // Never let time_range through for staged local datasets: the period
+    // column is a DHIS2 period string (e.g. "2024Q1"), not a SQL datetime,
+    // so standard date-range SQL from the backend always fails with 500.
+    const existingFilters = Array.isArray((baseQueryObject as any).filters)
+      ? (baseQueryObject as any).filters
+      : [];
+    const combinedFilters = [
+      ...existingFilters,
+      ...columnExtraFilters,
+      ...(ouLevelFilter ? [ouLevelFilter] : []),
+    ];
 
     // For staged serving-table datasets, aggregate on the backend whenever
     // possible so the map receives one row per displayed OU instead of one row
@@ -352,11 +436,15 @@ export default function buildQuery(formData: QueryFormData) {
         ...baseQueryObject,
         extras: dhis2QueryExtras,
         groupby: columns,
-        metrics: aggregatedMetric ? [aggregatedMetric] : [],
+        metrics: safeMetrics,
+        filters: combinedFilters,
         // Use a reasonable row limit (0 means unlimited which can cause issues)
         row_limit: baseQueryObject.row_limit || 10000,
-        // Disable time range filtering if not needed for DHIS2
-        time_range: baseQueryObject.time_range || 'No filter',
+        // Period column is a DHIS2 string (e.g. "2024Q1"), NOT a SQL datetime.
+        // Passing any time_range value causes the backend to generate invalid
+        // date-range SQL which always results in a 500.  Use the dedicated
+        // dhis2_filter_periods control instead.
+        time_range: 'No filter',
       },
     ];
   });

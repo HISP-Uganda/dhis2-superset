@@ -25,6 +25,7 @@ export * as sections from './sections';
 
 export * from './components/ColumnOption';
 export * from './components/ColumnTypeLabel/ColumnTypeLabel';
+export * from './components/ColumnTypeLabel/DHIS2ColumnTag';
 export * from './components/ControlSubSectionHeader';
 export * from './components/Dropdown';
 export * from './components/Menu';

@@ -289,7 +289,9 @@ export function Menu({
       case path.startsWith(Paths.Chart) || path.startsWith(Paths.Explore):
         setActiveTabs(['Charts']);
         break;
-      case path.startsWith(Paths.DHIS2) || path.startsWith(Paths.SqlLab):
+      case path.startsWith(Paths.DHIS2) ||
+        path.startsWith(Paths.SqlLab) ||
+        path.startsWith('/superset/local-staging/'):
         setActiveTabs(['Data']);
         break;
       case path.startsWith(Paths.Datasets):
@@ -421,7 +423,9 @@ export function Menu({
 
 // transform the menu data to reorganize components
 export default function MenuWrapper({ data, ...rest }: MenuProps) {
-  const dataWorkspaceChildren: MenuObjectChildProps[] = [
+  const sqlLabSeparator = '-' as const;
+
+const dataWorkspaceChildren: MenuObjectChildProps[] = [
     {
       name: 'DHIS2 Health',
       label: 'DHIS2 Health',
@@ -447,7 +451,12 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
       label: 'DHIS2 Instances',
       url: '/superset/dhis2/instances/',
     },
-    // SQL Lab is moved here automatically by isSqlMenu — no hardcoded duplicate needed
+    {
+      name: 'Staging Engine',
+      label: 'Staging Engine',
+      url: '/superset/local-staging/',
+    },
+    // SQL Lab is appended after the separator (see normalizedDataMenu.childs below)
   ];
 
   const newMenuData = {
@@ -477,6 +486,7 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
 
   const isDHIS2Menu = (item: MenuObjectProps) =>
     item.url?.startsWith('/superset/dhis2/') ||
+    item.url?.startsWith('/superset/local-staging/') ||
     item.name === 'DHIS2' ||
     item.label === 'DHIS2' ||
     item.name === 'DHIS2 Federation' ||
@@ -484,7 +494,8 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     item.childs?.some(
       child =>
         typeof child !== 'string' &&
-        child.url?.startsWith('/superset/dhis2/'),
+        (child.url?.startsWith('/superset/dhis2/') ||
+          child.url?.startsWith('/superset/local-staging/')),
     );
 
   const dedupeChildren = (children: (MenuObjectChildProps | string)[]) =>
@@ -639,11 +650,23 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     label: 'Data',
     childs: [],
   };
+  // SQL Lab entry hardcoded to the frontend SPA route so it renders as a
+  // React Router NavLink rather than an <a href> full-page reload.  The server
+  // may provide a different URL (e.g. /superset/sqllab/) that doesn't match the
+  // SPA route and would navigate away from the React app.
+  const sqlLabChild: MenuObjectChildProps = {
+    name: 'SQL Lab',
+    label: 'SQL Lab',
+    url: '/sqllab/',
+  };
+
   normalizedDataMenu.childs = dedupeChildren([
     ...dataWorkspaceChildren,
     '-',
     ...movedDataChildren.map(toDataChild),
     ...(normalizedDataMenu.childs || []),
+    sqlLabSeparator,
+    sqlLabChild,
   ]);
 
   const datasetsIndex = cleanedMenuWithoutData.findIndex(

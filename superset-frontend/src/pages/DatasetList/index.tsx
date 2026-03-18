@@ -24,7 +24,15 @@ import {
   css,
   t,
 } from '@superset-ui/core';
-import { FunctionComponent, useState, useMemo, useCallback, Key } from 'react';
+import {
+  FunctionComponent,
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  Key,
+} from 'react';
 import { Link, useHistory } from 'react-router-dom';
 import { dhis2DataPreloader } from 'src/utils/dhis2DataPreloader';
 import rison from 'rison';
@@ -156,6 +164,8 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
 }) => {
   const history = useHistory();
   const theme = useTheme();
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const {
     state: {
       loading,
@@ -185,6 +195,10 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
 
   const [datasetCurrentlyPreviewing, setDatasetCurrentlyPreviewing] =
     useState<Dataset | null>(null);
+
+  const [datasetEditLoadingId, setDatasetEditLoadingId] = useState<
+    number | null
+  >(null);
 
   const [importingDataset, showImportModal] = useState<boolean>(false);
   const [passwordFields, setPasswordFields] = useState<string[]>([]);
@@ -229,10 +243,25 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
 
   const openDatasetEditModal = useCallback(
     ({ id }: Dataset) => {
+      if (datasetEditLoadingId !== null) return; // prevent duplicate in-flight requests
+      setDatasetEditLoadingId(id);
       SupersetClient.get({
         endpoint: `/api/v1/dataset/${id}`,
       })
         .then(({ json = {} }) => {
+          // DHIS2 staged datasets use the wizard UI instead of the column/metric modal
+          const extra = json.result?.extra;
+          let extraParsed: Record<string, unknown> = {};
+          try {
+            extraParsed = extra ? JSON.parse(extra) : {};
+          } catch {
+            // ignore parse errors
+          }
+          if (extraParsed.dhis2_staged_local) {
+            history.push(`/dataset/${id}/`);
+            return;
+          }
+
           const addCertificationFields = json.result.columns.map(
             (column: ColumnObject) => {
               const {
@@ -254,9 +283,12 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
           addDangerToast(
             t('An error occurred while fetching dataset related data'),
           );
+        })
+        .finally(() => {
+          if (mountedRef.current) setDatasetEditLoadingId(null);
         });
     },
-    [addDangerToast],
+    [addDangerToast, datasetEditLoadingId, history],
   );
 
   const openDatasetDeleteModal = (dataset: Dataset) =>
@@ -445,6 +477,7 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
             original.owners.map((o: Owner) => o.id).includes(user.userId) ||
             isUserAdmin(user);
 
+          const isEditLoading = datasetEditLoadingId === original.id;
           const handleEdit = () => openDatasetEditModal(original);
           const handleDelete = () => openDatasetDeleteModal(original);
           const handleExport = () => handleBulkDatasetExport([original]);
@@ -546,10 +579,15 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
                   <span
                     role="button"
                     tabIndex={0}
-                    className={`action-button ${allowEdit ? '' : 'disabled'}`}
-                    onClick={allowEdit ? handleEdit : undefined}
+                    className={`action-button ${allowEdit && !isEditLoading ? '' : 'disabled'}`}
+                    onClick={allowEdit && !isEditLoading ? handleEdit : undefined}
+                    style={isEditLoading ? { opacity: 0.5, cursor: 'wait' } : undefined}
                   >
-                    <Icons.EditOutlined iconSize="l" />
+                    {isEditLoading ? (
+                      <Loading position="inline" size="s" />
+                    ) : (
+                      <Icons.EditOutlined iconSize="l" />
+                    )}
                   </span>
                 </Tooltip>
               )}

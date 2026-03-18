@@ -96,8 +96,21 @@ def sync_staged_dataset_task(
         :meth:`~superset.dhis2.sync_service.DHIS2SyncService.sync_staged_dataset`.
     """
     from superset import db
-    from superset.dhis2.models import DHIS2SyncJob
+    from superset.dhis2.models import DHIS2StagedDataset, DHIS2SyncJob
     from superset.dhis2.sync_service import DHIS2SyncService
+
+    # Guard: dataset may have been deleted between task dispatch and execution.
+    dataset_exists = (
+        db.session.query(DHIS2StagedDataset.id)
+        .filter(DHIS2StagedDataset.id == staged_dataset_id)
+        .scalar()
+    ) is not None
+    if not dataset_exists:
+        logger.warning(
+            "dhis2_sync: staged dataset id=%d no longer exists — skipping task",
+            staged_dataset_id,
+        )
+        return {"status": "skipped", "reason": "dataset not found"}
 
     service = DHIS2SyncService()
     if job_id is not None:

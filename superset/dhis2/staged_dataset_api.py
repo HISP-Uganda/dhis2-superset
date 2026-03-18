@@ -38,6 +38,8 @@ Routes
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from typing import Any
@@ -51,8 +53,61 @@ from superset.dhis2 import staged_dataset_service as svc
 from superset.dhis2.staging_database_service import get_staging_database
 from superset.dhis2.staging_engine import DHIS2StagingEngine
 from superset.dhis2.sync_service import schedule_staged_dataset_sync, DHIS2SyncService
+from superset.local_staging.engine_factory import get_active_staging_engine as _get_engine
 
 logger = logging.getLogger(__name__)
+
+# Cache TTLs (seconds) for read endpoints backed by local staging tables.
+# Keyed on dataset_id + last_sync_at so entries are automatically superseded
+# whenever a new sync completes — no explicit invalidation required.
+_QUERY_CACHE_TTL = 300        # 5 min — chart data
+_COLVALS_CACHE_TTL = 600      # 10 min — distinct column values
+_PERIODS_CACHE_TTL = 600      # 10 min — available period list
+
+
+def _data_cache():
+    """Lazy accessor for Superset's Redis data-cache (DATA_CACHE_CONFIG)."""
+    try:
+        from superset.extensions import cache_manager  # pylint: disable=import-outside-toplevel
+        return cache_manager.data_cache
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _cache_key(prefix: str, dataset_id: int, sync_ts: Any, **params: Any) -> str:
+    """Build a deterministic cache key that embeds the dataset's sync timestamp.
+
+    Including *sync_ts* means stale entries become unreachable as soon as a
+    new sync updates ``last_sync_at`` — no explicit delete needed.
+    """
+    payload = json.dumps(params, sort_keys=True, default=str)
+    digest = hashlib.md5(payload.encode()).hexdigest()[:16]  # noqa: S324 — not crypto
+    return f"dhis2_sv_{prefix}_{dataset_id}_{sync_ts}_{digest}"
+
+
+def _fetch_distinct_periods(
+    engine: Any,
+    dataset: Any,
+    *,
+    use_serving: bool = True,
+) -> list[str]:
+    """Return distinct period strings from staging or serving table.
+
+    Delegates to the engine's own connection so DuckDB / ClickHouse engines
+    are not forced to use Superset's metadata-DB connection.
+    """
+    try:
+        return engine.get_distinct_periods(dataset, use_serving=use_serving)
+    except Exception:  # pylint: disable=broad-except
+        table_ref = (
+            engine.get_serving_sql_table_ref(dataset)
+            if use_serving
+            else engine.get_superset_sql_table_ref(dataset)
+        )
+        logger.warning(
+            "Failed to fetch distinct periods from %s", table_ref, exc_info=True
+        )
+        return []
 
 
 def _normalize_variable_mappings(
@@ -156,7 +211,7 @@ class DHIS2StagedDatasetApi(BaseApi):
         payload = dataset.to_json()
         if not include_dataset_config:
             payload.pop("dataset_config", None)
-        payload["staging_table_ref"] = DHIS2StagingEngine(
+        payload["staging_table_ref"] = _get_engine(
             dataset.database_id
         ).get_superset_sql_table_ref(dataset)
         try:
@@ -921,27 +976,39 @@ class DHIS2StagedDatasetApi(BaseApi):
         metric_alias = body.get("metric_alias")
         aggregation_method = body.get("aggregation_method")
 
+        safe_limit = int(limit or 100)
+        safe_page = int(page or 1)
+        safe_cols = selected_columns if isinstance(selected_columns, list) else None
+        safe_filters = filters if isinstance(filters, list) else None
+        safe_group = group_by_columns if isinstance(group_by_columns, list) else None
+        safe_metric = str(metric_column).strip() if metric_column is not None and str(metric_column).strip() else None
+        safe_alias = str(metric_alias).strip() if metric_alias is not None and str(metric_alias).strip() else None
+        safe_agg = str(aggregation_method).strip() if aggregation_method is not None else None
+
+        sync_ts = str(getattr(dataset, "last_sync_at", "") or "")
+        ck = _cache_key(
+            "q", pk, sync_ts,
+            cols=safe_cols, filters=safe_filters, limit=safe_limit, page=safe_page,
+            group=safe_group, metric=safe_metric, alias=safe_alias, agg=safe_agg,
+        )
+        cache = _data_cache()
+        if cache is not None:
+            cached = cache.get(ck)
+            if cached is not None:
+                return self.response(200, result=cached)
+
         try:
             result = svc.query_serving_data(
                 pk,
-                selected_columns=selected_columns
-                if isinstance(selected_columns, list)
-                else None,
-                filters=filters if isinstance(filters, list) else None,
-                limit=int(limit or 100),
-                page=int(page or 1),
-                group_by_columns=group_by_columns
-                if isinstance(group_by_columns, list)
-                else None,
-                metric_column=str(metric_column).strip()
-                if metric_column is not None and str(metric_column).strip()
-                else None,
-                metric_alias=str(metric_alias).strip()
-                if metric_alias is not None and str(metric_alias).strip()
-                else None,
-                aggregation_method=str(aggregation_method).strip()
-                if aggregation_method is not None
-                else None,
+                selected_columns=safe_cols,
+                filters=safe_filters,
+                limit=safe_limit,
+                page=safe_page,
+                group_by_columns=safe_group,
+                metric_column=safe_metric,
+                metric_alias=safe_alias,
+                aggregation_method=safe_agg,
+                count_rows=False,
             )
         except ValueError as exc:
             return self.response_400(message=str(exc))
@@ -951,7 +1018,136 @@ class DHIS2StagedDatasetApi(BaseApi):
             )
             return self.response_500(message="Failed to query staged local data")
 
+        if cache is not None:
+            try:
+                cache.set(ck, result, timeout=_QUERY_CACHE_TTL)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
         return self.response(200, result=result)
+
+    @expose("/<int:pk>/available-periods", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def get_available_periods(self, pk: int) -> Response:
+        """Return distinct period values present in the serving table.
+
+        Used by the DHIS2Map control panel to populate the period filter
+        with the actual periods that have been synced, so users can pick
+        from real values rather than typing free-form strings.
+
+        Returns::
+
+            {"result": ["2024Q1", "2024Q2", "2024Q3", "2024Q4"]}
+        """
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        sync_ts = str(getattr(dataset, "last_sync_at", "") or "")
+        ck = _cache_key("periods", pk, sync_ts)
+        cache = _data_cache()
+        if cache is not None:
+            cached = cache.get(ck)
+            if cached is not None:
+                return self.response(200, result=cached)
+
+        try:
+            engine = _get_engine(dataset.database_id)
+            # Use the serving table when available; fall back to staging table.
+            if engine.serving_table_exists(dataset):
+                periods = _fetch_distinct_periods(engine, dataset, use_serving=True)
+            elif engine.table_exists(dataset):
+                periods = _fetch_distinct_periods(engine, dataset, use_serving=False)
+            else:
+                periods = []
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to load available periods for staged dataset id=%s", pk
+            )
+            return self.response_500(message="Failed to load available periods")
+
+        result = sorted(set(str(p) for p in periods if p))
+        if cache is not None:
+            try:
+                cache.set(ck, result, timeout=_PERIODS_CACHE_TTL)
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return self.response(200, result=result)
+
+    @expose("/<int:pk>/column-values", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def get_column_values(self, pk: int) -> Response:
+        """Return distinct values for a specific column in the staged serving table.
+
+        Query parameter ``column`` is required.  Returns up to 2 000 distinct
+        non-null values, ordered alphabetically, so the DHIS2Map filter control
+        can show real values from the data without requiring free-form typing.
+
+        Returns::
+
+            {"result": ["value1", "value2", ...]}
+        """
+        column = request.args.get("column", "").strip()
+        if not column:
+            return self.response_400(message="'column' query parameter is required")
+
+        # Reject obvious SQL-injection attempts — allow only identifier-safe chars
+        if not re.match(r"^[A-Za-z0-9_\- ]+$", column):
+            return self.response_400(message="Invalid column name")
+
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        sync_ts = str(getattr(dataset, "last_sync_at", "") or "")
+        ck = _cache_key("cv", pk, sync_ts, column=column)
+        cache = _data_cache()
+        if cache is not None:
+            cached = cache.get(ck)
+            if cached is not None:
+                return self.response(200, result=cached)
+
+        try:
+            from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+            from superset import db  # pylint: disable=import-outside-toplevel
+
+            engine = _get_engine(dataset.database_id)
+
+            if engine.serving_table_exists(dataset):
+                table_ref = engine.get_serving_sql_table_ref(dataset)
+            elif engine.table_exists(dataset):
+                table_ref = engine.get_superset_sql_table_ref(dataset)
+            else:
+                return self.response(200, result=[])
+
+            # Use quoted identifier to avoid reserved-word clashes
+            sql = (
+                f'SELECT DISTINCT "{column}" AS v FROM {table_ref} '
+                f'WHERE "{column}" IS NOT NULL '
+                f'ORDER BY "{column}" LIMIT 2000'
+            )
+            with db.engine.connect() as conn:
+                DHIS2StagingEngine.apply_connection_optimizations(
+                    conn, str(getattr(db.engine.dialect, "name", "") or "")
+                )
+                rows = conn.execute(text(sql)).fetchall()
+                values = [str(row[0]) for row in rows if row[0] is not None]
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to load column values for dataset id=%s column=%s", pk, column
+            )
+            return self.response_500(message="Failed to load column values")
+
+        if cache is not None:
+            try:
+                cache.set(ck, values, timeout=_COLVALS_CACHE_TTL)
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return self.response(200, result=values)
 
     @expose("/<int:pk>/filters", methods=["GET", "POST"])
     @protect()
@@ -1272,7 +1468,7 @@ class DHIS2StagedDatasetApi(BaseApi):
         from superset.dhis2.superset_dataset_service import (
             register_serving_table_as_superset_dataset,
         )
-        from superset.dhis2.staging_engine import DHIS2StagingEngine
+        from superset.local_staging.engine_factory import get_active_staging_engine
 
         dataset = svc.get_staged_dataset(pk)
         if dataset is None:
@@ -1280,8 +1476,14 @@ class DHIS2StagedDatasetApi(BaseApi):
 
         try:
             serving_table_ref, serving_columns = ensure_serving_table(pk)
-            engine = DHIS2StagingEngine(dataset.database_id)
-            serving_db_id = getattr(engine, "database_id", None)
+            # Use the active staging engine (DuckDB / ClickHouse) so we register
+            # under the correct Superset Database, not the DHIS2 source database.
+            engine = get_active_staging_engine(dataset.database_id)
+            if hasattr(engine, "get_or_create_superset_database"):
+                _sdb = engine.get_or_create_superset_database()
+                serving_db_id = getattr(_sdb, "id", None)
+            else:
+                serving_db_id = getattr(engine, "database_id", None)
 
             if not serving_db_id:
                 return self.response_500(message="Could not determine serving database")
@@ -1292,6 +1494,7 @@ class DHIS2StagedDatasetApi(BaseApi):
                 serving_table_ref=serving_table_ref,
                 serving_columns=serving_columns,
                 serving_database_id=serving_db_id,
+                source_database_id=dataset.database_id,
             )
             if dataset.serving_superset_dataset_id != sqla_id:
                 dataset.serving_superset_dataset_id = sqla_id
@@ -1527,5 +1730,154 @@ class DHIS2StagedDatasetApi(BaseApi):
                 "message": "Sync status reset",
                 "previous_status": old_status,
                 "stuck_jobs_reset": len(stuck_jobs),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Orphan cleanup
+    # ------------------------------------------------------------------
+
+    @expose("/orphans", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def list_orphans(self) -> Response:
+        """Return orphaned staged datasets and DuckDB tables.
+
+        An *orphaned staged dataset* is a ``DHIS2StagedDataset`` whose
+        ``serving_superset_dataset_id`` no longer points to an existing
+        ``SqlaTable`` (i.e. the dataset definition was deleted from the UI
+        without triggering the cascade).
+
+        An *orphaned DuckDB table* is a ``ds_*`` or ``sv_*`` table in the
+        staging schema for which no ``DHIS2StagedDataset`` row exists.
+
+        ---
+        get:
+          summary: List orphaned staged datasets and DuckDB tables
+          responses:
+            200:
+              description: Orphan inventory
+        """
+        from superset.connectors.sqla.models import SqlaTable
+        from superset.dhis2.models import DHIS2StagedDataset as StagedDataset
+        from superset.local_staging.engine_factory import get_active_staging_engine
+
+        # --- orphaned DHIS2StagedDataset rows ---
+        orphaned_datasets: list[dict] = []
+        all_staged = db.session.query(StagedDataset).all()
+        sqla_ids = {
+            r.id
+            for r in db.session.query(SqlaTable.id).all()
+        }
+        for ds in all_staged:
+            sid = ds.serving_superset_dataset_id
+            if sid is not None and sid not in sqla_ids:
+                orphaned_datasets.append({
+                    "id": ds.id,
+                    "name": ds.name,
+                    "staging_table_name": ds.staging_table_name,
+                    "serving_superset_dataset_id": sid,
+                    "reason": "serving SqlaTable deleted",
+                })
+
+        # --- orphaned DuckDB tables ---
+        orphaned_tables: list[str] = []
+        try:
+            engine = get_active_staging_engine(0)
+            if hasattr(engine, "_connect"):
+                conn = engine._connect()
+                rows = conn.execute(
+                    "SELECT table_schema || '.' || table_name "
+                    "FROM information_schema.tables "
+                    "WHERE table_name LIKE 'ds_%' OR table_name LIKE 'sv_%' "
+                    "ORDER BY table_name"
+                ).fetchall()
+                staged_names = {ds.staging_table_name for ds in all_staged if ds.staging_table_name}
+                for (ref,) in rows:
+                    table_name = ref.split(".")[-1]
+                    if table_name not in staged_names and not any(
+                        table_name == f"sv_{ds.id}_{ds.staging_table_name[3+len(str(ds.id))+1:]}"
+                        or table_name.startswith(f"ds_{ds.id}_")
+                        or table_name.startswith(f"sv_{ds.id}_")
+                        for ds in all_staged
+                    ):
+                        orphaned_tables.append(ref)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("list_orphans: failed to query DuckDB tables")
+
+        return self.response(
+            200,
+            result={
+                "orphaned_staged_datasets": orphaned_datasets,
+                "orphaned_duckdb_tables": orphaned_tables,
+                "total_staged_datasets": len(all_staged),
+            },
+        )
+
+    @expose("/cleanup-orphans", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def cleanup_orphans(self) -> Response:
+        """Delete orphaned staged datasets and drop their DuckDB tables.
+
+        Handles two classes of orphans:
+
+        1. ``DHIS2StagedDataset`` rows whose ``serving_superset_dataset_id``
+           points to a deleted ``SqlaTable``.
+        2. ``DHIS2StagedDataset`` rows with no ``serving_superset_dataset_id``
+           at all (never registered).
+
+        Drops the physical ``ds_*`` and ``sv_*`` DuckDB tables, then removes
+        the metadata row.  Idempotent — safe to call repeatedly.
+
+        ---
+        post:
+          summary: Delete orphaned staged datasets and their DuckDB tables
+          responses:
+            200:
+              description: Cleanup summary
+        """
+        from superset.connectors.sqla.models import SqlaTable
+        from superset.dhis2.models import DHIS2StagedDataset as StagedDataset
+        from superset.dhis2.staged_dataset_service import delete_staged_dataset
+
+        sqla_ids = {
+            r.id
+            for r in db.session.query(SqlaTable.id).all()
+        }
+
+        deleted: list[dict] = []
+        errors: list[dict] = []
+
+        for ds in db.session.query(StagedDataset).all():
+            sid = ds.serving_superset_dataset_id
+            is_orphan = sid is not None and sid not in sqla_ids
+            if not is_orphan:
+                continue
+            try:
+                delete_staged_dataset(ds.id)
+                deleted.append({"id": ds.id, "name": ds.name})
+                logger.info(
+                    "cleanup_orphans: deleted orphaned staged dataset id=%s '%s'",
+                    ds.id,
+                    ds.name,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.exception(
+                    "cleanup_orphans: failed to delete staged dataset id=%s", ds.id
+                )
+                errors.append({"id": ds.id, "name": ds.name, "error": str(exc)})
+
+        return self.response(
+            200,
+            result={
+                "deleted": deleted,
+                "errors": errors,
+                "message": (
+                    f"Cleaned up {len(deleted)} orphaned staged dataset(s)."
+                    + (f" {len(errors)} error(s)." if errors else "")
+                ),
             },
         )

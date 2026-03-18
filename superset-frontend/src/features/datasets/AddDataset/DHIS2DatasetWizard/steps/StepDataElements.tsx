@@ -5,12 +5,14 @@ import {
   Alert,
   Button,
   Checkbox,
+  Divider,
   Empty,
   Input,
   Pagination,
   Progress,
   Select,
   Space,
+  Switch,
   Tag,
 } from 'antd';
 
@@ -2058,6 +2060,40 @@ export default function WizardStepDataElements({
             ))}
           </SelectionList>
         )}
+
+        <Divider style={{ margin: '16px 0 12px' }} />
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 6,
+            }}
+          >
+            <Switch
+              size="small"
+              checked={wizardState.includeDisaggregationDimension ?? false}
+              onChange={checked =>
+                updateState({ includeDisaggregationDimension: checked })
+              }
+            />
+            <span style={{ fontWeight: 500, fontSize: 13 }}>
+              {t('Include disaggregation dimension')}
+            </span>
+          </div>
+          <span
+            style={{
+              fontSize: 12,
+              color: 'var(--text-color-secondary, #888)',
+              display: 'block',
+            }}
+          >
+            {t(
+              'Exposes a "Disaggregation" column (Category Option Combo) so charts can group and filter by sex, age group, or any other DHIS2 disaggregation.',
+            )}
+          </span>
+        </div>
       </SidePanel>
     </StepContainer>
   );

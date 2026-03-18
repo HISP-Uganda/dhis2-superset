@@ -26,6 +26,10 @@ import {
   getClientErrorObject,
 } from '@superset-ui/core';
 import { type FormInstance, Select } from '@superset-ui/core/components';
+import {
+  detectDHIS2Kind,
+  DHIS2ColumnTag,
+} from '@superset-ui/chart-controls';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
 import { NativeFiltersForm, NativeFiltersFormItem } from '../types';
@@ -68,8 +72,11 @@ export function ColumnSelect({
     () =>
       ensureIsArray(columns)
         .filter(filterValues)
-        .map((col: Column) => col.column_name)
-        .map((column: string) => ({ label: column, value: column })),
+        .map((col: Column) => ({
+          label: col.verbose_name || col.column_name,
+          value: col.column_name,
+          extra: (col as Column & { extra?: unknown }).extra,
+        })),
     [columns, filterValues],
   );
 
@@ -100,6 +107,8 @@ export function ColumnSelect({
             'columns.is_dttm',
             'columns.type_generic',
             'columns.filterable',
+            'columns.verbose_name',
+            'columns.extra',
           ],
         })}`,
       })
@@ -141,6 +150,17 @@ export function ColumnSelect({
       notFoundContent={t('No compatible columns found')}
       showSearch
       allowClear={allowClear}
+      optionRender={option => {
+        const kind = detectDHIS2Kind(
+          (option.data as { extra?: unknown }).extra,
+        );
+        return (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {kind && <DHIS2ColumnTag kind={kind} />}
+            {option.label}
+          </span>
+        );
+      }}
     />
   );
 }

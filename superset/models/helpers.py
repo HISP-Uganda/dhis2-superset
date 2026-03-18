@@ -2092,17 +2092,28 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
         # DHIS2 FIX: Skip temporal validation for DHIS2 datasets
         # DHIS2 data is multi-dimensional (period, orgUnit, dataElements, etc.)
-        # and doesn't require a datetime column for categorical charts
+        # and doesn't require a datetime column for categorical charts.
+        # Also covers DHIS2 staged-local datasets (backed by DuckDB) whose
+        # sqlalchemy_uri starts with "duckdb://" not "dhis2://".
         is_dhis2_datasource = False
         if hasattr(self, 'database') and self.database:
             try:
-                # Check if sqlalchemy_uri contains dhis2://
                 uri = getattr(self.database, 'sqlalchemy_uri_decrypted', None) or getattr(self.database, 'sqlalchemy_uri', '')
                 is_dhis2_datasource = 'dhis2://' in str(uri)
-            except:
-                # Fallback: check backend attribute if it exists
+            except Exception:
                 backend = getattr(self.database, 'backend', '')
                 is_dhis2_datasource = backend in ['dhis2', 'dhis2.dhis2']
+        # Also treat DHIS2 staged-local SqlaTables as DHIS2 datasources so that
+        # timeseries charts don't require a granularity column.
+        if not is_dhis2_datasource:
+            try:
+                import json as _json
+                _extra_raw = getattr(self, 'extra', None)
+                _extra = _json.loads(_extra_raw) if isinstance(_extra_raw, str) else {}
+                if _extra.get('dhis2_staged_local'):
+                    is_dhis2_datasource = True
+            except Exception:
+                pass
 
         if not granularity and is_timeseries and not is_dhis2_datasource:
             raise QueryObjectValidationError(

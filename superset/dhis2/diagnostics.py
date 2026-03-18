@@ -30,10 +30,12 @@ from typing import Any
 from superset import db
 from superset.dhis2 import instance_service
 from superset.dhis2.metadata_staging_service import (
+    CATEGORY_METADATA_TYPES,
     LEGEND_SET_METADATA_TYPE,
     ORG_UNIT_METADATA_TYPES,
+    PROGRAM_METADATA_TYPES,
     SUPPORTED_METADATA_TYPES,
-    VARIABLE_METADATA_TYPES,
+    VARIABLE_STATUS_METADATA_TYPES,
     get_metadata_refresh_progress,
     schedule_database_metadata_refresh,
 )
@@ -247,7 +249,17 @@ class DHIS2DiagnosticsService:
         )
         variables = self._get_metadata_family_status(
             database_id=database_id,
-            metadata_types=list(VARIABLE_METADATA_TYPES),
+            metadata_types=list(VARIABLE_STATUS_METADATA_TYPES),
+            instances=instances,
+        )
+        programs = self._get_metadata_family_status(
+            database_id=database_id,
+            metadata_types=list(PROGRAM_METADATA_TYPES),
+            instances=instances,
+        )
+        categories = self._get_metadata_family_status(
+            database_id=database_id,
+            metadata_types=list(CATEGORY_METADATA_TYPES),
             instances=instances,
         )
         legend_sets = self._get_metadata_family_status(
@@ -262,13 +274,21 @@ class DHIS2DiagnosticsService:
         )
 
         overall_status = self._summarize_metadata_statuses(
-            [variables["status"], legend_sets["status"], org_units["status"]]
+            [
+                variables["status"],
+                programs["status"],
+                categories["status"],
+                legend_sets["status"],
+                org_units["status"],
+            ]
         )
 
         refreshed_candidates = [
             candidate
             for candidate in (
                 self._parse_datetime(variables.get("last_refreshed_at")),
+                self._parse_datetime(programs.get("last_refreshed_at")),
+                self._parse_datetime(categories.get("last_refreshed_at")),
                 self._parse_datetime(legend_sets.get("last_refreshed_at")),
                 self._parse_datetime(org_units.get("last_refreshed_at")),
             )
@@ -284,6 +304,8 @@ class DHIS2DiagnosticsService:
                 max(refreshed_candidates).isoformat() if refreshed_candidates else None
             ),
             "variables": variables,
+            "programs": programs,
+            "categories": categories,
             "legend_sets": legend_sets,
             "org_units": org_units,
             "refresh_progress": get_metadata_refresh_progress(database_id),

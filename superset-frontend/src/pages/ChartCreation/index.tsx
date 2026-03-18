@@ -38,10 +38,7 @@ import VizTypeGallery, {
 import { findPermission } from 'src/utils/findPermission';
 import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import getBootstrapData from 'src/utils/getBootstrapData';
-import {
-  Dataset,
-  DatasetSelectLabel,
-} from 'src/features/datasets/DatasetSelectLabel';
+import { Dataset } from 'src/features/datasets/DatasetSelectLabel';
 import { Icons } from '@superset-ui/core/components/Icons';
 
 export interface ChartCreationProps extends RouteComponentProps {
@@ -245,10 +242,12 @@ export class ChartCreation extends PureComponent<
   }
 
   mapDatasetToOption(item: Dataset) {
+    const dbName = item.database?.database_name;
+    const label = dbName ? `${item.table_name} — ${dbName}` : item.table_name;
     return {
       id: item.id,
       value: `${item.id}__${item.datasource_type || 'table'}`,
-      label: DatasetSelectLabel(item),
+      label,
       customLabel: item.table_name,
     };
   }

@@ -137,6 +137,13 @@ const DHIS2Downloads = lazy(
     ),
 );
 
+const LocalStagingSettings = lazy(
+  () =>
+    import(
+      /* webpackChunkName: "LocalStagingSettings" */ 'src/pages/LocalStagingSettings'
+    ),
+);
+
 const Chart = lazy(
   () => import(/* webpackChunkName: "Chart" */ 'src/pages/Chart'),
 );
@@ -350,6 +357,10 @@ export const routes: Routes = [
   {
     path: '/superset/dhis2/downloads/',
     Component: DHIS2Downloads,
+  },
+  {
+    path: '/superset/local-staging/',
+    Component: LocalStagingSettings,
   },
   {
     path: '/rowlevelsecurity/list',

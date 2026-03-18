@@ -66,6 +66,7 @@ import csv
 from io import StringIO
 import json
 import logging
+import os
 import re
 from typing import Any, Mapping
 
@@ -186,17 +187,166 @@ class DHIS2StagingEngine:
         SQLite locks aggressively when a second write connection tries to run
         DDL while the scoped session already has an open transaction. Reuse the
         session-bound connection there so staged dataset creation can complete
-        without tripping `database is locked`.
+        without tripping ``database is locked``.
+
+        Applies dialect-specific session settings for maximum write throughput.
         """
-        if self._dialect_name == "sqlite":
+        dialect = self._dialect_name
+        if dialect == "sqlite":
             session = getattr(db, "session", None)
             connection_factory = getattr(session, "connection", None)
             if callable(connection_factory):
-                yield connection_factory()
+                conn = connection_factory()
+                self.apply_connection_optimizations(conn, dialect, for_writes=True)
+                yield conn
                 return
 
         with db.engine.begin() as conn:
+            self.apply_connection_optimizations(conn, dialect, for_writes=True)
             yield conn
+
+    @staticmethod
+    def apply_connection_optimizations(
+        conn: Any,
+        dialect_name: str,
+        *,
+        for_writes: bool = False,
+    ) -> None:
+        """Apply dialect-specific session settings to maximise staging I/O throughput.
+
+        All settings are best-effort — failures are silently swallowed so a
+        misconfigured hint never breaks an actual query.
+
+        Supported backends
+        ------------------
+        * **SQLite** — WAL journal, normal sync, 64 MB page cache, RAM temp
+          store, 256 MB mmap window.
+        * **PostgreSQL** — 256 MB ``work_mem`` for sorts/hashes, SSD-tuned
+          planner costs, async commit on write sessions.
+        * **MySQL / MariaDB** — session-level sort, read, and join buffers set
+          to 256 MB each.
+        * **DuckDB** — auto-detected CPU thread count, 2 GB memory cap.
+        * **ClickHouse** — 2 GB ``max_memory_usage``, auto-detected thread count.
+        """
+        _cpu = os.cpu_count() or 4
+        try:
+            d = str(dialect_name or "").lower()
+
+            if d == "sqlite":
+                # WAL mode: concurrent readers while a writer is active
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                # NORMAL sync: fsync only at checkpoints — safe, much faster
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                # 64 MB page cache (negative value = kibibytes)
+                conn.execute(text("PRAGMA cache_size=-65536"))
+                # Sorts and indexes stay in RAM
+                conn.execute(text("PRAGMA temp_store=MEMORY"))
+                # 256 MB memory-mapped I/O
+                conn.execute(text("PRAGMA mmap_size=268435456"))
+
+            elif d == "postgresql":
+                # Large in-memory sort/hash buffer for GROUP BY and ORDER BY
+                conn.execute(text("SET LOCAL work_mem = '256MB'"))
+                # Assume SSD — lower random-page cost so planner prefers indexes
+                conn.execute(text("SET LOCAL random_page_cost = 1.1"))
+                # Inform planner about OS page-cache size for cost estimates
+                conn.execute(text("SET LOCAL effective_cache_size = '4GB'"))
+                if for_writes:
+                    # Async commit: WAL write queued, not flushed — safe for
+                    # staging data where loss on crash is acceptable
+                    conn.execute(text("SET LOCAL synchronous_commit = off"))
+
+            elif d in ("mysql", "mariadb"):
+                # Per-session sort, read, and join buffers (256 MB each)
+                conn.execute(text("SET SESSION sort_buffer_size = 268435456"))
+                conn.execute(text("SET SESSION read_buffer_size = 67108864"))
+                conn.execute(text("SET SESSION join_buffer_size = 268435456"))
+                if for_writes:
+                    # Disable unique-key caching for faster bulk inserts
+                    conn.execute(text("SET SESSION unique_checks = 0"))
+                    conn.execute(text("SET SESSION foreign_key_checks = 0"))
+
+            elif d == "duckdb":
+                # Use all available CPU cores; cap memory for shared deployments
+                conn.execute(text(f"SET threads TO {_cpu}"))
+                conn.execute(text("SET memory_limit = '2GB'"))
+
+            elif d == "clickhouse":
+                # Per-query memory cap and thread count
+                conn.execute(text("SET max_memory_usage = 2147483648"))
+                conn.execute(text(f"SET max_threads = {_cpu}"))
+
+        except Exception:  # pylint: disable=broad-except
+            pass  # Optimizations are best-effort; never break real queries
+
+    def _run_analyze(self, conn: Any, full_name: str) -> None:
+        """Run the dialect-appropriate statistics-refresh command.
+
+        Accurate statistics let the query planner choose better execution plans
+        after a bulk load — critical for GROUP BY / ORDER BY performance on
+        fresh staging tables.
+
+        * SQLite / PostgreSQL — ``ANALYZE <table>``
+        * MySQL / MariaDB     — ``ANALYZE TABLE <table>``
+        * DuckDB              — ``ANALYZE`` (no per-table form in most releases)
+        * ClickHouse          — ``OPTIMIZE TABLE <table> FINAL`` (materialises
+          merges so subsequent reads are faster)
+        """
+        try:
+            d = self._dialect_name
+            if d in ("sqlite", "postgresql"):
+                conn.execute(text(f"ANALYZE {full_name}"))
+            elif d in ("mysql", "mariadb"):
+                conn.execute(text(f"ANALYZE TABLE {full_name}"))
+            elif d == "duckdb":
+                conn.execute(text("ANALYZE"))
+            elif d == "clickhouse":
+                conn.execute(text(f"OPTIMIZE TABLE {full_name} FINAL"))
+            # Other dialects: skip silently — statistics are auto-maintained
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _create_serving_index(
+        self,
+        conn: Any,
+        table_name: str,
+        full_name: str,
+        col_name: str,
+    ) -> None:
+        """Create a single serving-table index with dialect-aware DDL.
+
+        Failures are swallowed individually so one unsupported index does not
+        abort the rest of the index-creation loop.
+
+        * SQLite / PostgreSQL / MySQL / MariaDB / DuckDB — standard
+          ``CREATE INDEX IF NOT EXISTS``
+        * ClickHouse — skipped; ClickHouse uses ``ORDER BY``-based physical
+          ordering rather than secondary indexes, so there is nothing to create.
+        """
+        d = self._dialect_name
+        if d == "clickhouse":
+            return  # ClickHouse does not support CREATE INDEX
+
+        safe_col = col_name.replace(" ", "_")[:40]
+        idx_name = f"ix_{table_name}_{safe_col}"
+        quoted_col = f'"{col_name}"'
+
+        # MySQL does not support IF NOT EXISTS on CREATE INDEX before 8.0;
+        # use a DROP/CREATE pattern for pre-8.0 compatibility.
+        if d in ("mysql", "mariadb"):
+            ddl = (
+                f"CREATE INDEX {idx_name} ON {full_name} ({quoted_col})"
+            )
+        else:
+            ddl = (
+                f"CREATE INDEX IF NOT EXISTS {idx_name} ON {full_name} ({quoted_col})"
+            )
+
+        try:
+            conn.execute(text(ddl))
+        except Exception:  # pylint: disable=broad-except
+            # Index may already exist (MySQL pre-8.0) or be unsupported — ignore
+            pass
 
     # ------------------------------------------------------------------
     # Schema helpers
@@ -955,7 +1105,17 @@ class DHIS2StagingEngine:
         metric_column: str | None = None,
         metric_alias: str | None = None,
         aggregation_method: str | None = None,
+        count_rows: bool = True,
     ) -> dict[str, Any]:
+        """Query the analytical serving table.
+
+        Parameters
+        ----------
+        count_rows:
+            When ``False`` the extra ``SELECT COUNT(*)`` query is skipped.
+            Set this for chart renders where total row count is irrelevant;
+            it eliminates a second full-table scan on every load.
+        """
         full_name = self.get_serving_sql_table_ref(staged_dataset)
         safe_limit = self._coerce_query_limit(limit)
         safe_page = max(1, int(page or 1))
@@ -1001,20 +1161,33 @@ class DHIS2StagingEngine:
                 "sql_preview": f"SELECT * FROM {full_name} LIMIT {safe_limit}",
             }
 
+        effective_limit = params.get("limit", safe_limit)
         with db.engine.connect() as conn:
+            self.apply_connection_optimizations(conn, self._dialect_name)
             result = conn.execute(text(select_sql), params)
             rows = [dict(row._mapping) for row in result]
-            total_rows = conn.execute(
-                text(count_sql),
-                {key: value for key, value in params.items() if key != "limit"},
-            ).scalar() or 0
-        total_rows_int = int(total_rows)
-        total_pages = max(1, (total_rows_int + params.get("limit", safe_limit) - 1) // params.get("limit", safe_limit)) if total_rows_int else 0
+            if count_rows:
+                total_rows_int = int(
+                    conn.execute(
+                        text(count_sql),
+                        {k: v for k, v in params.items() if k != "limit"},
+                    ).scalar()
+                    or 0
+                )
+            else:
+                # Estimate from returned row count to avoid the extra scan
+                total_rows_int = len(rows) if len(rows) < effective_limit else -1
+
+        total_pages = (
+            max(1, (total_rows_int + effective_limit - 1) // effective_limit)
+            if total_rows_int > 0
+            else (1 if rows else 0)
+        )
 
         return {
             "columns": resolved_columns,
             "rows": rows,
-            "limit": params.get("limit", safe_limit),
+            "limit": effective_limit,
             "page": safe_page,
             "total_pages": total_pages,
             "total_rows": total_rows_int,
@@ -1069,7 +1242,14 @@ class DHIS2StagingEngine:
 
         hierarchy_columns.sort(key=lambda item: int(item["level"]))
 
+        normalized_filters = [
+            filter_item
+            for filter_item in list(filters or [])
+            if isinstance(filter_item, dict)
+        ]
+
         def _fetch_options_for_column(
+            conn: Any,
             column_name: str,
             scoped_filters: list[dict[str, Any]] | None = None,
         ) -> list[dict[str, Any]]:
@@ -1088,53 +1268,51 @@ class DHIS2StagingEngine:
                 f"GROUP BY {quoted_column} "
                 f"ORDER BY {quoted_column}"
             )
-            with db.engine.connect() as conn:
-                result = conn.execute(text(sql), params)
-                return [
-                    {
-                        "label": str(row._mapping.get("option_value") or ""),
-                        "value": str(row._mapping.get("option_value") or ""),
-                        "row_count": int(row._mapping.get("row_count") or 0),
-                    }
-                    for row in result
-                    if str(row._mapping.get("option_value") or "").strip()
-                ]
-
-        normalized_filters = [
-            filter_item
-            for filter_item in list(filters or [])
-            if isinstance(filter_item, dict)
-        ]
-
-        org_unit_filters = []
-        for column in hierarchy_columns:
-            column_name = str(column["column_name"])
-            scoped_filters = [
-                filter_item
-                for filter_item in normalized_filters
-                if str(filter_item.get("column") or "").strip() != column_name
-            ]
-            org_unit_filters.append(
+            result = conn.execute(text(sql), params)
+            return [
                 {
-                    **column,
-                    "options": _fetch_options_for_column(column_name, scoped_filters),
+                    "label": str(row._mapping.get("option_value") or ""),
+                    "value": str(row._mapping.get("option_value") or ""),
+                    "row_count": int(row._mapping.get("row_count") or 0),
                 }
-            )
-
-        if period_filter is not None:
-            period_column_name = str(period_filter["column_name"])
-            scoped_period_filters = [
-                filter_item
-                for filter_item in normalized_filters
-                if str(filter_item.get("column") or "").strip() != period_column_name
+                for row in result
+                if str(row._mapping.get("option_value") or "").strip()
             ]
-            period_filter = {
-                **period_filter,
-                "options": _fetch_options_for_column(
-                    period_column_name,
-                    scoped_period_filters,
-                ),
-            }
+
+        # Reuse a single connection for all filter-option queries to avoid
+        # opening one connection per hierarchy column (N+1 connection overhead).
+        org_unit_filters = []
+        with db.engine.connect() as shared_conn:
+            self.apply_connection_optimizations(shared_conn, self._dialect_name)
+            for column in hierarchy_columns:
+                column_name = str(column["column_name"])
+                scoped_filters = [
+                    filter_item
+                    for filter_item in normalized_filters
+                    if str(filter_item.get("column") or "").strip() != column_name
+                ]
+                org_unit_filters.append(
+                    {
+                        **column,
+                        "options": _fetch_options_for_column(shared_conn, column_name, scoped_filters),
+                    }
+                )
+
+            if period_filter is not None:
+                period_column_name = str(period_filter["column_name"])
+                scoped_period_filters = [
+                    filter_item
+                    for filter_item in normalized_filters
+                    if str(filter_item.get("column") or "").strip() != period_column_name
+                ]
+                period_filter = {
+                    **period_filter,
+                    "options": _fetch_options_for_column(
+                        shared_conn,
+                        period_column_name,
+                        scoped_period_filters,
+                    ),
+                }
 
         return {
             "org_unit_filters": org_unit_filters,
@@ -1369,14 +1547,35 @@ class DHIS2StagingEngine:
                     ]
                     conn.execute(insert_sql, params)
 
+            # Index all dimension/filter columns — not just period and dhis2_instance.
+            # Serving tables are read-heavy: dashboard filter selects do GROUP BY on
+            # every hierarchy and period column, causing full table scans without indexes.
+            _ALWAYS_INDEX = {"period", "dhis2_instance"}
             for column in columns:
-                if column["column_name"] in {"period", "dhis2_instance"}:
-                    conn.execute(
-                        text(
-                            f'CREATE INDEX IF NOT EXISTS ix_{table_name}_{column["column_name"]} '
-                            f'ON {full_name} ("{column["column_name"]}")'
+                col_name = column["column_name"]
+                col_extra: dict = {}
+                try:
+                    raw_extra = column.get("extra") or ""
+                    if raw_extra:
+                        col_extra = (
+                            json.loads(raw_extra)
+                            if isinstance(raw_extra, str)
+                            else dict(raw_extra)
                         )
-                    )
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+                should_index = (
+                    col_name in _ALWAYS_INDEX
+                    or col_extra.get("dhis2_is_period")
+                    or col_extra.get("dhis2_is_ou_hierarchy")
+                    or col_extra.get("dhis2_is_dimension")
+                )
+                if should_index:
+                    self._create_serving_index(conn, table_name, full_name, col_name)
+
+            # Give the query planner accurate row statistics after bulk insert
+            self._run_analyze(conn, full_name)
 
         return full_name
 

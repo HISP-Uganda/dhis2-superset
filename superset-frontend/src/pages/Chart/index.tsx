@@ -175,6 +175,35 @@ export default function ExplorePage() {
             );
           }
 
+          // Sync DHIS2 legend sets as Superset color schemes for all chart types.
+          // This makes DHIS2 legend sets available in the color-scheme picker for
+          // bar, line, pie, and every other chart type — not just DHIS2Map.
+          try {
+            const rawExtra = (dataset as any)?.extra;
+            const datasetExtra =
+              typeof rawExtra === 'string'
+                ? JSON.parse(rawExtra)
+                : (rawExtra ?? {});
+            const sourceDatabaseId = Number(
+              datasetExtra?.dhis2_source_database_id,
+            );
+            if (
+              datasetExtra?.dhis2_staged_local === true &&
+              Number.isFinite(sourceDatabaseId) &&
+              sourceDatabaseId > 0
+            ) {
+              import('src/utils/dhis2LegendColorSchemes').then(
+                ({ syncDHIS2LegendSchemesForDatabase }) => {
+                  syncDHIS2LegendSchemesForDatabase(sourceDatabaseId).catch(
+                    () => {},
+                  );
+                },
+              );
+            }
+          } catch (_e) {
+            // Non-fatal — legend sets fall back to column-attached legends
+          }
+
           dispatch(
             hydrateExplore({
               ...result,

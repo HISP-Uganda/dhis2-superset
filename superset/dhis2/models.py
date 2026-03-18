@@ -361,6 +361,36 @@ class DHIS2StagedDataset(Model):
     dataset_config = sa.Column(Text, nullable=True)
 
     # ------------------------------------------------------------------
+    # Operational fields (promoted from dataset_config for queryability)
+    # ------------------------------------------------------------------
+    source_mode = sa.Column(
+        sa.String(50), nullable=False, server_default="analytics"
+    )
+    preserve_period_dimension = sa.Column(
+        sa.Boolean, nullable=False, server_default=sa.false()
+    )
+    preserve_orgunit_dimension = sa.Column(
+        sa.Boolean, nullable=False, server_default=sa.false()
+    )
+    preserve_category_dimensions = sa.Column(
+        sa.Boolean, nullable=False, server_default=sa.false()
+    )
+    history_start_date = sa.Column(sa.Date, nullable=True)
+    rolling_window_months = sa.Column(sa.Integer, nullable=True)
+    root_orgunits_json = sa.Column(Text, nullable=True)   # JSON list[str]
+    max_orgunit_level = sa.Column(sa.Integer, nullable=True)
+    include_descendants = sa.Column(
+        sa.Boolean, nullable=False, server_default=sa.false()
+    )
+    refresh_mode = sa.Column(sa.String(50), nullable=True)  # incremental|full|period_window
+    id_scheme_input = sa.Column(sa.String(50), nullable=True)   # UID|CODE|NAME
+    id_scheme_output = sa.Column(sa.String(50), nullable=True)
+    display_property = sa.Column(sa.String(50), nullable=True)
+    approval_level = sa.Column(sa.Integer, nullable=True)
+    error_policy = sa.Column(sa.String(50), nullable=True)   # SKIP|FAIL|WARN
+    retry_policy = sa.Column(Text, nullable=True)             # JSON blob
+
+    # ------------------------------------------------------------------
     # Audit timestamps
     # ------------------------------------------------------------------
     created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
@@ -654,9 +684,23 @@ class DHIS2SyncJob(Model):
     rows_failed = sa.Column(sa.Integer, nullable=True)
 
     # ------------------------------------------------------------------
+    # Fine-grained progress tracking
+    # ------------------------------------------------------------------
+    total_units = sa.Column(sa.Integer, nullable=True)
+    completed_units = sa.Column(sa.Integer, nullable=True)
+    failed_units = sa.Column(sa.Integer, nullable=True)
+    percent_complete = sa.Column(sa.Float, nullable=True)
+    current_step = sa.Column(sa.String(100), nullable=True)
+    current_item = sa.Column(sa.String(255), nullable=True)
+    rows_extracted = sa.Column(sa.Integer, nullable=True)
+    rows_staged = sa.Column(sa.Integer, nullable=True)
+    rows_merged = sa.Column(sa.Integer, nullable=True)
+
+    # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
     error_message = sa.Column(Text, nullable=True)
+    error_summary = sa.Column(Text, nullable=True)
     instance_results = sa.Column(Text, nullable=True)
 
     # ------------------------------------------------------------------
@@ -742,7 +786,18 @@ class DHIS2SyncJob(Model):
             "duration_seconds": self.duration_seconds,
             "rows_loaded": self.rows_loaded,
             "rows_failed": self.rows_failed,
+            # Fine-grained progress
+            "total_units": self.total_units,
+            "completed_units": self.completed_units,
+            "failed_units": self.failed_units,
+            "percent_complete": self.percent_complete,
+            "current_step": self.current_step,
+            "current_item": self.current_item,
+            "rows_extracted": self.rows_extracted,
+            "rows_staged": self.rows_staged,
+            "rows_merged": self.rows_merged,
             "error_message": self.error_message,
+            "error_summary": self.error_summary,
             "instance_results": self.get_instance_results(),
             "created_on": self.created_on.isoformat() if self.created_on else None,
             "changed_on": self.changed_on.isoformat() if self.changed_on else None,
@@ -1020,4 +1075,196 @@ class DHIS2MetadataJob(Model):
         return (
             f"<DHIS2MetadataJob id={self.id} status={self.status!r} "
             f"database_id={self.database_id}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# DHIS2QueryProfile — per-dataset query shape configuration
+# ---------------------------------------------------------------------------
+
+
+class DHIS2QueryProfile(Model):
+    """Stores explicit analytics query parameters for a staged dataset.
+
+    Promotes query-shape details out of the opaque ``dataset_config`` blob so
+    they are individually queryable and version-controllable.
+    """
+
+    __tablename__ = "dhis2_query_profiles"
+
+    __table_args__ = (
+        sa.Index("ix_dhis2_query_profiles_staged_dataset_id", "staged_dataset_id"),
+    )
+
+    id = sa.Column(sa.Integer, primary_key=True)
+
+    staged_dataset_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_staged_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    endpoint = sa.Column(sa.String(255), nullable=True)
+    dimensions_json = sa.Column(Text, nullable=True)
+    filters_json = sa.Column(Text, nullable=True)
+    rows_json = sa.Column(Text, nullable=True)
+    columns_json = sa.Column(Text, nullable=True)
+    table_layout = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    include_num_den = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    skip_rounding = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    hide_empty_rows = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    hide_empty_columns = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    hierarchy_meta = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    ignore_limit = sa.Column(sa.Boolean, nullable=False, server_default=sa.false())
+    time_window_rule_json = sa.Column(Text, nullable=True)
+    orgunit_partition_rule_json = sa.Column(Text, nullable=True)
+    selected_dx_types_json = sa.Column(Text, nullable=True)
+    category_settings_json = sa.Column(Text, nullable=True)
+
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+
+    staged_dataset: DHIS2StagedDataset = relationship(
+        "DHIS2StagedDataset",
+        backref="query_profiles",
+        foreign_keys=[staged_dataset_id],
+    )
+
+    def __repr__(self) -> str:
+        return f"<DHIS2QueryProfile id={self.id} staged_dataset_id={self.staged_dataset_id}>"
+
+
+# ---------------------------------------------------------------------------
+# DHIS2AnalyticsRaw — raw analytics API audit table
+# ---------------------------------------------------------------------------
+
+
+class DHIS2AnalyticsRaw(Model):
+    """Stores raw analytics API response payloads for auditability and replay."""
+
+    __tablename__ = "stg_dhis2_analytics_raw"
+
+    __table_args__ = (
+        sa.Index("ix_stg_dhis2_analytics_raw_batch_id", "batch_id"),
+        sa.Index("ix_stg_dhis2_analytics_raw_dataset_config_id", "dataset_config_id"),
+        sa.Index("ix_stg_dhis2_analytics_raw_extracted_at", "extracted_at"),
+    )
+
+    id = sa.Column(sa.BigInteger, primary_key=True)
+    batch_id = sa.Column(sa.String(64), nullable=True)
+    dataset_config_id = sa.Column(sa.Integer, nullable=True)
+    connection_id = sa.Column(sa.Integer, nullable=True)
+    extracted_at = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+    headers_json = sa.Column(Text, nullable=True)
+    metadata_json = sa.Column(Text, nullable=True)
+    rows_json = sa.Column(Text, nullable=True)
+    format = sa.Column(sa.String(20), nullable=True)
+    source_version = sa.Column(sa.String(50), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<DHIS2AnalyticsRaw id={self.id} batch_id={self.batch_id!r}>"
+
+
+# ---------------------------------------------------------------------------
+# DHIS2DataValueSetRaw — raw dataValueSets API audit table
+# ---------------------------------------------------------------------------
+
+
+class DHIS2DataValueSetRaw(Model):
+    """Stores raw dataValueSets API response payloads for auditability and replay."""
+
+    __tablename__ = "stg_dhis2_datavalueset_raw"
+
+    __table_args__ = (
+        sa.Index("ix_stg_dhis2_datavalueset_raw_batch_id", "batch_id"),
+        sa.Index("ix_stg_dhis2_datavalueset_raw_dataset_config_id", "dataset_config_id"),
+        sa.Index("ix_stg_dhis2_datavalueset_raw_extracted_at", "extracted_at"),
+    )
+
+    id = sa.Column(sa.BigInteger, primary_key=True)
+    batch_id = sa.Column(sa.String(64), nullable=True)
+    dataset_config_id = sa.Column(sa.Integer, nullable=True)
+    connection_id = sa.Column(sa.Integer, nullable=True)
+    extracted_at = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+    payload_format = sa.Column(sa.String(20), nullable=True)
+    data_json = sa.Column(Text, nullable=True)
+    import_summary_json = sa.Column(Text, nullable=True)
+    source_version = sa.Column(sa.String(50), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<DHIS2DataValueSetRaw id={self.id} batch_id={self.batch_id!r}>"
+
+
+# ---------------------------------------------------------------------------
+# DHIS2TrackerConfig — tracker extraction configuration per dataset
+# ---------------------------------------------------------------------------
+
+
+class DHIS2TrackerConfig(Model):
+    """Stores Tracker API extraction parameters for a staged dataset."""
+
+    __tablename__ = "dhis2_tracker_configs"
+
+    __table_args__ = (
+        sa.Index("ix_dhis2_tracker_configs_staged_dataset_id", "staged_dataset_id"),
+    )
+
+    id = sa.Column(sa.Integer, primary_key=True)
+
+    staged_dataset_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_staged_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instance_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_instances.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    program_uid = sa.Column(sa.String(11), nullable=True)
+    tracked_entity_type_uid = sa.Column(sa.String(11), nullable=True)
+    program_stage_uid = sa.Column(sa.String(11), nullable=True)
+    # events|enrollments|trackedEntities|all
+    extract_scope = sa.Column(sa.String(50), nullable=False, server_default="events")
+    start_date = sa.Column(sa.Date, nullable=True)
+    end_date = sa.Column(sa.Date, nullable=True)
+    last_updated_duration = sa.Column(sa.String(20), nullable=True)
+    org_unit_uid = sa.Column(sa.String(11), nullable=True)
+    # SELECTED|CHILDREN|DESCENDANTS|ALL
+    ou_mode = sa.Column(sa.String(20), nullable=False, server_default="SELECTED")
+    page_size = sa.Column(sa.Integer, nullable=True, server_default="100")
+    extra_params = sa.Column(Text, nullable=True)  # JSON blob
+
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+    changed_on = sa.Column(
+        sa.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=True,
+    )
+
+    staged_dataset: DHIS2StagedDataset = relationship(
+        "DHIS2StagedDataset",
+        backref="tracker_configs",
+        foreign_keys=[staged_dataset_id],
+    )
+    instance: DHIS2Instance = relationship(
+        "DHIS2Instance",
+        foreign_keys=[instance_id],
+    )
+
+    def get_extra_params(self) -> dict[str, Any]:
+        raw = self.__dict__.get("extra_params")
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    def __repr__(self) -> str:
+        return (
+            f"<DHIS2TrackerConfig id={self.id} "
+            f"staged_dataset_id={self.staged_dataset_id} "
+            f"program_uid={self.program_uid!r}>"
         )

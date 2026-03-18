@@ -42,6 +42,7 @@ from superset.dhis2.analytical_serving import (
     build_serving_manifest,
     dataset_columns_payload,
     materialize_serving_rows,
+    prune_empty_hierarchy_columns,
 )
 from superset.dhis2.models import (
     DHIS2DatasetVariable,
@@ -49,6 +50,7 @@ from superset.dhis2.models import (
     DHIS2StagedDataset,
 )
 from superset.dhis2.staging_engine import DHIS2StagingEngine
+from superset.local_staging.engine_factory import get_active_staging_engine
 from superset.staging.compat import (
     sync_dhis2_dataset_variable,
     sync_dhis2_staged_dataset,
@@ -69,6 +71,24 @@ _ALLOWED_DATASET_CREATE_FIELDS = frozenset(
         "is_active",
         "auto_refresh_enabled",
         "dataset_config",
+        # Operational fields promoted from dataset_config blob
+        "source_mode",
+        "preserve_period_dimension",
+        "preserve_orgunit_dimension",
+        "preserve_category_dimensions",
+        "history_start_date",
+        "rolling_window_months",
+        "root_orgunits_json",
+        "max_orgunit_level",
+        "include_descendants",
+        "refresh_mode",
+        "id_scheme_input",
+        "id_scheme_output",
+        "display_property",
+        "approval_level",
+        "error_policy",
+        "retry_policy",
+        "include_ancestor_levels",
     }
 )
 
@@ -114,8 +134,16 @@ def _sync_compat_variable(variable: DHIS2DatasetVariable) -> None:
 
 
 def _get_engine(database_id: int) -> DHIS2StagingEngine:
-    """Return a :class:`DHIS2StagingEngine` for *database_id*."""
-    return DHIS2StagingEngine(database_id)
+    """Return the active staging engine for *database_id*.
+
+    Delegates to the pluggable engine factory so DuckDB / ClickHouse engines
+    are used transparently when configured.  The return type annotation is kept
+    as :class:`DHIS2StagingEngine` for backwards-compatibility with callers
+    that have typed locals; the actual object satisfies the same interface via
+    the :class:`~superset.local_staging.base_engine.LocalStagingEngineBase`
+    ABC (and SupersetDBStagingEngine delegates all calls to DHIS2StagingEngine).
+    """
+    return get_active_staging_engine(database_id)  # type: ignore[return-value]
 
 
 def _coerce_json_field(value: Any) -> str | None:
@@ -635,6 +663,7 @@ def query_serving_data(
     metric_column: str | None = None,
     metric_alias: str | None = None,
     aggregation_method: str | None = None,
+    count_rows: bool = True,
 ) -> dict[str, Any]:
     dataset = get_staged_dataset(dataset_id)
     if dataset is None:
@@ -652,6 +681,7 @@ def query_serving_data(
         metric_column=metric_column,
         metric_alias=metric_alias,
         aggregation_method=aggregation_method,
+        count_rows=count_rows,
     )
 
 
@@ -810,6 +840,19 @@ def _serving_table_needs_rebuild(
     dataset: DHIS2StagedDataset,
     manifest: dict[str, Any],
 ) -> bool:
+    """Return True when the serving table must be fully rebuilt.
+
+    The table is rebuilt when:
+    * it does not yet exist, OR
+    * the set/order of column names has changed since the last build (schema
+      drift — new variables added, hierarchy levels changed, etc.).
+
+    Column *metadata* changes (extra flags, verbose names) do NOT trigger a
+    rebuild because the startup compatibility backfill
+    (``superset.dhis2.backfill.run_compatibility_backfill``) already patches
+    indexes and SqlaTable column extra without touching the data.
+    """
+    import json as _json
     expected_columns = [
         str(column.get("column_name") or "").strip()
         for column in list(manifest.get("columns") or [])
@@ -822,7 +865,36 @@ def _serving_table_needs_rebuild(
         return True
 
     current_columns = list(engine.get_serving_table_columns(dataset))
-    return current_columns != expected_columns
+    if current_columns == expected_columns:
+        return False
+
+    # Additive-column tolerance: do not trigger a rebuild when the only
+    # missing columns are system columns that are populated on the next
+    # explicit sync.  Currently covers:
+    #   * dhis2_is_ou_hierarchy — pruned when all-blank at materialization
+    #   * dhis2_is_ou_level     — new column added in a later code release
+    _ADDITIVE_EXTRA_KEYS = {"dhis2_is_ou_hierarchy", "dhis2_is_ou_level"}
+    current_set = set(current_columns)
+    missing = [c for c in expected_columns if c not in current_set]
+    if missing:
+        additive_names: set[str] = set()
+        for col in list(manifest.get("columns") or []):
+            extra = col.get("extra")
+            if isinstance(extra, str):
+                try:
+                    extra = _json.loads(extra)
+                except Exception:  # pylint: disable=broad-except
+                    extra = {}
+            if isinstance(extra, dict) and any(extra.get(k) for k in _ADDITIVE_EXTRA_KEYS):
+                name = str(col.get("column_name") or "").strip()
+                if name:
+                    additive_names.add(name)
+        if all(c in additive_names for c in missing):
+            # Verify relative order of retained columns is still intact
+            expected_without_missing = [c for c in expected_columns if c in current_set]
+            if expected_without_missing == current_columns:
+                return False
+    return True
 
 
 def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
@@ -832,22 +904,29 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
 
     engine = _get_engine(dataset.database_id)
     manifest = build_serving_manifest(dataset)
+    # serving_columns tracks the *actual* columns in the physical table.
+    # When a rebuild runs, pruned columns replace the full manifest set.
     serving_columns = dataset_columns_payload(manifest["columns"])
     if _serving_table_needs_rebuild(engine, dataset, manifest):
         from superset.dhis2.sync_service import _build_ou_filter_for_dataset
 
         ou_filter = _build_ou_filter_for_dataset(dataset)
-        raw_rows = engine.fetch_staging_rows(dataset, ou_filter=ou_filter)
+        raw_rows = engine.fetch_staging_rows(dataset, limit=0, ou_filter=ou_filter)
         serving_rows_columns, serving_rows = materialize_serving_rows(
             dataset,
             raw_rows,
             manifest,
+        )
+        serving_rows_columns, serving_rows = prune_empty_hierarchy_columns(
+            serving_rows_columns, serving_rows
         )
         engine.create_or_replace_serving_table(
             dataset,
             columns=serving_rows_columns,
             rows=serving_rows,
         )
+        # Use the pruned column set for Superset dataset registration
+        serving_columns = dataset_columns_payload(serving_rows_columns)
     serving_table_ref = engine.get_serving_sql_table_ref(dataset)
 
     # Auto-register the serving table as a Superset virtual dataset
@@ -857,15 +936,33 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
         )
         from superset import db as _db
 
-        # The staging engine's database_id IS the serving database id
-        serving_db_id = getattr(engine, "database_id", None)
+        # For DuckDB (and ClickHouse) engines the staging engine's database_id
+        # is the DHIS2 *source* database, not the serving database.
+        # Always ask the engine for the canonical serving Database record.
+        if hasattr(engine, "get_or_create_superset_database"):
+            _serving_db = engine.get_or_create_superset_database()
+            serving_db_id = getattr(_serving_db, "id", None)
+        else:
+            serving_db_id = getattr(engine, "database_id", None)
         if serving_db_id is not None:
+            # Collect source instance IDs from dataset variables so the
+            # DHIS2Map can route geo/metadata requests to the right instances.
+            from superset.dhis2.models import DHIS2DatasetVariable as _DSVar
+            _instance_ids = list(dict.fromkeys(
+                v.instance_id
+                for v in _db.session.query(_DSVar)
+                    .filter_by(staged_dataset_id=dataset.id)
+                    .all()
+                if v.instance_id is not None
+            ))
             sqla_id = register_serving_table_as_superset_dataset(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
                 serving_table_ref=serving_table_ref,
                 serving_columns=serving_columns,
                 serving_database_id=serving_db_id,
+                source_database_id=dataset.database_id,
+                source_instance_ids=_instance_ids,
             )
             if dataset.serving_superset_dataset_id != sqla_id:
                 dataset.serving_superset_dataset_id = sqla_id
@@ -875,5 +972,11 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
             "ensure_serving_table: auto-register as Superset dataset failed for dataset_id=%s",
             dataset_id,
         )
+        # Roll back any partial transaction so the session stays usable for
+        # subsequent callers in the same worker thread.
+        try:
+            _db.session.rollback()
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     return serving_table_ref, serving_columns

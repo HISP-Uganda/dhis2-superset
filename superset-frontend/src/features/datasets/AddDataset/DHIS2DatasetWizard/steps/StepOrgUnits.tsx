@@ -1335,7 +1335,7 @@ export default function WizardStepOrgUnits({
         </Title>
         <Paragraph style={{ margin: 0 }}>
           {t(
-            'Choose whether organisation units come from one primary configured connection, a merged repository structure, or per-connection hierarchies kept separate. All options read from locally staged metadata with source lineage preserved.',
+            'Choose which organisation units to sync. Leaving the selection empty uses the current user\'s assigned org units. Organisation units and periods are optional — users can filter by any org unit or period directly in charts.',
           )}
         </Paragraph>
         {selectedConnectionCount > 0 ? (
@@ -1357,6 +1357,59 @@ export default function WizardStepOrgUnits({
         ) : null}
       </div>
 
+      {/* Auto-detect / no restriction option */}
+      <div>
+        <Checkbox
+          checked={!!wizardState.orgUnitsAutoDetect}
+          onChange={e => {
+            const checked = e.target.checked;
+            updateState({
+              orgUnitsAutoDetect: checked,
+              ...(checked
+                ? { orgUnits: [], selectedOrgUnitDetails: [] }
+                : {}),
+            });
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>
+            {t('Auto-detect and stage all applicable org units')}
+          </span>
+          <span
+            style={{ marginLeft: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}
+          >
+            {t('(skip manual selection — use current user\'s assigned org units)')}
+          </span>
+        </Checkbox>
+
+        {wizardState.orgUnitsAutoDetect && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              background: '#fffbe6',
+              border: '1px solid #ffe58f',
+              borderRadius: 4,
+              fontSize: 13,
+            }}
+          >
+            <strong>
+              {t('⚠ Data Loading may take some time to complete for unrestricted datasets.')}
+            </strong>
+            <br />
+            {t(
+              'Without an org unit restriction the sync will fetch data for all organisation units assigned to your DHIS2 user account. For large org unit hierarchies this can significantly increase sync time and dataset size.',
+            )}
+          </div>
+        )}
+      </div>
+
+      <div
+        style={
+          wizardState.orgUnitsAutoDetect
+            ? { opacity: 0.45, pointerEvents: 'none' }
+            : undefined
+        }
+      >
       {activeInstances.length > 0 && selectedConnectionCount === 0 ? (
         <Alert
           type="warning"
@@ -1973,6 +2026,7 @@ export default function WizardStepOrgUnits({
           {t('Clear All')}
         </Button>
       )}
+      </div>{/* end auto-detect wrapper */}
     </StepContainer>
   );
 }

@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect } from 'react';
 import { css, styled, t } from '@superset-ui/core';
 import { Typography, Loading } from '@superset-ui/core/components';
 import { Empty, Select } from 'antd';
@@ -85,6 +85,16 @@ export default function DHIS2PageLayout({
   extra,
   children,
 }: DHIS2PageLayoutProps) {
+  // Register staged DHIS2 legend sets as color schemes so they appear in
+  // all chart type color-scheme pickers (not just DHIS2Map).
+  useEffect(() => {
+    if (!selectedDatabaseId) return;
+    import('src/utils/dhis2LegendColorSchemes').then(
+      ({ syncDHIS2LegendSchemesForDatabase }) => {
+        syncDHIS2LegendSchemesForDatabase(selectedDatabaseId).catch(() => {});
+      },
+    );
+  }, [selectedDatabaseId]);
   const tabs = [
     {
       label: t('Instances'),

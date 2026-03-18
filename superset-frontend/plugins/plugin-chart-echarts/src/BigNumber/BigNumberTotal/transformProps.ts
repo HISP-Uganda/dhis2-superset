@@ -58,6 +58,11 @@ export default function transformProps(
     currencyFormat,
     subheader,
     subheaderFontSize,
+    cardVariant,
+    cardShadow,
+    cardBorderRadius,
+    valueColor,
+    textAlign,
   } = formData;
   const refs: Refs = {};
   const { data = [], coltypes = [] } = queriesData[0] || {};
@@ -123,5 +128,10 @@ export default function transformProps(
     metricName: originalLabel,
     showMetricName,
     metricNameFontSize,
+    cardVariant,
+    cardShadow,
+    cardBorderRadius,
+    valueColor,
+    textAlign,
   };
 }

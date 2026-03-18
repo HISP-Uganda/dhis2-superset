@@ -33,6 +33,11 @@ import {
   subtitleControl,
   showMetricNameControl,
   metricNameFontSizeWithVisibility,
+  cardVariantControl,
+  cardShadowControl,
+  cardBorderRadiusControl,
+  valueColorControl,
+  textAlignControl,
 } from '../sharedControls';
 
 const config: ControlPanelConfig = {
@@ -284,6 +289,17 @@ const config: ControlPanelConfig = {
             },
           },
         ],
+      ],
+    },
+    {
+      label: t('Appearance'),
+      expanded: false,
+      controlSetRows: [
+        [textAlignControl],
+        [cardVariantControl],
+        [cardShadowControl],
+        [cardBorderRadiusControl],
+        [valueColorControl],
       ],
     },
   ],

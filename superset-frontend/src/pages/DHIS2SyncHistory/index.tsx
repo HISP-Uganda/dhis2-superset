@@ -36,11 +36,13 @@ import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
 import type {
   DHIS2AnyJob,
   DHIS2MetadataJob,
+  DHIS2MetadataTypeResult,
   DHIS2RequestLog,
   DHIS2RequestLogSummary,
   DHIS2SyncJob,
 } from 'src/features/dhis2/types';
 import useDHIS2Databases from 'src/features/dhis2/useDHIS2Databases';
+import WorkerStatusBanner from 'src/features/dhis2/WorkerStatusBanner';
 import {
   formatDateTime,
   formatDuration,
@@ -272,6 +274,7 @@ export default function DHIS2SyncHistory() {
       onDatabaseChange={setSelectedDatabaseId}
     >
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <WorkerStatusBanner />
         <Space style={{ width: '100%' }} wrap>
           <Card style={{ minWidth: 160 }}>
             <Statistic title={t('Total loaded')} value={jobs.length} />
@@ -320,10 +323,16 @@ export default function DHIS2SyncHistory() {
                       return job.staged_dataset_name || `#${job.staged_dataset_id}`;
                     }
                     const mj = job as DHIS2MetadataJob;
-                    const instCount = (mj.instance_ids || []).length;
-                    return instCount
-                      ? t('%s instance(s)', instCount)
-                      : t('All instances');
+                    const ids = mj.instance_ids || [];
+                    const nameMap = mj.instance_name_map || {};
+                    if (ids.length === 0) return t('All instances');
+                    const names = ids.map(id => nameMap[String(id)] || `#${id}`);
+                    if (names.length === 1) return names[0];
+                    return (
+                      <Tooltip title={names.join(', ')}>
+                        <span>{t('%s instances', names.length)}</span>
+                      </Tooltip>
+                    );
                   },
                 },
                 {
@@ -360,15 +369,27 @@ export default function DHIS2SyncHistory() {
                 {
                   title: t('Rows'),
                   key: 'rows',
-                  width: 90,
+                  width: 110,
                   render: (_: unknown, job: DHIS2AnyJob) => {
                     const loaded = job.rows_loaded ?? 0;
+                    const extracted = isSyncJob(job) ? (job.rows_extracted ?? null) : null;
+                    const fetchedDiffers = extracted !== null && extracted > 0 && extracted !== loaded;
                     if (ACTIVE_STATUSES.has(job.status)) {
                       return (
                         <Space size={4}>
                           <SyncOutlined spin style={{ color: '#1677ff' }} />
                           <Text>{loaded}</Text>
                         </Space>
+                      );
+                    }
+                    if (fetchedDiffers) {
+                      return (
+                        <Tooltip title={t('%s fetched from DHIS2, %s written to local staging', String(extracted), String(loaded))}>
+                          <Space size={2}>
+                            <Text>{loaded}</Text>
+                            <Text type="secondary" style={{ fontSize: 11 }}>({extracted} {t('fetched')})</Text>
+                          </Space>
+                        </Tooltip>
                       );
                     }
                     return String(loaded);
@@ -385,7 +406,7 @@ export default function DHIS2SyncHistory() {
                         <Text type="danger" ellipsis>{v}</Text>
                       </Tooltip>
                     ) : (
-                      <Text type="secondary">{t('None')}</Text>
+                      <Text type="secondary">—</Text>
                     ),
                 },
                 {
@@ -493,6 +514,155 @@ export default function DHIS2SyncHistory() {
                   const results = job.instance_results || {};
                   const instEntries = Object.entries(results);
                   const logData = isSyncJob(job) ? requestLogs[job.id] : undefined;
+                  const nameMap = !isSyncJob(job)
+                    ? ((job as DHIS2MetadataJob).instance_name_map || {})
+                    : {};
+
+                  // ── Metadata job: instance cards + per-type breakdown ──
+                  const renderMetadataInstances = () => {
+                    if (instEntries.length === 0) {
+                      return <Text type="secondary">{t('No instance details recorded')}</Text>;
+                    }
+                    return (
+                      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                        {instEntries.map(([instId, typeResults]) => {
+                          const typeMap = typeResults as Record<string, DHIS2MetadataTypeResult>;
+                          const typeRows = Object.entries(typeMap)
+                            .map(([typeName, r]) => ({ typeName, ...r }))
+                            .sort((a, b) => a.typeName.localeCompare(b.typeName));
+                          const totalCount = typeRows.reduce((s, r) => s + (r.count || 0), 0);
+                          const failedTypes = typeRows.filter(r => r.status !== 'success' && r.status !== 'unsupported');
+                          const instanceName = nameMap[instId] || `Instance ${instId}`;
+                          const allOk = failedTypes.length === 0;
+
+                          return (
+                            <Card
+                              key={instId}
+                              size="small"
+                              title={
+                                <Space>
+                                  {allOk
+                                    ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                    : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                  <Text strong>{instanceName}</Text>
+                                  <Tag color={allOk ? 'success' : 'error'} style={{ fontSize: 11 }}>
+                                    {allOk ? t('success') : t('%s failed', failedTypes.length)}
+                                  </Tag>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>
+                                    {t('%s total items', totalCount.toLocaleString())}
+                                  </Text>
+                                </Space>
+                              }
+                              style={{ borderColor: allOk ? '#b7eb8f' : '#ffccc7' }}
+                            >
+                              <Table<{ typeName: string; count: number; status: string; message?: string | null }>
+                                dataSource={typeRows}
+                                rowKey="typeName"
+                                size="small"
+                                pagination={false}
+                                scroll={{ y: 320 }}
+                                rowClassName={r => r.status !== 'success' && r.status !== 'unsupported' ? 'ant-table-row-danger' : ''}
+                                columns={[
+                                  {
+                                    title: t('Metadata type'),
+                                    dataIndex: 'typeName',
+                                    key: 'typeName',
+                                    render: (v: string) => <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{v}</Text>,
+                                  },
+                                  {
+                                    title: t('Count'),
+                                    dataIndex: 'count',
+                                    key: 'count',
+                                    width: 90,
+                                    align: 'right' as const,
+                                    render: (v: number) => (
+                                      <Text strong style={{ fontSize: 12 }}>
+                                        {(v || 0).toLocaleString()}
+                                      </Text>
+                                    ),
+                                  },
+                                  {
+                                    title: t('Status'),
+                                    dataIndex: 'status',
+                                    key: 'status',
+                                    width: 110,
+                                    render: (v: string) => {
+                                      const color = v === 'success' ? 'success' : v === 'unsupported' ? 'default' : 'error';
+                                      return <Tag color={color} style={{ fontSize: 11 }}>{v}</Tag>;
+                                    },
+                                  },
+                                  {
+                                    title: t('Note'),
+                                    dataIndex: 'message',
+                                    key: 'message',
+                                    ellipsis: true,
+                                    render: (v: string | null) =>
+                                      v ? <Text type="secondary" style={{ fontSize: 11 }}>{v}</Text> : null,
+                                  },
+                                ]}
+                              />
+                            </Card>
+                          );
+                        })}
+                      </Space>
+                    );
+                  };
+
+                  // ── Sync job: instance status cards ────────────────────
+                  const renderSyncInstances = () => {
+                    if (instEntries.length === 0) {
+                      return <Text type="secondary">{t('No instance details')}</Text>;
+                    }
+                    return (
+                      <Space wrap size="small">
+                        {instEntries.map(([instId, result]) => {
+                          const r = result as Record<string, unknown>;
+                          const isOk = r.status === 'success';
+                          const instanceName = nameMap[instId] || `Instance ${instId}`;
+                          return (
+                            <Card
+                              key={instId}
+                              size="small"
+                              style={{
+                                minWidth: 220,
+                                borderColor: isOk ? '#b7eb8f' : '#ffccc7',
+                                background: isOk ? '#f6ffed' : '#fff2f0',
+                              }}
+                            >
+                              <Space direction="vertical" size={2}>
+                                <Space>
+                                  {isOk
+                                    ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                    : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                  <Text strong style={{ fontSize: 13 }}>{instanceName}</Text>
+                                  <Tag color={isOk ? 'success' : 'error'} style={{ fontSize: 11 }}>
+                                    {String(r.status)}
+                                  </Tag>
+                                </Space>
+                                {r.rows !== undefined && (
+                                  <Text style={{ fontSize: 12 }}>
+                                    {t('Rows loaded')}: <Text strong>{String(r.rows)}</Text>
+                                  </Text>
+                                )}
+                                {r.sync_mode && (
+                                  <Text type="secondary" style={{ fontSize: 11 }}>
+                                    {t('Mode')}: {String(r.sync_mode)}
+                                  </Text>
+                                )}
+                                {r.error && (
+                                  <Tooltip title={String(r.error)}>
+                                    <Text type="danger" ellipsis style={{ fontSize: 12, maxWidth: 260 }}>
+                                      {String(r.error)}
+                                    </Text>
+                                  </Tooltip>
+                                )}
+                              </Space>
+                            </Card>
+                          );
+                        })}
+                      </Space>
+                    );
+                  };
 
                   return (
                     <div style={{ padding: '8px 0' }}>
@@ -513,61 +683,9 @@ export default function DHIS2SyncHistory() {
                                 )}
                               </Space>
                             ),
-                            children: instEntries.length === 0 ? (
-                              <Text type="secondary">{t('No instance details')}</Text>
-                            ) : (
-                              <Space wrap size="small">
-                                {instEntries.map(([instId, result]) => {
-                                  const r = result as Record<string, unknown>;
-                                  const isOk = r.status === 'success';
-                                  return (
-                                    <Card
-                                      key={instId}
-                                      size="small"
-                                      style={{
-                                        minWidth: 220,
-                                        borderColor: isOk ? '#b7eb8f' : '#ffccc7',
-                                        background: isOk ? '#f6ffed' : '#fff2f0',
-                                      }}
-                                    >
-                                      <Space direction="vertical" size={2}>
-                                        <Space>
-                                          {isOk
-                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
-                                          <Text strong style={{ fontSize: 13 }}>
-                                            {t('Instance')} {instId}
-                                          </Text>
-                                          <Tag
-                                            color={isOk ? 'success' : 'error'}
-                                            style={{ fontSize: 11 }}
-                                          >
-                                            {String(r.status)}
-                                          </Tag>
-                                        </Space>
-                                        {r.rows !== undefined && (
-                                          <Text style={{ fontSize: 12 }}>
-                                            {t('Rows loaded')}: <Text strong>{String(r.rows)}</Text>
-                                          </Text>
-                                        )}
-                                        {r.sync_mode && (
-                                          <Text type="secondary" style={{ fontSize: 11 }}>
-                                            {t('Mode')}: {String(r.sync_mode)}
-                                          </Text>
-                                        )}
-                                        {r.error && (
-                                          <Tooltip title={String(r.error)}>
-                                            <Text type="danger" ellipsis style={{ fontSize: 12, maxWidth: 260 }}>
-                                              {String(r.error)}
-                                            </Text>
-                                          </Tooltip>
-                                        )}
-                                      </Space>
-                                    </Card>
-                                  );
-                                })}
-                              </Space>
-                            ),
+                            children: isSyncJob(job)
+                              ? renderSyncInstances()
+                              : renderMetadataInstances(),
                           },
 
                           // ── Per-batch request log panel (sync only) ────
@@ -828,8 +946,7 @@ export default function DHIS2SyncHistory() {
                     </div>
                   );
                 },
-                rowExpandable: (job: DHIS2AnyJob) =>
-                  Object.keys(job.instance_results || {}).length > 0 || isSyncJob(job),
+                rowExpandable: () => true,
               }}
             />
           ) : (

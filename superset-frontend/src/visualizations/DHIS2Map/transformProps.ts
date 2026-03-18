@@ -420,43 +420,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     filterState,
   } = chartProps;
 
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Received formData:', {
-    boundary_levels: (formData as any)?.boundary_levels,
-    boundary_level: (formData as any)?.boundary_level,
-    all_keys: Object.keys(formData || {}),
-    // Check for any boundary-related keys
-    boundary_keys: Object.keys(formData || {}).filter(k => k.toLowerCase().includes('boundary') || k.toLowerCase().includes('level')),
-    // Show raw formData for boundary fields
-    raw_boundary_levels: JSON.stringify((formData as any)?.boundary_levels),
-  });
-
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] 🎨 STYLE PROPS (from formData):', {
-    colorScheme: (formData as any)?.colorScheme,
-    linearColorScheme: (formData as any)?.linearColorScheme,
-    useLinearColorScheme: (formData as any)?.useLinearColorScheme,
-    opacity: (formData as any)?.opacity,
-    strokeColor: (formData as any)?.strokeColor,
-    strokeWidth: (formData as any)?.strokeWidth,
-    autoThemeBorders: (formData as any)?.autoThemeBorders,
-    showLegend: (formData as any)?.showLegend,
-    showLabels: (formData as any)?.showLabels,
-    show_labels: (formData as any)?.show_labels,
-    legendPosition: (formData as any)?.legendPosition,
-    legendClasses: (formData as any)?.legendClasses,
-  });
-
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] 🎨 LEVEL COLORS (from formData):', {
-    level_1_color: (formData as any)?.level_1_color,
-    level1Color: (formData as any)?.level1Color,
-    level_2_color: (formData as any)?.level_2_color,
-    level2Color: (formData as any)?.level2Color,
-    level_3_color: (formData as any)?.level_3_color,
-    level3Color: (formData as any)?.level3Color,
-  });
-
   const formDataAny = formData as any;
 
   const {
@@ -529,36 +492,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   const level_5_color = formDataAny?.level5Color || formDataAny?.level_5_color;
   const level_6_color = formDataAny?.level6Color || formDataAny?.level_6_color;
 
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] ✅ EXTRACTED STYLE VALUES (will be used):', {
-    colorScheme: color_scheme,
-    linearColorScheme: linear_color_scheme,
-    useLinearColorScheme: use_linear_color_scheme,
-    opacity,
-    strokeColor: stroke_color,
-    strokeWidth: stroke_width,
-    autoThemeBorders: auto_theme_borders,
-    showLegend: show_legend,
-    legendPosition: legend_position,
-    legendClasses: legend_classes,
-    showLabels: show_labels,
-    focusSelectedBoundaryWithChildren:
-      focus_selected_boundary_with_children,
-    styleUnselectedAreas: style_unselected_areas,
-    unselectedAreaFillColor: unselected_area_fill_color,
-    unselectedAreaFillOpacity: unselected_area_fill_opacity,
-    unselectedAreaBorderColor: unselected_area_border_color,
-    unselectedAreaBorderWidth: unselected_area_border_width,
-    levelColors: {
-      level_1: level_1_color,
-      level_2: level_2_color,
-      level_3: level_3_color,
-      level_4: level_4_color,
-      level_5: level_5_color,
-      level_6: level_6_color,
-    },
-  });
-
   const data = queriesData[0]?.data || [];
   const datasourceAny = datasource as any;
   const datasourceColumns = Array.isArray(datasourceAny?.columns)
@@ -616,19 +549,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       (formData as any)?.database_id ||
       (formData as any)?.database?.id;
   }
-
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Database ID extraction:', {
-    databaseId,
-    isStagedLocalDataset,
-    sourceDatabaseIdFromExtra,
-    sourceInstanceIdsFromExtra,
-    formData_dhis2_source_database_id: (formData as any)?.dhis2_source_database_id,
-    formData_dhis2_staged_local_dataset: (formData as any)?.dhis2_staged_local_dataset,
-    servingDatabaseId: datasourceAny?.database?.id || datasourceAny?.database_id,
-    datasource_keys: datasource ? Object.keys(datasource as object) : [],
-    database_obj: datasourceAny?.database,
-  });
 
   const cachedOrgUnitLevels = readCachedOrgUnitLevels(databaseId);
   const cachedLegendSets = readCachedLegendSets(databaseId);
@@ -731,33 +651,15 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   let hierarchyLevelColumn = '';
   const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
 
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Detecting org unit column:', {
-    org_unit_column,
-    sanitizedOrgUnitColumn,
-    allColumns,
-    hasData: data.length > 0,
-  });
-
   // Look for hierarchy level columns
   // Priority 1: Use org_unit_column if explicitly set (try both original and sanitized)
   if (org_unit_column && allColumns.includes(org_unit_column)) {
     hierarchyLevelColumn = org_unit_column;
-    // eslint-disable-next-line no-console
-    console.log(
-      '[DHIS2Map transformProps] Using explicitly set org_unit_column:',
-      org_unit_column,
-    );
   } else if (
     sanitizedOrgUnitColumn &&
     allColumns.includes(sanitizedOrgUnitColumn)
   ) {
     hierarchyLevelColumn = sanitizedOrgUnitColumn;
-    // eslint-disable-next-line no-console
-    console.log(
-      '[DHIS2Map transformProps] Using sanitized org_unit_column:',
-      sanitizedOrgUnitColumn,
-    );
   }
 
   // Priority 2: Use staged hierarchy metadata carried on the dataset columns.
@@ -783,11 +685,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
           .slice(-1)[0];
 
       hierarchyLevelColumn = preferredHierarchyLevel?.columnName || '';
-      console.log('[DHIS2Map transformProps] Using staged hierarchy column:', {
-        hierarchyLevelColumn,
-        requestedPrimaryLevel,
-        availableHierarchyLevels: datasourceHierarchyLevels,
-      });
     }
   }
 
@@ -810,29 +707,17 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       // Use first string column as hierarchy column
       if (typeof firstRow[col] === 'string') {
         hierarchyLevelColumn = col;
-        // eslint-disable-next-line no-console
-        console.log(
-          '[DHIS2Map transformProps] Using first string column as org unit:',
-          col,
-        );
         break;
       }
     }
   }
 
   // Priority 4: If we STILL have no hierarchy column and this is DHIS2, use first column as fallback
-  // (DHIS2 data should have org units as the first meaningful column)
   if (!hierarchyLevelColumn && isDHIS2Dataset && allColumns.length > 0) {
     const firstRow = data[0];
-    // Look for first non-numeric column
     for (const col of allColumns) {
       if (typeof firstRow[col] === 'string') {
         hierarchyLevelColumn = col;
-        // eslint-disable-next-line no-console
-        console.log(
-          '[DHIS2Map transformProps] Using DHIS2 fallback org unit column:',
-          col,
-        );
         break;
       }
     }
@@ -922,50 +807,21 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   // Try boundary_levels first, then boundary_level for backward compatibility
   let selectedLevels = requestedBoundaryLevels;
-  let levelSource = 'boundary_levels';
-
   if (selectedLevels.length === 0) {
     selectedLevels = requestedBoundaryLevelFallback;
-    levelSource = 'boundary_level';
   }
-
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Boundary level inputs:', {
-    boundary_levels,
-    rawBoundaryLevels,
-    boundary_levels_type: typeof boundary_levels,
-    boundary_levels_isArray: Array.isArray(boundary_levels),
-    boundary_level,
-    rawBoundaryLevel,
-    boundary_level_type: typeof boundary_level,
-    boundary_level_isArray: Array.isArray(boundary_level),
-    normalizedLevels: selectedLevels,
-    levelSource,
-  });
 
   // Keep the selected OU hierarchy column as the primary boundary level so stale
   // saved boundary config does not request the wrong administrative geometry.
   if (selectedLevels.length === 0 && primaryBoundaryLevel) {
     selectedLevels = [primaryBoundaryLevel];
-    levelSource = `resolved from column "${hierarchyLevelColumn}"`;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[DHIS2Map transformProps] Resolved primary boundary level ${primaryBoundaryLevel} from column "${hierarchyLevelColumn}"`,
-    );
   } else if (primaryBoundaryLevel) {
     selectedLevels = mergeBoundaryLevels(primaryBoundaryLevel, selectedLevels);
-    levelSource = `${levelSource} + column "${hierarchyLevelColumn}"`;
   }
-  
+
   // Final fallback: Default to Level 2 if nothing is specified
   if (selectedLevels.length === 0) {
     selectedLevels = [2];
-    levelSource = 'DEFAULT (no level specified)';
-    // eslint-disable-next-line no-console
-    console.log(
-      '[DHIS2Map transformProps] Using DEFAULT (Level 2):',
-      selectedLevels,
-    );
   }
 
   // Build custom colors map from individual level color controls
@@ -974,13 +830,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     { r: number; g: number; b: number; a: number }
   > = {};
 
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] 🔧 Building customLevelColors map...', {
-    level_1_color,
-    level_2_color,
-    level_3_color,
-  });
-
   if (level_1_color) customLevelColors[1] = level_1_color;
   if (level_2_color) customLevelColors[2] = level_2_color;
   if (level_3_color) customLevelColors[3] = level_3_color;
@@ -988,23 +837,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   if (level_5_color) customLevelColors[5] = level_5_color;
   if (level_6_color) customLevelColors[6] = level_6_color;
 
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] 🔧 customLevelColors map built:', customLevelColors);
-
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Level color controls:', {
-    level_1_color,
-    level_2_color,
-    level_3_color,
-    level_4_color,
-    level_5_color,
-    level_6_color,
-    customLevelColors,
-    selectedLevels,
-  });
-
   // Generate distinct border colors for each boundary level
-  // Use custom level_border_colors if provided, then custom level colors, otherwise defaults
   let levelBorderColors: LevelBorderColor[];
   if (
     level_border_colors &&
@@ -1012,51 +845,13 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     level_border_colors.length > 0
   ) {
     levelBorderColors = level_border_colors;
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using level_border_colors from formData');
   } else if (Object.keys(customLevelColors).length > 0) {
-    // Use custom colors from control panel
     levelBorderColors = generateLevelBorderColors(
       selectedLevels,
       customLevelColors,
     );
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Generated levelBorderColors from customLevelColors:', levelBorderColors);
   } else {
     levelBorderColors = generateLevelBorderColors(selectedLevels);
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Generated levelBorderColors with defaults:', levelBorderColors);
-  }
-
-  // Debug logging
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] Data structure:', {
-    total_rows: data.length,
-    all_columns: allColumns,
-    hierarchy_level_columns: levelColumns,
-    selected_hierarchy_column: hierarchyLevelColumn,
-    primary_boundary_level: primaryBoundaryLevel,
-    org_unit_column_original: org_unit_column,
-    org_unit_column_sanitized: sanitizedOrgUnitColumn,
-    selected_metric_column: metricColumn,
-    metric_string: metricString,
-    metric_display_label: metricDisplayLabel,
-    sanitized_metric: sanitizedMetric,
-    boundary_levels_from_formData: boundary_levels,
-    boundary_level_from_formData: boundary_level,
-    selected_boundary_levels: selectedLevels,
-    level_border_colors: levelBorderColors,
-    custom_level_colors: customLevelColors,
-    sample_row: data[0],
-  });
-  if (!metricColumn && data.length > 0) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[DHIS2Map transformProps] WARNING: No metric column found! Expected metric:',
-      metricString,
-      'Available columns:',
-      allColumns.join(', '),
-    );
   }
 
   // Parse manual breaks from comma-separated string to number array
@@ -1074,22 +869,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
         .map((c: string) => c.trim())
         .filter((c: string) => c.length > 0)
     : undefined;
-
-  // Final debug logging for critical props
-  // eslint-disable-next-line no-console
-  console.log('[DHIS2Map transformProps] FINAL PROPS:', {
-    databaseId,
-    isStagedLocalDataset,
-    sourceInstanceIds: sourceInstanceIdsFromExtra,
-    primaryBoundaryLevel,
-    boundaryLevels: selectedLevels,
-    boundaryLevelLabels,
-    levelBorderColors,
-    orgUnitColumn: hierarchyLevelColumn,
-    metric: metricColumn,
-    isDHIS2Dataset,
-    dataRowCount: data.length,
-  });
 
   // Derive datasetId if datasource payload is minimal (e.g., dashboards)
   const datasetId =

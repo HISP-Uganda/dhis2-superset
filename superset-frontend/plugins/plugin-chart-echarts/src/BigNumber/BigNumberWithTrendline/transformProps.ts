@@ -103,6 +103,11 @@ export default function transformProps(
     yAxisFormat,
     currencyFormat,
     timeRangeFixed,
+    cardVariant,
+    cardShadow,
+    cardBorderRadius,
+    valueColor,
+    textAlign,
   } = formData;
   const granularity = extractTimegrain(rawFormData);
   const {
@@ -359,5 +364,10 @@ export default function transformProps(
     onContextMenu,
     xValueFormatter: formatTime,
     refs,
+    cardVariant,
+    cardShadow,
+    cardBorderRadius,
+    valueColor,
+    textAlign,
   };
 }

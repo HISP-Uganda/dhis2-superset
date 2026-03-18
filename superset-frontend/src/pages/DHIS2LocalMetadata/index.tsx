@@ -16,12 +16,18 @@ import {
   Tag,
   Tooltip,
 } from 'antd';
-import { ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import {
+  CodeOutlined,
+  ReloadOutlined,
+  StopOutlined,
+  TableOutlined,
+} from '@ant-design/icons';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
 import type { DHIS2MetadataStatus } from 'src/features/dhis2/types';
 import useDHIS2Databases from 'src/features/dhis2/useDHIS2Databases';
+import WorkerStatusBanner from 'src/features/dhis2/WorkerStatusBanner';
 import {
   formatCount,
   formatDateTime,
@@ -31,7 +37,16 @@ import {
 
 const { Text } = Typography;
 
-type MetadataFamily = 'variables' | 'legend_sets' | 'org_units';
+type MetadataFamily =
+  | 'variables'
+  | 'programs'
+  | 'categories'
+  | 'org_units'
+  | 'legend_sets'
+  | 'boundaries';
+
+type ViewMode = 'table' | 'json';
+
 type MetadataPreviewRow = Record<string, unknown> & {
   id?: string;
   displayName?: string;
@@ -39,9 +54,19 @@ type MetadataPreviewRow = Record<string, unknown> & {
   level?: number;
   source_instance_name?: string;
   groupLabels?: string[];
+  members?: unknown[];
+  categories?: unknown[];
+  categoryCombo?: { displayName?: string } | null;
+  dataDimensionType?: string;
+  programType?: string;
+  analyticsType?: string;
   legendDefinition?: {
     items?: unknown[];
   };
+  // GeoJSON feature fields
+  geometry?: { type?: string; coordinates?: unknown } | null;
+  properties?: Record<string, unknown> | null;
+  type?: string;
 };
 
 const VARIABLE_TYPE_OPTIONS = [
@@ -50,19 +75,103 @@ const VARIABLE_TYPE_OPTIONS = [
   { label: t('Program Indicators'), value: 'programIndicators' },
   { label: t('Event Data Items'), value: 'eventDataItems' },
   { label: t('Data Sets'), value: 'dataSets' },
+  { label: t('Indicator Types'), value: 'indicatorTypes' },
+  { label: t('Data Element Groups'), value: 'dataElementGroups' },
+  { label: t('Data Element Group Sets'), value: 'dataElementGroupSets' },
+  { label: t('Indicator Groups'), value: 'indicatorGroups' },
+  { label: t('Indicator Group Sets'), value: 'indicatorGroupSets' },
+];
+
+const PROGRAM_TYPE_OPTIONS = [
+  { label: t('Programs'), value: 'programs' },
+  { label: t('Program Stages'), value: 'programStages' },
+  { label: t('Tracked Entity Types'), value: 'trackedEntityTypes' },
+];
+
+const CATEGORY_TYPE_OPTIONS = [
+  { label: t('Category Combos'), value: 'categoryCombos' },
+  { label: t('Categories'), value: 'categories' },
+  { label: t('Category Option Combos'), value: 'categoryOptionCombos' },
 ];
 
 const ORG_UNIT_TYPE_OPTIONS = [
   { label: t('Organisation Units'), value: 'organisationUnits' },
   { label: t('Organisation Unit Levels'), value: 'organisationUnitLevels' },
   { label: t('Organisation Unit Groups'), value: 'organisationUnitGroups' },
+  { label: t('Organisation Unit Group Sets'), value: 'organisationUnitGroupSets' },
 ];
 
 const LEGEND_SET_TYPE_OPTIONS = [
   { label: t('Legend Sets'), value: 'legendSets' },
 ];
 
+const BOUNDARY_TYPE_OPTIONS = [
+  { label: t('Boundary GeoJSON'), value: 'geoJSON' },
+  { label: t('OU Hierarchy'), value: 'orgUnitHierarchy' },
+];
+
 const POLL_INTERVAL_MS = 3000;
+
+/** Extract rows from a metadata API response regardless of format. */
+function extractRows(
+  responseJson: Record<string, unknown>,
+  metadataType: string,
+): MetadataPreviewRow[] {
+  // Helper: flatten a FeatureCollection into preview rows
+  const featuresFromCollection = (
+    collection: Record<string, unknown>,
+  ): MetadataPreviewRow[] =>
+    (collection.features as Record<string, unknown>[]).map((feature, idx) => {
+      const props = (feature.properties as Record<string, unknown>) || {};
+      return {
+        ...props,
+        id: (props.id as string) || (feature.id as string) || String(idx),
+        displayName:
+          (props.displayName as string) ||
+          (props.name as string) ||
+          (feature.id as string) ||
+          String(idx),
+        geometry: feature.geometry as MetadataPreviewRow['geometry'],
+        type: feature.type as string,
+        _raw_feature: feature,
+      };
+    });
+
+  // GeoJSON: result wrapper (standard staged API format)
+  const resultVal = responseJson.result as Record<string, unknown> | null;
+  if (
+    resultVal &&
+    typeof resultVal === 'object' &&
+    resultVal.type === 'FeatureCollection' &&
+    Array.isArray(resultVal.features)
+  ) {
+    return featuresFromCollection(resultVal);
+  }
+
+  // GeoJSON: top-level FeatureCollection (rare, direct format)
+  if (
+    responseJson.type === 'FeatureCollection' &&
+    Array.isArray(responseJson.features)
+  ) {
+    return featuresFromCollection(responseJson);
+  }
+
+  // orgUnitHierarchy is usually a tree — wrap as single row for JSON-only display
+  if (metadataType === 'orgUnitHierarchy') {
+    const root = responseJson.result ?? responseJson.data ?? responseJson;
+    if (root && typeof root === 'object') {
+      return [{ id: 'root', displayName: t('OU Hierarchy tree'), _tree: root }];
+    }
+    return [];
+  }
+
+  // Standard paginated API response
+  if (Array.isArray(resultVal)) {
+    return resultVal as MetadataPreviewRow[];
+  }
+
+  return [];
+}
 
 export default function DHIS2LocalMetadata() {
   const { addDangerToast, addSuccessToast } = useToasts();
@@ -77,6 +186,7 @@ export default function DHIS2LocalMetadata() {
   );
   const [family, setFamily] = useState<MetadataFamily>('variables');
   const [metadataType, setMetadataType] = useState('dataElements');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [searchValue, setSearchValue] = useState('');
   const [submittedSearch, setSubmittedSearch] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -85,19 +195,19 @@ export default function DHIS2LocalMetadata() {
   const [cancellingJob, setCancellingJob] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewRows, setPreviewRows] = useState<MetadataPreviewRow[]>([]);
+  const [rawJsonData, setRawJsonData] = useState<unknown>(null);
   const [previewStatus, setPreviewStatus] = useState<string>('idle');
   const [previewMessage, setPreviewMessage] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const typeOptions = useMemo(
-    () =>
-      family === 'variables'
-        ? VARIABLE_TYPE_OPTIONS
-        : family === 'legend_sets'
-          ? LEGEND_SET_TYPE_OPTIONS
-          : ORG_UNIT_TYPE_OPTIONS,
-    [family],
-  );
+  const typeOptions = useMemo(() => {
+    if (family === 'variables') return VARIABLE_TYPE_OPTIONS;
+    if (family === 'programs') return PROGRAM_TYPE_OPTIONS;
+    if (family === 'categories') return CATEGORY_TYPE_OPTIONS;
+    if (family === 'legend_sets') return LEGEND_SET_TYPE_OPTIONS;
+    if (family === 'boundaries') return BOUNDARY_TYPE_OPTIONS;
+    return ORG_UNIT_TYPE_OPTIONS;
+  }, [family]);
 
   useEffect(() => {
     const nextValue = typeOptions[0]?.value;
@@ -105,6 +215,13 @@ export default function DHIS2LocalMetadata() {
       setMetadataType(nextValue);
     }
   }, [metadataType, typeOptions]);
+
+  // Default boundary types to JSON view; switch table for other families
+  useEffect(() => {
+    if (family === 'boundaries' && metadataType === 'orgUnitHierarchy') {
+      setViewMode('json');
+    }
+  }, [family, metadataType]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current !== null) {
@@ -162,6 +279,7 @@ export default function DHIS2LocalMetadata() {
   const loadPreview = async () => {
     if (!selectedDatabaseId || !metadataType) {
       setPreviewRows([]);
+      setRawJsonData(null);
       setPreviewStatus('idle');
       setPreviewMessage(null);
       return;
@@ -173,24 +291,30 @@ export default function DHIS2LocalMetadata() {
       params.set('type', metadataType);
       params.set('federated', 'true');
       params.set('staged', 'true');
-      params.set('page', '1');
-      params.set('page_size', '25');
-      if (submittedSearch.trim()) {
-        params.set('search', submittedSearch.trim());
+      // GeoJSON/hierarchy: no pagination params needed
+      if (family !== 'boundaries') {
+        params.set('page', '1');
+        params.set('page_size', '25');
+        if (submittedSearch.trim()) {
+          params.set('search', submittedSearch.trim());
+        }
       }
 
       const response = await SupersetClient.get({
         endpoint: `/api/v1/database/${selectedDatabaseId}/dhis2_metadata/?${params.toString()}`,
       });
 
-      setPreviewRows((response.json.result || []) as MetadataPreviewRow[]);
-      setPreviewStatus((response.json.status as string) || 'success');
-      setPreviewMessage((response.json.message as string) || null);
+      const json = response.json as Record<string, unknown>;
+      setRawJsonData(json);
+      setPreviewRows(extractRows(json, metadataType));
+      setPreviewStatus((json.status as string) || 'success');
+      setPreviewMessage((json.message as string) || null);
     } catch (error) {
       addDangerToast(
         getErrorMessage(error, t('Failed to load local metadata preview')),
       );
       setPreviewRows([]);
+      setRawJsonData(null);
       setPreviewStatus('failed');
       setPreviewMessage(t('Failed to load local metadata preview.'));
     } finally {
@@ -206,7 +330,7 @@ export default function DHIS2LocalMetadata() {
 
   useEffect(() => {
     void loadPreview();
-  }, [selectedDatabaseId, metadataType, submittedSearch]);
+  }, [selectedDatabaseId, metadataType, submittedSearch]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRefresh = async () => {
     if (!selectedDatabaseId) {
@@ -223,7 +347,6 @@ export default function DHIS2LocalMetadata() {
         setActiveMetadataJobId(jobId);
       }
       addSuccessToast(t('Local metadata refresh started.'));
-      // Fetch status immediately then start polling
       const status = await fetchMetadataStatus(selectedDatabaseId);
       const prog = status?.refresh_progress;
       if (prog && (prog.status === 'running' || prog.status === 'queued')) {
@@ -261,124 +384,236 @@ export default function DHIS2LocalMetadata() {
   const familyStatus =
     family === 'variables'
       ? metadataStatus?.variables
-      : family === 'legend_sets'
-        ? metadataStatus?.legend_sets
-        : metadataStatus?.org_units;
+      : family === 'programs'
+        ? metadataStatus?.programs
+        : family === 'categories'
+          ? metadataStatus?.categories
+          : family === 'legend_sets'
+            ? metadataStatus?.legend_sets
+            : family === 'boundaries'
+              ? undefined
+              : metadataStatus?.org_units;
 
-  const previewColumns =
-    family === 'variables'
-      ? [
-          {
-            title: t('Variable'),
-            key: 'displayName',
-            render: (_value: unknown, row: MetadataPreviewRow) =>
-              row.displayName || row.name || row.id || t('Unknown'),
+  const _instanceCol = {
+    title: t('Instance'),
+    key: 'source_instance_name',
+    render: (_value: unknown, row: MetadataPreviewRow) =>
+      row.source_instance_name ? (
+        <Tag>{row.source_instance_name}</Tag>
+      ) : (
+        <Text type="secondary">{t('Unknown')}</Text>
+      ),
+  };
+  const _uidCol = { title: t('UID'), dataIndex: 'id', key: 'id' };
+  const _nameCol = (label: string) => ({
+    title: label,
+    key: 'displayName',
+    render: (_value: unknown, row: MetadataPreviewRow) =>
+      row.displayName || row.name || row.id || t('Unknown'),
+  });
+  const _groupsCol = {
+    title: t('Groups'),
+    key: 'groupLabels',
+    render: (_value: unknown, row: MetadataPreviewRow) =>
+      Array.isArray(row.groupLabels) && row.groupLabels.length ? (
+        <Space wrap>
+          {row.groupLabels.slice(0, 3).map(label => (
+            <Tag key={label}>{label}</Tag>
+          ))}
+        </Space>
+      ) : (
+        <Text type="secondary">{t('None')}</Text>
+      ),
+  };
+  const _membersCol = {
+    title: t('Members'),
+    key: 'members',
+    render: (_value: unknown, row: MetadataPreviewRow) => (
+      <Text type="secondary">
+        {Array.isArray(row.members) ? String(row.members.length) : '—'}
+      </Text>
+    ),
+  };
+
+  const previewColumns = (() => {
+    if (family === 'boundaries' && metadataType === 'geoJSON') {
+      return [
+        _nameCol(t('Name / UID')),
+        {
+          title: t('Level'),
+          key: 'level',
+          render: (_value: unknown, row: MetadataPreviewRow) => {
+            const lvl =
+              row.level ??
+              (row.properties as Record<string, unknown> | null)?.level;
+            return lvl !== undefined && lvl !== null ? (
+              <Tag>{String(lvl)}</Tag>
+            ) : (
+              <Text type="secondary">{t('—')}</Text>
+            );
           },
-          {
-            title: t('Instance'),
-            key: 'source_instance_name',
-            render: (_value: unknown, row: MetadataPreviewRow) =>
-              row.source_instance_name ? (
-                <Tag>{row.source_instance_name}</Tag>
-              ) : (
-                <Text type="secondary">{t('Unknown')}</Text>
-              ),
+        },
+        {
+          title: t('Geometry type'),
+          key: 'geometry_type',
+          render: (_value: unknown, row: MetadataPreviewRow) => {
+            const geomType = row.geometry?.type;
+            return geomType ? (
+              <Tag color="blue">{geomType}</Tag>
+            ) : (
+              <Text type="secondary">{t('None')}</Text>
+            );
           },
-          {
-            title: t('Groups'),
-            key: 'groupLabels',
-            render: (_value: unknown, row: MetadataPreviewRow) =>
-              Array.isArray(row.groupLabels) && row.groupLabels.length ? (
-                <Space wrap>
-                  {row.groupLabels.slice(0, 3).map(label => (
-                    <Tag key={label}>{label}</Tag>
-                  ))}
-                </Space>
-              ) : (
-                <Text type="secondary">{t('None')}</Text>
-              ),
+        },
+        {
+          title: t('Coordinates'),
+          key: 'coord_count',
+          render: (_value: unknown, row: MetadataPreviewRow) => {
+            const coords = row.geometry?.coordinates;
+            if (!coords) return <Text type="secondary">{t('—')}</Text>;
+            const flat = JSON.stringify(coords);
+            return (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {flat.slice(0, 60)}
+                {flat.length > 60 ? '…' : ''}
+              </Text>
+            );
           },
-          {
-            title: t('UID'),
-            dataIndex: 'id',
-            key: 'id',
+        },
+      ];
+    }
+
+    if (family === 'boundaries' && metadataType === 'orgUnitHierarchy') {
+      return [
+        _nameCol(t('Name')),
+        _uidCol,
+      ];
+    }
+
+    if (family === 'legend_sets') {
+      return [
+        _nameCol(t('Legend set')),
+        {
+          title: t('Legends'),
+          key: 'legendCount',
+          render: (_value: unknown, row: MetadataPreviewRow) =>
+            String(
+              Array.isArray(row.legendDefinition?.items)
+                ? row.legendDefinition?.items.length
+                : 0,
+            ),
+        },
+        _instanceCol,
+        _uidCol,
+      ];
+    }
+
+    if (family === 'org_units') {
+      return [
+        _nameCol(t('Organisation unit')),
+        {
+          title: t('Level'),
+          dataIndex: 'level',
+          key: 'level',
+          render: (value: unknown) =>
+            value === null || value === undefined ? (
+              <Text type="secondary">{t('—')}</Text>
+            ) : (
+              String(value)
+            ),
+        },
+        {
+          title: t('Instance'),
+          key: 'source_instance_name',
+          render: (_value: unknown, row: MetadataPreviewRow) =>
+            row.source_instance_name ? (
+              <Tag>{row.source_instance_name}</Tag>
+            ) : (
+              <Text type="secondary">{t('Merged')}</Text>
+            ),
+        },
+        _uidCol,
+      ];
+    }
+
+    if (family === 'programs') {
+      return [
+        _nameCol(t('Program / Stage / Entity')),
+        {
+          title: t('Type'),
+          key: 'programType',
+          render: (_value: unknown, row: MetadataPreviewRow) => (
+            <Text type="secondary">
+              {String(row.programType || row.analyticsType || '—')}
+            </Text>
+          ),
+        },
+        _instanceCol,
+        _uidCol,
+      ];
+    }
+
+    if (family === 'categories') {
+      return [
+        _nameCol(t('Name')),
+        {
+          title: t('Dimension type / Combo'),
+          key: 'dataDimensionType',
+          render: (_value: unknown, row: MetadataPreviewRow) => (
+            <Text type="secondary">
+              {String(
+                row.dataDimensionType ||
+                  row.categoryCombo?.displayName ||
+                  '—',
+              )}
+            </Text>
+          ),
+        },
+        {
+          title: t('Items'),
+          key: 'categories',
+          render: (_value: unknown, row: MetadataPreviewRow) => {
+            const count = Array.isArray(row.categories)
+              ? row.categories.length
+              : null;
+            return (
+              <Text type="secondary">
+                {count !== null ? String(count) : '—'}
+              </Text>
+            );
           },
-        ]
-      : family === 'legend_sets'
-        ? [
-            {
-              title: t('Legend set'),
-              key: 'displayName',
-              render: (_value: unknown, row: MetadataPreviewRow) =>
-                row.displayName || row.name || row.id || t('Unknown'),
-            },
-            {
-              title: t('Legends'),
-              key: 'legendCount',
-              render: (_value: unknown, row: MetadataPreviewRow) =>
-                String(
-                  Array.isArray(row.legendDefinition?.items)
-                    ? row.legendDefinition?.items.length
-                    : 0,
-                ),
-            },
-            {
-              title: t('Instance'),
-              key: 'source_instance_name',
-              render: (_value: unknown, row: MetadataPreviewRow) =>
-                row.source_instance_name ? (
-                  <Tag>{row.source_instance_name}</Tag>
-                ) : (
-                  <Text type="secondary">{t('Unknown')}</Text>
-                ),
-            },
-            {
-              title: t('UID'),
-              dataIndex: 'id',
-              key: 'id',
-            },
-          ]
-        : [
-          {
-            title: t('Organisation unit'),
-            key: 'displayName',
-            render: (_value: unknown, row: MetadataPreviewRow) =>
-              row.displayName || row.name || row.id || t('Unknown'),
-          },
-          {
-            title: t('Level'),
-            dataIndex: 'level',
-            key: 'level',
-            render: (value: unknown) =>
-              value === null || value === undefined ? (
-                <Text type="secondary">{t('Unknown')}</Text>
-              ) : (
-                String(value)
-              ),
-          },
-          {
-            title: t('Instance'),
-            key: 'source_instance_name',
-            render: (_value: unknown, row: MetadataPreviewRow) =>
-              row.source_instance_name ? (
-                <Tag>{row.source_instance_name}</Tag>
-              ) : (
-                <Text type="secondary">{t('Merged')}</Text>
-              ),
-          },
-          {
-            title: t('UID'),
-            dataIndex: 'id',
-            key: 'id',
-          },
-        ];
+        },
+        _instanceCol,
+        _uidCol,
+      ];
+    }
+
+    // Default: variables (dataElements, indicators, groups, etc.)
+    const hasGroups = [
+      'dataElements', 'indicators', 'programIndicators', 'eventDataItems',
+    ].includes(metadataType);
+    const hasMembers = [
+      'dataElementGroups', 'indicatorGroups',
+      'dataElementGroupSets', 'indicatorGroupSets',
+    ].includes(metadataType);
+    const extraCol = hasMembers ? _membersCol : hasGroups ? _groupsCol : null;
+    return [
+      _nameCol(t('Variable')),
+      _instanceCol,
+      ...(extraCol ? [extraCol] : []),
+      _uidCol,
+    ];
+  })();
+
+  // Whether the current type can show a meaningful table
+  const canShowTable = !(family === 'boundaries' && metadataType === 'orgUnitHierarchy');
 
   return (
     <DHIS2PageLayout
       activeTab="local-metadata"
       databases={databases}
       description={t(
-        'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables, legend sets, or organisation units without waiting on live DHIS2 responses.',
+        'Inspect metadata already staged locally for fast dataset creation. Refresh it, verify readiness by connection, and browse staged variables, legend sets, boundaries, or organisation units without waiting on live DHIS2 responses.',
       )}
       extra={
         <Space>
@@ -436,6 +671,7 @@ export default function DHIS2LocalMetadata() {
       onDatabaseChange={setSelectedDatabaseId}
     >
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <WorkerStatusBanner />
         <Space style={{ width: '100%' }} wrap>
           <Card style={{ minWidth: 190 }}>
             <Statistic
@@ -508,7 +744,7 @@ export default function DHIS2LocalMetadata() {
                         <Progress
                           percent={pct}
                           status={antStatus}
-                          strokeWidth={10}
+                          size={10}
                         />
                       </div>
 
@@ -549,7 +785,6 @@ export default function DHIS2LocalMetadata() {
                               percent={famPct}
                               size="small"
                               status={famStatus}
-                              strokeWidth={6}
                             />
                           </div>
                         );
@@ -578,15 +813,25 @@ export default function DHIS2LocalMetadata() {
 
               <Space wrap>
                 <Tag color={getStatusColor(metadataStatus.variables.status)}>
-                  {t('Variables: %s', metadataStatus.variables.status)}
+                  {t('Variables: %s', formatCount(metadataStatus.variables.count))}
                 </Tag>
+                {metadataStatus.programs ? (
+                  <Tag color={getStatusColor(metadataStatus.programs.status)}>
+                    {t('Programs: %s', formatCount(metadataStatus.programs.count))}
+                  </Tag>
+                ) : null}
+                {metadataStatus.categories ? (
+                  <Tag color={getStatusColor(metadataStatus.categories.status)}>
+                    {t('Categories: %s', formatCount(metadataStatus.categories.count))}
+                  </Tag>
+                ) : null}
                 {metadataStatus.legend_sets ? (
                   <Tag color={getStatusColor(metadataStatus.legend_sets.status)}>
-                    {t('Legend sets: %s', metadataStatus.legend_sets.status)}
+                    {t('Legend sets: %s', formatCount(metadataStatus.legend_sets.count))}
                   </Tag>
                 ) : null}
                 <Tag color={getStatusColor(metadataStatus.org_units.status)}>
-                  {t('Org units: %s', metadataStatus.org_units.status)}
+                  {t('Org units: %s', formatCount(metadataStatus.org_units.count))}
                 </Tag>
               </Space>
             </Space>
@@ -601,11 +846,14 @@ export default function DHIS2LocalMetadata() {
               <Select
                 aria-label={t('Metadata family')}
                 options={[
-                  { label: t('Variables'), value: 'variables' },
-                  { label: t('Legend Sets'), value: 'legend_sets' },
+                  { label: t('Variables & Data'), value: 'variables' },
+                  { label: t('Programs & Tracker'), value: 'programs' },
+                  { label: t('Categories & Disaggregation'), value: 'categories' },
                   { label: t('Organisation Units'), value: 'org_units' },
+                  { label: t('Legend Sets'), value: 'legend_sets' },
+                  { label: t('Boundaries & GeoJSON'), value: 'boundaries' },
                 ]}
-                style={{ width: 180 }}
+                style={{ width: 230 }}
                 value={family}
                 onChange={value => setFamily(value)}
               />
@@ -616,15 +864,35 @@ export default function DHIS2LocalMetadata() {
                 value={metadataType}
                 onChange={value => setMetadataType(value)}
               />
-              <Input.Search
-                allowClear
-                aria-label={t('Search local metadata')}
-                placeholder={t('Search local metadata')}
-                style={{ width: 260 }}
-                value={searchValue}
-                onChange={event => setSearchValue(event.target.value)}
-                onSearch={value => setSubmittedSearch(value)}
-              />
+              {family !== 'boundaries' && (
+                <Input.Search
+                  allowClear
+                  aria-label={t('Search local metadata')}
+                  placeholder={t('Search local metadata')}
+                  style={{ width: 260 }}
+                  value={searchValue}
+                  onChange={event => setSearchValue(event.target.value)}
+                  onSearch={value => setSubmittedSearch(value)}
+                />
+              )}
+              {canShowTable && (
+                <Tooltip
+                  title={
+                    viewMode === 'table'
+                      ? t('Switch to raw JSON view')
+                      : t('Switch to table view')
+                  }
+                >
+                  <Button
+                    icon={viewMode === 'table' ? <CodeOutlined /> : <TableOutlined />}
+                    onClick={() =>
+                      setViewMode(prev => (prev === 'table' ? 'json' : 'table'))
+                    }
+                  >
+                    {viewMode === 'table' ? t('JSON') : t('Table')}
+                  </Button>
+                </Tooltip>
+              )}
             </Space>
           }
           loading={loadingPreview}
@@ -639,21 +907,45 @@ export default function DHIS2LocalMetadata() {
               type={previewStatus === 'failed' ? 'error' : 'info'}
             />
           ) : null}
-          {previewRows.length ? (
-            <Table
-              columns={previewColumns}
-              dataSource={previewRows}
-              pagination={{ pageSize: 10, showSizeChanger: false }}
-              rowKey={row =>
-                `${row.source_instance_name || 'shared'}-${row.id || row.displayName || row.name}`
-              }
-            />
-          ) : (
-            <Empty
-              description={t(
-                'No staged metadata matched the current selection.',
-              )}
-            />
+
+          {/* JSON view */}
+          {(viewMode === 'json' || !canShowTable) && rawJsonData !== null ? (
+            <pre
+              style={{
+                background: '#1a1a2e',
+                color: '#e2e8f0',
+                borderRadius: 8,
+                padding: 16,
+                overflowX: 'auto',
+                fontSize: 12,
+                maxHeight: 600,
+                overflowY: 'auto',
+              }}
+            >
+              {JSON.stringify(rawJsonData, null, 2)}
+            </pre>
+          ) : viewMode === 'json' ? (
+            <Empty description={t('No staged data loaded yet.')} />
+          ) : null}
+
+          {/* Table view */}
+          {viewMode === 'table' && canShowTable && (
+            previewRows.length ? (
+              <Table
+                columns={previewColumns}
+                dataSource={previewRows}
+                pagination={{ pageSize: 10, showSizeChanger: false }}
+                rowKey={row =>
+                  `${row.source_instance_name || 'shared'}-${row.id || row.displayName || row.name}`
+                }
+              />
+            ) : (
+              <Empty
+                description={t(
+                  'No staged metadata matched the current selection.',
+                )}
+              />
+            )
           )}
         </Card>
       </Space>

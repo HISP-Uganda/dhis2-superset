@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 import requests
+from flask import current_app, has_app_context
 from sqlalchemy import event
 from sqlalchemy.engine.url import make_url
 
@@ -40,9 +41,15 @@ SUPPORTED_METADATA_TYPES = (
     "dataElementGroupSets",
     "indicatorGroups",
     "indicatorGroupSets",
+    # Disaggregation / category dimension metadata
+    "categories",
+    "categoryCombos",
+    "categoryOptionCombos",
+    # Org unit structure
     "organisationUnits",
     "organisationUnitLevels",
     "organisationUnitGroups",
+    "organisationUnitGroupSets",
     LEGEND_SET_METADATA_TYPE,
     GEOJSON_METADATA_TYPE,
     ORG_UNIT_HIERARCHY_METADATA_TYPE,
@@ -68,12 +75,39 @@ VARIABLE_PROGRESS_METADATA_TYPES = (
     "dataElementGroupSets",
     "indicatorGroups",
     "indicatorGroupSets",
+    "categories",
+    "categoryCombos",
+    "categoryOptionCombos",
+)
+CATEGORY_METADATA_TYPES = (
+    "categories",
+    "categoryCombos",
+    "categoryOptionCombos",
+)
+PROGRAM_METADATA_TYPES = (
+    "programs",
+    "programStages",
+    "trackedEntityTypes",
+)
+# Full variable family used in status/diagnostics (excludes programs and categories)
+VARIABLE_STATUS_METADATA_TYPES = (
+    "dataElements",
+    "indicators",
+    "indicatorTypes",
+    "dataSets",
+    "programIndicators",
+    "eventDataItems",
+    "dataElementGroups",
+    "dataElementGroupSets",
+    "indicatorGroups",
+    "indicatorGroupSets",
 )
 LEGEND_SET_PROGRESS_METADATA_TYPES = (LEGEND_SET_METADATA_TYPE,)
 ORG_UNIT_METADATA_TYPES = (
     "organisationUnits",
     "organisationUnitLevels",
     "organisationUnitGroups",
+    "organisationUnitGroupSets",
     GEOJSON_METADATA_TYPE,
     ORG_UNIT_HIERARCHY_METADATA_TYPE,
 )
@@ -93,6 +127,23 @@ _ANALYTICS_NUMERIC_TYPES = {
 }
 _BACKGROUND_REFRESH_DELAY_SECONDS = 0.25
 _ORG_UNIT_SOURCE_MODE_REPOSITORY = "repository"
+
+_CELERY_PING_TIMEOUT = 1.0  # seconds to wait for a worker ping
+
+
+def _celery_workers_available() -> bool:
+    """Return True if at least one Celery worker is reachable (via ping).
+
+    Uses a short timeout so this never blocks the request thread.
+    Falls back to False on any error so the caller uses the thread path.
+    """
+    try:
+        from celery import current_app as celery_app  # lazy import
+
+        response = celery_app.control.inspect(timeout=_CELERY_PING_TIMEOUT).ping()
+        return bool(response)
+    except Exception:  # pylint: disable=broad-except
+        return False
 _ORG_UNIT_SOURCE_MODE_PRIMARY = "primary"
 _ORG_UNIT_SOURCE_MODE_PER_INSTANCE = "per_instance"
 
@@ -538,6 +589,60 @@ def resolve_metadata_contexts(
     return [_build_database_context(database)]
 
 
+def _resolve_dhis2_source_database(
+    database: Database,
+    requested_instance_ids: list[int] | None = None,
+) -> Database | None:
+    """Return the DHIS2 source database for a DuckDB serving database.
+
+    Metadata snapshots and DHIS2 instance registrations are stored against
+    the DHIS2 source database, not the DuckDB serving database.  This helper
+    resolves the correct source so lookups find the cached data.
+
+    Resolution order:
+    1. If instance IDs are provided, look up the first instance's database_id.
+    2. Fall back to scanning SqlaTable.extra for ``dhis2_source_database_id``.
+    """
+    from superset import db as _db
+    from superset.models.core import Database as _Database
+
+    # Prefer instance-based resolution — direct and accurate.
+    if requested_instance_ids:
+        from superset.dhis2 import instance_service as inst_svc
+        try:
+            instance = inst_svc.get_instance(requested_instance_ids[0])
+            if instance is not None:
+                source_db = _db.session.get(_Database, instance.database_id)
+                if source_db is not None:
+                    return source_db
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    # Fallback: scan dataset extras for the source database ID.
+    try:
+        from superset.connectors.sqla.models import SqlaTable
+
+        sqla_tables = (
+            _db.session.query(SqlaTable)
+            .filter_by(database_id=database.id)
+            .all()
+        )
+        for sqla in sqla_tables:
+            try:
+                extra = json.loads(sqla.extra or "{}")
+                src_db_id = extra.get("dhis2_source_database_id")
+                if src_db_id:
+                    source_db = _db.session.get(_Database, int(src_db_id))
+                    if source_db is not None:
+                        return source_db
+            except Exception:  # pylint: disable=broad-except
+                pass
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    return None
+
+
 def _resolve_staged_contexts(
     database: Database,
     *,
@@ -546,6 +651,24 @@ def _resolve_staged_contexts(
     federated: bool = False,
 ) -> list[MetadataContext]:
     requested_instance_ids = list(dict.fromkeys(requested_instance_ids or []))
+
+    # If this is a DuckDB (or other local-staging) serving database, resolve
+    # to the originating DHIS2 source database *first* — regardless of whether
+    # instance IDs were provided.  DHIS2 instances are registered against the
+    # source DHIS2 database, not the DuckDB serving database, so any call to
+    # resolve_metadata_contexts with the DuckDB database will return no contexts.
+    uri = str(getattr(database, "sqlalchemy_uri_decrypted", None) or "")
+    if uri.startswith("duckdb://"):
+        source_db = _resolve_dhis2_source_database(database, requested_instance_ids)
+        if source_db is not None:
+            return _resolve_staged_contexts(
+                source_db,
+                instance_id=instance_id,
+                requested_instance_ids=requested_instance_ids,
+                federated=federated or bool(requested_instance_ids),
+            )
+        return []
+
     if instance_id is not None or requested_instance_ids or federated:
         return resolve_metadata_contexts(
             database,
@@ -1405,6 +1528,42 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                 # organisationUnits fetch. Including the full nested OU tree here
                 # causes massive payloads and timeouts on large instances.
                 "fields": "id,displayName,name,organisationUnits[id]",
+                "paging": "false",
+            },
+        )
+    if metadata_type == "organisationUnitGroupSets":
+        return (
+            "organisationUnitGroupSets",
+            "organisationUnitGroupSets",
+            {
+                "fields": "id,displayName,name,organisationUnitGroups[id,displayName,name]",
+                "paging": "false",
+            },
+        )
+    if metadata_type == "categories":
+        return (
+            "categories",
+            "categories",
+            {
+                "fields": "id,displayName,name,dataDimensionType,categoryOptions[id,displayName,name]",
+                "paging": "false",
+            },
+        )
+    if metadata_type == "categoryCombos":
+        return (
+            "categoryCombos",
+            "categoryCombos",
+            {
+                "fields": "id,displayName,name,dataDimensionType,categories[id,displayName,name]",
+                "paging": "false",
+            },
+        )
+    if metadata_type == "categoryOptionCombos":
+        return (
+            "categoryOptionCombos",
+            "categoryOptionCombos",
+            {
+                "fields": "id,displayName,name,categoryCombo[id,displayName,name]",
                 "paging": "false",
             },
         )
@@ -2461,68 +2620,83 @@ def schedule_database_metadata_refresh(
     db.session.flush()  # get id before dispatch
     job_id = meta_job.id
 
-    try:
-        from superset.tasks.dhis2_metadata import refresh_dhis2_metadata
-
-        task = refresh_dhis2_metadata.apply_async(
-            kwargs=dict(
-                database_id=database_id,
-                instance_ids=requested_instance_ids,
-                metadata_types=active_metadata_types,
-                reason=reason,
-                job_id=job_id,
-                continuation_metadata_types=active_continuation_types or None,
-            )
-        )
-        task_id = getattr(task, "id", None)
-        meta_job.task_id = task_id
-        db.session.commit()
-        return {
-            "scheduled": True,
-            "mode": "celery",
-            "task_id": task_id,
-            "job_id": job_id,
-        }
-    except Exception:  # pylint: disable=broad-except
-        logger.info(
-            "Celery metadata refresh unavailable for database id=%s",
-            database_id,
-            exc_info=True,
-        )
-
-    def _run() -> None:
+    if _celery_workers_available():
         try:
-            result = refresh_database_metadata(
-                database_id,
-                instance_ids=requested_instance_ids,
-                metadata_types=active_metadata_types,
-                reason=reason or "thread_fallback",
-                job_id=job_id,
+            from superset.tasks.dhis2_metadata import refresh_dhis2_metadata
+
+            task = refresh_dhis2_metadata.apply_async(
+                kwargs=dict(
+                    database_id=database_id,
+                    instance_ids=requested_instance_ids,
+                    metadata_types=active_metadata_types,
+                    reason=reason,
+                    job_id=job_id,
+                    continuation_metadata_types=active_continuation_types or None,
+                )
             )
-            if active_continuation_types and result.get("status") not in (
-                "failed",
-                "cancelled",
-            ):
-                try:
-                    schedule_database_metadata_refresh(
-                        database_id,
-                        instance_ids=requested_instance_ids,
-                        metadata_types=active_continuation_types,
-                        reason="initial_setup_phase2",
-                        job_type="scheduled",
-                    )
-                except Exception:  # pylint: disable=broad-except
-                    logger.warning(
-                        "Failed to dispatch thread phase-2 continuation for database_id=%s",
-                        database_id,
-                        exc_info=True,
-                    )
+            task_id = getattr(task, "id", None)
+            meta_job.task_id = task_id
+            db.session.commit()
+            return {
+                "scheduled": True,
+                "mode": "celery",
+                "task_id": task_id,
+                "job_id": job_id,
+            }
         except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "Thread fallback metadata refresh failed for database id=%s",
+            logger.info(
+                "Celery metadata refresh dispatch failed for database id=%s, falling back to thread",
                 database_id,
                 exc_info=True,
             )
+    else:
+        logger.info(
+            "No Celery workers available for database id=%s, using thread fallback",
+            database_id,
+        )
+
+    _flask_app = current_app._get_current_object() if has_app_context() else None
+
+    def _run() -> None:
+        def _do_run() -> None:
+            try:
+                result = refresh_database_metadata(
+                    database_id,
+                    instance_ids=requested_instance_ids,
+                    metadata_types=active_metadata_types,
+                    reason=reason or "thread_fallback",
+                    job_id=job_id,
+                )
+                if active_continuation_types and result.get("status") not in (
+                    "failed",
+                    "cancelled",
+                ):
+                    try:
+                        schedule_database_metadata_refresh(
+                            database_id,
+                            instance_ids=requested_instance_ids,
+                            metadata_types=active_continuation_types,
+                            reason="initial_setup_phase2",
+                            job_type="scheduled",
+                        )
+                    except Exception:  # pylint: disable=broad-except
+                        logger.warning(
+                            "Failed to dispatch thread phase-2 continuation for database_id=%s",
+                            database_id,
+                            exc_info=True,
+                        )
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Thread fallback metadata refresh failed for database id=%s",
+                    database_id,
+                    exc_info=True,
+                )
+
+        if _flask_app is not None:
+            with _flask_app.app_context():
+                _do_run()
+        else:
+            _do_run()
 
     meta_job.status = "running"
     db.session.commit()
@@ -2595,6 +2769,16 @@ def get_staged_geo_payload(
 ) -> dict[str, Any]:
     requested_instance_ids = requested_instance_ids or []
     parent_ids = parent_ids or []
+
+    # Snapshots are stored against the DHIS2 source database, not the DuckDB
+    # serving database.  Resolve the effective database for both context
+    # resolution and snapshot/schedule lookups.
+    uri = str(getattr(database, "sqlalchemy_uri_decrypted", None) or "")
+    if uri.startswith("duckdb://"):
+        source_db = _resolve_dhis2_source_database(database, requested_instance_ids)
+        if source_db is not None:
+            database = source_db
+
     contexts = _resolve_staged_contexts(
         database,
         instance_id=instance_id,
@@ -2619,6 +2803,7 @@ def get_staged_geo_payload(
             "instance_results": [],
             "message": "DHIS2 boundaries are being prepared in local staging.",
             "staged": True,
+            "retry_after_ms": 8000,
         }
 
     merged_collection = {"type": "FeatureCollection", "features": []}
@@ -2652,87 +2837,52 @@ def get_staged_geo_payload(
             )
             continue
         if snapshot_status != "success":
-            fallback_error: str | None = None
-            if allow_live_fallback and snapshot_status in {None, "pending", "failed"}:
-                try:
-                    snapshot = _build_snapshot_payload(
-                        context=context,
-                        metadata_type=GEOJSON_METADATA_TYPE,
-                        status="success",
-                        result_payload=_hydrate_geo_snapshots_from_live(
-                            database=database,
-                            context=context,
-                        ),
-                    )
-                    snapshot_status = "success"
-                    loaded_via_live_fallback = True
-                except Exception as ex:  # pylint: disable=broad-except
-                    fallback_error = str(ex)
-                    logger.warning(
-                        "Failed live boundary fallback for database id=%s instance=%s",
-                        database.id,
-                        context.instance_id,
-                        exc_info=True,
-                    )
-
-            if snapshot_status != "success":
-                response_status = (
-                    "failed"
-                    if fallback_error or snapshot_status == "failed"
-                    else "pending"
-                )
-                if response_status == "pending":
-                    pending_count += 1
-                else:
-                    failed_count += 1
-                if context.instance_id is not None:
-                    refresh_instance_ids.append(context.instance_id)
-                instance_results.append(
-                    {
-                        "id": context.instance_id,
-                        "name": context.instance_name,
-                        "status": response_status,
-                        "count": int((snapshot or {}).get("count") or 0)
+            # Schedule async background refresh and return pending immediately.
+            # Do NOT call _hydrate_geo_snapshots_from_live synchronously — it
+            # hits the live DHIS2 API and can take 2-3 minutes, blocking the
+            # HTTP request and making the map appear hung.
+            response_status = "failed" if snapshot_status == "failed" else "pending"
+            if response_status == "pending":
+                pending_count += 1
+            else:
+                failed_count += 1
+            if context.instance_id is not None:
+                refresh_instance_ids.append(context.instance_id)
+            instance_results.append(
+                {
+                    "id": context.instance_id,
+                    "name": context.instance_name,
+                    "status": response_status,
+                    "count": int((snapshot or {}).get("count") or 0)
+                    if isinstance(snapshot, dict)
+                    else 0,
+                    "error": (
+                        (snapshot or {}).get("message")
                         if isinstance(snapshot, dict)
-                        else 0,
-                        "error": fallback_error
-                        or (
-                            (snapshot or {}).get("message")
-                            if isinstance(snapshot, dict)
-                            else None
-                        )
-                        or "Boundary snapshot not ready yet.",
-                    }
-                )
-                continue
+                        else None
+                    )
+                    or "Boundary snapshot not ready yet.",
+                    "retry_after_ms": 8000,
+                }
+            )
+            continue
 
         raw_collection = snapshot.get("result")
         if not isinstance(raw_collection, dict):
             raw_collection = {"type": "FeatureCollection", "features": []}
-        if (
-            allow_live_fallback
-            and not loaded_via_live_fallback
-            and not _geojson_feature_collection_supports_levels(raw_collection, levels)
-        ):
-            try:
-                raw_collection = _hydrate_geo_snapshots_from_live(
-                    database=database,
-                    context=context,
-                )
-                loaded_via_live_fallback = True
-            except Exception as ex:  # pylint: disable=broad-except
-                logger.warning(
-                    "Failed staged boundary rehydrate for database id=%s instance=%s",
-                    database.id,
-                    context.instance_id,
-                    exc_info=True,
-                )
-                if not isinstance(snapshot, dict):
-                    snapshot = {}
-                snapshot = {
-                    **snapshot,
-                    "message": str(ex),
-                }
+        if not _geojson_feature_collection_supports_levels(raw_collection, levels):
+            # Snapshot exists but doesn't cover the requested levels — schedule
+            # an async refresh and serve what we have rather than blocking on a
+            # live DHIS2 fetch.
+            if context.instance_id is not None:
+                refresh_instance_ids.append(context.instance_id)
+            logger.info(
+                "Boundary snapshot for database id=%s instance=%s does not cover "
+                "requested levels %s; serving existing snapshot and queuing refresh.",
+                database.id,
+                context.instance_id,
+                levels,
+            )
         filtered_collection = _filter_geojson_feature_collection(
             raw_collection,
             levels=levels,
@@ -2809,6 +2959,7 @@ def get_staged_geo_payload(
         "instance_results": instance_results,
         "message": message,
         "staged": True,
+        "retry_after_ms": 8000 if status in ("pending", "partial") else None,
         "count": (
             len(result)
             if isinstance(result, list)

@@ -34,10 +34,19 @@ export interface BigNumberDatum {
   [key: string]: number | null;
 }
 
+export type CardVariant = 'none' | 'outlined' | 'filled' | 'gradient';
+export type CardShadow = 'none' | 'small' | 'medium' | 'large';
+export type TextAlign = 'left' | 'center' | 'right';
+
 export type BigNumberTotalFormData = QueryFormData & {
   metric?: QueryFormMetric;
   yAxisFormat?: string;
   forceTimestampFormatting?: boolean;
+  cardVariant?: CardVariant;
+  cardShadow?: CardShadow;
+  cardBorderRadius?: number;
+  valueColor?: { r: number; g: number; b: number; a: number } | null;
+  textAlign?: TextAlign;
 };
 
 export type BigNumberWithTrendlineFormData = BigNumberTotalFormData & {
@@ -102,4 +111,9 @@ export type BigNumberVizProps = {
   formData?: BigNumberWithTrendlineFormData;
   refs: Refs;
   colorThresholdFormatters?: ColorFormatters;
+  cardVariant?: CardVariant;
+  cardShadow?: CardShadow;
+  cardBorderRadius?: number;
+  valueColor?: { r: number; g: number; b: number; a: number } | null;
+  textAlign?: TextAlign;
 };

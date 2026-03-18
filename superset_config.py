@@ -40,8 +40,15 @@ WTF_CSRF_EXEMPT_LIST = [
 # Set this API key to enable Mapbox visualizations
 MAPBOX_API_KEY = os.environ.get('MAPBOX_API_KEY', '')
 
-# Secret key for signing cookies
-SECRET_KEY = "222nevYrQia2O5NAfpkFgaD9g7loFW2gqpW6C+lh1t/mj77t8kRQpHwG"
+# Secret key for signing cookies.
+# Reads SECRET_KEY first (Celery workers need this exact name), then falls back to
+# SUPERSET_SECRET_KEY (the name used by the base config), then the hardcoded value.
+# Production: set SECRET_KEY in /etc/superset/superset.env — do NOT rely on this fallback.
+SECRET_KEY = (
+    os.environ.get("SECRET_KEY")
+    or os.environ.get("SUPERSET_SECRET_KEY")
+    or "222nevYrQia2O5NAfpkFgaD9g7loFW2gqpW6C+lh1t/mj77t8kRQpHwG"
+)
 
 # Keep backend startup stable by default; enable debug explicitly when needed.
 DEBUG = os.environ.get("SUPERSET_DEBUG", "0") == "1"
@@ -67,6 +74,11 @@ FEATURE_FLAGS = {
     "DASHBOARD_RBAC": True,
     "DASHBOARD_NATIVE_FILTERS": True,
     "ENABLE_TEMPLATE_PROCESSING": True,
+    # Enable drill-down interactions on charts and dashboards.
+    # DrillBy lets users pivot on a different dimension from the context menu.
+    # DrillToDetail opens a row-level data modal for any data point.
+    "DrillBy": True,
+    "DrillToDetail": True,
 }
 
 # Guest token configuration for embedded dashboards
@@ -328,7 +340,7 @@ class CeleryConfig:
     task_serializer = 'json'
     accept_content = ['json']
     result_serializer = 'json'
-    timezone = 'UTC'
+    timezone = 'Africa/Kampala'  # UTC+3 — local time for Uganda deployments
     enable_utc = True
 
     # Task routing — route DHIS2 sync tasks to the 'dhis2' queue so the
@@ -359,6 +371,51 @@ class CeleryConfig:
     }
 
 CELERY_CONFIG = CeleryConfig
+
+# Allow admins to create and manage custom themes via Settings → Themes.
+# Admins can set a dark-mode default by clicking the moon icon on the theme list.
+ENABLE_UI_THEME_ADMINISTRATION = True
+
+# ============================================================================
+# DARK THEME — softer dark navy palette
+# ============================================================================
+# The base config.py THEME_DARK uses `**THEME_DEFAULT, "algorithm": "dark"` which
+# lets Ant Design's dark algorithm generate all background/text tokens from
+# colorBgBase = #000000 (pure black).  Users find the result too harsh.
+#
+# Fix: override colorBgBase to a dark navy-grey (#111827).  The dark algorithm
+# then derives all colorBg* tokens from that seed, producing softer surfaces
+# (containers ≈ #1a2332, layout ≈ #111827) instead of near-black ones.
+#
+# All other design tokens (brand colors, fonts, border-radius) are inherited
+# from THEME_DEFAULT via the spread in config.py — only the bg seed is changed.
+THEME_DARK = {
+    "algorithm": "dark",
+    "token": {
+        # ── Brand identity (same as light theme) ─────────────────────────────
+        "colorPrimary": "#2893B3",
+        "colorLink": "#2893B3",
+        "colorError": "#e04355",
+        "colorWarning": "#fcc700",
+        "colorSuccess": "#5ac189",
+        "colorInfo": "#66bcfe",
+        # ── Typography ───────────────────────────────────────────────────────
+        "fontFamily": "Inter, Helvetica, Arial",
+        "fontFamilyCode": "'Fira Code', 'Courier New', monospace",
+        "transitionTiming": 0.3,
+        "brandIconMaxWidth": 37,
+        "fontSizeXS": "8",
+        "fontSizeXXL": "28",
+        "fontWeightNormal": "400",
+        "fontWeightLight": "300",
+        "fontWeightStrong": "500",
+        # ── Softer dark backgrounds ───────────────────────────────────────────
+        # Ant Design's dark algorithm seeds ALL colorBg* tokens from colorBgBase.
+        # Using dark navy (#111827) instead of pure black (#000000) shifts the
+        # entire background palette ~12 lightness points softer.
+        "colorBgBase": "#111827",
+    },
+}
 
 # ============================================================================
 # NOTES ON CACHE WARMING:

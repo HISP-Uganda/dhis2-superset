@@ -44,6 +44,7 @@ from flask_appbuilder.security.decorators import permission_name, protect
 
 from superset import db
 from superset.dhis2.models import (
+    DHIS2Instance,
     DHIS2MetadataJob,
     DHIS2StagedDataset,
     DHIS2SyncJob,
@@ -137,7 +138,18 @@ class DHIS2JobsApi(BaseApi):
                 .limit(limit)
                 .all()
             )
-            results.extend(job.to_json() for job in meta_jobs)
+            # Build a {id: name} map for all instances in this database so
+            # the frontend can show real names instead of "Instance <id>".
+            all_instances = (
+                db.session.query(DHIS2Instance.id, DHIS2Instance.name)
+                .filter(DHIS2Instance.database_id == database_id)
+                .all()
+            )
+            instance_name_map = {str(row.id): row.name for row in all_instances}
+            for job in meta_jobs:
+                row = job.to_json()
+                row["instance_name_map"] = instance_name_map
+                results.append(row)
 
         # Sort combined list newest-first
         results.sort(

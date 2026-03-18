@@ -182,7 +182,6 @@ function DashboardTable({
     });
   }
 
-  if (loading) return <LoadingCards cover={showThumbnails} />;
   return (
     <>
       <SubMenu
@@ -250,30 +249,36 @@ function DashboardTable({
           title={t('Please confirm')}
         />
       )}
-      {dashboards.length > 0 && (
-        <CardContainer showThumbnails={showThumbnails}>
-          {dashboards.map(e => (
-            <DashboardCard
-              key={e.id}
-              dashboard={e}
-              hasPerm={hasPerm}
-              bulkSelectEnabled={false}
-              showThumbnails={showThumbnails}
-              userId={user?.userId}
-              loading={loading}
-              openDashboardEditModal={(dashboard: Dashboard) =>
-                setEditModal(dashboard)
-              }
-              saveFavoriteStatus={saveFavoriteStatus}
-              favoriteStatus={favoriteStatus[e.id]}
-              handleBulkDashboardExport={handleBulkDashboardExport}
-              onDelete={dashboard => setDashboardToDelete(dashboard)}
-            />
-          ))}
-        </CardContainer>
-      )}
-      {dashboards.length === 0 && (
-        <EmptyState tableName={WelcomeTable.Dashboards} tab={activeTab} />
+      {loading ? (
+        <LoadingCards cover={showThumbnails} />
+      ) : (
+        <>
+          {dashboards.length > 0 && (
+            <CardContainer showThumbnails={showThumbnails}>
+              {dashboards.map(e => (
+                <DashboardCard
+                  key={e.id}
+                  dashboard={e}
+                  hasPerm={hasPerm}
+                  bulkSelectEnabled={false}
+                  showThumbnails={showThumbnails}
+                  userId={user?.userId}
+                  loading={loading}
+                  openDashboardEditModal={(dashboard: Dashboard) =>
+                    setEditModal(dashboard)
+                  }
+                  saveFavoriteStatus={saveFavoriteStatus}
+                  favoriteStatus={favoriteStatus[e.id]}
+                  handleBulkDashboardExport={handleBulkDashboardExport}
+                  onDelete={dashboard => setDashboardToDelete(dashboard)}
+                />
+              ))}
+            </CardContainer>
+          )}
+          {dashboards.length === 0 && (
+            <EmptyState tableName={WelcomeTable.Dashboards} tab={activeTab} />
+          )}
+        </>
       )}
       {preparingExport && <Loading />}
     </>

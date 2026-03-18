@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SupersetClient, styled, t } from '@superset-ui/core';
 import { Typography } from '@superset-ui/core/components';
 import {
@@ -22,7 +22,9 @@ import type {
   DHIS2LocalFilterOptionsResult,
   DHIS2LocalDataQueryResult,
   DHIS2StagedDatasetSummary,
+  DHIS2SyncJob,
 } from 'src/features/dhis2/types';
+import SyncProgressPanel from 'src/features/dhis2/SyncProgressPanel';
 import useDHIS2Databases from 'src/features/dhis2/useDHIS2Databases';
 import {
   formatCount,
@@ -38,6 +40,7 @@ const { TextArea } = Input;
 
 const PREVIEW_LIMIT_OPTIONS = [25, 50, 100, 250];
 const DATASET_POLL_INTERVAL_MS = 4000;
+const JOB_PROGRESS_POLL_MS = 2000;
 const ACTIVE_SYNC_STATUSES = new Set(['pending', 'queued', 'running']);
 const EMPTY_LOCAL_FILTER_OPTIONS: DHIS2LocalFilterOptionsResult = {
   org_unit_filters: [],
@@ -142,6 +145,19 @@ export default function DHIS2LocalData() {
   const [refreshingDatasetId, setRefreshingDatasetId] = useState<number | null>(
     null,
   );
+  const [_activeJobId, setActiveJobId] = useState<number | null>(null);
+  const [activeJobProgress, setActiveJobProgress] = useState<DHIS2SyncJob | null>(null);
+  const jobProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks mount state to prevent state updates on unmounted component
+  const isMountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
+  // Stable ref to loadDatasets so scheduleJobPoll can call it without stale closure issues
+  const loadDatasetsRef = useRef<() => Promise<void>>(async () => {});
   const [cleaningDatasetId, setCleaningDatasetId] = useState<number | null>(null);
   const [deletingDatasetId, setDeletingDatasetId] = useState<number | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -153,6 +169,48 @@ export default function DHIS2LocalData() {
     Record<string, string | undefined>
   >({});
   const [selectedPeriods, setSelectedPeriods] = useState<string[]>([]);
+
+  const stopJobPolling = useCallback(() => {
+    if (jobProgressTimerRef.current !== null) {
+      clearTimeout(jobProgressTimerRef.current);
+      jobProgressTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleJobPoll = useCallback(
+    (jobId: number) => {
+      stopJobPolling();
+      jobProgressTimerRef.current = setTimeout(async () => {
+        if (!isMountedRef.current) return;
+        try {
+          const response = await SupersetClient.get({
+            endpoint: `/api/v1/dhis2/sync/job/${jobId}`,
+          });
+          if (!isMountedRef.current) return;
+          const job = response.json?.result as DHIS2SyncJob | null;
+          if (!job) return;
+          setActiveJobProgress(job);
+          if (ACTIVE_SYNC_STATUSES.has(job.status)) {
+            scheduleJobPoll(jobId);
+          } else {
+            // Terminal — clear active job and refresh dataset list
+            setActiveJobId(null);
+            void loadDatasetsRef.current();
+          }
+        } catch {
+          if (isMountedRef.current) {
+            setActiveJobId(null);
+          }
+        }
+      }, JOB_PROGRESS_POLL_MS);
+    },
+    // loadDatasets is defined below; we reference it via a ref trick instead
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stopJobPolling],
+  );
+
+  // Cleanup poll timer on unmount
+  useEffect(() => () => stopJobPolling(), [stopJobPolling]);
 
   const loadDatasets = async () => {
     if (!selectedDatabaseId) {
@@ -168,6 +226,7 @@ export default function DHIS2LocalData() {
           `/api/v1/dhis2/staged-datasets/?database_id=${selectedDatabaseId}` +
           '&include_inactive=true&include_stats=true',
       });
+      if (!isMountedRef.current) return;
       const nextDatasets = (response.json.result || []) as DHIS2StagedDatasetSummary[];
       setDatasets(nextDatasets);
       setActiveDatasetId(currentId => {
@@ -177,15 +236,19 @@ export default function DHIS2LocalData() {
         return nextDatasets[0]?.id;
       });
     } catch (error) {
+      if (!isMountedRef.current) return;
       addDangerToast(
         getErrorMessage(error, t('Failed to load local staged datasets')),
       );
       setDatasets([]);
       setActiveDatasetId(undefined);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   };
+
+  // Keep ref up-to-date so scheduleJobPoll always calls the latest version
+  loadDatasetsRef.current = loadDatasets;
 
   useEffect(() => {
     void loadDatasets();
@@ -524,26 +587,36 @@ export default function DHIS2LocalData() {
 
   const refreshDataset = async (dataset: DHIS2StagedDatasetSummary) => {
     setRefreshingDatasetId(dataset.id);
+    // Clear any previous progress for a fresh run
+    setActiveJobProgress(null);
+    stopJobPolling();
     try {
       const response = await SupersetClient.post({
         endpoint: `/api/v1/dhis2/sync/trigger/${dataset.id}`,
       });
-      const status = response.json?.result?.status || 'running';
+      const result = response.json?.result;
+      const status = result?.status || 'running';
+      const jobId: number | null = result?.job_id ?? null;
       addSuccessToast(
         status === 'running'
           ? t(
               'Refresh now started for %s. Job %s is now running.',
               dataset.name,
-              response.json?.result?.job_id ?? '',
+              jobId ?? '',
             )
           : t(
               'Refresh now queued for %s. Job %s is now %s.',
               dataset.name,
-              response.json?.result?.job_id ?? '',
+              jobId ?? '',
               status,
             ),
       );
-      await loadDatasets();
+      if (jobId !== null) {
+        setActiveJobId(jobId);
+        scheduleJobPoll(jobId);
+      } else {
+        await loadDatasets();
+      }
     } catch (error) {
       addDangerToast(
         getErrorMessage(error, t('Failed to queue a local data refresh')),
@@ -801,6 +874,16 @@ export default function DHIS2LocalData() {
                   'Refresh and Clear local data keep the saved variable-to-instance mappings intact. Only the locally staged rows are reloaded or removed.',
                 )}
               />
+              {activeJobProgress &&
+                activeJobProgress.staged_dataset_id === activeDataset.id && (
+                  <Card
+                    size="small"
+                    style={{ background: '#fafafa', borderRadius: 8 }}
+                    title={t('Sync progress')}
+                  >
+                    <SyncProgressPanel job={activeJobProgress} />
+                  </Card>
+                )}
               <ActionBar>
                 <Button
                   data-test="dhis2-local-data-run-query"

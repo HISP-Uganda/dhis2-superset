@@ -311,3 +311,43 @@ class DHIS2DiagnosticsApi(BaseApi):
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("diagnostics: get_admin_summary failed")
             return self.response_500(message=str(exc))
+
+    @expose("/worker-status", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def worker_status(self) -> Response:
+        """Check whether Celery workers are available for background processing.
+
+        Returns ``workers_available: true`` when at least one Celery worker
+        responds to a ping within 1 second.  When no workers are available the
+        UI should warn the user that scheduled syncs and metadata refreshes will
+        run in-process (thread mode) until workers are restarted.
+
+        ---
+        get:
+          summary: Celery worker availability check
+          responses:
+            200:
+              description: Worker status
+        """
+        _PING_TIMEOUT = 1.0
+        workers_available = False
+        worker_count = 0
+        try:
+            from superset.extensions import celery_app
+
+            response = celery_app.control.inspect(timeout=_PING_TIMEOUT).ping()
+            if response:
+                workers_available = True
+                worker_count = len(response)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        return self.response(
+            200,
+            result={
+                "workers_available": workers_available,
+                "worker_count": worker_count,
+            },
+        )

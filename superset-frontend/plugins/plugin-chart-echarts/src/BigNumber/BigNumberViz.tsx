@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useState, useEffect, useRef, MouseEvent } from 'react';
+import React, { useState, useEffect, useRef, MouseEvent } from 'react';
 import {
   t,
   getNumberFormatter,
@@ -44,6 +44,20 @@ const PROPORTION = {
   TRENDLINE: 0.3,
 };
 
+function cssRgba(
+  color: { r: number; g: number; b: number; a: number } | null | undefined,
+): string | undefined {
+  if (!color) return undefined;
+  return `rgba(${color.r},${color.g},${color.b},${color.a})`;
+}
+
+const SHADOW_MAP: Record<string, string> = {
+  none: 'none',
+  small: '0 1px 4px rgba(0,0,0,0.12)',
+  medium: '0 4px 12px rgba(0,0,0,0.16)',
+  large: '0 8px 24px rgba(0,0,0,0.22)',
+};
+
 function BigNumberVis({
   className = '',
   headerFormatter = defaultNumberFormatter,
@@ -60,6 +74,11 @@ function BigNumberVis({
   subheaderFontSize = PROPORTION.SUBHEADER,
   subtitleFontSize = PROPORTION.SUBHEADER,
   timeRangeFixed = false,
+  cardVariant = 'none',
+  cardShadow = 'none',
+  cardBorderRadius = 8,
+  valueColor,
+  textAlign = 'left',
   ...props
 }: BigNumberVizProps) {
   const theme = useTheme();
@@ -200,7 +219,9 @@ function BigNumberVis({
       colorThresholdFormatters.length > 0;
 
     let numberColor;
-    if (hasThresholdColorFormatter) {
+    if (valueColor) {
+      numberColor = cssRgba(valueColor);
+    } else if (hasThresholdColorFormatter) {
       colorThresholdFormatters!.forEach(formatter => {
         const formatterResult = bigNumber
           ? formatter.getColorFromValue(bigNumber as number)
@@ -417,13 +438,43 @@ function BigNumberVis({
   const { height } = props;
   const componentClassName = getClassName();
 
+  // Appearance extras
+  const cardStyle: React.CSSProperties = (() => {
+    if (cardVariant === 'none') return {};
+    const base: React.CSSProperties = {
+      borderRadius: cardBorderRadius,
+      boxShadow: SHADOW_MAP[cardShadow] ?? 'none',
+      padding: '12px 16px',
+      boxSizing: 'border-box',
+    };
+    if (cardVariant === 'outlined') {
+      return { ...base, border: `1px solid ${theme.colorBorderSecondary}` };
+    }
+    if (cardVariant === 'filled') {
+      return { ...base, background: theme.colorFillAlter };
+    }
+    if (cardVariant === 'gradient') {
+      return {
+        ...base,
+        background: `linear-gradient(135deg, ${theme.colorPrimary}22 0%, ${theme.colorPrimary}08 100%)`,
+        border: `1px solid ${theme.colorPrimary}44`,
+      };
+    }
+    return base;
+  })();
+
+  const alignStyle: React.CSSProperties =
+    textAlign === 'left'
+      ? {}
+      : { alignItems: textAlign === 'center' ? 'center' : 'flex-end' };
+
   if (showTrendLine) {
     const chartHeight = Math.floor(PROPORTION.TRENDLINE * height);
     const allTextHeight = height - chartHeight;
     const overflow = shouldApplyOverflow(allTextHeight);
 
     return (
-      <div className={componentClassName}>
+      <div className={componentClassName} style={{ ...cardStyle, ...alignStyle }}>
         <div
           className="text-container"
           style={{
@@ -470,6 +521,8 @@ function BigNumberVis({
       className={componentClassName}
       style={{
         height,
+        ...cardStyle,
+        ...alignStyle,
         ...(overflow
           ? {
               display: 'block',

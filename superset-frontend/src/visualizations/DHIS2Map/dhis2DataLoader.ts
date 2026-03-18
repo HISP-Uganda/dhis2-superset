@@ -82,8 +82,6 @@ export class DHIS2DataLoader {
         return null;
       }
 
-      // eslint-disable-next-line no-console
-      console.log(`[DHIS2DataLoader] Cache hit for ${databaseId}, returning ${entry.data.rows.length} cached rows`);
       return entry.data;
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -100,8 +98,6 @@ export class DHIS2DataLoader {
         data,
       };
       localStorage.setItem(cacheKey, JSON.stringify(entry));
-      // eslint-disable-next-line no-console
-      console.log(`[DHIS2DataLoader] Cached ${data.rows.length} rows for future use`);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[DHIS2DataLoader] Failed to cache data', e);
@@ -116,8 +112,6 @@ export class DHIS2DataLoader {
           localStorage.removeItem(key);
         }
       });
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Cache cleared');
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn('[DHIS2DataLoader] Failed to clear cache', e);
@@ -207,9 +201,6 @@ export class DHIS2DataLoader {
       return null;
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2DataLoader] Parsing SQL:', sql.substring(0, 200));
-
     const blockCommentMatch = sql.match(/\/\*\s*DHIS2:\s*(.+?)\s*\*\//i);
 
     if (!blockCommentMatch) {
@@ -219,14 +210,10 @@ export class DHIS2DataLoader {
     }
 
     const paramStr = blockCommentMatch[1].trim();
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2DataLoader] Raw parameter string:', paramStr);
     const params: Record<string, string> = {};
 
     try {
       const decodedParamStr = decodeURIComponent(paramStr);
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Decoded parameter string:', decodedParamStr);
       for (const param of decodedParamStr.split('&')) {
         if (param.includes('=')) {
           const [key, value] = param.split('=', 2);
@@ -245,15 +232,6 @@ export class DHIS2DataLoader {
     const ouMode = params.ouMode || '';
     const includeChildren = ouMode.toUpperCase() === 'DESCENDANTS';
     const dataLevelScope = includeChildren ? 'all_levels' : 'selected';
-
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2DataLoader] Parsed parameters:', {
-      dataElements: deIds,
-      periods: periodIds,
-      orgUnits: ouIds,
-      includeChildren,
-      dataLevelScope,
-    });
 
     if (deIds.length === 0 || periodIds.length === 0 || ouIds.length === 0) {
       // eslint-disable-next-line no-console
@@ -281,22 +259,11 @@ export class DHIS2DataLoader {
     boundaryLevel?: number,
     parentId?: string | null,
   ): Promise<DHIS2Data | null> {
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2DataLoader] fetchChartData called with:', {
-      databaseId,
-      sqlLength: sql?.length,
-      limit,
-      boundaryLevel,
-      parentId,
-    });
-
     // Check cache first - use base SQL as key since we always fetch full hierarchy
     // Level filtering happens on the returned data rows, not on the API call
     const cacheKey = sql;
     const cachedData = this.getCachedData(databaseId, cacheKey);
     if (cachedData) {
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Returning cached data');
       if (boundaryLevel && boundaryLevel > 0 && cachedData.rows.length > 0) {
         const filteredRows = await this.filterRowsByHierarchyLevel(
           databaseId,
@@ -329,8 +296,6 @@ export class DHIS2DataLoader {
     // By passing root org units, we get the complete hierarchy structure with all columns populated
     // Filtering by selected level happens on the returned DATA rows via the org unit path, not the API call
     if (boundaryLevel && boundaryLevel > 0) {
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] User selected boundary level:', boundaryLevel, '- keeping original org units:', params.orgUnits, 'parentId:', parentId);
       // Org units remain unchanged from SQL - DHIS2 API will return full hierarchy
     }
 
@@ -356,8 +321,6 @@ export class DHIS2DataLoader {
     }
 
     try {
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Fetching metadata...');
       // Fetch metadata for proper display names
       const deMap = await this.fetchMetadata(
         databaseId,
@@ -368,9 +331,6 @@ export class DHIS2DataLoader {
         databaseId,
         params.orgUnits,
       );
-
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Fetching column structure...');
 
       const columnsPayload = {
         data_elements: params.dataElements.map(id => ({
@@ -386,19 +346,12 @@ export class DHIS2DataLoader {
         data_level_scope: params.dataLevelScope,
       };
 
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Sending columns payload:', columnsPayload);
       const columnsResponse = await SupersetClient.post({
         endpoint: `/api/v1/database/${databaseId}/dhis2_preview/columns/`,
         jsonPayload: columnsPayload,
       });
 
       const columns = columnsResponse.json?.columns || [];
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Columns response:', columnsResponse.json);
-
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Fetching data...');
 
       const dataPayload = {
         data_elements: params.dataElements,
@@ -411,8 +364,6 @@ export class DHIS2DataLoader {
         data_level_scope: params.dataLevelScope,
       };
 
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Sending data payload:', dataPayload);
       const dataResponse = await SupersetClient.post({
         endpoint: `/api/v1/database/${databaseId}/dhis2_preview/data/`,
         jsonPayload: dataPayload,
@@ -420,17 +371,6 @@ export class DHIS2DataLoader {
 
       let rows = dataResponse.json?.rows || [];
       const total = dataResponse.json?.total || 0;
-
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Data response:', dataResponse.json);
-      // eslint-disable-next-line no-console
-      console.log('[DHIS2DataLoader] Fetched data:', {
-        rowCount: rows.length,
-        columnCount: columns.length,
-        total,
-        boundaryLevel,
-        parentId,
-      });
 
       if (rows.length === 0) {
         // eslint-disable-next-line no-console
@@ -446,8 +386,6 @@ export class DHIS2DataLoader {
             boundaryLevel,
             parentId,
           );
-          // eslint-disable-next-line no-console
-          console.log(`[DHIS2DataLoader] Filtered rows by level ${boundaryLevel}:`, rows.length, 'rows');
         } catch (error: any) {
           // eslint-disable-next-line no-console
           console.warn('[DHIS2DataLoader] Failed to filter rows by hierarchy level:', error);

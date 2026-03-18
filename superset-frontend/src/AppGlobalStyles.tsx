@@ -48,30 +48,42 @@ export function AppGlobalStyles() {
       styles={css`
         /* ============================================================
            SENTINEL DESIGN TOKENS — CSS custom properties
+           These are derived from the active Ant Design theme so they
+           automatically adapt when the user switches dark / light mode.
+           Brand accent colors (navy, teal, status) remain fixed.
            ============================================================ */
         :root {
+          /* ── Brand colors — fixed regardless of mode ────────────────── */
           --sentinel-navy: #1e2d45;
           --sentinel-navy-lt: #2e4a6f;
           --sentinel-teal: #2b6a6a;
           --sentinel-teal-hover: #245858;
-          --sentinel-teal-bg: #edf6f6;
-          --sentinel-canvas: #f4f6f9;
-          --sentinel-surface: #ffffff;
-          --sentinel-sub-surface: #f8fafc;
-          --sentinel-border: #e2e8f0;
-          --sentinel-border-strong: #cbd5e0;
-          --sentinel-text: #1e2d45;
-          --sentinel-text-body: #374151;
-          --sentinel-text-secondary: #64748b;
-          --sentinel-text-muted: #94a3b0;
           --sentinel-critical: #a83232;
-          --sentinel-critical-bg: #fbeded;
           --sentinel-warning: #b07d1a;
-          --sentinel-warning-bg: #fbf5e6;
           --sentinel-info: #2e5fa3;
-          --sentinel-info-bg: #ebf2fc;
           --sentinel-success: #2b6a6a;
-          --sentinel-success-bg: #edf6f6;
+
+          /* ── Surface tokens — auto-adapt to active theme ────────────── */
+          --sentinel-canvas: ${theme.colorBgLayout};
+          --sentinel-surface: ${theme.colorBgContainer};
+          --sentinel-sub-surface: ${theme.colorBgElevated};
+
+          /* ── Border tokens — auto-adapt to active theme ─────────────── */
+          --sentinel-border: ${theme.colorBorderSecondary};
+          --sentinel-border-strong: ${theme.colorBorder};
+
+          /* ── Text tokens — auto-adapt to active theme ───────────────── */
+          --sentinel-text: ${theme.colorText};
+          --sentinel-text-body: ${theme.colorText};
+          --sentinel-text-secondary: ${theme.colorTextSecondary};
+          --sentinel-text-muted: ${theme.colorTextTertiary};
+
+          /* ── Status background tokens — auto-adapt ───────────────────── */
+          --sentinel-teal-bg: ${theme.colorSuccessBg};
+          --sentinel-critical-bg: ${theme.colorErrorBg};
+          --sentinel-warning-bg: ${theme.colorWarningBg};
+          --sentinel-info-bg: ${theme.colorInfoBg};
+          --sentinel-success-bg: ${theme.colorSuccessBg};
         }
 
         /* ============================================================
@@ -223,7 +235,7 @@ export function AppGlobalStyles() {
         }
 
         /* Alternating row background */
-        .ant-table-tbody > tr:nth-child(even) > td {
+        .ant-table-tbody > tr:nth-of-type(even) > td {
           background: var(--sentinel-sub-surface);
         }
 

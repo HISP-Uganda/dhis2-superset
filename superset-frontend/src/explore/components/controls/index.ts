@@ -59,6 +59,7 @@ import NumberControl from './NumberControl';
 import TimeRangeControl from './TimeRangeControl';
 import ColorBreakpointsControl from './ColorBreakpointsControl';
 import MatrixifyDimensionControl from './MatrixifyDimensionControl';
+import DHIS2ColumnFilterControl from './DHIS2ColumnFilterControl';
 
 const extensionsRegistry = getExtensionsRegistry();
 const DateFilterControlExtension = extensionsRegistry.get(
@@ -107,6 +108,7 @@ const controlMap = {
   NumberControl,
   TimeRangeControl,
   MatrixifyDimensionControl,
+  DHIS2ColumnFilterControl,
   ...sharedControlComponents,
 };
 export default controlMap;

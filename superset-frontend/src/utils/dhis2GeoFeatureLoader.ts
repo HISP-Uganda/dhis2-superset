@@ -139,6 +139,14 @@ export interface GeoFeatureLoadResult {
   errors: string[];
   /** Cache metrics for monitoring */
   cacheMetrics?: CacheMetrics;
+  /**
+   * True when the backend returned status="pending" — boundaries are being
+   * prepared asynchronously.  The caller should display a friendly message
+   * and retry after `retryAfterMs`.
+   */
+  pendingRetry?: boolean;
+  /** Milliseconds to wait before retrying when pendingRetry is true */
+  retryAfterMs?: number;
 }
 
 /**
@@ -279,10 +287,6 @@ async function saveToIndexedDB(
     });
 
     db.close();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[GeoFeatureLoader] Saved ${cache.features.length} features to IndexedDB`,
-    );
   } catch (error) {
     // eslint-disable-next-line no-console
     console.warn('[GeoFeatureLoader] Failed to save to IndexedDB:', error);
@@ -365,10 +369,7 @@ function normalizeCoordinates(
   targetType: 'Point' | 'Polygon' | 'MultiPolygon',
 ): any {
   const depth = detectCoordinateDepth(coords);
-  
-  // eslint-disable-next-line no-console
-  console.debug(`[GeoFeatureLoader] normalizeCoordinates: depth=${depth}, targetType=${targetType}`);
-  
+
   if (targetType === 'Point') {
     // Point should be [lng, lat]
     if (depth === 1) return coords;
@@ -424,8 +425,6 @@ async function parseGeoFeaturesInWorker(
         const response = e.data;
 
         if (response.type === 'result') {
-          // eslint-disable-next-line no-console
-          console.log('[GeoFeatureLoader] Worker parsing complete:', response.stats);
           worker.terminate();
           resolve(response.features);
         } else if (response.type === 'error') {
@@ -473,9 +472,6 @@ function convertGeoFeatureToGeoJSON(
 
     // Detect actual coordinate depth
     const depth = detectCoordinateDepth(coordinates);
-    
-    // eslint-disable-next-line no-console
-    console.debug(`[GeoFeatureLoader] Feature "${geoFeature.na}": ty=${geoFeature.ty}, coord_depth=${depth}`);
 
     // Determine geometry type based on ty field AND coordinate structure
     let geometryType: 'Point' | 'Polygon' | 'MultiPolygon';
@@ -507,13 +503,9 @@ function convertGeoFeatureToGeoJSON(
     if (geometryType === 'Polygon' && depth === 4) {
       // Declared as Polygon but has MultiPolygon structure
       geometryType = 'MultiPolygon';
-      // eslint-disable-next-line no-console
-      console.debug(`[GeoFeatureLoader] Correcting "${geoFeature.na}": Polygon → MultiPolygon (depth=4)`);
     } else if (geometryType === 'MultiPolygon' && depth === 3) {
       // Declared as MultiPolygon but has Polygon structure
       geometryType = 'Polygon';
-      // eslint-disable-next-line no-console
-      console.debug(`[GeoFeatureLoader] Correcting "${geoFeature.na}": MultiPolygon → Polygon (depth=3)`);
     }
     
     // Normalize coordinates to match the detected type
@@ -541,12 +533,18 @@ function convertGeoFeatureToGeoJSON(
   }
 }
 
+interface EndpointLoadResult {
+  features: DHIS2GeoJSONFeature[];
+  pendingRetry?: boolean;
+  retryAfterMs?: number;
+}
+
 /**
  * Load geo features using the geoFeatures endpoint
  */
 async function loadViaGeoFeaturesEndpoint(
   options: GeoFeatureLoadOptions,
-): Promise<DHIS2GeoJSONFeature[]> {
+): Promise<EndpointLoadResult> {
   const allFeatures: DHIS2GeoJSONFeature[] = [];
   const {
     databaseId,
@@ -566,16 +564,6 @@ async function loadViaGeoFeaturesEndpoint(
 
   const ouDimension = ouParts.join(';');
 
-  // eslint-disable-next-line no-console
-    console.log('[GeoFeatureLoader] loadViaGeoFeaturesEndpoint:', {
-      databaseId,
-      levels,
-      parentOuIds,
-      sourceInstanceIds,
-      ouDimension,
-      ouParts,
-    });
-
   try {
     const response = await fetchDHIS2MetadataWithPublicFallback(options, {
         type: 'geoFeatures',
@@ -584,45 +572,15 @@ async function loadViaGeoFeaturesEndpoint(
         instance_ids: sourceInstanceIds?.join(',') || undefined,
     });
 
-    // eslint-disable-next-line no-console
-    console.log('[GeoFeatureLoader] API response received:', {
-      featureCount: response.json?.result?.length || 0,
-      levels,
-      ouDimension,
-    });
+    // If the backend returned a pending status (boundaries are being fetched
+    // asynchronously in the background), propagate this to the caller.
+    const responseStatus = response.json?.status;
+    const retryAfterMs = response.json?.retry_after_ms as number | undefined;
+    if (responseStatus === 'pending') {
+      return { features: [], pendingRetry: true, retryAfterMs: retryAfterMs ?? 8000 };
+    }
 
     const geoFeatures: DHIS2GeoFeature[] = response.json?.result || [];
-
-    // Log raw feature data for debugging coordinate issues
-    if (geoFeatures.length > 0) {
-      // Parse first coordinate to verify geographic location
-      let firstCoordParsed = null;
-      try {
-        const coordsArray = JSON.parse(geoFeatures[0].co || '[]');
-        // Navigate to the first actual [lng, lat] pair
-        let coords = coordsArray;
-        while (Array.isArray(coords) && coords.length > 0 && Array.isArray(coords[0])) {
-          coords = coords[0];
-        }
-        if (Array.isArray(coords) && coords.length >= 2) {
-          firstCoordParsed = { lng: coords[0], lat: coords[1] };
-        }
-      } catch {
-        firstCoordParsed = 'parse error';
-      }
-
-      // eslint-disable-next-line no-console
-      console.log('[GeoFeatureLoader] Raw geoFeatures sample:', {
-        firstFeature: {
-          id: geoFeatures[0].id,
-          name: geoFeatures[0].na,
-          type: geoFeatures[0].ty,
-          coordsPreview: geoFeatures[0].co?.substring(0, 200) + '...',
-          firstCoordParsed,
-        },
-        allFeatureNames: geoFeatures.map(gf => gf.na),
-      });
-    }
 
     // Parse features using Web Worker or main thread
     if (useWebWorker && geoFeatures.length > 100) {
@@ -653,26 +611,13 @@ async function loadViaGeoFeaturesEndpoint(
       }
     }
 
-    // Log converted features
-    if (allFeatures.length > 0) {
-      // eslint-disable-next-line no-console
-      console.log('[GeoFeatureLoader] Converted features:', {
-        count: allFeatures.length,
-        sample: {
-          id: allFeatures[0].id,
-          name: allFeatures[0].properties.name,
-          geometryType: allFeatures[0].geometry.type,
-          coordDepth: detectCoordinateDepth(allFeatures[0].geometry.coordinates),
-        },
-      });
-    }
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('[GeoFeatureLoader] Error loading geoFeatures:', error);
     throw error;
   }
 
-  return allFeatures;
+  return { features: allFeatures };
 }
 
 /**
@@ -680,7 +625,7 @@ async function loadViaGeoFeaturesEndpoint(
  */
 async function loadViaGeoJSONEndpoint(
   options: GeoFeatureLoadOptions,
-): Promise<DHIS2GeoJSONFeature[]> {
+): Promise<EndpointLoadResult> {
   const allFeatures: DHIS2GeoJSONFeature[] = [];
   const { levels, parentOuIds, sourceInstanceIds } = options;
 
@@ -692,6 +637,14 @@ async function loadViaGeoJSONEndpoint(
         staged: 'true',
         instance_ids: sourceInstanceIds?.join(',') || undefined,
     });
+
+    // If the backend returned a pending status (boundaries being fetched
+    // asynchronously), propagate this to the caller.
+    const responseStatus = response.json?.status;
+    const retryAfterMs = response.json?.retry_after_ms as number | undefined;
+    if (responseStatus === 'pending') {
+      return { features: [], pendingRetry: true, retryAfterMs: retryAfterMs ?? 8000 };
+    }
 
     const featureCollection: DHIS2GeoJSONFeatureCollection = response.json
       ?.result || { type: 'FeatureCollection', features: [] };
@@ -705,7 +658,7 @@ async function loadViaGeoJSONEndpoint(
     throw error;
   }
 
-  return allFeatures;
+  return { features: allFeatures };
 }
 
 /**
@@ -845,9 +798,6 @@ async function backgroundRefresh(options: GeoFeatureLoadOptions): Promise<void> 
 
   backgroundRefreshInProgress.add(cacheKey);
 
-  // eslint-disable-next-line no-console
-  console.log('[GeoFeatureLoader] Starting background refresh for:', cacheKey);
-
   try {
     let features: DHIS2GeoJSONFeature[];
     if (options.endpoint === 'geoJSON') {
@@ -858,10 +808,6 @@ async function backgroundRefresh(options: GeoFeatureLoadOptions): Promise<void> 
 
     if (features.length > 0) {
       await saveToCache(options, features);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[GeoFeatureLoader] Background refresh complete: ${features.length} features`,
-      );
     }
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -917,23 +863,6 @@ export async function loadDHIS2GeoFeatures(
   const errors: string[] = [];
   const cacheKey = getCacheKey(options);
 
-  // eslint-disable-next-line no-console
-  console.log('[GeoFeatureLoader] Loading geo features:', {
-    databaseId: options.databaseId,
-    chartId: options.chartId,
-    dashboardId: options.dashboardId,
-    sourceInstanceIds: options.sourceInstanceIds,
-    levels: options.levels,
-    endpoint: options.endpoint || 'geoFeatures',
-    forceRefresh: options.forceRefresh,
-  });
-
-  // eslint-disable-next-line no-console
-  console.log('[GeoFeatureLoader] Cache key generated:', {
-    cacheKey,
-    requestedLevels: options.levels,
-  });
-
   // Check cache first (unless force refresh)
   let cacheMetrics: CacheMetrics | undefined;
 
@@ -970,17 +899,6 @@ export async function loadDHIS2GeoFeatures(
         cacheKey,
       };
 
-      // eslint-disable-next-line no-console
-      console.log('[GeoFeatureLoader] Cache hit:', {
-        source,
-        featureCount: cached.features.length,
-        cacheAge: `${(cacheAge / 1000).toFixed(1)}s`,
-        staleness,
-        backgroundRefreshQueued,
-        cachedLevels: cached.levels,
-        requestedLevels: options.levels,
-      });
-
       return {
         featuresByLevel: groupFeaturesByLevel(cached.features),
         allFeatures: cached.features,
@@ -996,32 +914,39 @@ export async function loadDHIS2GeoFeatures(
 
   // Load from API
   let allFeatures: DHIS2GeoJSONFeature[] = [];
+  let pendingRetry: boolean | undefined;
+  let retryAfterMs: number | undefined;
 
   try {
+    let endpointResult: EndpointLoadResult;
     if (options.endpoint === 'geoJSON') {
-      allFeatures = await loadViaGeoJSONEndpoint(options);
+      endpointResult = await loadViaGeoJSONEndpoint(options);
     } else {
-      allFeatures = await loadViaGeoFeaturesEndpoint(options);
+      endpointResult = await loadViaGeoFeaturesEndpoint(options);
     }
-
-    // Verify loaded features have correct levels
-    const featureLevelCounts: Record<number, number> = {};
-    allFeatures.forEach(f => {
-      const level = f.properties.level;
-      featureLevelCounts[level] = (featureLevelCounts[level] || 0) + 1;
-    });
-
-    // eslint-disable-next-line no-console
-    console.log('[GeoFeatureLoader] Features loaded from API:', {
-      totalFeatures: allFeatures.length,
-      requestedLevels: options.levels,
-      featureLevelCounts,
-      sampleFeature: allFeatures[0]?.properties,
-    });
+    allFeatures = endpointResult.features;
+    pendingRetry = endpointResult.pendingRetry;
+    retryAfterMs = endpointResult.retryAfterMs;
   } catch (error: any) {
     errors.push(error.message || 'Unknown error loading geo features');
     // eslint-disable-next-line no-console
     console.error('[GeoFeatureLoader] API error:', error);
+  }
+
+  // If the backend is still preparing boundaries, return early without caching
+  // so the next request re-checks the backend.
+  if (pendingRetry) {
+    return {
+      featuresByLevel: new Map(),
+      allFeatures: [],
+      totalCount: 0,
+      fromCache: false,
+      backgroundRefreshInProgress: false,
+      loadTimeMs: Date.now() - startTime,
+      errors,
+      pendingRetry: true,
+      retryAfterMs: retryAfterMs ?? 8000,
+    };
   }
 
   // Save to cache if we got features
@@ -1037,11 +962,6 @@ export async function loadDHIS2GeoFeatures(
   ) {
     const chunkSize = options.chunkSize || 1000;
     const totalChunks = Math.ceil(allFeatures.length / chunkSize);
-
-    // eslint-disable-next-line no-console
-    console.log(
-      `[GeoFeatureLoader] Progressive loading: ${allFeatures.length} features in ${totalChunks} chunks`,
-    );
 
     // Process chunks progressively
     for (let i = 0; i < allFeatures.length; i += chunkSize) {
@@ -1132,10 +1052,6 @@ export async function clearGeoFeatureCache(
     console.warn('[GeoFeatureLoader] Failed to clear IndexedDB cache:', error);
   }
 
-  // eslint-disable-next-line no-console
-  console.log(
-    `[GeoFeatureLoader] Cleared ${keysToDelete.length} cache entries`,
-  );
 }
 
 /**
@@ -1147,11 +1063,6 @@ export async function preloadGeoFeatures(
   levels: number[] = [1, 2, 3, 4],
   endpoint: 'geoFeatures' | 'geoJSON' = 'geoFeatures',
 ): Promise<void> {
-  // eslint-disable-next-line no-console
-  console.log(
-    `[GeoFeatureLoader] Preloading levels ${levels.join(', ')} for database ${databaseId}`,
-  );
-
   try {
     await loadDHIS2GeoFeatures({
       databaseId,
@@ -1264,11 +1175,6 @@ export async function preloadAdjacentLevels(
   if (validLevels.length === 0) {
     return;
   }
-
-  // eslint-disable-next-line no-console
-  console.log(
-    `[GeoFeatureLoader] Predictive preload: levels ${validLevels.join(', ')} (from level ${currentLevel})`,
-  );
 
   // Use requestIdleCallback if available for low-priority loading
   const preloadFunc = async () => {

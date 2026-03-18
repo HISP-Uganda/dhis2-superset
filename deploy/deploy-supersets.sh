@@ -6,11 +6,12 @@ set -euo pipefail
 # Clean, deploy, update Apache Superset on a remote LXD host
 # ==============================================================================
 #
-# Final runtime model:
+# Runtime model:
 #   - Source code runtime comes from: /opt/superset/work/src
 #   - Python dependencies come from:  /opt/superset/venv
-#   - Gunicorn/Celery are started with nohup, not systemd
-#   - Existing systemd Superset services are stopped/disabled/masked
+#   - Gunicorn runs with nohup
+#   - Celery worker/beat run with systemd
+#   - Existing legacy/systemd Superset services are stopped/disabled/masked
 #
 # Preserved:
 #   - /etc/superset/superset.env
@@ -104,6 +105,9 @@ USAGE:
   ./deploy-supersets.sh reset [options]
   ./deploy-supersets.sh deploy [options]
   ./deploy-supersets.sh update [options]
+  ./deploy-supersets.sh restart [options]          # restart gunicorn + celery worker + beat
+  ./deploy-supersets.sh restart-gunicorn [options] # restart gunicorn only
+  ./deploy-supersets.sh restart-celery [options]   # restart celery worker + beat only
 
 OPTIONS:
   --target user@host
@@ -222,9 +226,6 @@ remote_worker() {
     local ct="$1"
     shift || true
     local payload
-    # Do NOT use bash -lc (login shell): sourcing /etc/profile.d/* can set
-    # ERR traps that fire even through '|| true', silently closing the
-    # SSH session.  Set PATH explicitly so system tools are always found.
     payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$*"
     lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
   }
@@ -260,7 +261,7 @@ EOS
   }
 
   disable_systemd_superset_services() {
-    log "[supersets] stop/disable/mask systemd superset services"
+    log "[supersets] stop/disable/mask legacy systemd superset services"
     exec_in_ct "$CT_SUP" "
       for svc in superset.service superset-worker.service superset-beat.service; do
         systemctl stop \$svc >/dev/null 2>&1 || true
@@ -269,6 +270,97 @@ EOS
       done
       systemctl daemon-reload >/dev/null 2>&1 || true
     " || true
+  }
+
+  # ---------------------------------------------------------------------------
+  # Safe process stopping helpers
+  # Avoid pkill -f inside inline bash -c payloads because the payload text can
+  # match its own command line and kill the current exec shell.
+  # ---------------------------------------------------------------------------
+
+  stop_pidfile_proc_in_ct() {
+    local ct="$1"
+    local pidfile="$2"
+    local label="$3"
+
+    exec_in_ct "$ct" "
+      set +e
+      if [ -f '$pidfile' ]; then
+        pid=\$(cat '$pidfile' 2>/dev/null || true)
+        if [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null; then
+          echo 'stopping $label via pidfile: '\$pid
+          kill \"\$pid\" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            kill -0 \"\$pid\" 2>/dev/null || break
+            sleep 1
+          done
+          kill -9 \"\$pid\" 2>/dev/null || true
+        fi
+        rm -f '$pidfile'
+      fi
+      true
+    " || true
+  }
+
+  stop_matching_procs_in_ct() {
+    local ct="$1"
+    local regex="$2"
+    local label="$3"
+    local qregex
+    qregex="$(printf '%q' "$regex")"
+
+    exec_in_ct "$ct" "
+      set +e
+      me=\$\$
+      ppid=\$PPID
+      found=0
+
+      for pid in \$(pgrep -f $qregex 2>/dev/null || true); do
+        [ -n \"\$pid\" ] || continue
+        [ \"\$pid\" = \"\$me\" ] && continue
+        [ \"\$pid\" = \"\$ppid\" ] && continue
+        cmdline=\$(tr '\0' ' ' < /proc/\$pid/cmdline 2>/dev/null || true)
+        case \"\$cmdline\" in
+          *'bash -c '*|*'pgrep -f '*)
+            ;;
+        esac
+        echo 'stopping $label pid='\$pid
+        kill \"\$pid\" 2>/dev/null || true
+        found=1
+      done
+
+      if [ \"\$found\" = '1' ]; then
+        sleep 2
+        for pid in \$(pgrep -f $qregex 2>/dev/null || true); do
+          [ -n \"\$pid\" ] || continue
+          [ \"\$pid\" = \"\$me\" ] && continue
+          [ \"\$pid\" = \"\$ppid\" ] && continue
+          kill -9 \"\$pid\" 2>/dev/null || true
+        done
+      fi
+      true
+    " || true
+  }
+
+  stop_gunicorn() {
+    stop_pidfile_proc_in_ct "$CT_SUP" "$GUNICORN_PID_FILE" "gunicorn"
+    stop_matching_procs_in_ct "$CT_SUP" 'gunicorn.*superset.app:create_app' "gunicorn"
+    stop_matching_procs_in_ct "$CT_SUP" 'gunicorn.*superset' "gunicorn"
+  }
+
+  stop_celery_runtime() {
+    exec_in_ct "$CT_SUP" "
+      set +e
+      systemctl stop superset-celery-worker superset-celery-beat >/dev/null 2>&1 || true
+      systemctl disable superset-celery-worker superset-celery-beat >/dev/null 2>&1 || true
+      true
+    " || true
+
+    stop_pidfile_proc_in_ct "$CT_SUP" "$CELERY_PID_FILE" "celery-worker"
+    stop_pidfile_proc_in_ct "$CT_SUP" "$CELERY_BEAT_PID_FILE" "celery-beat"
+    stop_matching_procs_in_ct "$CT_SUP" 'celery.*superset.tasks.celery_app.*worker' "celery-worker"
+    stop_matching_procs_in_ct "$CT_SUP" 'celery.*superset.tasks.celery_app.*beat' "celery-beat"
+    stop_matching_procs_in_ct "$CT_SUP" 'celery.*superset.tasks.celery_app' "celery"
   }
 
   ensure_host_tools() {
@@ -500,25 +592,17 @@ SQL"
   cleanup_container_opt_layout() {
     log "[supersets] cleanup container /opt layout and preserve only required folders"
 
+    stop_gunicorn
+    stop_celery_runtime
+
     exec_in_ct "$CT_SUP" "
       echo 'cleanup: checking required files'
-      test -f '$ENV_FILE'         || { echo 'ERROR: missing $ENV_FILE'; exit 2; }
+      test -f '$ENV_FILE' || { echo 'ERROR: missing $ENV_FILE'; exit 2; }
       test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }
-
-      echo 'cleanup: stopping services'
-      set +e
-      pkill -f '[g]unicorn.*superset'       2>/dev/null
-      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null
-      pkill -f '[c]elery.*superset.tasks.celery_app' 2>/dev/null
-      sleep 1
-      set -e
 
       echo 'cleanup: making base dirs'
       mkdir -p '$SUPERSET_HOME' '$CONFIG_DIR' '$BACKUP_DIR'
 
-      # Pre-clean WORK_SRC bottom-up BEFORE the broad find-delete below.
-      # node_modules trees cause 'Directory not empty' on overlay FS when
-      # rm -rf tries to delete them top-down; find -depth deletes leaves first.
       echo 'cleanup: pre-clearing work/src'
       if [ -d '$WORK_SRC' ]; then
         find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' 2>/dev/null || true
@@ -776,6 +860,9 @@ PY
   cleanup_installed_runtime_artifacts() {
     log "[supersets] cleanup stale installed runtime artifacts"
 
+    stop_gunicorn
+    stop_celery_runtime
+
     exec_in_ct "$CT_SUP" "
       rm -rf /tmp/webpack-* /tmp/.webpack-* 2>/dev/null || true
       rm -rf /root/.cache/pip 2>/dev/null || true
@@ -817,7 +904,6 @@ PY
         exit 12
       }
 
-      # Install package metadata/dependencies but runtime will come from PYTHONPATH=$WORK_SRC
       '$VENV/bin/pip' install -U .
       '$VENV/bin/pip' install -U 'gunicorn>=22.0.0'
       '$VENV/bin/pip' install -U 'redis>=4.6,<5.0'
@@ -1191,7 +1277,8 @@ PY
       die "Refusing wipe: SUPERSET_DB_URI host=$host does not match postgres container/IP"
     fi
 
-    exec_in_ct "$CT_SUP" "pkill -f '[g]gunicorn.*superset' || true; sleep 1"
+    stop_gunicorn
+    stop_celery_runtime
 
     exec_in_ct_as_postgres "$CT_PG" "psql -v ON_ERROR_STOP=1 -v db=$(printf '%q' "$db") -v usr=$(printf '%q' "$user") -v pwd=$(printf '%q' "$pw") <<'SQL'
 SELECT pg_terminate_backend(pid)
@@ -1321,6 +1408,8 @@ SQL"
   restart_gunicorn() {
     log "[supersets] restart Gunicorn with nohup and verify /health"
 
+    stop_gunicorn
+
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
       $(normalize_secret_env_snippet)
@@ -1345,17 +1434,7 @@ capture_output = True
 PY
       python3 -m py_compile '$GUNICORN_CONF'
 
-      if [ -f '$GUNICORN_PID_FILE' ]; then
-        oldpid=\$(cat '$GUNICORN_PID_FILE' 2>/dev/null || true)
-        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
-          kill \"\$oldpid\" || true
-          sleep 2
-        fi
-        rm -f '$GUNICORN_PID_FILE'
-      fi
-
-      pkill -f '[g]gunicorn.*superset.app:create_app' || pkill -f '[g]gunicorn.*superset' || true
-      sleep 2
+      rm -f '$GUNICORN_PID_FILE'
       fuser -k \${PORT}/tcp >/dev/null 2>&1 || true
       sleep 1
 
@@ -1391,23 +1470,17 @@ PY
     "
   }
 
-  # ---------------------------------------------------------------------------
-  # Write systemd unit files and (re)start via systemctl
-  # ---------------------------------------------------------------------------
-  # Both services use EnvironmentFile= to load secrets from superset.env so
-  # that credentials are never embedded in the unit files.  They run as root
-  # (matching lxc exec behaviour) and restart automatically on failure.
-  # ---------------------------------------------------------------------------
-
   install_celery_systemd_units() {
     log "[supersets] write systemd unit files for Celery worker + beat"
 
     exec_in_ct "$CT_SUP" "
-      # ---- worker unit -------------------------------------------------------
+      mkdir -p '$LOG_DIR'
+
       cat > /etc/systemd/system/superset-celery-worker.service <<'UNIT'
 [Unit]
 Description=Superset Celery Worker
-After=network.target
+After=network.target redis-server.service
+Wants=redis-server.service
 
 [Service]
 Type=simple
@@ -1415,9 +1488,7 @@ User=root
 WorkingDirectory=$SUPERSET_HOME
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$WORK_SRC
-ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app worker \\
-  --pool=prefork -O fair -c $CELERY_CONCURRENCY \\
-  -Q celery,dhis2
+ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app worker --pool=prefork -O fair -c $CELERY_CONCURRENCY -Q celery,dhis2
 StandardOutput=append:$CELERY_LOG
 StandardError=append:$CELERY_LOG
 Restart=always
@@ -1427,11 +1498,11 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-      # ---- beat unit ---------------------------------------------------------
       cat > /etc/systemd/system/superset-celery-beat.service <<'UNIT'
 [Unit]
 Description=Superset Celery Beat
-After=network.target superset-celery-worker.service
+After=network.target redis-server.service
+Wants=redis-server.service
 
 [Service]
 Type=simple
@@ -1439,8 +1510,7 @@ User=root
 WorkingDirectory=$SUPERSET_HOME
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONPATH=$WORK_SRC
-ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app beat \\
-  --schedule=$SUPERSET_HOME/celerybeat-schedule
+ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app beat --schedule=$SUPERSET_HOME/celerybeat-schedule
 StandardOutput=append:$CELERY_BEAT_LOG
 StandardError=append:$CELERY_BEAT_LOG
 Restart=always
@@ -1460,6 +1530,8 @@ UNIT
 
     log "[supersets] enable + start Celery worker via systemd"
 
+    stop_celery_runtime
+
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
       $(normalize_secret_env_snippet)
@@ -1470,19 +1542,9 @@ UNIT
       touch '$CELERY_LOG'
       chmod 664 '$CELERY_LOG' || true
 
-      # Kill any stale nohup workers from previous deploys.
-      pkill -f '[c]elery.*superset.tasks.celery_app.*worker' 2>/dev/null || true
-      rm -f '$CELERY_PID_FILE'
-
-      # Enable + (re)start the systemd service.
       systemctl enable superset-celery-worker
-      if systemctl is-active --quiet superset-celery-worker; then
-        systemctl restart superset-celery-worker
-      else
-        systemctl start superset-celery-worker
-      fi
+      systemctl restart superset-celery-worker
 
-      # Wait up to 30 s for the worker to answer ping.
       tries=0
       while true; do
         PYTHONPATH='$WORK_SRC' '$VENV/bin/celery' --app=superset.tasks.celery_app:app inspect ping >/dev/null 2>&1 && break
@@ -1501,7 +1563,7 @@ UNIT
   }
 
   restart_celery_beat() {
-    [[ "$ENABLE_CELERY_BEAT" == "1" ]] || return 0
+    [[ "$ENABLE_CELERY_BEAT" == "1" ]] || { log "[supersets] celery beat skipped"; return 0; }
 
     log "[supersets] enable + start Celery beat via systemd"
 
@@ -1515,20 +1577,9 @@ UNIT
       touch '$CELERY_BEAT_LOG'
       chmod 664 '$CELERY_BEAT_LOG' || true
 
-      # Kill any stale nohup beat processes from previous deploys.
-      pkill -f '[c]elery.*superset.tasks.celery_app.*beat' 2>/dev/null || true
-      rm -f '$CELERY_BEAT_PID_FILE'
-
-      # Enable + (re)start the systemd service.
       systemctl enable superset-celery-beat
-      if systemctl is-active --quiet superset-celery-beat; then
-        systemctl restart superset-celery-beat
-      else
-        systemctl start superset-celery-beat
-      fi
+      systemctl restart superset-celery-beat
 
-      # Celery beat has no ping command — wait up to 30 s for the process
-      # to remain alive (it exits immediately if config is wrong).
       tries=0
       while true; do
         systemctl is-active --quiet superset-celery-beat && break
@@ -1595,18 +1646,13 @@ AP
     ensure_env_exists
     ensure_superset_config_exists
 
-    exec_in_ct "$CT_SUP" "
-      set +e
-      pkill -f '[g]unicorn.*superset'       2>/dev/null
-      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null
-      pkill -f '[c]elery.*superset.tasks.celery_app' 2>/dev/null
-      sleep 2
-      set -e
+    stop_gunicorn
+    stop_celery_runtime
 
+    exec_in_ct "$CT_SUP" "
       test -f '$SUPERSET_CONFIG_FILE'
       test -f '$ENV_FILE'
 
-      # Clear node_modules bottom-up before rm-ing the work tree.
       if [ -d '$WORK_SRC' ]; then
         find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' 2>/dev/null || true
       fi
@@ -1673,6 +1719,26 @@ AP
       restart_celery_beat
       apache_cache_fix
       proxy_verify
+      ;;
+    restart)
+      ensure_env_exists
+      ensure_superset_config_exists
+      restart_gunicorn
+      install_celery_systemd_units
+      restart_celery_worker
+      restart_celery_beat
+      ;;
+    restart-gunicorn)
+      ensure_env_exists
+      ensure_superset_config_exists
+      restart_gunicorn
+      ;;
+    restart-celery)
+      ensure_env_exists
+      ensure_superset_config_exists
+      install_celery_systemd_units
+      restart_celery_worker
+      restart_celery_beat
       ;;
     *)
       die "Unknown command: $cmd"
@@ -1760,7 +1826,6 @@ main() {
   ssh_tty "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH'"
   ssh_tty "sudo bash -lc 'set -a; . \"$REMOTE_ENV_PATH\"; set +a; exec bash \"$REMOTE_SCRIPT_PATH\" __remote \"$cmd\"'"
 }
-
 if [[ "${1:-}" == "__remote" ]]; then
   shift
   remote_worker "$@"

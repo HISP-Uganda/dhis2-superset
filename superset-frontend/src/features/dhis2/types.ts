@@ -82,11 +82,28 @@ export interface DHIS2SyncJob {
   rows_loaded?: number | null;
   rows_failed?: number | null;
   error_message?: string | null;
+  error_summary?: string | null;
   instance_results: Record<string, DHIS2SyncJobInstanceResult>;
   /** Dataset-level sync status at the time this job was polled. */
   dataset_sync_status?: string | null;
   /** Dataset-level rows loaded at the time this job was polled. */
   dataset_sync_rows?: number | null;
+  // Fine-grained progress fields
+  total_units?: number | null;
+  completed_units?: number | null;
+  failed_units?: number | null;
+  percent_complete?: number | null;
+  current_step?: string | null;
+  current_item?: string | null;
+  rows_extracted?: number | null;
+  rows_staged?: number | null;
+  rows_merged?: number | null;
+}
+
+export interface DHIS2MetadataTypeResult {
+  count: number;
+  status: string;
+  message?: string | null;
 }
 
 export interface DHIS2MetadataJob {
@@ -107,7 +124,10 @@ export interface DHIS2MetadataJob {
   rows_loaded?: number | null;
   rows_failed?: number | null;
   error_message?: string | null;
-  instance_results?: Record<string, unknown>;
+  /** keyed by instance_id (string) → { [metadataType]: {count, status} } */
+  instance_results?: Record<string, Record<string, DHIS2MetadataTypeResult>>;
+  /** keyed by instance_id (string) → instance display name */
+  instance_name_map?: Record<string, string>;
 }
 
 export type DHIS2AnyJob = DHIS2SyncJob | DHIS2MetadataJob;
@@ -246,6 +266,8 @@ export interface DHIS2MetadataRefreshProgress {
     percent_complete: number;
   };
   variables: DHIS2MetadataRefreshFamilyProgress;
+  programs?: DHIS2MetadataRefreshFamilyProgress;
+  categories?: DHIS2MetadataRefreshFamilyProgress;
   legend_sets?: DHIS2MetadataRefreshFamilyProgress;
   org_units: DHIS2MetadataRefreshFamilyProgress;
 }
@@ -257,6 +279,8 @@ export interface DHIS2MetadataStatus {
   overall_status: 'ready' | 'pending' | 'partial' | 'failed' | 'missing';
   last_refreshed_at?: string | null;
   variables: DHIS2MetadataFamilyStatus;
+  programs?: DHIS2MetadataFamilyStatus;
+  categories?: DHIS2MetadataFamilyStatus;
   legend_sets?: DHIS2MetadataFamilyStatus;
   org_units: DHIS2MetadataFamilyStatus;
   refresh_progress?: DHIS2MetadataRefreshProgress | null;

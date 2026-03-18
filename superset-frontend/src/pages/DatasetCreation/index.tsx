@@ -16,40 +16,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useEffect, useState, type Dispatch } from 'react';
 import { useParams } from 'react-router-dom';
-
-import Header from 'src/features/datasets/AddDataset/Header';
-import EditPage from 'src/features/datasets/AddDataset/EditDataset';
 import BranchingDatasetWizard from 'src/features/datasets/AddDataset/BranchingDatasetWizard';
-import type { DSReducerActionType } from 'src/features/datasets/AddDataset/types';
-import DatasetLayout from 'src/features/datasets/DatasetLayout';
-
-const PRESET_EDIT_TITLE = 'Dataset';
-const NOOP_SET_DATASET = (() => undefined) as Dispatch<DSReducerActionType>;
 
 export default function DatasetCreationPage() {
   const { datasetId: id } = useParams<{ datasetId: string }>();
-  const [editPageIsVisible, setEditPageIsVisible] = useState(false);
+  const editDatasetId = id ? parseInt(id, 10) : NaN;
 
-  useEffect(() => {
-    setEditPageIsVisible(!Number.isNaN(parseInt(id, 10)));
-  }, [id]);
-
-  if (!editPageIsVisible) {
-    return <BranchingDatasetWizard />;
-  }
-
+  // Always show the wizard — in edit mode it pre-loads the existing dataset.
   return (
-    <DatasetLayout
-      datasetPanel={<EditPage id={id} />}
-      header={
-        <Header
-          editing
-          setDataset={NOOP_SET_DATASET}
-          title={PRESET_EDIT_TITLE}
-        />
-      }
-    />
+    <BranchingDatasetWizard editDatasetId={!Number.isNaN(editDatasetId) ? editDatasetId : undefined} />
   );
 }

@@ -56,6 +56,13 @@ BACKEND_ENABLE_DEBUGGER="${BACKEND_ENABLE_DEBUGGER:-0}"
 
 CACHE_DIR="$PROJECT_DIR/superset_home/cache"
 
+CELERY_WORKER_LOG_FILE="$LOG_DIR/celery_worker.log"
+CELERY_BEAT_LOG_FILE="$LOG_DIR/celery_beat.log"
+CELERY_WORKER_PID_FILE="$PROJECT_DIR/celery_worker.pid"
+CELERY_BEAT_PID_FILE="$PROJECT_DIR/celery_beat.pid"
+CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
+CELERY_BEAT_SCHEDULE="$PROJECT_DIR/celerybeat-schedule"
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -584,12 +591,9 @@ clear_backend_cache() {
     exit 1
   fi
 
-  if [[ -d "$CACHE_DIR" ]]; then
-    rm -rf "$CACHE_DIR"/* || true
-    ok "Backend cache cleared: $CACHE_DIR"
-  else
-    warn "Cache directory not found: $CACHE_DIR"
-  fi
+  mkdir -p "$CACHE_DIR"
+  rm -rf "$CACHE_DIR"/* 2>/dev/null || true
+  ok "Backend cache cleared: $CACHE_DIR"
 
   find "$PROJECT_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
   find "$PROJECT_DIR" -type f -name "*.pyc" -delete 2>/dev/null || true
@@ -732,6 +736,8 @@ view_logs() {
     backend)  file="$BACKEND_LOG_FILE" ;;
     frontend) file="$FRONTEND_LOG_FILE" ;;
     redis)    file="$REDIS_LOG_FILE" ;;
+    celery|celery-worker) file="$CELERY_WORKER_LOG_FILE" ;;
+    celery-beat)          file="$CELERY_BEAT_LOG_FILE" ;;
     *)
       error "Unknown log type: $which"
       exit 1
@@ -748,25 +754,200 @@ view_logs() {
 }
 
 # ----------------------------------------------------------------------------
+# Celery worker + beat
+# ----------------------------------------------------------------------------
+celery_worker_running() {
+  local pid
+  pid="$(read_pid_file "$CELERY_WORKER_PID_FILE" || true)"
+  [[ -n "${pid:-}" ]] && pid_is_running "$pid"
+}
+
+celery_beat_running() {
+  local pid
+  pid="$(read_pid_file "$CELERY_BEAT_PID_FILE" || true)"
+  [[ -n "${pid:-}" ]] && pid_is_running "$pid"
+}
+
+start_celery_worker() {
+  header "Starting Celery Worker"
+
+  validate_backend
+  ensure_log_dir
+
+  if ! redis_running; then
+    warn "Redis not running — starting it first"
+    start_redis || { error "Redis unavailable; cannot start Celery worker"; exit 1; }
+  fi
+
+  if celery_worker_running; then
+    ok "Celery worker already running"
+    return 0
+  fi
+
+  cd "$BACKEND_DIR"
+  venv_activate
+  set_backend_env
+
+  info "Starting Celery worker (concurrency=$CELERY_CONCURRENCY, queues=celery,dhis2)"
+  local pid
+  # Use --pool=prefork on macOS; solo is safer if fork causes issues
+  pid="$(spawn_detached \
+    "$CELERY_WORKER_PID_FILE" \
+    "$CELERY_WORKER_LOG_FILE" \
+    "$VENV_DIR/bin/celery" \
+      --app=superset.tasks.celery_app:app \
+      worker \
+      --loglevel=info \
+      --pool=prefork \
+      --concurrency="$CELERY_CONCURRENCY" \
+      -Q celery,dhis2 \
+  )"
+
+  # Give the worker a moment to connect to Redis and register
+  local ready=0
+  for _ in {1..20}; do
+    sleep 1
+    if celery_worker_running; then
+      ready=1
+      break
+    fi
+  done
+
+  if [[ "$ready" == "1" ]]; then
+    ok "Celery worker started (PID: $pid)"
+    echo "  Queues: celery, dhis2"
+    echo "  Logs:   $CELERY_WORKER_LOG_FILE"
+  else
+    error "Celery worker failed to start"
+    tail -30 "$CELERY_WORKER_LOG_FILE" || true
+    exit 1
+  fi
+}
+
+stop_celery_worker() {
+  header "Stopping Celery Worker"
+  kill_pid_file "$CELERY_WORKER_PID_FILE" "Celery worker"
+  # Also kill any stray celery worker processes for this app
+  pkill -f "celery.*superset.tasks.celery_app.*worker" 2>/dev/null || true
+  ok "Celery worker stopped"
+}
+
+start_celery_beat() {
+  header "Starting Celery Beat"
+
+  validate_backend
+  ensure_log_dir
+
+  if ! redis_running; then
+    warn "Redis not running — starting it first"
+    start_redis || { error "Redis unavailable; cannot start Celery beat"; exit 1; }
+  fi
+
+  if celery_beat_running; then
+    ok "Celery beat already running"
+    return 0
+  fi
+
+  cd "$BACKEND_DIR"
+  venv_activate
+  set_backend_env
+
+  info "Starting Celery beat scheduler"
+  local pid
+  pid="$(spawn_detached \
+    "$CELERY_BEAT_PID_FILE" \
+    "$CELERY_BEAT_LOG_FILE" \
+    "$VENV_DIR/bin/celery" \
+      --app=superset.tasks.celery_app:app \
+      beat \
+      --loglevel=info \
+      --schedule="$CELERY_BEAT_SCHEDULE" \
+  )"
+
+  local ready=0
+  for _ in {1..15}; do
+    sleep 1
+    if celery_beat_running; then
+      ready=1
+      break
+    fi
+  done
+
+  if [[ "$ready" == "1" ]]; then
+    ok "Celery beat started (PID: $pid)"
+    echo "  Schedule: $CELERY_BEAT_SCHEDULE"
+    echo "  Logs:     $CELERY_BEAT_LOG_FILE"
+  else
+    error "Celery beat failed to start"
+    tail -30 "$CELERY_BEAT_LOG_FILE" || true
+    exit 1
+  fi
+}
+
+stop_celery_beat() {
+  header "Stopping Celery Beat"
+  kill_pid_file "$CELERY_BEAT_PID_FILE" "Celery beat"
+  pkill -f "celery.*superset.tasks.celery_app.*beat" 2>/dev/null || true
+  ok "Celery beat stopped"
+}
+
+restart_celery() {
+  header "Restarting Celery Worker + Beat"
+  stop_celery_beat || true
+  stop_celery_worker || true
+  sleep 1
+  start_celery_worker
+  start_celery_beat
+}
+
+celery_status() {
+  header "Celery Status"
+
+  if celery_worker_running; then
+    local pid
+    pid="$(read_pid_file "$CELERY_WORKER_PID_FILE" || echo '?')"
+    ok "Celery worker running (PID: $pid)"
+    echo "  Logs: $CELERY_WORKER_LOG_FILE"
+  else
+    warn "Celery worker not running"
+    echo "  Start with: ./superset-manager.sh start-celery"
+  fi
+
+  if celery_beat_running; then
+    local pid
+    pid="$(read_pid_file "$CELERY_BEAT_PID_FILE" || echo '?')"
+    ok "Celery beat running (PID: $pid)"
+    echo "  Logs: $CELERY_BEAT_LOG_FILE"
+  else
+    warn "Celery beat not running"
+    echo "  Start with: ./superset-manager.sh start-celery-beat"
+  fi
+}
+
+# ----------------------------------------------------------------------------
 # Combined
 # ----------------------------------------------------------------------------
 start_all() {
-  header "Starting Backend + Frontend"
+  header "Starting Backend + Frontend + Celery"
   start_backend
+  start_celery_worker
+  start_celery_beat
   start_frontend
   ok "All services started"
 }
 
 stop_all() {
-  header "Stopping Backend + Frontend"
+  header "Stopping Backend + Frontend + Celery"
   stop_frontend || true
+  stop_celery_beat || true
+  stop_celery_worker || true
   stop_backend || true
   stop_redis || true
   ok "All services stopped"
 }
 
 restart_all() {
-  header "Restarting Backend + Frontend"
+  header "Restarting Backend + Frontend + Celery"
   stop_all || true
   sleep 1
   clear_all_cache || true
@@ -778,6 +959,7 @@ restart_all() {
 status_all() {
   header "Full Status"
   backend_status
+  celery_status
   frontend_status
   redis_status
 }
@@ -801,10 +983,17 @@ Commands:
   status-frontend       Frontend status
   build-frontend        Build frontend assets
 
-  start-all             Start backend + frontend
-  stop-all              Stop backend + frontend + redis
+  start-all             Start backend + celery worker + beat + frontend
+  stop-all              Stop everything (frontend, celery, backend, redis)
   restart-all           Restart everything with cache cleanup
   status-all            Show full status
+
+  start-celery          Start Celery worker + beat
+  stop-celery           Stop Celery worker + beat
+  restart-celery        Restart Celery worker + beat
+  start-celery-beat     Start Celery beat scheduler only
+  stop-celery-beat      Stop Celery beat scheduler only
+  celery-status         Celery worker + beat status
 
   start-redis           Start Redis
   stop-redis            Stop Redis
@@ -820,16 +1009,20 @@ Commands:
   cache-all             Clear all caches
   clear-logs            Clear logs
 
-  logs [backend|frontend|redis] [follow]
+  logs [backend|frontend|redis|celery|celery-beat] [follow]
   health
   help
+
+Environment:
+  CELERY_CONCURRENCY    Worker concurrency (default: 2)
 
 Examples:
   ./superset-manager.sh setup              # First-time setup
   ./superset-manager.sh restart-all        # Stop → migrate → restart everything
-  ./superset-manager.sh start-all          # Start backend + frontend + redis
+  ./superset-manager.sh start-all          # Start backend + celery + frontend
+  ./superset-manager.sh start-celery       # Start celery worker + beat only
+  ./superset-manager.sh logs celery follow # Tail celery worker log
   ./superset-manager.sh db-upgrade         # Run migrations only
-  ./superset-manager.sh logs backend follow
 EOF
 }
 
@@ -853,6 +1046,13 @@ main() {
     stop-all) stop_all ;;
     restart-all) restart_all ;;
     status-all) status_all ;;
+
+    start-celery) restart_celery ;;
+    stop-celery) stop_celery_beat; stop_celery_worker ;;
+    restart-celery) restart_celery ;;
+    start-celery-beat) start_celery_beat ;;
+    stop-celery-beat) stop_celery_beat ;;
+    celery-status) celery_status ;;
 
     start-redis) start_redis ;;
     stop-redis) stop_redis ;;

@@ -1142,16 +1142,8 @@ function getStepErrorsForCurrentState(
           errors.dataSelection ||
           t('Choose at least one DHIS2 variable to continue.');
       }
-      if (state.periods.length === 0) {
-        errors.dataSelection = errors.dataSelection
-          ? errors.dataSelection
-          : t('Choose at least one time period to continue.');
-      }
-      if (state.orgUnits.length === 0) {
-        errors.dataSelection = errors.dataSelection
-          ? errors.dataSelection
-          : t('Choose at least one organisation unit to continue.');
-      }
+      // Period and org-unit are warehouse dimensions exposed for Superset
+      // filtering — they are NOT required at dataset creation time.
     }
   } else {
     if (!state.databaseId) {
@@ -1186,7 +1178,12 @@ function getStepErrorsForCurrentState(
   return errors;
 }
 
-export default function BranchingDatasetWizard() {
+interface BranchingDatasetWizardProps {
+  /** When provided, the wizard loads an existing DHIS2 staged dataset for editing. */
+  editDatasetId?: number;
+}
+
+export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatasetWizardProps = {}) {
   const history = useHistory();
   const { addDangerToast, addSuccessToast } = useToasts();
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState);
@@ -1210,6 +1207,10 @@ export default function BranchingDatasetWizard() {
   );
   const [selectedDataTab, setSelectedDataTab] = useState('variables');
   const [sourceSearch, setSourceSearch] = useState('');
+  // Edit mode: track the staged dataset id and loading state
+  const [editStagedDatasetId, setEditStagedDatasetId] = useState<number | null>(null);
+  const [editLoading, setEditLoading] = useState(!!editDatasetId);
+  const isEditMode = !!editDatasetId;
   const isCompact = useResponsiveShell();
   const sourceRequestIdRef = useRef(0);
   const metadataStatusRequestIdRef = useRef(0);
@@ -1236,6 +1237,120 @@ export default function BranchingDatasetWizard() {
     },
     [],
   );
+
+  // Load existing dataset when editing — fires when databases list is ready
+  useEffect(() => {
+    if (!editDatasetId || databasesLoading || databases.length === 0) return;
+
+    setEditLoading(true);
+    (async () => {
+      try {
+        // 1. Fetch the Superset dataset to get the staged dataset id from extra
+        const dsRes = await SupersetClient.get({ endpoint: `/api/v1/dataset/${editDatasetId}` });
+        const dsResult = dsRes.json?.result as Record<string, unknown> | undefined;
+        let stagedId: number | null = null;
+        try {
+          const extra = JSON.parse((dsResult?.extra as string) || '{}');
+          stagedId = extra?.dhis2_staged_dataset_id ?? null;
+        } catch { /* ignore */ }
+
+        if (stagedId === null) {
+          // Not a DHIS2 staged dataset — cannot pre-fill
+          if (isMountedRef.current) setEditLoading(false);
+          return;
+        }
+
+        // 2. Fetch the staged dataset configuration
+        const sdRes = await SupersetClient.get({
+          endpoint: `/api/v1/dhis2/staged-datasets/${stagedId}`,
+        });
+        const sd = sdRes.json?.result as Record<string, unknown> | null;
+        if (!sd || !isMountedRef.current) {
+          if (isMountedRef.current) setEditLoading(false);
+          return;
+        }
+
+        setEditStagedDatasetId(stagedId);
+
+        // 3. Find the matching database object from already-loaded databases
+        const dbId = sd.database_id as number;
+        const dbObj = databases.find(db => db.id === dbId) ?? null;
+        if (dbObj) {
+          // SET_SOURCE resets most state so dispatch it first
+          dispatch({ type: 'SET_SOURCE', payload: dbObj });
+        }
+
+        // 4. Pre-fill DHIS2 selection from dataset_config
+        const cfg = (sd.dataset_config as Record<string, unknown>) || {};
+        const rawVars = Array.isArray(sd.variables) ? sd.variables as Array<Record<string, unknown>> : [];
+        const selectedVariables: VariableMapping[] = rawVars.map(v => ({
+          instanceId: v.instance_id as number,
+          instanceName: (v.instance_name as string) || '',
+          variableId: v.variable_id as string,
+          variableName: (v.variable_name as string) || '',
+          variableType: (v.variable_type as string) || '',
+          alias: (v.alias as string | undefined) || undefined,
+        }));
+
+        dispatch({
+          type: 'SET_SELECTED_INSTANCE_IDS',
+          payload: {
+            ids: Array.isArray(cfg.configured_connection_ids)
+              ? (cfg.configured_connection_ids as number[])
+              : [],
+            touched: true,
+          },
+        });
+
+        dispatch({
+          type: 'PATCH_DHIS2_SELECTION',
+          payload: {
+            selectedVariables,
+            periods: Array.isArray(cfg.periods) ? cfg.periods : [],
+            orgUnits: Array.isArray(cfg.org_units) ? cfg.org_units : [],
+            selectedOrgUnitDetails: Array.isArray(cfg.org_unit_details)
+              ? cfg.org_unit_details
+              : [],
+            dataLevelScope: (cfg.org_unit_scope as DataLevelScope) || 'selected',
+            orgUnitSourceMode: (cfg.org_unit_source_mode as OrgUnitSourceMode) || 'repository',
+            primaryOrgUnitInstanceId:
+              typeof cfg.primary_org_unit_instance_id === 'number'
+                ? cfg.primary_org_unit_instance_id
+                : null,
+          },
+        });
+
+        dispatch({
+          type: 'PATCH_DATASET_SETTINGS',
+          payload: {
+            name: (sd.name as string) || '',
+            description: (sd.description as string) || '',
+            nameTouched: true,
+          },
+        });
+
+        if (sd.schedule_cron) {
+          dispatch({
+            type: 'SET_SCHEDULE_CONFIG',
+            payload: {
+              preset: 'custom',
+              cron: (sd.schedule_cron as string) || '0 5 * * *',
+              timezone: (sd.schedule_timezone as string) || 'UTC',
+            },
+          });
+        }
+
+        // Start on step 1 (data selection) since step 0 (database) is already filled
+        setCurrentStep(1);
+      } catch (err) {
+        addDangerToast(t('Failed to load dataset configuration for editing'));
+      } finally {
+        if (isMountedRef.current) setEditLoading(false);
+      }
+    })();
+    // Run once when databases become available — editDatasetId is stable
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editDatasetId, databasesLoading, databases]);
 
   const filteredDatabases = useMemo(() => {
     const needle = sourceSearch.trim().toLowerCase();
@@ -1916,6 +2031,62 @@ export default function BranchingDatasetWizard() {
     );
   };
 
+  const updateDhIS2Dataset = async () => {
+    if (!editStagedDatasetId) {
+      throw new Error(t('No staged dataset ID found for update.'));
+    }
+    const updatePayload = {
+      name: state.datasetSettings.name.trim(),
+      description: state.datasetSettings.description.trim() || undefined,
+      schedule_cron: state.scheduleConfig.cron,
+      schedule_timezone: state.scheduleConfig.timezone,
+      dataset_config: {
+        configured_connection_ids: state.selectedInstanceIds,
+        periods: state.periods,
+        org_units: state.orgUnits,
+        org_unit_details: state.selectedOrgUnitDetails,
+        org_unit_scope: state.dataLevelScope,
+        org_unit_source_mode:
+          state.orgUnitSourceMode === 'federated'
+            ? 'repository'
+            : state.orgUnitSourceMode,
+        primary_org_unit_instance_id:
+          state.orgUnitSourceMode === 'primary'
+            ? state.primaryOrgUnitInstanceId
+            : null,
+      },
+      variables:
+        state.selectedVariables.length > 0
+          ? state.selectedVariables.map(variable => ({
+              instance_id: variable.instanceId,
+              variable_id: variable.variableId,
+              variable_type: variable.variableType,
+              variable_name: variable.variableName,
+              alias: variable.alias || undefined,
+            }))
+          : [],
+    };
+
+    await SupersetClient.put({
+      endpoint: `/api/v1/dhis2/staged-datasets/${editStagedDatasetId}`,
+      jsonPayload: updatePayload,
+    });
+
+    // Also update the Superset dataset name/description if changed
+    if (editDatasetId) {
+      await SupersetClient.put({
+        endpoint: `/api/v1/dataset/${editDatasetId}`,
+        jsonPayload: {
+          table_name: state.datasetSettings.name.trim(),
+          description: state.datasetSettings.description.trim() || undefined,
+        },
+      });
+    }
+
+    addSuccessToast(t('Dataset updated successfully.'));
+    history.push(PREV_URL);
+  };
+
   const handleCreate = async (createChart: boolean) => {
     const nextErrors = getStepErrorsForCurrentState(state, instances, {
       instancesError,
@@ -1932,14 +2103,20 @@ export default function BranchingDatasetWizard() {
       setSaving(true);
     }
     try {
-      if (state.datasetType === 'dhis2') {
+      if (isEditMode && state.datasetType === 'dhis2') {
+        await updateDhIS2Dataset();
+      } else if (state.datasetType === 'dhis2') {
         await createDhIS2Dataset(createChart);
       } else if (state.datasetType === 'database') {
         await createDatabaseDataset(createChart);
       }
     } catch (error) {
       addDangerToast(
-        error instanceof Error ? error.message : t('Failed to create dataset.'),
+        error instanceof Error
+          ? error.message
+          : isEditMode
+            ? t('Failed to update dataset.')
+            : t('Failed to create dataset.'),
       );
     } finally {
       if (isMountedRef.current) {
@@ -2998,6 +3175,14 @@ export default function BranchingDatasetWizard() {
     return renderReview();
   };
 
+  if (editLoading) {
+    return (
+      <div style={{ padding: '64px 0', textAlign: 'center' }}>
+        <Loading />
+      </div>
+    );
+  }
+
   return (
     <WizardShell compact={isCompact} data-test="branching-dataset-wizard">
       <div className="wizard-frame" data-layout={isCompact ? 'stacked' : 'split'}>
@@ -3051,16 +3236,28 @@ export default function BranchingDatasetWizard() {
             ) : null}
             {state.datasetType && currentStep === currentSteps.length - 1 ? (
               <>
-                <Button loading={saving} onClick={() => void handleCreate(false)}>
-                  {t('Create Dataset')}
-                </Button>
-                <Button
-                  loading={saving}
-                  onClick={() => void handleCreate(true)}
-                  type="primary"
-                >
-                  {t('Create and Explore')}
-                </Button>
+                {isEditMode ? (
+                  <Button
+                    loading={saving}
+                    type="primary"
+                    onClick={() => void handleCreate(false)}
+                  >
+                    {t('Update Dataset')}
+                  </Button>
+                ) : (
+                  <>
+                    <Button loading={saving} onClick={() => void handleCreate(false)}>
+                      {t('Create Dataset')}
+                    </Button>
+                    <Button
+                      loading={saving}
+                      onClick={() => void handleCreate(true)}
+                      type="primary"
+                    >
+                      {t('Create and Explore')}
+                    </Button>
+                  </>
+                )}
               </>
             ) : null}
           </Space>

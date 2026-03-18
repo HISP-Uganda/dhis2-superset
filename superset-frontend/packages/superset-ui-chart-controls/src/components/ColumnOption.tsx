@@ -24,6 +24,10 @@ import {
   InfoTooltip,
 } from '@superset-ui/core/components';
 import { ColumnTypeLabel } from './ColumnTypeLabel/ColumnTypeLabel';
+import {
+  DHIS2ColumnTag,
+  detectDHIS2Kind,
+} from './ColumnTypeLabel/DHIS2ColumnTag';
 import CertifiedIconWithTooltip from './CertifiedIconWithTooltip';
 import { ColumnMeta } from '../types';
 import {
@@ -57,6 +61,7 @@ export function ColumnOption({
   const warningMarkdown =
     column.warning_markdown || column.warning_text || column.error_text;
   const type = hasExpression ? 'expression' : type_generic;
+  const dhis2Kind = detectDHIS2Kind(column.extra);
   const [tooltipText, setTooltipText] = useState<ReactNode>(column.column_name);
   const [columnTypeTooltipText, setcolumnTypeTooltipText] = useState<ReactNode>(
     column.type,
@@ -69,17 +74,23 @@ export function ColumnOption({
 
   return (
     <StyleOverrides>
-      {showType && type !== undefined && (
-        <Tooltip
-          id="metric-type-tooltip"
-          title={columnTypeTooltipText}
-          placement="bottomRight"
-          align={{ offset: [8, -2] }}
-        >
-          <span>
-            <ColumnTypeLabel type={type} />
-          </span>
-        </Tooltip>
+      {showType && (
+        dhis2Kind ? (
+          <DHIS2ColumnTag kind={dhis2Kind} />
+        ) : (
+          type !== undefined && (
+            <Tooltip
+              id="metric-type-tooltip"
+              title={columnTypeTooltipText}
+              placement="bottomRight"
+              align={{ offset: [8, -2] }}
+            >
+              <span>
+                <ColumnTypeLabel type={type} />
+              </span>
+            </Tooltip>
+          )
+        )
       )}
       <Tooltip id="metric-name-tooltip" title={tooltipText}>
         <span

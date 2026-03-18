@@ -38,7 +38,7 @@ import requests
 from flask import current_app, has_app_context
 
 from superset import db
-from superset.dhis2.analytical_serving import materialize_serving_rows
+from superset.dhis2.analytical_serving import materialize_serving_rows, prune_empty_hierarchy_columns
 from superset.dhis2.models import (
     DHIS2DatasetVariable,
     DHIS2Instance,
@@ -46,11 +46,30 @@ from superset.dhis2.models import (
     DHIS2SyncJob,
 )
 from superset.dhis2.staging_engine import DHIS2StagingEngine
+from superset.local_staging.engine_factory import get_active_staging_engine
 from superset.staging.compat import sync_dhis2_staged_dataset, sync_dhis2_sync_job
 from superset.staging import metadata_cache_service
 from superset.staging.storage import record_dhis2_stage_rows
 
 logger = logging.getLogger(__name__)
+
+_CELERY_PING_TIMEOUT = 1.0  # seconds to wait for a worker ping
+
+
+def _celery_workers_available() -> bool:
+    """Return True if at least one Celery worker is reachable.
+
+    Uses a short timeout so this never blocks the request thread.
+    Falls back to False on any error so the caller uses the thread path.
+    """
+    try:
+        from celery import current_app as celery_app  # lazy import
+
+        response = celery_app.control.inspect(timeout=_CELERY_PING_TIMEOUT).ping()
+        return bool(response)
+    except Exception:  # pylint: disable=broad-except
+        return False
+
 
 # Maximum number of DHIS2 variable UIDs to include in a single analytics request.
 # Larger batches risk exceeding URL length limits on some DHIS2 deployments.
@@ -632,6 +651,18 @@ def _expand_org_units_for_scope(
                 continue
             expanded.add(node_id)
 
+    # Leaf-only rule: remove any expanded node that has at least one child
+    # also in the expanded set.  Querying a parent alongside its children
+    # causes double-counting because DHIS2 returns the parent's aggregate
+    # value (which already includes its children) as a separate row.
+    ancestors_in_expanded: set[str] = set()
+    for unit_id in expanded:
+        node = node_lookup.get(unit_id) or {}
+        for ancestor_id in (node.get("ancestorIds") or []):
+            if ancestor_id in expanded:
+                ancestors_in_expanded.add(ancestor_id)
+    expanded -= ancestors_in_expanded
+
     ordered_units = [unit for unit in allowed_units if unit in expanded]
     ordered_units.extend(
         unit_id
@@ -679,16 +710,20 @@ def _selected_org_unit_is_descendant(
     return False
 
 
-def _prune_descendant_root_org_units(
+def _prune_ancestor_org_units(
     allowed_units: list[str],
     selected_detail_map: dict[str, dict[str, Any]],
 ) -> list[str]:
-    """Remove descendant root selections when an ancestor is already selected.
+    """Keep only leaf org units — remove any unit that has a descendant in the set.
 
-    Dataset org-unit selections represent root scopes, not every descendant that
-    should be fetched. Descendant units under an already selected ancestor would
-    either be redundant or exceed the chosen stop level, so keep only the
-    shallowest selected roots and let scope expansion handle the rest.
+    When a user selects both a parent (e.g., District) and one of its children
+    (e.g., Parish), querying DHIS2 for both produces double-counting: the
+    parent row already aggregates all child values.  This function discards
+    every unit whose ID appears in a sibling unit's ancestor path, so only
+    the most-granular selections reach the analytics API.
+
+    Path/parentId metadata from ``selected_detail_map`` is used.  Units whose
+    detail is missing are conservatively kept (no false removal).
     """
     unique_units = list(dict.fromkeys(unit for unit in allowed_units if unit))
     if len(unique_units) <= 1:
@@ -702,22 +737,41 @@ def _prune_descendant_root_org_units(
         if source_id and source_id not in detail_by_source_id:
             detail_by_source_id[source_id] = detail
 
-    ordered_units = sorted(
-        unique_units,
-        key=lambda unit: (_selected_org_unit_depth(detail_by_source_id.get(unit, {})), unique_units.index(unit)),
-    )
+    unit_set = set(unique_units)
 
-    kept: list[str] = []
-    for unit in ordered_units:
+    # Collect every unit in the set that is an ancestor of at least one other
+    # unit in the set.  We read this from the *descendant* unit's path/parentId
+    # so the check is O(n × path_depth) rather than O(n²).
+    ancestors_in_set: set[str] = set()
+    for unit in unique_units:
         detail = detail_by_source_id.get(unit, {})
-        if any(
-            _selected_org_unit_is_descendant(detail, ancestor_unit)
-            for ancestor_unit in kept
-        ):
-            continue
-        kept.append(unit)
 
-    return [unit for unit in unique_units if unit in kept]
+        # Path-based: ancestors are all path segments except the last (self)
+        path = _config_value(detail, "path")
+        if isinstance(path, str) and path.strip():
+            segments = [s for s in path.split("/") if s.strip()]
+            for ancestor_seg in segments[:-1]:
+                if ancestor_seg in unit_set:
+                    ancestors_in_set.add(ancestor_seg)
+            continue  # path is authoritative; skip parentId check
+
+        # parentId-based fallback (direct parent only)
+        parent_id = _config_value(detail, "parentId", "parent_id")
+        if isinstance(parent_id, str) and parent_id:
+            normalized = (
+                parent_id.split("::", 1)[1] if "::" in parent_id else parent_id
+            )
+            if normalized in unit_set:
+                ancestors_in_set.add(normalized)
+
+    leaves = [u for u in unique_units if u not in ancestors_in_set]
+    # If no ancestry information was available, return all units unchanged so
+    # we never silently lose a valid selection.
+    return leaves if leaves else unique_units
+
+
+# Legacy alias kept for any direct call-sites outside this module.
+_prune_descendant_root_org_units = _prune_ancestor_org_units
 
 
 def _resolve_incremental_period_plan(
@@ -728,7 +782,7 @@ def _resolve_incremental_period_plan(
     periods_cfg = dataset_config.get("periods", ["LAST_12_MONTHS"])
     if isinstance(periods_cfg, str):
         periods_cfg = [periods_cfg]
-    if not isinstance(periods_cfg, list):
+    if not isinstance(periods_cfg, list) or not periods_cfg:
         periods_cfg = ["LAST_12_MONTHS"]
 
     expanded_periods, has_relative = _expand_periods_for_incremental_sync(
@@ -747,7 +801,7 @@ def _resolve_incremental_period_plan(
             periods_to_delete=[],
         )
 
-    staging_engine = DHIS2StagingEngine(dataset.database_id)
+    staging_engine = get_active_staging_engine(dataset.database_id)
     existing_periods = staging_engine.get_instance_periods(dataset, instance.id)
     existing_period_set = set(existing_periods)
     target_period_set = set(expanded_periods)
@@ -1324,6 +1378,29 @@ class DHIS2SyncService:
         db.session.commit()
 
         dataset_config = dataset.get_dataset_config()
+
+        # ------------------------------------------------------------------
+        # Source-mode dispatch — delegate non-analytics paths early
+        # ------------------------------------------------------------------
+        source_mode = (
+            getattr(dataset, "source_mode", None)
+            or dataset_config.get("source_mode", "analytics")
+            or "analytics"
+        )
+        if source_mode == "dataValueSets":
+            return self._sync_datavalues_mode(
+                dataset, dataset_config, job_id, incremental, started_at
+            )
+        if source_mode == "hybrid":
+            r1 = self._sync_analytics_mode_inner(
+                dataset, dataset_config, staged_dataset_id, job_id, incremental, started_at
+            )
+            r2 = self._sync_datavalues_mode(
+                dataset, dataset_config, job_id, incremental, started_at
+            )
+            return self._merge_mode_results(r1, r2)
+        # Default analytics path continues below unchanged.
+
         variables: list[DHIS2DatasetVariable] = (
             db.session.query(DHIS2DatasetVariable)
             .filter_by(staged_dataset_id=staged_dataset_id)
@@ -1337,6 +1414,10 @@ class DHIS2SyncService:
         total_rows = 0
         any_success = False
         any_failure = bool(configuration_errors)
+        _completed_units = 0
+        _failed_units = 0
+        _rows_extracted = 0
+        _rows_staged = 0
 
         for message in configuration_errors:
             logger.warning(
@@ -1344,6 +1425,17 @@ class DHIS2SyncService:
                 staged_dataset_id,
                 message,
             )
+
+        self._update_job_progress(
+            job_id,
+            current_step="preparing",
+            total_units=len(instance_vars),
+            completed_units=0,
+            failed_units=0,
+            rows_extracted=0,
+            rows_staged=0,
+            rows_merged=0,
+        )
 
         for instance_id, inst_vars in instance_vars.items():
             # Check for cancellation before each instance fetch
@@ -1393,6 +1485,11 @@ class DHIS2SyncService:
                 len(inst_vars),
                 staged_dataset_id,
             )
+            self._update_job_progress(
+                job_id,
+                current_step=f"fetching from {instance.name}",
+                current_item=instance.name,
+            )
 
             try:
                 effective_config = dict(dataset_config)
@@ -1417,6 +1514,13 @@ class DHIS2SyncService:
                         effective_config,
                         job_id=job_id,
                     )
+                _rows_extracted += len(rows)
+                self._update_job_progress(
+                    job_id,
+                    current_step=f"loading rows from {instance.name}",
+                    rows_extracted=_rows_extracted,
+                )
+
                 row_count = self._load_rows(
                     dataset,
                     instance,
@@ -1426,6 +1530,8 @@ class DHIS2SyncService:
                     periods_to_prune=incremental_plan.periods_to_delete,
                 )
 
+                _completed_units += 1
+                _rows_staged += row_count
                 total_rows += row_count
                 any_success = True
                 instance_results[str(instance_id)] = {
@@ -1463,14 +1569,27 @@ class DHIS2SyncService:
                         _interim_job.rows_loaded = total_rows
                         _interim_job.instance_results = json.dumps(instance_results)
                 db.session.commit()
+                self._update_job_progress(
+                    job_id,
+                    current_step=f"completed {instance.name}",
+                    completed_units=_completed_units,
+                    rows_staged=_rows_staged,
+                    rows_merged=total_rows,
+                )
             except Exception as exc:  # pylint: disable=broad-except
                 any_failure = True
+                _failed_units += 1
                 err_msg = str(exc)
                 instance_results[str(instance_id)] = {
                     "status": "failed",
                     "rows": 0,
                     "error": err_msg,
                 }
+                self._update_job_progress(
+                    job_id,
+                    completed_units=_completed_units,
+                    failed_units=_failed_units,
+                )
                 logger.exception(
                     "Sync: failed for instance '%s', dataset=%d: %s",
                     instance.name,
@@ -1534,11 +1653,29 @@ class DHIS2SyncService:
                         for v in instance_results.values()
                         if v["status"] == "failed"
                     ),
-                    error_message="\n".join(configuration_errors)
-                    if configuration_errors
-                    else None,
+                    error_message="\n".join(
+                        configuration_errors
+                        + [
+                            f"{inst_id}: {v.get('error') or 'sync failed'}"
+                            for inst_id, v in instance_results.items()
+                            if v.get("status") == "failed" and v.get("error")
+                        ]
+                    ) or None,
                     instance_results=instance_results,
                 )
+                # Ensure final progress snapshot is complete
+                job.completed_units = _completed_units
+                job.failed_units = _failed_units
+                job.rows_extracted = _rows_extracted
+                job.rows_staged = _rows_staged
+                job.rows_merged = total_rows
+                job.total_units = len(instance_vars)
+                job.percent_complete = 100.0 if status == "success" else (
+                    round(_completed_units / max(len(instance_vars), 1) * 100, 1)
+                )
+                job.current_step = "done"
+                job.current_item = None
+                db.session.commit()
 
         logger.info(
             "Sync: dataset=%d completed status=%s rows=%d duration=%.1fs",
@@ -1548,6 +1685,244 @@ class DHIS2SyncService:
             duration,
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Source-mode helpers
+    # ------------------------------------------------------------------
+
+    def _sync_analytics_mode_inner(
+        self,
+        dataset: DHIS2StagedDataset,
+        dataset_config: dict[str, Any],
+        staged_dataset_id: int,
+        job_id: int | None,
+        incremental: bool,
+        started_at: float,
+    ) -> dict[str, Any]:
+        """Run the analytics sync path for a dataset already loaded in memory.
+
+        This is a thin wrapper that delegates back to the full
+        ``sync_staged_dataset`` method with the same arguments so that
+        hybrid-mode callers share the same code path without duplication.
+        The dataset's ``source_mode`` is temporarily masked as ``"analytics"``
+        to prevent infinite recursion.
+        """
+        # Call sync_staged_dataset with source_mode forced to analytics.
+        # We achieve this by temporarily overriding the attribute value so
+        # the dispatch inside sync_staged_dataset falls through to the analytics
+        # path naturally.
+        original_mode = getattr(dataset, "source_mode", None)
+        try:
+            if hasattr(dataset, "source_mode"):
+                dataset.source_mode = "analytics"
+            return self.sync_staged_dataset(
+                staged_dataset_id,
+                job_id=job_id,
+                incremental=incremental,
+            )
+        finally:
+            if hasattr(dataset, "source_mode"):
+                dataset.source_mode = original_mode
+
+    def _sync_datavalues_mode(
+        self,
+        dataset: DHIS2StagedDataset,
+        dataset_config: dict[str, Any],
+        job_id: int | None,
+        incremental: bool,
+        started_at: float,
+    ) -> dict[str, Any]:
+        """Fetch raw aggregate data via the DHIS2 dataValueSets API.
+
+        Iterates over all active instances for this dataset, calls
+        :class:`~superset.dhis2.data_value_extractor.DHIS2DataValueExtractor`,
+        stores payloads in ``stg_dhis2_datavalueset_raw``, and normalises
+        them into ``fact_dhis2_datavalue`` via
+        :class:`~superset.dhis2.warehouse_service.DHIS2WarehouseService`.
+        """
+        import uuid
+        from datetime import datetime as _datetime
+
+        from sqlalchemy import text as _text
+
+        from superset.dhis2.data_value_extractor import (
+            DHIS2DataValueExtractor,
+            _MAX_OUS_PER_REQUEST as _DVS_MAX_OUS,
+            _MAX_PERIODS_PER_REQUEST as _DVS_MAX_PERIODS,
+        )
+        from superset.dhis2.warehouse_service import DHIS2WarehouseService
+
+        staged_dataset_id = dataset.id
+        instances = get_instances_with_legacy_fallback(dataset.database_id)
+
+        instance_results: dict[str, Any] = {}
+        total_rows = 0
+        any_success = False
+        any_failure = False
+        batch_id = uuid.uuid4().hex
+        warehouse = DHIS2WarehouseService()
+
+        data_sets_cfg = dataset_config.get("data_sets", [])
+        if isinstance(data_sets_cfg, str):
+            data_sets_cfg = [data_sets_cfg]
+
+        periods_cfg = dataset_config.get("periods", [])
+        if isinstance(periods_cfg, str):
+            periods_cfg = [periods_cfg]
+
+        last_updated_duration = dataset_config.get("last_updated_duration")
+
+        for instance in instances:
+            inst_key = str(instance.id)
+            try:
+                extractor = DHIS2DataValueExtractor(instance)
+                org_units = self._resolve_org_units_for_instance(instance, dataset_config)
+                # Remove user-relative markers; dataValueSets needs concrete UIDs
+                org_units = [
+                    u for u in org_units
+                    if u not in {"USER_ORGUNIT", "USER_ORGUNIT_CHILDREN", "USER_ORGUNIT_GRANDCHILDREN"}
+                ]
+                if not org_units:
+                    logger.warning(
+                        "dataValueSets: no concrete org units for instance=%d dataset=%d; skipping",
+                        instance.id,
+                        staged_dataset_id,
+                    )
+                    instance_results[inst_key] = {"status": "skipped", "rows": 0, "error": "no org units"}
+                    continue
+
+                all_values: list[dict[str, Any]] = []
+                # Chunk org units and periods
+                for ou_start in range(0, max(len(org_units), 1), _DVS_MAX_OUS):
+                    ou_chunk = org_units[ou_start : ou_start + _DVS_MAX_OUS]
+                    if periods_cfg and not last_updated_duration:
+                        for pe_start in range(0, max(len(periods_cfg), 1), _DVS_MAX_PERIODS):
+                            pe_chunk = periods_cfg[pe_start : pe_start + _DVS_MAX_PERIODS]
+                            chunk_values = extractor.fetch(
+                                data_sets=data_sets_cfg or None,
+                                periods=pe_chunk,
+                                org_units=ou_chunk,
+                                id_scheme=dataset_config.get("id_scheme_input"),
+                            )
+                            all_values.extend(chunk_values)
+                    else:
+                        chunk_values = extractor.fetch(
+                            data_sets=data_sets_cfg or None,
+                            org_units=ou_chunk,
+                            last_updated_duration=last_updated_duration,
+                            id_scheme=dataset_config.get("id_scheme_input"),
+                        )
+                        all_values.extend(chunk_values)
+
+                # Persist raw payload
+                db.session.execute(
+                    _text(
+                        "INSERT INTO stg_dhis2_datavalueset_raw "
+                        "(batch_id, dataset_config_id, connection_id, extracted_at, "
+                        " payload_format, data_json) "
+                        "VALUES (:batch_id, :dc_id, :conn_id, :now, :fmt, :data)"
+                    ),
+                    {
+                        "batch_id": batch_id,
+                        "dc_id": staged_dataset_id,
+                        "conn_id": instance.id,
+                        "now": _datetime.utcnow(),
+                        "fmt": "json",
+                        "data": json.dumps({"dataValues": all_values}),
+                    },
+                )
+                db.session.commit()
+
+                # Normalize to fact table
+                fact_rows = warehouse.normalize_datavalues_to_fact(
+                    batch_id, staged_dataset_id
+                )
+
+                instance_results[inst_key] = {
+                    "status": "success",
+                    "rows": fact_rows,
+                    "error": None,
+                }
+                total_rows += fact_rows
+                any_success = True
+
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.exception(
+                    "dataValueSets sync failed for instance=%d dataset=%d",
+                    instance.id,
+                    staged_dataset_id,
+                )
+                instance_results[inst_key] = {
+                    "status": "failed",
+                    "rows": 0,
+                    "error": str(exc),
+                }
+                any_failure = True
+
+        duration = round(time.monotonic() - started_at, 3)
+        if any_success and any_failure:
+            status = "partial"
+        elif any_success:
+            status = "success"
+        elif any_failure:
+            status = "failed"
+        else:
+            status = "success"
+
+        dataset.last_sync_at = _datetime.utcnow()
+        dataset.last_sync_status = status
+        dataset.last_sync_rows = total_rows
+        db.session.commit()
+
+        if job_id is not None:
+            job: DHIS2SyncJob | None = db.session.query(DHIS2SyncJob).get(job_id)
+            if job is not None:
+                self.update_job_status(
+                    job,
+                    status=status,
+                    rows_loaded=total_rows,
+                    rows_failed=sum(
+                        1 for v in instance_results.values() if v["status"] == "failed"
+                    ),
+                    instance_results=instance_results,
+                )
+
+        return {
+            "status": status,
+            "total_rows": total_rows,
+            "instances": instance_results,
+            "duration_seconds": duration,
+        }
+
+    @staticmethod
+    def _merge_mode_results(
+        r1: dict[str, Any], r2: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge results from analytics + dataValueSets mode runs."""
+        statuses = {r1.get("status"), r2.get("status")}
+        if "failed" in statuses and "success" in statuses:
+            merged_status = "partial"
+        elif statuses == {"failed"}:
+            merged_status = "failed"
+        else:
+            merged_status = "success"
+
+        merged_instances: dict[str, Any] = {}
+        for key in set(list(r1.get("instances", {}).keys()) + list(r2.get("instances", {}).keys())):
+            entry1 = r1.get("instances", {}).get(key, {})
+            entry2 = r2.get("instances", {}).get(key, {})
+            merged_instances[key] = {
+                "status": entry1.get("status") or entry2.get("status"),
+                "rows": (entry1.get("rows") or 0) + (entry2.get("rows") or 0),
+                "error": entry1.get("error") or entry2.get("error"),
+            }
+
+        return {
+            "status": merged_status,
+            "total_rows": (r1.get("total_rows") or 0) + (r2.get("total_rows") or 0),
+            "instances": merged_instances,
+            "duration_seconds": (r1.get("duration_seconds") or 0) + (r2.get("duration_seconds") or 0),
+        }
 
     # ------------------------------------------------------------------
     # Fetch helpers
@@ -1589,8 +1964,37 @@ class DHIS2SyncService:
         periods_cfg = dataset_config.get("periods", ["LAST_12_MONTHS"])
         if isinstance(periods_cfg, str):
             periods_cfg = [periods_cfg]
+        if not isinstance(periods_cfg, list) or not periods_cfg:
+            periods_cfg = ["LAST_12_MONTHS"]
 
         org_units_cfg = self._resolve_org_units_for_instance(instance, dataset_config)
+
+        # When include_ancestor_levels is set, expand LEVEL-N selectors to also
+        # request data at all parent levels (1 through N-1) from DHIS2. This gives
+        # DHIS2-computed aggregated values at each level, which are correct for
+        # percentage/rate indicators where SQL SUM would be wrong.
+        if dataset_config.get("include_ancestor_levels"):
+            expanded: list[str] = list(org_units_cfg)  # copy
+            _LEVEL_RE = re.compile(r"^LEVEL-(\d+)$", re.IGNORECASE)
+            max_leaf = 0
+            for entry in org_units_cfg:
+                m = _LEVEL_RE.match(str(entry))
+                if m:
+                    max_leaf = max(max_leaf, int(m.group(1)))
+            if max_leaf > 1:
+                existing_levels = {
+                    int(m.group(1))
+                    for entry in org_units_cfg
+                    if (m := _LEVEL_RE.match(str(entry)))
+                }
+                for level in range(1, max_leaf):
+                    if level not in existing_levels:
+                        expanded.insert(0, f"LEVEL-{level}")
+                org_units_cfg = list(dict.fromkeys(expanded))
+                logger.info(
+                    "Sync: include_ancestor_levels — expanded org_units to %s",
+                    org_units_cfg,
+                )
 
         # Allow per-dataset overrides for chunk / page sizes.  Values are
         # clamped to safe bounds so a misconfiguration can't OOM the worker.
@@ -1711,6 +2115,8 @@ class DHIS2SyncService:
         org_units_cfg = dataset_config.get("org_units", ["USER_ORGUNIT"])
         if isinstance(org_units_cfg, str):
             org_units_cfg = [org_units_cfg]
+        if not isinstance(org_units_cfg, list) or not org_units_cfg:
+            org_units_cfg = ["USER_ORGUNIT"]
 
         org_unit_source_mode = str(
             dataset_config.get("org_unit_source_mode", _ORG_UNIT_SOURCE_MODE_REPOSITORY)
@@ -1759,7 +2165,7 @@ class DHIS2SyncService:
             ]
             if not primary_units:
                 primary_units = concrete_units
-            primary_units = _prune_descendant_root_org_units(
+            primary_units = _prune_ancestor_org_units(
                 list(dict.fromkeys(primary_units)),
                 selected_detail_map,
             )
@@ -1824,7 +2230,7 @@ class DHIS2SyncService:
                     for key in concrete_units
                 ]
 
-        allowed_units = _prune_descendant_root_org_units(
+        allowed_units = _prune_ancestor_org_units(
             list(dict.fromkeys(allowed_units)),
             selected_detail_map,
         )
@@ -2138,16 +2544,18 @@ class DHIS2SyncService:
             )
             return 0
 
-        staging_engine = DHIS2StagingEngine(dataset.database_id)
+        staging_engine = get_active_staging_engine(dataset.database_id)
         row_count = 0
         if replace_instance_rows:
-            row_count = staging_engine.replace_rows_for_instance(
+            result = staging_engine.replace_rows_for_instance(
                 dataset,
                 instance_id=instance.id,
                 instance_name=instance.name,
                 rows=rows,
                 sync_job_id=sync_job_id,
             )
+            # replace_rows_for_instance returns {"deleted": int, "inserted": int}
+            row_count = result.get("inserted", 0) if isinstance(result, dict) else int(result or 0)
         else:
             if periods_to_prune:
                 staging_engine.delete_rows_for_instance_periods(
@@ -2162,6 +2570,10 @@ class DHIS2SyncService:
                 rows=rows,
                 sync_job_id=sync_job_id,
             )
+            if isinstance(row_count, dict):
+                row_count = row_count.get("inserted", 0)
+            else:
+                row_count = int(row_count or 0)
         record_dhis2_stage_rows(
             dataset=dataset,
             instance=instance,
@@ -2171,10 +2583,11 @@ class DHIS2SyncService:
         return row_count
 
     def _materialize_serving_table(self, dataset: DHIS2StagedDataset) -> None:
-        staging_engine = DHIS2StagingEngine(dataset.database_id)
+        staging_engine = get_active_staging_engine(dataset.database_id)
         ou_filter = _build_ou_filter_for_dataset(dataset)
-        raw_rows = staging_engine.fetch_staging_rows(dataset, ou_filter=ou_filter)
+        raw_rows = staging_engine.fetch_staging_rows(dataset, limit=0, ou_filter=ou_filter)
         serving_columns, serving_rows = materialize_serving_rows(dataset, raw_rows)
+        serving_columns, serving_rows = prune_empty_hierarchy_columns(serving_columns, serving_rows)
         staging_engine.create_or_replace_serving_table(
             dataset,
             columns=serving_columns,
@@ -2216,6 +2629,57 @@ class DHIS2SyncService:
             staged_dataset_id,
         )
         return job
+
+    def _update_job_progress(
+        self,
+        job_id: int | None,
+        *,
+        current_step: str | None = None,
+        current_item: str | None = None,
+        completed_units: int | None = None,
+        failed_units: int | None = None,
+        total_units: int | None = None,
+        rows_extracted: int | None = None,
+        rows_staged: int | None = None,
+        rows_merged: int | None = None,
+    ) -> None:
+        """Write a lightweight progress snapshot to the job record.
+
+        Silently no-ops when *job_id* is ``None`` (e.g. direct service calls
+        that don't track a job).  Commits immediately so the frontend sees
+        live updates when it polls ``/api/v1/dhis2/sync/job/<job_id>``.
+        """
+        if job_id is None:
+            return
+        try:
+            job: DHIS2SyncJob | None = db.session.get(DHIS2SyncJob, job_id)
+            if job is None:
+                return
+            if total_units is not None:
+                job.total_units = total_units
+            if completed_units is not None:
+                job.completed_units = completed_units
+            if failed_units is not None:
+                job.failed_units = failed_units
+            if current_step is not None:
+                job.current_step = current_step
+            if current_item is not None:
+                job.current_item = current_item
+            if rows_extracted is not None:
+                job.rows_extracted = rows_extracted
+            if rows_staged is not None:
+                job.rows_staged = rows_staged
+            if rows_merged is not None:
+                job.rows_merged = rows_merged
+            # Recompute percent
+            if (job.total_units or 0) > 0 and job.completed_units is not None:
+                job.percent_complete = round(
+                    job.completed_units / job.total_units * 100, 1
+                )
+            job.changed_on = datetime.utcnow()
+            db.session.commit()
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("_update_job_progress: non-fatal error for job_id=%s", job_id, exc_info=True)
 
     def update_job_status(
         self,
@@ -2331,7 +2795,7 @@ def schedule_staged_dataset_sync(
         else:
             _run_sync_job_thread(staged_dataset_id, job.id, incremental=incremental)
 
-    if not prefer_immediate:
+    if not prefer_immediate and _celery_workers_available():
         try:
             from superset.tasks.dhis2_sync import sync_staged_dataset_task
 
@@ -2361,10 +2825,15 @@ def schedule_staged_dataset_sync(
             }
         except Exception:  # pylint: disable=broad-except
             logger.info(
-                "Celery staged dataset sync unavailable for dataset id=%s",
+                "Celery staged dataset sync dispatch failed for dataset id=%s, falling back to thread",
                 staged_dataset_id,
                 exc_info=True,
             )
+    elif not prefer_immediate:
+        logger.info(
+            "No Celery workers available for dataset id=%s, using thread fallback",
+            staged_dataset_id,
+        )
 
     service.update_job_status(job, status="running")
     service.update_dataset_sync_state(

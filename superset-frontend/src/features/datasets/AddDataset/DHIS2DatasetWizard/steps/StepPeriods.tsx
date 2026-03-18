@@ -473,13 +473,60 @@ export default function WizardStepPeriods({
           Period
         </Title>
         <Paragraph style={{ margin: 0 }}>
-          Choose time periods for your dataset.
+          Choose time periods for your dataset. Leave empty to use the default
+          (last 12 months). Periods and org units are optional — users can
+          filter by any period or org unit directly in charts.
         </Paragraph>
       </div>
 
       {errors.periods && <ErrorText>{errors.periods}</ErrorText>}
 
+      {/* Auto-detect option */}
+      <Section>
+        <Checkbox
+          checked={!!wizardState.periodsAutoDetect}
+          onChange={e => {
+            const checked = e.target.checked;
+            updateState({
+              periodsAutoDetect: checked,
+              // Clear manual selections when auto-detect is enabled
+              ...(checked ? { periods: [] } : {}),
+            });
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>
+            Auto-detect and stage all applicable data
+          </span>
+          <span
+            style={{ marginLeft: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}
+          >
+            (skip period selection — sync all available DHIS2 data)
+          </span>
+        </Checkbox>
+
+        {wizardState.periodsAutoDetect && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '10px 14px',
+              background: '#fffbe6',
+              border: '1px solid #ffe58f',
+              borderRadius: 4,
+              fontSize: 13,
+            }}
+          >
+            <strong>⚠ Data Loading may take some time to complete for unrestricted datasets.</strong>
+            <br />
+            Without a period restriction the sync will fetch all historical data
+            available in DHIS2. This can be a very large amount of data.
+            Consider selecting specific periods if your dataset covers many years
+            or high-frequency data.
+          </div>
+        )}
+      </Section>
+
       <TabsContainer
+        style={wizardState.periodsAutoDetect ? { opacity: 0.45, pointerEvents: 'none' } : undefined}
         items={[
           {
             key: 'relative',

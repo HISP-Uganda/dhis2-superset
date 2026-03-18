@@ -36,6 +36,7 @@ def _make_dataset():
                 variable_name="ANC 1st Visit",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                get_extra_params=lambda: {},
             ),
             SimpleNamespace(
                 instance_id=2,
@@ -44,6 +45,7 @@ def _make_dataset():
                 variable_name="Reporting Rate",
                 alias=None,
                 instance=SimpleNamespace(id=2, name="Non Routine DHIS2"),
+                get_extra_params=lambda: {},
             ),
         ],
         get_dataset_config=lambda: {
@@ -165,6 +167,7 @@ def test_build_serving_manifest_uses_user_facing_dimensions_and_variables():
         "Region",
         "District",
         "Period",
+        "OU Level",
         "ANC 1st Visit",
         "Reporting Rate",
     ]
@@ -174,6 +177,7 @@ def test_build_serving_manifest_uses_user_facing_dimensions_and_variables():
         "region",
         "district",
         "period",
+        "ou_level",
     ]
 
 
@@ -269,6 +273,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "region",
         "district",
         "period",
+        "ou_level",
         "anc_1st_visit",
         "reporting_rate",
     ]
@@ -278,6 +283,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "region": "Central",
             "district": "Kampala",
             "period": "2024Q1",
+            "ou_level": None,
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
         },
@@ -286,8 +292,9 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "region": "Eastern",
             "district": "Mbale",
             "period": "2024Q1",
-            "anc_1st_visit": None,
+            "ou_level": None,
             "reporting_rate": 95.3,
+            "anc_1st_visit": None,
         },
     ]
 
@@ -306,6 +313,7 @@ def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                get_extra_params=lambda: {},
             ),
         ],
         get_dataset_config=lambda: {
@@ -385,6 +393,7 @@ def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_
         "Region",
         "District",
         "Period",
+        "OU Level",
         "Malaria Cases",
     ]
 
@@ -403,6 +412,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                get_extra_params=lambda: {},
             ),
         ],
         get_dataset_config=lambda: {
@@ -497,6 +507,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         "District",
         "Subcounty",
         "Period",
+        "OU Level",
         "Malaria Cases",
     ]
 
@@ -588,3 +599,302 @@ def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_p
     predicate_sql = str(predicate)
     assert "level2" in predicate_sql
     assert "level3" in predicate_sql
+
+
+# ── COC / disaggregation-dimension tests ──────────────────────────────────────
+
+
+def _make_single_instance_dataset(extra_config=None):
+    """Minimal single-instance dataset fixture."""
+    config = {
+        "configured_connection_ids": [1],
+        "org_unit_scope": "selected",
+        "org_unit_details": [
+            {
+                "id": "ou-national",
+                "source_org_unit_id": "ou-national",
+                "level": 1,
+                "source_instance_ids": [1],
+            }
+        ],
+    }
+    if extra_config:
+        config.update(extra_config)
+
+    variable = SimpleNamespace(
+        instance_id=1,
+        variable_id="de_malaria",
+        variable_type="dataElement",
+        variable_name="Malaria Cases",
+        alias=None,
+        instance=SimpleNamespace(id=1, name="HMIS"),
+    )
+    if not hasattr(variable, "get_extra_params"):
+        variable.get_extra_params = lambda: {}
+
+    return SimpleNamespace(
+        id=20,
+        database_id=10,
+        variables=[variable],
+        get_dataset_config=lambda: config,
+    )
+
+
+def _single_instance_payloads():
+    return {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [{"level": 1, "displayName": "National"}],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "ou-national",
+                    "displayName": "Uganda",
+                    "level": 1,
+                    "path": "/ou-national",
+                }
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_malaria",
+                    "displayName": "Malaria Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+
+
+def test_build_serving_manifest_without_coc_dimension_has_no_co_columns():
+    """Default (include_disaggregation_dimension=False) must not add CO columns."""
+    from superset.dhis2.analytical_serving import build_serving_manifest
+
+    dataset = _make_single_instance_dataset()
+    payloads = _single_instance_payloads()
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ), patch(
+        "superset.dhis2.analytical_serving.db.engine.connect",
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    col_names = [c["column_name"] for c in manifest["columns"]]
+    assert "co_uid" not in col_names
+    assert "disaggregation" not in col_names
+    assert manifest["coc_uid_column_name"] is None
+    assert manifest["coc_name_column_name"] is None
+
+
+def test_build_serving_manifest_with_coc_dimension_adds_co_columns():
+    """include_disaggregation_dimension=True must expose co_uid and disaggregation columns."""
+    from superset.dhis2.analytical_serving import (
+        _DHIS2_COC_EXTRA_KEY,
+        _DHIS2_COC_UID_EXTRA_KEY,
+        build_serving_manifest,
+    )
+
+    dataset = _make_single_instance_dataset(
+        extra_config={"include_disaggregation_dimension": True}
+    )
+    payloads = _single_instance_payloads()
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ), patch(
+        "superset.dhis2.analytical_serving.db.engine.connect",
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    col_names = [c["column_name"] for c in manifest["columns"]]
+    verbose_names = [c["verbose_name"] for c in manifest["columns"]]
+
+    assert "co_uid" in col_names
+    assert "disaggregation" in col_names
+    assert "Category Option Combo (UID)" in verbose_names
+    assert "Disaggregation" in verbose_names
+
+    # Both must be in dimension_column_names
+    assert "co_uid" in manifest["dimension_column_names"]
+    assert "disaggregation" in manifest["dimension_column_names"]
+
+    # Manifest returns the column name references
+    assert manifest["coc_uid_column_name"] == "co_uid"
+    assert manifest["coc_name_column_name"] == "disaggregation"
+
+    # Extra metadata must carry the right keys
+    co_uid_col = next(c for c in manifest["columns"] if c["column_name"] == "co_uid")
+    co_name_col = next(c for c in manifest["columns"] if c["column_name"] == "disaggregation")
+    assert co_uid_col["extra"].get(_DHIS2_COC_UID_EXTRA_KEY) is True
+    assert co_name_col["extra"].get(_DHIS2_COC_EXTRA_KEY) is True
+
+
+def test_materialize_serving_rows_with_coc_dimension_keeps_rows_separate():
+    """With include_disaggregation_dimension, rows for different COCs must not be merged."""
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = _make_single_instance_dataset(
+        extra_config={"include_disaggregation_dimension": True}
+    )
+    payloads = _single_instance_payloads()
+
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS",
+            "dx_uid": "de_malaria",
+            "pe": "2024",
+            "ou": "ou-national",
+            "ou_name": "Uganda",
+            "ou_level": 1,
+            "value": "120",
+            "value_numeric": 120.0,
+            "co_uid": "coc-male",
+            "co_name": "Male",
+        },
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS",
+            "dx_uid": "de_malaria",
+            "pe": "2024",
+            "ou": "ou-national",
+            "ou_name": "Uganda",
+            "ou_level": 1,
+            "value": "95",
+            "value_numeric": 95.0,
+            "co_uid": "coc-female",
+            "co_name": "Female",
+        },
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ), patch(
+        "superset.dhis2.analytical_serving.db.engine.connect",
+    ):
+        manifest = build_serving_manifest(dataset)
+        columns, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    # Must produce two separate rows — one per COC
+    assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}: {rows}"
+
+    by_coc = {r["disaggregation"]: r for r in rows}
+    assert set(by_coc.keys()) == {"Male", "Female"}
+    assert by_coc["Male"]["malaria_cases"] == 120.0
+    assert by_coc["Female"]["malaria_cases"] == 95.0
+
+    # co_uid must also be populated
+    assert by_coc["Male"]["co_uid"] == "coc-male"
+    assert by_coc["Female"]["co_uid"] == "coc-female"
+
+
+def test_materialize_serving_rows_without_coc_dimension_merges_coc_rows():
+    """Without include_disaggregation_dimension, rows with different COCs must be merged."""
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = _make_single_instance_dataset()  # no include_disaggregation_dimension
+    payloads = _single_instance_payloads()
+
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS",
+            "dx_uid": "de_malaria",
+            "pe": "2024",
+            "ou": "ou-national",
+            "ou_name": "Uganda",
+            "ou_level": 1,
+            "value": "120",
+            "value_numeric": 120.0,
+            "co_uid": "coc-male",
+            "co_name": "Male",
+        },
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS",
+            "dx_uid": "de_malaria",
+            "pe": "2024",
+            "ou": "ou-national",
+            "ou_name": "Uganda",
+            "ou_level": 1,
+            "value": "95",
+            "value_numeric": 95.0,
+            "co_uid": "coc-female",
+            "co_name": "Female",
+        },
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ), patch(
+        "superset.dhis2.analytical_serving.db.engine.connect",
+    ):
+        manifest = build_serving_manifest(dataset)
+        columns, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    # Without COC dimension the two rows share the same grouping key (same period/ou/ou_level)
+    # The last written value wins — the important assertion is that we do NOT get two rows.
+    assert len(rows) == 1, f"Expected 1 merged row, got {len(rows)}: {rows}"
+    # No disaggregation or co_uid columns
+    col_names = [c["column_name"] for c in columns]
+    assert "disaggregation" not in col_names
+    assert "co_uid" not in col_names
+
+
+def test_coc_dimension_columns_have_correct_extra_metadata():
+    """The extra metadata keys on CO columns must match what DHIS2ColumnTag expects."""
+    from superset.dhis2.analytical_serving import (
+        _DHIS2_COC_EXTRA_KEY,
+        _DHIS2_COC_UID_EXTRA_KEY,
+        build_serving_manifest,
+    )
+
+    dataset = _make_single_instance_dataset(
+        extra_config={"include_disaggregation_dimension": True}
+    )
+    payloads = _single_instance_payloads()
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ), patch(
+        "superset.dhis2.analytical_serving.db.engine.connect",
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    col_by_name = {c["column_name"]: c for c in manifest["columns"]}
+
+    uid_col = col_by_name["co_uid"]
+    assert uid_col["extra"][_DHIS2_COC_UID_EXTRA_KEY] is True
+    assert uid_col["is_dimension"] is True
+    assert uid_col["type"] == "STRING"
+
+    name_col = col_by_name["disaggregation"]
+    assert name_col["extra"][_DHIS2_COC_EXTRA_KEY] is True
+    assert name_col["is_dimension"] is True
+    assert name_col["verbose_name"] == "Disaggregation"

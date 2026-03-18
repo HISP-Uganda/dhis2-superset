@@ -46,7 +46,11 @@ export const LocationProvider: FC = ({ children }: { children: ReactNode }) => {
 
     const queryParamsState = {
       requestedQuery: { dbid, sql, name, schema, autorun },
-      isDataset: true,
+      // Only treat as dataset editing when the caller explicitly signals it
+      // (e.g. Explore "Edit in SQL Lab" passes isDataset=true).
+      // Plain preview links like /sqllab?dbid=X&sql=Y must NOT set isDataset
+      // or SQL Lab shows false "virtual dataset null" / "database not found" warnings.
+      isDataset: queryParams.get('isDataset') === 'true',
     } as LocationState;
     return <Provider value={queryParamsState}>{children}</Provider>;
   }

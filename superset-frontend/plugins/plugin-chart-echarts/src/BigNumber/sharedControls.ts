@@ -113,3 +113,82 @@ export const metricNameFontSizeWithVisibility: CustomControlItem = {
     resetOnHide: false,
   },
 };
+
+export const cardVariantControl: CustomControlItem = {
+  name: 'card_variant',
+  config: {
+    type: 'SelectControl',
+    label: t('Card Style'),
+    renderTrigger: true,
+    clearable: false,
+    default: 'none',
+    choices: [
+      ['none', t('None')],
+      ['outlined', t('Outlined')],
+      ['filled', t('Filled')],
+      ['gradient', t('Gradient')],
+    ],
+    description: t('Apply a card container style around the number'),
+  },
+};
+
+export const cardShadowControl: CustomControlItem = {
+  name: 'card_shadow',
+  config: {
+    type: 'SelectControl',
+    label: t('Shadow'),
+    renderTrigger: true,
+    clearable: false,
+    default: 'none',
+    choices: [
+      ['none', t('None')],
+      ['small', t('Small')],
+      ['medium', t('Medium')],
+      ['large', t('Large')],
+    ],
+    visibility: ({ controls }) => controls?.card_variant?.value !== 'none',
+    resetOnHide: false,
+  },
+};
+
+export const cardBorderRadiusControl: CustomControlItem = {
+  name: 'card_border_radius',
+  config: {
+    type: 'SliderControl',
+    label: t('Corner Radius'),
+    renderTrigger: true,
+    min: 0,
+    max: 32,
+    step: 2,
+    default: 8,
+    visibility: ({ controls }) => controls?.card_variant?.value !== 'none',
+    resetOnHide: false,
+  },
+};
+
+export const valueColorControl: CustomControlItem = {
+  name: 'value_color',
+  config: {
+    type: 'ColorPickerControl',
+    label: t('Value Color'),
+    renderTrigger: true,
+    default: null,
+    description: t('Override the value/number text color'),
+  },
+};
+
+export const textAlignControl: CustomControlItem = {
+  name: 'text_align',
+  config: {
+    type: 'SelectControl',
+    label: t('Text Alignment'),
+    renderTrigger: true,
+    clearable: false,
+    default: 'left',
+    choices: [
+      ['left', t('Left')],
+      ['center', t('Center')],
+      ['right', t('Right')],
+    ],
+  },
+};

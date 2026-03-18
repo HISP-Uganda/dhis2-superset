@@ -37,6 +37,9 @@ _DHIS2_OU_HIERARCHY_EXTRA_KEY = "dhis2_is_ou_hierarchy"
 _DHIS2_OU_LEVEL_EXTRA_KEY = "dhis2_ou_level"
 _DHIS2_PERIOD_EXTRA_KEY = "dhis2_is_period"
 _DHIS2_LEGEND_EXTRA_KEY = "dhis2_legend"
+# Category Option Combo dimension columns (opt-in disaggregation-as-dimension)
+_DHIS2_COC_EXTRA_KEY = "dhis2_is_coc"
+_DHIS2_COC_UID_EXTRA_KEY = "dhis2_is_coc_uid"
 
 _NUMERIC_VALUE_TYPES = {
     "AGE",
@@ -265,11 +268,46 @@ def _scope_max_level(scope: str, selected_level: int, hierarchy_max_level: int) 
     return min(selected_level, hierarchy_max_level)
 
 
+def _get_level_mapping(dataset_config: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Return mapping rows when ``level_mapping.enabled`` is True, else ``None``.
+
+    A ``None`` return means "use auto-merge logic".  An empty list means the
+    user explicitly enabled mapping but defined no rows (no hierarchy columns
+    will be generated).
+    """
+    lm = dataset_config.get("level_mapping")
+    if not isinstance(lm, dict):
+        return None
+    if not lm.get("enabled"):
+        return None
+    rows = list(lm.get("rows") or [])
+    # Validate / filter rows that have a usable merged_level
+    valid: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            merged_level = int(row.get("merged_level"))
+        except (TypeError, ValueError):
+            continue
+        if merged_level > 0:
+            valid.append({**row, "merged_level": merged_level})
+    return valid
+
+
 def _resolve_level_labels(
     database_id: int,
     instance_ids: list[int],
     max_level: int,
+    mapping_rows: list[dict[str, Any]] | None = None,
 ) -> dict[int, str]:
+    # When a custom mapping is supplied, use the user-defined labels directly.
+    if mapping_rows is not None:
+        return {
+            row["merged_level"]: str(
+                row.get("label") or f"Level {row['merged_level']}"
+            ).strip() or f"Level {row['merged_level']}"
+            for row in mapping_rows
+        }
+
     labels_by_level: dict[int, Counter[str]] = defaultdict(Counter)
 
     for instance_id in instance_ids:
@@ -304,7 +342,13 @@ def _resolve_level_labels(
 def _resolve_level_range(
     dataset: DHIS2StagedDataset,
     instance_ids: list[int],
+    mapping_rows: list[dict[str, Any]] | None = None,
 ) -> list[int]:
+    # When a custom mapping is supplied, use its merged_level values directly.
+    if mapping_rows is not None:
+        levels = sorted({row["merged_level"] for row in mapping_rows})
+        return levels
+
     dataset_config = dataset.get_dataset_config()
     selected_root_details = _selected_root_details(dataset_config)
 
@@ -348,20 +392,58 @@ def _resolve_level_range(
     return list(range(1, max_level + 1)) if max_level > 0 else []
 
 
+def _build_instance_level_map(
+    instance_id: int,
+    hierarchy_columns: list[dict[str, Any]],
+    mapping_rows: list[dict[str, Any]] | None,
+) -> dict[int, str]:
+    """Return ``{raw_level: column_name}`` for a single DHIS2 instance.
+
+    When *mapping_rows* is ``None`` (auto-merge), every merged level maps to the
+    same raw level (1:1).  When a custom mapping is provided, the raw level for
+    ``instance_id`` is read from ``row["instance_levels"][str(instance_id)]``
+    and then mapped to the column that was built for ``row["merged_level"]``.
+    """
+    if mapping_rows is None:
+        return {
+            int(col["level"]): col["column_name"] for col in hierarchy_columns
+        }
+
+    result: dict[int, str] = {}
+    merged_level_to_column = {
+        int(col["level"]): col["column_name"] for col in hierarchy_columns
+    }
+    instance_key = str(instance_id)
+    for row in mapping_rows:
+        merged_level = row["merged_level"]
+        column_name = merged_level_to_column.get(merged_level)
+        if column_name is None:
+            continue
+        raw_level = (row.get("instance_levels") or {}).get(instance_key)
+        if raw_level is None:
+            continue
+        try:
+            result[int(raw_level)] = column_name
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def _build_hierarchy_lookup(
     dataset: DHIS2StagedDataset,
     instance_ids: list[int],
     hierarchy_columns: list[dict[str, Any]],
+    mapping_rows: list[dict[str, Any]] | None = None,
 ) -> dict[tuple[int, str], dict[str, Any]]:
     if not hierarchy_columns:
         return {}
 
     hierarchy_lookup: dict[tuple[int, str], dict[str, Any]] = {}
-    relevant_levels = {
-        int(column["level"]): column["column_name"] for column in hierarchy_columns
-    }
 
     for instance_id in instance_ids:
+        relevant_levels = _build_instance_level_map(
+            instance_id, hierarchy_columns, mapping_rows
+        )
         snapshot = _load_snapshot(dataset.database_id, _ORG_UNIT_HIERARCHY_NAMESPACE, instance_id)
         if snapshot is None or snapshot.get("status") != "success":
             continue
@@ -552,17 +634,23 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
                 "sql_type": "TEXT",
                 "is_dttm": False,
                 "is_dimension": True,
+                # Internal routing column — exists in the serving table for
+                # multi-instance deduplication but must NOT appear in chart
+                # control panels or the Explore sidebar.
+                "extra": {"dhis2_is_internal": True},
             }
         )
         dimension_column_names.append(instance_column_name)
 
-    level_range = _resolve_level_range(dataset, selected_instance_ids)
+    mapping_rows = _get_level_mapping(dataset_config)
+    level_range = _resolve_level_range(dataset, selected_instance_ids, mapping_rows)
     hierarchy_columns: list[dict[str, Any]] = []
     if level_range:
         level_labels = _resolve_level_labels(
             dataset.database_id,
             selected_instance_ids,
             max(level_range),
+            mapping_rows,
         )
         for level_number in level_range:
             label = level_labels.get(level_number, f"Level {level_number}")
@@ -614,6 +702,60 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         }
     )
     dimension_column_names.append(period_column_name)
+
+    # ou_level column — allows buildQuery to filter rows to a specific OU level
+    # and prevents double-counting when data is loaded at multiple levels.
+    ou_level_column_name = _dedupe_identifier("ou_level", used_identifiers)
+    columns.append(
+        {
+            "column_name": ou_level_column_name,
+            "verbose_name": "OU Level",
+            "type": "INTEGER",
+            "sql_type": "INTEGER",
+            "is_dttm": False,
+            "is_dimension": True,
+            "extra": {
+                "dhis2_is_ou_level": True,
+            },
+        }
+    )
+    dimension_column_names.append(ou_level_column_name)
+
+    # ── Disaggregation dimension (opt-in) ─────────────────────────────────────
+    # When ``include_disaggregation_dimension`` is true the staging co_uid / co_name
+    # fields are promoted to first-class dimension columns so users can group and
+    # filter charts by Category Option Combo without pivoting variables.
+    include_coc_dimension = bool(dataset_config.get("include_disaggregation_dimension"))
+    coc_uid_column_name: str | None = None
+    coc_name_column_name: str | None = None
+    if include_coc_dimension:
+        coc_uid_column_name = _dedupe_identifier("co_uid", used_identifiers)
+        columns.append(
+            {
+                "column_name": coc_uid_column_name,
+                "verbose_name": "Category Option Combo (UID)",
+                "type": "STRING",
+                "sql_type": "TEXT",
+                "is_dttm": False,
+                "is_dimension": True,
+                "extra": {_DHIS2_COC_UID_EXTRA_KEY: True},
+            }
+        )
+        dimension_column_names.append(coc_uid_column_name)
+
+        coc_name_column_name = _dedupe_identifier("disaggregation", used_identifiers)
+        columns.append(
+            {
+                "column_name": coc_name_column_name,
+                "verbose_name": "Disaggregation",
+                "type": "STRING",
+                "sql_type": "TEXT",
+                "is_dttm": False,
+                "is_dimension": True,
+                "extra": {_DHIS2_COC_EXTRA_KEY: True},
+            }
+        )
+        dimension_column_names.append(coc_name_column_name)
 
     label_counts = Counter(
         (
@@ -700,7 +842,9 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
             columns.append(col)
             variable_lookup[(str(variable.variable_id), None)] = col
 
-    hierarchy_lookup = _build_hierarchy_lookup(dataset, selected_instance_ids, hierarchy_columns)
+    hierarchy_lookup = _build_hierarchy_lookup(
+        dataset, selected_instance_ids, hierarchy_columns, mapping_rows
+    )
 
     return {
         "columns": columns,
@@ -718,6 +862,9 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
             None,
         ),
         "period_column_name": period_column_name,
+        "ou_level_column_name": ou_level_column_name,
+        "coc_uid_column_name": coc_uid_column_name,
+        "coc_name_column_name": coc_name_column_name,
     }
 
 
@@ -758,6 +905,21 @@ def materialize_serving_rows(
 
         row_values[period_column_name] = raw_row.get("pe")
 
+        ou_level_column_name = str(manifest.get("ou_level_column_name") or "ou_level")
+        try:
+            ou_level_val = int(raw_row.get("ou_level") or 0)
+        except (TypeError, ValueError):
+            ou_level_val = 0
+        row_values[ou_level_column_name] = ou_level_val or None
+
+        # Category Option Combo dimension values (only present when enabled)
+        coc_uid_col = manifest.get("coc_uid_column_name")
+        coc_name_col = manifest.get("coc_name_column_name")
+        if coc_uid_col:
+            row_values[coc_uid_col] = raw_row.get("co_uid") or None
+        if coc_name_col:
+            row_values[coc_name_col] = raw_row.get("co_name") or None
+
         key = tuple(row_values.get(column_name) for column_name in dimension_column_names)
         current = grouped_rows.setdefault(
             key,
@@ -792,6 +954,61 @@ def materialize_serving_rows(
 
     rows = list(grouped_rows.values())
     return columns, rows
+
+
+def prune_empty_hierarchy_columns(
+    columns: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Remove OU hierarchy columns that are completely blank in the materialized rows.
+
+    When data only covers a subset of OU levels (e.g. National → District),
+    deeper hierarchy levels (Health Facility, Ward, etc.) will be NULL in
+    every row.  Including them bloats GROUP BY clauses, slows queries, and
+    confuses users — the map sees extra groupby columns that never contain
+    data for any boundary polygon match.
+
+    Returns:
+        Tuple of (pruned_columns, pruned_rows).
+    """
+    # Collect OU hierarchy column names from the manifest
+    ou_hierarchy_cols: set[str] = set()
+    for col in columns:
+        extra = col.get("extra")
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:  # pylint: disable=broad-except
+                extra = {}
+        if isinstance(extra, dict) and extra.get(_DHIS2_OU_HIERARCHY_EXTRA_KEY):
+            ou_hierarchy_cols.add(col["column_name"])
+
+    if not ou_hierarchy_cols or not rows:
+        return columns, rows
+
+    # Find which OU hierarchy columns have at least one non-empty value
+    populated: set[str] = set()
+    for row in rows:
+        for col_name in ou_hierarchy_cols - populated:
+            val = row.get(col_name)
+            if val is not None and str(val).strip():
+                populated.add(col_name)
+        if populated == ou_hierarchy_cols:
+            break  # All populated — nothing to prune
+
+    empty_cols = ou_hierarchy_cols - populated
+    if not empty_cols:
+        return columns, rows
+
+    logger.info(
+        "prune_empty_hierarchy_columns: removing %d all-blank OU hierarchy column(s): %s",
+        len(empty_cols),
+        sorted(empty_cols),
+    )
+
+    pruned_columns = [c for c in columns if c["column_name"] not in empty_cols]
+    pruned_rows = [{k: v for k, v in row.items() if k not in empty_cols} for row in rows]
+    return pruned_columns, pruned_rows
 
 
 def dataset_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:

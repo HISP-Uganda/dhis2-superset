@@ -1,5 +1,5 @@
 import { SupersetClient, t } from '@superset-ui/core';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useHistory, useLocation } from 'react-router-dom';
 import rison from 'rison';
 
@@ -19,11 +19,17 @@ export default function useDHIS2Databases(
 ): UseDHIS2DatabasesResult {
   const history = useHistory();
   const location = useLocation();
+  const locationSearchRef = useRef(location.search);
   const [databases, setDatabases] = useState<DHIS2DatabaseOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedDatabaseId, setSelectedDatabaseIdState] = useState<
     number | undefined
   >(() => getDatabaseIdFromSearch(location.search));
+
+  // Keep ref current so Effect 4 can read it without depending on it
+  useEffect(() => {
+    locationSearchRef.current = location.search;
+  });
 
   const refreshDatabases = async () => {
     setLoading(true);
@@ -53,11 +59,10 @@ export default function useDHIS2Databases(
     void refreshDatabases();
   }, []);
 
+  // Sync URL → state (browser back/forward navigation)
+  // Always call setState; React bails out if the value hasn't changed.
   useEffect(() => {
-    const databaseIdFromSearch = getDatabaseIdFromSearch(location.search);
-    if (databaseIdFromSearch !== selectedDatabaseId) {
-      setSelectedDatabaseIdState(databaseIdFromSearch);
-    }
+    setSelectedDatabaseIdState(getDatabaseIdFromSearch(location.search));
   }, [location.search]);
 
   useEffect(() => {
@@ -72,21 +77,24 @@ export default function useDHIS2Databases(
     }
   }, [databases, selectedDatabaseId]);
 
+  // Sync state → URL. Uses locationSearchRef (not location.search) to avoid
+  // a feedback loop: history.replace() changes location.search which would
+  // re-trigger this effect, which would call history.replace() again, etc.
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
+    const params = new URLSearchParams(locationSearchRef.current);
     if (selectedDatabaseId) {
       params.set('database', String(selectedDatabaseId));
     } else {
       params.delete('database');
     }
     const nextSearch = params.toString() ? `?${params.toString()}` : '';
-    if (nextSearch !== location.search) {
+    if (nextSearch !== locationSearchRef.current) {
       history.replace({
         pathname: location.pathname,
         search: nextSearch,
       });
     }
-  }, [history, location.pathname, location.search, selectedDatabaseId]);
+  }, [history, location.pathname, selectedDatabaseId]);
 
   return {
     databases,

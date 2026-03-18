@@ -14,7 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+import json
 import logging
+import re
+from typing import Any
 
 from flask import current_app as app, request
 from flask_appbuilder.api import expose, protect, safe
@@ -29,6 +32,134 @@ from superset.utils.core import apply_max_row_limit, DatasourceType, SqlExpressi
 from superset.views.base_api import BaseSupersetApi, statsd_metrics
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# DHIS2 staging helpers
+# ---------------------------------------------------------------------------
+
+_SAFE_COLUMN_RE = re.compile(r'^[A-Za-z0-9_\- ]+$')
+_STAGING_COL_LIMIT = 2000
+
+
+def _get_dhis2_staged_dataset_id(datasource: Any) -> int | None:
+    """Return the DHIS2 staged dataset ID if *datasource* is backed by one.
+
+    The ``extra`` JSON field on the SqlaTable is set by
+    :func:`~superset.dhis2.superset_dataset_service.register_serving_table_as_superset_dataset`
+    and contains ``{"dhis2_staged_dataset_id": <int>}``.
+    Returns ``None`` for any non-DHIS2-staging dataset.
+    """
+    try:
+        extra = getattr(datasource, "extra", None)
+        if not extra:
+            return None
+        if isinstance(extra, str):
+            extra = json.loads(extra)
+        val = extra.get("dhis2_staged_dataset_id")
+        if val is None:
+            return None
+        id_ = int(val)
+        return id_ if id_ > 0 else None
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _column_values_from_staging(
+    staged_dataset_id: int,
+    column_name: str,
+    limit: int,
+    cascade_parent_column: str | None = None,
+    cascade_parent_values: Any = None,
+) -> list[str]:
+    """Query the serving table directly for distinct column values.
+
+    Bypasses the DHIS2 dialect so that filter selects show real staged data
+    rather than attempting live API calls to the DHIS2 server.
+
+    Cascade filtering: when *cascade_parent_column* and *cascade_parent_values*
+    are provided, a ``WHERE parent IN (...)`` clause is added so child filters
+    (e.g. facility list) narrow when the user selects a parent value (e.g.
+    district).
+    """
+    from sqlalchemy import text
+
+    from superset import db
+    from superset.dhis2.models import DHIS2StagedDataset
+    from superset.local_staging.engine_factory import get_active_staging_engine
+
+    if not _SAFE_COLUMN_RE.match(column_name):
+        logger.warning(
+            "staging column-values: unsafe column name %r for dataset %d — skipping",
+            column_name,
+            staged_dataset_id,
+        )
+        return []
+
+    dataset: DHIS2StagedDataset | None = (
+        db.session.query(DHIS2StagedDataset)
+        .filter_by(id=staged_dataset_id)
+        .first()
+    )
+    if dataset is None:
+        logger.warning(
+            "staging column-values: staged dataset id=%d not found", staged_dataset_id
+        )
+        return []
+
+    try:
+        engine = get_active_staging_engine(dataset.database_id)
+        table_ref = engine.get_serving_sql_table_ref(dataset)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "staging column-values: could not get serving table ref for dataset id=%d",
+            staged_dataset_id,
+        )
+        return []
+
+    quoted_col = f'"{column_name}"'
+    safe_limit = max(1, min(int(limit), _STAGING_COL_LIMIT))
+
+    # Build optional cascade WHERE clause
+    cascade_clause = ""
+    cascade_params: dict[str, Any] = {}
+    if (
+        cascade_parent_column
+        and _SAFE_COLUMN_RE.match(cascade_parent_column)
+        and cascade_parent_values
+    ):
+        parent_vals: list[str] = (
+            cascade_parent_values
+            if isinstance(cascade_parent_values, list)
+            else [str(cascade_parent_values)]
+        )
+        # Build parameterised IN clause — one bind var per value
+        placeholders = ", ".join(f":cv{i}" for i in range(len(parent_vals)))
+        cascade_clause = (
+            f' AND "{cascade_parent_column}" IN ({placeholders})'
+        )
+        cascade_params = {f"cv{i}": v for i, v in enumerate(parent_vals)}
+
+    sql = (
+        f"SELECT DISTINCT {quoted_col} FROM {table_ref}"
+        f" WHERE {quoted_col} IS NOT NULL{cascade_clause}"
+        f" ORDER BY {quoted_col} LIMIT {safe_limit}"
+    )
+
+    try:
+        from superset.dhis2.staging_engine import DHIS2StagingEngine  # pylint: disable=import-outside-toplevel
+        with db.engine.connect() as conn:
+            DHIS2StagingEngine.apply_connection_optimizations(
+                conn, str(getattr(db.engine.dialect, "name", "") or "")
+            )
+            rows = conn.execute(text(sql), cascade_params).fetchall()
+        return [str(row[0]) for row in rows if row[0] is not None]
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "staging column-values: query failed for dataset id=%d column=%r",
+            staged_dataset_id,
+            column_name,
+        )
+        return []
 
 
 class DatasourceRestApi(BaseSupersetApi):
@@ -132,38 +263,40 @@ class DatasourceRestApi(BaseSupersetApi):
         row_limit = apply_max_row_limit(app.config["FILTER_SELECT_ROW_LIMIT"])
         denormalize_column = not datasource.normalize_columns
 
-        # Get cascade filter parameters from query string
+        # Cascade filter parameters (forwarded to both staging and dialect paths)
         cascade_parent_column = request.args.get("cascade_parent_column")
-
-        # Parse cascade parent value (can be comma-separated for multi-select)
         if (cascade_parent_value := request.args.get("cascade_parent_value")):
-            # Try to convert to list if multiple values
-            parent_values = cascade_parent_value.split(",") if "," in cascade_parent_value else cascade_parent_value
+            parent_values = (
+                cascade_parent_value.split(",")
+                if "," in cascade_parent_value
+                else cascade_parent_value
+            )
         else:
             parent_values = None
 
-        # Store cascade parameters in Flask g for DHIS2 dialect to access during query execution
-        # This enables automatic hierarchy-based cascading for DHIS2 org unit filters
-        print(f"[Cascade API] 🔍 REQUEST: column={column_name}, parent_column={cascade_parent_column}, parent_values={parent_values}")
+        # ------------------------------------------------------------------
+        # DHIS2 Staging path — if this SqlaTable was registered from a DHIS2
+        # staged dataset, query the serving table directly instead of routing
+        # through the DHIS2 dialect (which makes API calls to the DHIS2 server
+        # and cannot see the local staging data).
+        # ------------------------------------------------------------------
+        staged_dataset_id = _get_dhis2_staged_dataset_id(datasource)
+        if staged_dataset_id is not None:
+            payload = _column_values_from_staging(
+                staged_dataset_id=staged_dataset_id,
+                column_name=column_name,
+                limit=row_limit,
+                cascade_parent_column=cascade_parent_column,
+                cascade_parent_values=parent_values,
+            )
+            return self.response(200, result=payload)
+
+        # Store cascade params in Flask g for DHIS2 dialect to access
         if cascade_parent_column and parent_values:
-            logger.info(f"[Cascade API] Storing cascade params in Flask g: parent_column={cascade_parent_column}, parent_value={parent_values}")
-            print(f"[Cascade API] ✅ CASCADE ENABLED: parent={cascade_parent_column}, values={parent_values}")
             g.dhis2_cascade_parent_column = cascade_parent_column
             g.dhis2_cascade_parent_value = parent_values
             g.dhis2_cascade_child_column = column_name
-            logger.info(
-                "[Cascade API] child_column=%s",
-                column_name,
-            )
-            print(f"[Cascade API] child_column={column_name}")
-        else:
-            print(f"[Cascade API] ❌ NO CASCADE: parent_column={cascade_parent_column}, parent_values={parent_values}")
-
-        # Mark filter option requests for DHIS2 dialect handling
-        try:
-            g.dhis2_is_native_filter = True
-        except Exception:
-            pass
+        g.dhis2_is_native_filter = True
 
         try:
             payload = datasource.values_for_column(
@@ -173,26 +306,6 @@ class DatasourceRestApi(BaseSupersetApi):
                 cascade_parent_column=cascade_parent_column,
                 cascade_parent_value=parent_values,
             )
-            # Fallback for DHIS2 Period filter options
-            try:
-                if (
-                    (not payload)
-                    and column_name
-                    and column_name.lower() in ("period", "pe")
-                    and hasattr(datasource, "database")
-                    and datasource.database
-                ):
-                    uri = getattr(datasource.database, "sqlalchemy_uri_decrypted", None) or getattr(
-                        datasource.database, "sqlalchemy_uri", ""
-                    )
-                    if "dhis2://" in str(uri):
-                        from datetime import datetime
-
-                        current_year = datetime.utcnow().year
-                        payload = [str(y) for y in range(current_year - 4, current_year + 1)]
-                        print(f"[Cascade API] Period fallback -> {payload}")
-            except Exception:
-                pass
             return self.response(200, result=payload)
         except KeyError:
             return self.response(

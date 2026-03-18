@@ -22,11 +22,26 @@ import WizardStepDataElements from './steps/StepDataElements';
 import WizardStepVariableMapping from './steps/StepVariableMapping';
 import WizardStepPeriods from './steps/StepPeriods';
 import WizardStepOrgUnits from './steps/StepOrgUnits';
+import WizardStepLevelMapping from './steps/StepLevelMapping';
 import WizardStepDataPreview from './steps/StepDataPreview';
 import WizardStepSchedule from './steps/StepSchedule';
 import WizardStepSave from './steps/StepSave';
 import type { VariableMapping } from './steps/StepVariableMapping';
 import type { ScheduleConfig } from './steps/StepSchedule';
+
+export type LevelMappingRow = {
+  /** 1-based sequential level number in the merged/serving dataset */
+  merged_level: number;
+  /** Display name for this hierarchy level column */
+  label: string;
+  /** Maps instance ID (as string) to raw level number in that instance, or null to skip */
+  instance_levels: Record<string, number | null>;
+};
+
+export type LevelMappingConfig = {
+  enabled: boolean;
+  rows: LevelMappingRow[];
+};
 import buildStagedDhIS2DatasetPayload from '../buildStagedDhIS2DatasetPayload';
 import refreshDatasetMetadata from '../refreshDatasetMetadata';
 
@@ -103,7 +118,9 @@ export interface DHIS2WizardState {
   // Legacy / single-instance data elements list (kept for DataPreview compatibility)
   dataElements: string[];
   periods: string[];
+  periodsAutoDetect?: boolean;
   orgUnits: string[];
+  orgUnitsAutoDetect?: boolean;
   selectedOrgUnitDetails?: Array<{
     id: string;
     selectionKey?: string;
@@ -126,6 +143,14 @@ export interface DHIS2WizardState {
     is_dttm?: boolean;
   }>;
   previewData: any[];
+  // Level mapping (optional — if undefined/disabled, backend uses auto-merge)
+  levelMapping?: LevelMappingConfig;
+  /**
+   * When true, `co_uid` and `co_name` from the staging table are promoted to
+   * first-class dimension columns in the serving dataset so users can group and
+   * filter charts by Category Option Combo (disaggregation).
+   */
+  includeDisaggregationDimension?: boolean;
   // Schedule
   scheduleConfig: ScheduleConfig;
 }
@@ -146,9 +171,10 @@ const STEP_DATA_ELEMENTS = 2;
 const STEP_VARIABLE_MAPPING = 3;
 const STEP_PERIODS = 4;
 const STEP_ORG_UNITS = 5;
-const STEP_DATA_PREVIEW = 6;
-const STEP_SCHEDULE = 7;
-const STEP_SAVE = 8;
+const STEP_LEVEL_MAPPING = 6;
+const STEP_DATA_PREVIEW = 7;
+const STEP_SCHEDULE = 8;
+const STEP_SAVE = 9;
 
 const WIZARD_STEPS = [
   {
@@ -176,6 +202,11 @@ const WIZARD_STEPS = [
     key: 'org_units',
     title: t('Organization Units'),
     description: t('Select OU'),
+  },
+  {
+    key: 'level_mapping',
+    title: t('Level Mapping'),
+    description: t('Map hierarchy'),
   },
   {
     key: 'data_preview',
@@ -220,7 +251,9 @@ export default function DHIS2DatasetWizard({
     variableMappings: [],
     dataElements: [],
     periods: [],
+    periodsAutoDetect: false,
     orgUnits: [],
+    orgUnitsAutoDetect: false,
     selectedOrgUnitDetails: [],
     includeChildren: false,
     columns: dataset?.dhis2_columns || [],
@@ -258,16 +291,10 @@ export default function DHIS2DatasetWizard({
           }
           break;
         case STEP_PERIODS:
-          if (wizardState.periods.length === 0) {
-            newErrors.periods = t('At least one period must be selected');
-          }
+          // Periods are optional warehouse dimensions — no required validation
           break;
         case STEP_ORG_UNITS:
-          if (wizardState.orgUnits.length === 0) {
-            newErrors.orgUnits = t(
-              'At least one organization unit must be selected',
-            );
-          }
+          // Org units are optional warehouse dimensions — no required validation
           break;
         default:
           break;
@@ -376,6 +403,11 @@ export default function DHIS2DatasetWizard({
                 wizardState.orgUnitSourceMode === 'primary'
                   ? wizardState.primaryOrgUnitInstanceId
                   : null,
+              ...(wizardState.levelMapping?.enabled
+                ? { level_mapping: wizardState.levelMapping }
+                : {}),
+              include_disaggregation_dimension:
+                wizardState.includeDisaggregationDimension ?? false,
             },
             variables:
               variablesPayload.length > 0 ? variablesPayload : undefined,
@@ -391,18 +423,30 @@ export default function DHIS2DatasetWizard({
             jsonPayload: stagedPayload,
           });
 
-          stagedDatasetResult = (stagedResponse.json as any)?.result;
+          const stagedJson = stagedResponse.json as any;
+          stagedDatasetResult = stagedJson?.result;
           const servingTableRef = stagedDatasetResult?.serving_table_ref || null;
           const stagingTableRef =
             stagedDatasetResult?.staging_table_ref ||
-            (stagedDatasetResult?.staging_table_name
-              ? `dhis2_staging.${stagedDatasetResult.staging_table_name}`
-              : null);
+            stagedDatasetResult?.staging_table_name ||
+            null;
 
           if (servingTableRef || stagingTableRef) {
             sql = `SELECT * FROM ${servingTableRef || stagingTableRef}`;
             shouldRefreshColumnsFromSource = true;
             createdFromStaging = true;
+          }
+
+          // Warn if sync is running in thread mode (no Celery workers)
+          const syncMode = stagedJson?.sync_schedule?.mode;
+          if (syncMode === 'thread') {
+            addDangerToast(
+              t(
+                'No background job processors (Celery workers) are running. ' +
+                  'The initial sync is running in-process — restart workers for ' +
+                  'scheduled and background syncs to function properly.',
+              ),
+            );
           }
 
           logging.info('[DHIS2 Wizard] Staged dataset created successfully');
@@ -415,48 +459,59 @@ export default function DHIS2DatasetWizard({
         }
       }
 
-      // Always also create a standard Superset dataset record
-      const response = await SupersetClient.post({
-        endpoint: '/api/v1/dataset/',
-        jsonPayload: createdFromStaging
-          ? buildStagedDhIS2DatasetPayload({
-              datasetName: wizardState.datasetName,
-              stagingTableRef: sql.replace(/^SELECT \* FROM\s+/i, ''),
-              servingTableRef: stagedDatasetResult?.serving_table_ref || null,
-              sourceDatabaseId: dataset.db.id,
-              sourceDatabaseName: dataset.db.database_name,
-              servingDatabaseId:
-                typeof stagedDatasetResult?.serving_database_id === 'number'
-                  ? stagedDatasetResult.serving_database_id
-                  : null,
-              servingDatabaseName:
-                typeof stagedDatasetResult?.serving_database_name === 'string'
-                  ? stagedDatasetResult.serving_database_name
-                  : null,
-              stagedDatasetId:
-                typeof stagedDatasetResult?.id === 'number'
-                  ? stagedDatasetResult.id
-                  : null,
-              selectedInstanceIds: wizardState.selectedInstanceIds,
-              selectedInstanceNames: Array.from(
-                new Set(
-                  wizardState.variableMappings
-                    .map(mapping => mapping.instanceName)
-                    .filter(Boolean),
+      // When the staged-dataset path succeeded the backend already registered
+      // the serving table as a Superset dataset (friendly-named, virtual).
+      // Re-using that record avoids a duplicate entry in the chart selector.
+      // Fall back to creating a standard dataset only for the legacy path.
+      let result: any;
+      if (createdFromStaging && stagedDatasetResult?.serving_superset_dataset_id) {
+        result = { id: stagedDatasetResult.serving_superset_dataset_id };
+        logging.info(
+          '[DHIS2 Wizard] Reusing backend-registered dataset id:',
+          result.id,
+        );
+      } else {
+        const response = await SupersetClient.post({
+          endpoint: '/api/v1/dataset/',
+          jsonPayload: createdFromStaging
+            ? buildStagedDhIS2DatasetPayload({
+                datasetName: wizardState.datasetName,
+                stagingTableRef: sql.replace(/^SELECT \* FROM\s+/i, ''),
+                servingTableRef: stagedDatasetResult?.serving_table_ref || null,
+                sourceDatabaseId: dataset.db.id,
+                sourceDatabaseName: dataset.db.database_name,
+                servingDatabaseId:
+                  typeof stagedDatasetResult?.serving_database_id === 'number'
+                    ? stagedDatasetResult.serving_database_id
+                    : null,
+                servingDatabaseName:
+                  typeof stagedDatasetResult?.serving_database_name === 'string'
+                    ? stagedDatasetResult.serving_database_name
+                    : null,
+                stagedDatasetId:
+                  typeof stagedDatasetResult?.id === 'number'
+                    ? stagedDatasetResult.id
+                    : null,
+                selectedInstanceIds: wizardState.selectedInstanceIds,
+                selectedInstanceNames: Array.from(
+                  new Set(
+                    wizardState.variableMappings
+                      .map(mapping => mapping.instanceName)
+                      .filter(Boolean),
+                  ),
                 ),
-              ),
-            })
-          : {
-              database: dataset.db.id,
-              catalog: dataset.catalog || null,
-              schema: dataset.schema || null,
-              table_name: wizardState.datasetName,
-              sql,
-            },
-      });
-
-      const result = response.json;
-      logging.info('[DHIS2 Wizard] Dataset created:', result);
+              })
+            : {
+                database: dataset.db.id,
+                catalog: dataset.catalog || null,
+                schema: dataset.schema || null,
+                table_name: wizardState.datasetName,
+                sql,
+              },
+        });
+        result = response.json;
+        logging.info('[DHIS2 Wizard] Dataset created:', result);
+      }
 
       if (result?.id) {
         try {
@@ -616,6 +671,13 @@ export default function DHIS2DatasetWizard({
             updateState={updateWizardState}
             errors={errors}
             databaseId={dataset?.db?.id}
+          />
+        );
+      case STEP_LEVEL_MAPPING:
+        return (
+          <WizardStepLevelMapping
+            wizardState={wizardState}
+            updateState={updateWizardState}
           />
         );
       case STEP_DATA_PREVIEW:
