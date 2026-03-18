@@ -2371,13 +2371,18 @@ def refresh_database_metadata(
         for metadata_type in active_metadata_types:
             try:
                 if metadata_type == GEOJSON_METADATA_TYPE:
+                    org_unit_items = context_results.get("organisationUnits")
+                    if not isinstance(org_unit_items, list):
+                        # Fetch org units so _should_fallback_to_geo_features can
+                        # detect incomplete geojson and trigger per-level fallback.
+                        org_unit_items = _fetch_context_metadata_items(
+                            context=context,
+                            metadata_type="organisationUnits",
+                        )
+                        context_results["organisationUnits"] = org_unit_items
                     result_payload = _fetch_context_geojson_feature_collection(
                         context=context,
-                        org_unit_items=(
-                            context_results.get("organisationUnits")
-                            if isinstance(context_results.get("organisationUnits"), list)
-                            else None
-                        ),
+                        org_unit_items=org_unit_items,
                     )
                     count = len(list(result_payload.get("features") or []))
                 elif metadata_type == ORG_UNIT_HIERARCHY_METADATA_TYPE:
