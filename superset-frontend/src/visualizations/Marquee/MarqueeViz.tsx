@@ -356,7 +356,7 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
     dividerColor,
     showSeparators,
     height,
-    width,
+    width: _width,
   } = props;
 
   const [paused, setPaused] = useState(false);

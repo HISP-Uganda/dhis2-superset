@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { t, ControlPanelConfig } from '@superset-ui/core';
+import { t } from '@superset-ui/core';
+import { ControlPanelConfig } from '@superset-ui/chart-controls';
 
 const controlPanel: ControlPanelConfig = {
   controlPanelSections: [

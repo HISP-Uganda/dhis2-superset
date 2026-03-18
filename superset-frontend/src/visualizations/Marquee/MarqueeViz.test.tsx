@@ -3,7 +3,6 @@
  * or more contributor license agreements.
  */
 
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import MarqueeViz, { resolveIsVertical } from './MarqueeViz';
 import { MarqueeChartProps, MarqueeKpiItem } from './types';
@@ -105,7 +104,6 @@ describe('MarqueeViz', () => {
     // Track should have flex-direction row for horizontal
     const track = container.querySelector('[class*="Track"]') as HTMLElement | null;
     if (track) {
-      const style = window.getComputedStyle(track);
       // Just verify it rendered without error
       expect(track).toBeTruthy();
     }

@@ -613,8 +613,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     (typeof metric === 'string'
       ? undefined
       : resolveDHIS2MetricLabel(metric as any)) || metricString;
-  const sanitizedMetric = sanitizeDHIS2ColumnName(metricString);
-
   // Sanitize org_unit_column for matching
   const sanitizedOrgUnitColumn = org_unit_column
     ? sanitizeDHIS2ColumnName(org_unit_column)

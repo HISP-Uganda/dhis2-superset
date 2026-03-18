@@ -417,7 +417,6 @@ const SlideshowViz: React.FC<SlideshowChartProps> = ({
   const hoveredRef = useRef(false);
   const focusedRef = useRef(false);
   const autoPlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const progressResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const containerHeight = heightMode === 'fixed' ? fixedHeight : height;

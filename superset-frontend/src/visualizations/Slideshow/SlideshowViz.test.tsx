@@ -16,9 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
-import { render, screen, act, fireEvent } from '@testing-library/react';
-import { ThemeProvider } from '@superset-ui/core';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { ThemeProvider, supersetTheme } from '@superset-ui/core';
 import SlideshowViz from './SlideshowViz';
 import { SlideshowChartProps } from './types';
 
@@ -60,7 +59,7 @@ const DEFAULT_PROPS: SlideshowChartProps = {
 
 function renderSlideshow(overrides: Partial<SlideshowChartProps> = {}) {
   return render(
-    <ThemeProvider>
+    <ThemeProvider theme={supersetTheme}>
       <SlideshowViz {...DEFAULT_PROPS} {...overrides} />
     </ThemeProvider>,
   );
