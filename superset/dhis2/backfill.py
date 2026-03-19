@@ -207,6 +207,17 @@ def run_compatibility_backfill() -> None:
 
     processed = skipped = errors = 0
 
+    # Suppress noisy urllib3/clickhouse_connect WARNING logs that fire when the
+    # staging engine (e.g. ClickHouse) is not yet reachable during db upgrade/init.
+    # We handle those cases gracefully below; the library warnings are redundant.
+    import logging as _logging  # pylint: disable=import-outside-toplevel
+    _urllib3_logger = _logging.getLogger("urllib3.connectionpool")
+    _ch_logger = _logging.getLogger("clickhouse_connect.driver.httpclient")
+    _urllib3_prev = _urllib3_logger.level
+    _ch_prev = _ch_logger.level
+    _urllib3_logger.setLevel(_logging.ERROR)
+    _ch_logger.setLevel(_logging.ERROR)
+
     for dataset in datasets:
         try:
             engine = get_active_staging_engine(dataset.database_id)
@@ -231,13 +242,28 @@ def run_compatibility_backfill() -> None:
             _backfill_one_dataset(dataset, engine, columns)
             processed += 1
 
-        except Exception:  # pylint: disable=broad-except
-            errors += 1
-            logger.warning(
-                "compat_backfill: unexpected error for dataset id=%s — skipping",
-                dataset.id,
-                exc_info=True,
-            )
+        except Exception as exc:  # pylint: disable=broad-except
+            # Connection-refused means the staging engine (e.g. ClickHouse) is not
+            # yet running when backfill executes during `db upgrade` / `init`.
+            # This is expected — log at INFO only and do not count as an error.
+            exc_str = str(exc)
+            if "Connection refused" in exc_str or "NewConnectionError" in exc_str or "Max retries exceeded" in exc_str:
+                skipped += 1
+                logger.info(
+                    "compat_backfill: staging engine not reachable for dataset id=%s — will retry on next startup",
+                    dataset.id,
+                )
+            else:
+                errors += 1
+                logger.warning(
+                    "compat_backfill: unexpected error for dataset id=%s — skipping",
+                    dataset.id,
+                    exc_info=True,
+                )
+
+    # Restore log levels after the dataset loop
+    _urllib3_logger.setLevel(_urllib3_prev)
+    _ch_logger.setLevel(_ch_prev)
 
     # Ensure the DuckDB Superset Database record has read_only=True connect args
     # so chart queries don't compete for the write lock with the staging engine.
@@ -258,10 +284,9 @@ def run_compatibility_backfill() -> None:
     except Exception:  # pylint: disable=broad-except
         logger.warning("compat_backfill: final commit failed", exc_info=True)
 
-    if processed or errors:
-        logger.info(
-            "compat_backfill: complete — processed=%d skipped=%d errors=%d",
-            processed,
-            skipped,
-            errors,
-        )
+    logger.info(
+        "compat_backfill: complete — processed=%d skipped=%d errors=%d",
+        processed,
+        skipped,
+        errors,
+    )
