@@ -1060,7 +1060,7 @@ start_frontend() {
       "$FRONTEND_LOG_FILE" \
       bash \
       -c \
-      "cd '$FRONTEND_DIR' && export PATH=\"$FRONTEND_DIR/node_modules/.bin:\$PATH\" && export DISABLE_TYPE_CHECK=\"$FRONTEND_DISABLE_TYPE_CHECK\" && $cmd"
+      "cd '$FRONTEND_DIR' && export PATH=\"$FRONTEND_DIR/node_modules/.bin:\$PATH\" && export DISABLE_TYPE_CHECK=\"$FRONTEND_DISABLE_TYPE_CHECK\" && export WEBPACK_DEVSERVER_PORT=\"$FRONTEND_PORT\" && $cmd"
   )"
 
   info "Waiting for frontend on http://$FRONTEND_HOST:$FRONTEND_PORT"
