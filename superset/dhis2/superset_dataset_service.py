@@ -234,41 +234,42 @@ def register_serving_table_as_superset_dataset(
 
     _sync_columns(sqla_table, serving_columns)
 
-    db.session.add(sqla_table)
-    try:
-        db.session.flush()  # get id
-    except IntegrityError:
-        # UNIQUE constraint on table_name fired — race condition or the
-        # wizard's POST /api/v1/dataset/ already created the friendly record.
-        db.session.rollback()
-        existing = (
-            db.session.query(SqlaTable)
-            .filter_by(table_name=friendly_name)
-            .first()
-        )
-        if existing is not None and existing.database_id != serving_database_id:
-            existing.database_id = serving_database_id
-            existing.database = serving_db
-        if existing is None:
-            raise  # genuinely unexpected — propagate
-        _ensure_dhis2_extra(
-            existing,
-            dataset_id,
-            source_database_id=source_database_id,
-            source_instance_ids=source_instance_ids,
-            serving_database_id=serving_database_id,
-            serving_database_name=serving_db.database_name,
-            serving_table_ref=serving_table_ref,
-        )
-        _sync_columns(existing, serving_columns)
-        db.session.commit()
-        logger.info(
-            "superset_dataset_service: resolved race-condition; "
-            "using existing SqlaTable id=%d for '%s'",
-            existing.id,
-            table_name,
-        )
-        return existing.id
+    with db.session.no_autoflush:
+        db.session.add(sqla_table)
+        try:
+            db.session.flush()  # get id
+        except IntegrityError:
+            # UNIQUE constraint on table_name fired — race condition or the
+            # wizard's POST /api/v1/dataset/ already created the friendly record.
+            db.session.rollback()
+            existing = (
+                db.session.query(SqlaTable)
+                .filter_by(table_name=friendly_name)
+                .first()
+            )
+            if existing is not None and existing.database_id != serving_database_id:
+                existing.database_id = serving_database_id
+                existing.database = serving_db
+            if existing is None:
+                raise  # genuinely unexpected — propagate
+            _ensure_dhis2_extra(
+                existing,
+                dataset_id,
+                source_database_id=source_database_id,
+                source_instance_ids=source_instance_ids,
+                serving_database_id=serving_database_id,
+                serving_database_name=serving_db.database_name,
+                serving_table_ref=serving_table_ref,
+            )
+            _sync_columns(existing, serving_columns)
+            db.session.commit()
+            logger.info(
+                "superset_dataset_service: resolved race-condition; "
+                "using existing SqlaTable id=%d for '%s'",
+                existing.id,
+                table_name,
+            )
+            return existing.id
 
     logger.info(
         "superset_dataset_service: registered new SqlaTable id=%d name='%s' for DHIS2 dataset_id=%d",

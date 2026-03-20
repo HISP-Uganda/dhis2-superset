@@ -1,0 +1,47 @@
+columns substreams version: 1
+15 columns:
+2 substreams for column `dhis2_instance`:
+	dhis2_instance.null
+	dhis2_instance
+2 substreams for column `national`:
+	national.null
+	national
+2 substreams for column `region`:
+	region.null
+	region
+2 substreams for column `district_city`:
+	district_city.null
+	district_city
+2 substreams for column `period`:
+	period.null
+	period
+2 substreams for column `ou_level`:
+	ou_level.null
+	ou_level
+2 substreams for column `mal_malaria_1_to_malaria_3_dropout_rate`:
+	mal_malaria_1_to_malaria_3_dropout_rate.null
+	mal_malaria_1_to_malaria_3_dropout_rate
+2 substreams for column `mal_malaria_1_coverage_1_year`:
+	mal_malaria_1_coverage_1_year.null
+	mal_malaria_1_coverage_1_year
+2 substreams for column `mal_malaria_3_coverage_1_year`:
+	mal_malaria_3_coverage_1_year.null
+	mal_malaria_3_coverage_1_year
+2 substreams for column `mal_malaria_vaccine_all_outreach`:
+	mal_malaria_vaccine_all_outreach.null
+	mal_malaria_vaccine_all_outreach
+2 substreams for column `mal_malaria_vaccine_all_static`:
+	mal_malaria_vaccine_all_static.null
+	mal_malaria_vaccine_all_static
+2 substreams for column `c_105_cl19_malaria_1`:
+	c_105_cl19_malaria_1.null
+	c_105_cl19_malaria_1
+2 substreams for column `c_105_cl20_malaria_2`:
+	c_105_cl20_malaria_2.null
+	c_105_cl20_malaria_2
+2 substreams for column `c_105_cl21_malaria_3`:
+	c_105_cl21_malaria_3.null
+	c_105_cl21_malaria_3
+2 substreams for column `c_105_cl26_malaria_4`:
+	c_105_cl26_malaria_4.null
+	c_105_cl26_malaria_4

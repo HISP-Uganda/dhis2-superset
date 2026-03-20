@@ -1,0 +1,48 @@
+columns substreams version: 1
+16 columns:
+1 substreams for column `source_instance_id`:
+	source_instance_id
+2 substreams for column `source_instance_name`:
+	source_instance_name.size
+	source_instance_name
+2 substreams for column `dx_uid`:
+	dx_uid.size
+	dx_uid
+2 substreams for column `dx_name`:
+	dx_name.null
+	dx_name
+2 substreams for column `dx_type`:
+	dx_type.size
+	dx_type
+2 substreams for column `pe`:
+	pe.size
+	pe
+2 substreams for column `ou`:
+	ou.size
+	ou
+2 substreams for column `ou_name`:
+	ou_name.null
+	ou_name
+2 substreams for column `ou_level`:
+	ou_level.null
+	ou_level
+2 substreams for column `value`:
+	value.null
+	value
+2 substreams for column `value_numeric`:
+	value_numeric.null
+	value_numeric
+2 substreams for column `co_uid`:
+	co_uid.null
+	co_uid
+2 substreams for column `co_name`:
+	co_name.null
+	co_name
+2 substreams for column `aoc_uid`:
+	aoc_uid.null
+	aoc_uid
+1 substreams for column `synced_at`:
+	synced_at
+2 substreams for column `sync_job_id`:
+	sync_job_id.null
+	sync_job_id

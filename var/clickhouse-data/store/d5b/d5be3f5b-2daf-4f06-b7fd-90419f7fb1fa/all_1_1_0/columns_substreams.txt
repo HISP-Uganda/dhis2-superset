@@ -1,0 +1,32 @@
+columns substreams version: 1
+10 columns:
+2 substreams for column `national`:
+	national.null
+	national
+2 substreams for column `district`:
+	district.null
+	district
+2 substreams for column `chiefdom`:
+	chiefdom.null
+	chiefdom
+2 substreams for column `period`:
+	period.null
+	period
+2 substreams for column `anc_1st_visit`:
+	anc_1st_visit.null
+	anc_1st_visit
+2 substreams for column `anc_2nd_visit`:
+	anc_2nd_visit.null
+	anc_2nd_visit
+2 substreams for column `anc_4th_or_more_visits`:
+	anc_4th_or_more_visits.null
+	anc_4th_or_more_visits
+2 substreams for column `anc_3rd_visit`:
+	anc_3rd_visit.null
+	anc_3rd_visit
+2 substreams for column `cmc_fp_and_cac_procedure_rooms_have_adequate_lighting_for_the_performance_of_all_procedures`:
+	cmc_fp_and_cac_procedure_rooms_have_adequate_lighting_for_the_performance_of_all_procedures.null
+	cmc_fp_and_cac_procedure_rooms_have_adequate_lighting_for_the_performance_of_all_procedures
+2 substreams for column `distance_of_inhabitants_with_malaria_from_breeding_site`:
+	distance_of_inhabitants_with_malaria_from_breeding_site.null
+	distance_of_inhabitants_with_malaria_from_breeding_site

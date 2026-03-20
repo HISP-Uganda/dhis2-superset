@@ -1,0 +1,26 @@
+columns substreams version: 1
+8 columns:
+2 substreams for column `national`:
+	national.null
+	national
+2 substreams for column `district`:
+	district.null
+	district
+2 substreams for column `chiefdom`:
+	chiefdom.null
+	chiefdom
+2 substreams for column `period`:
+	period.null
+	period
+2 substreams for column `accute_flaccid_paralysis_deaths_5_yrs`:
+	accute_flaccid_paralysis_deaths_5_yrs.null
+	accute_flaccid_paralysis_deaths_5_yrs
+2 substreams for column `acute_flaccid_paralysis_afp_follow_up`:
+	acute_flaccid_paralysis_afp_follow_up.null
+	acute_flaccid_paralysis_afp_follow_up
+2 substreams for column `acute_flaccid_paralysis_afp_referrals`:
+	acute_flaccid_paralysis_afp_referrals.null
+	acute_flaccid_paralysis_afp_referrals
+2 substreams for column `acute_flaccid_paralysis_afp_new`:
+	acute_flaccid_paralysis_afp_new.null
+	acute_flaccid_paralysis_afp_new

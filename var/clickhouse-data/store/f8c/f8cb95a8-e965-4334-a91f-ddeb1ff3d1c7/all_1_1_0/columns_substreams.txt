@@ -1,0 +1,47 @@
+columns substreams version: 1
+15 columns:
+2 substreams for column `national`:
+	national.null
+	national
+2 substreams for column `district`:
+	district.null
+	district
+2 substreams for column `chiefdom`:
+	chiefdom.null
+	chiefdom
+2 substreams for column `period`:
+	period.null
+	period
+2 substreams for column `anc_1st_visit`:
+	anc_1st_visit.null
+	anc_1st_visit
+2 substreams for column `anc_2nd_visit`:
+	anc_2nd_visit.null
+	anc_2nd_visit
+2 substreams for column `anc_3rd_visit`:
+	anc_3rd_visit.null
+	anc_3rd_visit
+2 substreams for column `anc_4th_or_more_visits`:
+	anc_4th_or_more_visits.null
+	anc_4th_or_more_visits
+2 substreams for column `albendazole_given_at_anc_2nd_trimester`:
+	albendazole_given_at_anc_2nd_trimester.null
+	albendazole_given_at_anc_2nd_trimester
+2 substreams for column `iron_folate_given_at_anc_3rd`:
+	iron_folate_given_at_anc_3rd.null
+	iron_folate_given_at_anc_3rd
+2 substreams for column `llitn_given_at_anc_1st`:
+	llitn_given_at_anc_1st.null
+	llitn_given_at_anc_1st
+2 substreams for column `mch_anc_visit`:
+	mch_anc_visit.null
+	mch_anc_visit
+2 substreams for column `mnch_anc_attendance`:
+	mnch_anc_attendance.null
+	mnch_anc_attendance
+2 substreams for column `mnch_anc_registrants`:
+	mnch_anc_registrants.null
+	mnch_anc_registrants
+2 substreams for column `mnch_cases_of_anaemia_during_anc`:
+	mnch_cases_of_anaemia_during_anc.null
+	mnch_cases_of_anaemia_during_anc

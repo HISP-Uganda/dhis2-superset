@@ -1,0 +1,10 @@
+columns format version: 1
+8 columns:
+`national` Nullable(String)
+`district` Nullable(String)
+`chiefdom` Nullable(String)
+`period` Nullable(String)
+`accute_flaccid_paralysis_deaths_5_yrs` Nullable(Float64)
+`acute_flaccid_paralysis_afp_follow_up` Nullable(Float64)
+`acute_flaccid_paralysis_afp_referrals` Nullable(Float64)
+`acute_flaccid_paralysis_afp_new` Nullable(Float64)
