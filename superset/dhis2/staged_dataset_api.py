@@ -216,6 +216,8 @@ class DHIS2StagedDatasetApi(BaseApi):
         ).get_superset_sql_table_ref(dataset)
         try:
             serving_table_ref, serving_columns = svc.ensure_serving_table(pk)
+            # Reload so serving_superset_dataset_id (set by ensure_serving_table) is fresh
+            dataset = svc.get_staged_dataset(pk) or dataset
         except Exception:  # pylint: disable=broad-except
             logger.exception(
                 "Failed to build serving definition for staged dataset id=%s", pk
@@ -224,8 +226,15 @@ class DHIS2StagedDatasetApi(BaseApi):
             serving_columns = []
         payload["serving_table_ref"] = serving_table_ref
         payload["serving_columns"] = serving_columns
+
+        # Resolve the serving database from the engine so ClickHouse is handled
+        # correctly (get_staging_database() falls back to SQLite for non-DuckDB engines).
         try:
-            serving_database = get_staging_database()
+            engine = _get_engine(dataset.database_id)
+            if hasattr(engine, "get_or_create_superset_database"):
+                serving_database = engine.get_or_create_superset_database()
+            else:
+                serving_database = get_staging_database()
         except Exception:  # pylint: disable=broad-except
             logger.exception(
                 "Failed to resolve serving database for staged dataset id=%s", pk
@@ -234,6 +243,11 @@ class DHIS2StagedDatasetApi(BaseApi):
         if serving_database is not None:
             payload["serving_database_id"] = serving_database.id
             payload["serving_database_name"] = serving_database.name
+
+        # ensure_serving_table already called register_serving_table_as_superset_dataset
+        # and stored the resulting id on dataset.serving_superset_dataset_id.
+        if dataset.serving_superset_dataset_id is not None:
+            payload["serving_superset_dataset_id"] = dataset.serving_superset_dataset_id
 
         if include_variables:
             variables = svc.get_dataset_variables(pk)

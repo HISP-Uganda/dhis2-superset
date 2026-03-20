@@ -2034,6 +2034,16 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       throw new Error(t('The staged dataset did not return a serving table.'));
     }
 
+    // The backend already registered a Superset virtual dataset during staged
+    // dataset creation (via ensure_serving_table → register_serving_table_as_superset_dataset).
+    // Re-use that record to avoid a duplicate and the UNIQUE constraint 500 error.
+    if (typeof stagedResult?.serving_superset_dataset_id === 'number') {
+      const existingId = stagedResult.serving_superset_dataset_id as number;
+      addSuccessToast(t('Dataset created successfully.'));
+      history.push(createChart ? `/chart/add/?dataset=${existingId}` : PREV_URL);
+      return;
+    }
+
     await createDatasetRecord(
       buildStagedDhIS2DatasetPayload({
         datasetName: state.datasetSettings.name.trim(),
