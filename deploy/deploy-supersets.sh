@@ -20,9 +20,11 @@ set -euo pipefail
 # ==============================================================================
 #
 # Default staging engine: ClickHouse (installed and configured automatically)
-#   - Installs clickhouse-server, creates dhis2_user, and bootstraps databases
-#   - Installs clickhouse-connect Python package into the venv
-#   - Syncs credentials into Superset's local_staging_settings automatically
+#   - Installs clickhouse-server, creates a dedicated user, and bootstraps DBs
+#   - Stores ClickHouse credentials in: /etc/clickhouse-server/clickhouse.env
+#   - Auto-generates a strong random ClickHouse password on first deploy
+#   - Syncs credentials into /etc/superset/superset.env automatically
+#   - Prints final ClickHouse credentials after deploy/update
 #   - Can be disabled with: --no-clickhouse
 #
 # DuckDB support (opt-in):
@@ -87,11 +89,10 @@ ENABLE_CELERY_WORKER="${ENABLE_CELERY_WORKER:-1}"
 ENABLE_CELERY_BEAT="${ENABLE_CELERY_BEAT:-1}"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-4}"
 
-DUCKDB_ENABLED="${DUCKDB_ENABLED:-0}"          # opt-in: use --duckdb flag or DUCKDB_ENABLED=1
+DUCKDB_ENABLED="${DUCKDB_ENABLED:-0}"
 DUCKDB_PYTHON_PACKAGE="${DUCKDB_PYTHON_PACKAGE:-duckdb}"
 DUCKDB_SQLALCHEMY_PACKAGE="${DUCKDB_SQLALCHEMY_PACKAGE:-duckdb-engine}"
 
-# ClickHouse is the default staging engine — enabled by default
 CLICKHOUSE_ENABLED="${CLICKHOUSE_ENABLED:-1}"
 CLICKHOUSE_PYTHON_PACKAGE="${CLICKHOUSE_PYTHON_PACKAGE:-clickhouse-connect}"
 CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-127.0.0.1}"
@@ -100,10 +101,10 @@ CLICKHOUSE_NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
 CLICKHOUSE_STAGING_DATABASE="${CLICKHOUSE_STAGING_DATABASE:-dhis2_staging}"
 CLICKHOUSE_SERVING_DATABASE="${CLICKHOUSE_SERVING_DATABASE:-dhis2_serving}"
 CLICKHOUSE_CONTROL_DATABASE="${CLICKHOUSE_CONTROL_DATABASE:-dhis2_control}"
-CLICKHOUSE_USER="${CLICKHOUSE_USER:-dhis2_user}"
-# CLICKHOUSE_PASSWORD must be set externally or in the environment for security
-CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-change_me_securely}"
+CLICKHOUSE_USER="${CLICKHOUSE_USER:-superset_clickhouse}"
+CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-__AUTO_GENERATE__}"
 CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2 Serving (ClickHouse)}"
+CLICKHOUSE_ENV_FILE="${CLICKHOUSE_ENV_FILE:-/etc/clickhouse-server/clickhouse.env}"
 
 WIPE_METADATA="${WIPE_METADATA:-0}"
 CONFIRM_WIPE_METADATA="${CONFIRM_WIPE_METADATA:-0}"
@@ -113,8 +114,8 @@ CONFIG_SYNC="${CONFIG_SYNC:-0}"
 FORCE_CONFIG_SYNC="${FORCE_CONFIG_SYNC:-0}"
 CONFIG_CANDIDATE_PATH="${CONFIG_CANDIDATE_PATH:-}"
 
-ALEMBIC_FIX_MODE="${ALEMBIC_FIX_MODE:-auto}"           # auto | stamp-head | wipe
-ALEMBIC_AUTO_FALLBACK="${ALEMBIC_AUTO_FALLBACK:-none}" # stamp-head | wipe | none
+ALEMBIC_FIX_MODE="${ALEMBIC_FIX_MODE:-auto}"
+ALEMBIC_AUTO_FALLBACK="${ALEMBIC_AUTO_FALLBACK:-none}"
 
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
@@ -133,9 +134,9 @@ USAGE:
   ./deploy-supersets.sh reset [options]
   ./deploy-supersets.sh deploy [options]
   ./deploy-supersets.sh update [options]
-  ./deploy-supersets.sh restart [options]          # restart gunicorn + celery worker + beat
-  ./deploy-supersets.sh restart-gunicorn [options] # restart gunicorn only
-  ./deploy-supersets.sh restart-celery [options]   # restart celery worker + beat only
+  ./deploy-supersets.sh restart [options]
+  ./deploy-supersets.sh restart-gunicorn [options]
+  ./deploy-supersets.sh restart-celery [options]
 
 OPTIONS:
   --target user@host
@@ -173,14 +174,19 @@ OPTIONS:
   --celery-beat
   --celery-concurrency <N>
 
-  --no-clickhouse              Disable ClickHouse install (default: enabled)
-  --clickhouse-password <pw>   Override CLICKHOUSE_PASSWORD
-  --clickhouse-user <user>     Override CLICKHOUSE_USER (default: dhis2_user)
-  --clickhouse-host <host>     Override CLICKHOUSE_HOST (default: 127.0.0.1)
-  --clickhouse-http-port <N>   Override CLICKHOUSE_HTTP_PORT (default: 8123)
+  --no-clickhouse
+  --clickhouse-password <pw>
+  --clickhouse-user <user>
+  --clickhouse-host <host>
+  --clickhouse-http-port <N>
 
-  --duckdb                     Enable DuckDB install (default: disabled)
-  --no-duckdb                  Disable DuckDB install (already off by default)
+  --duckdb
+  --no-duckdb
+
+NOTES:
+  - ClickHouse credentials are auto-generated securely on first deploy
+    and stored in /etc/clickhouse-server/clickhouse.env
+  - The final ClickHouse password is displayed after deploy/update
 EOF
 }
 
@@ -224,7 +230,7 @@ write_remote_env_file() {
     CLICKHOUSE_ENABLED CLICKHOUSE_PYTHON_PACKAGE
     CLICKHOUSE_HOST CLICKHOUSE_HTTP_PORT CLICKHOUSE_NATIVE_PORT
     CLICKHOUSE_STAGING_DATABASE CLICKHOUSE_SERVING_DATABASE CLICKHOUSE_CONTROL_DATABASE
-    CLICKHOUSE_USER CLICKHOUSE_PASSWORD CLICKHOUSE_SUPERSET_DB_NAME
+    CLICKHOUSE_USER CLICKHOUSE_PASSWORD CLICKHOUSE_SUPERSET_DB_NAME CLICKHOUSE_ENV_FILE
     WIPE_METADATA CONFIRM_WIPE_METADATA DO_BACKUP
     CONFIG_SYNC FORCE_CONFIG_SYNC CONFIG_CANDIDATE_PATH
     ALEMBIC_FIX_MODE ALEMBIC_AUTO_FALLBACK
@@ -264,11 +270,79 @@ remote_worker() {
     fi
   }
 
+  # ---------------------------------------------------------------------------
+  # Safer apt helpers
+  # Avoid depending on fuser/pgrep before base packages are installed.
+  # ---------------------------------------------------------------------------
+
+  apt_quiesce_background_services() {
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+      systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+      systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+    fi
+
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -f unattended-upgrade >/dev/null 2>&1 || true
+    fi
+  }
+
+  apt_repair_if_needed() {
+    dpkg --configure -a >/dev/null 2>&1 || true
+  }
+
+  safe_apt_run() {
+    export DEBIAN_FRONTEND=noninteractive
+    local rc=0
+    local attempt
+
+    for attempt in 1 2 3; do
+      apt_quiesce_background_services
+      apt_repair_if_needed
+
+      if apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=5 "$@"; then
+        return 0
+      fi
+
+      rc=$?
+      echo "[apt] command failed on attempt ${attempt}, retrying in 10s..." >&2
+      sleep 10
+    done
+
+    return "$rc"
+  }
+
+  safe_apt_update() {
+    safe_apt_run update -y
+  }
+
+  safe_apt_install() {
+    safe_apt_run install -y "$@"
+  }
+
+  generate_secure_password() {
+    if command -v openssl >/dev/null 2>&1; then
+      openssl rand -base64 48 | tr -d '\n' | sed 's#[/=+]#A#g' | cut -c1-32
+      return 0
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY'
+import secrets
+alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%._-"
+print("".join(secrets.choice(alphabet) for _ in range(32)))
+PY
+      return 0
+    fi
+
+    date +%s | sha256sum | awk '{print substr($1,1,32)}'
+  }
+
   exec_in_ct() {
     local ct="$1"
     shift || true
     local payload
-    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$*"
+    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$(declare -f apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'\n'"$*"
     lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
   }
 
@@ -298,13 +372,112 @@ EOS
     exec_in_ct "$CT_SUP" "test -f '$ENV_FILE' || { echo 'ERROR: missing $ENV_FILE'; exit 2; }"
   }
 
-  # ---------------------------------------------------------------------------
-  # DuckDB .env variable management
-  # Idempotently writes required DHIS2_DUCKDB_* variables into ENV_FILE.
-  # Only adds variables that are not already present — never overwrites existing
-  # values so that admin-customised paths are preserved on re-deployment.
-  # Also ensures the DuckDB data directory exists with correct ownership.
-  # ---------------------------------------------------------------------------
+  ensure_clickhouse_credentials_file() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] ensure ClickHouse credentials in $CLICKHOUSE_ENV_FILE"
+
+    local out final_user final_password
+    out="$(exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+
+      ENV_FILE='$CLICKHOUSE_ENV_FILE'
+      mkdir -p \"\$(dirname \"\$ENV_FILE\")\"
+      touch \"\$ENV_FILE\"
+      chmod 600 \"\$ENV_FILE\"
+
+      _get_env_var() {
+        local key=\"\$1\"
+        grep -E \"^[[:space:]]*\${key}=\" \"\$ENV_FILE\" | tail -n1 | cut -d= -f2- || true
+      }
+
+      _upsert_env_var() {
+        local key=\"\$1\"
+        local val=\"\$2\"
+        local tmp
+        tmp=\$(mktemp)
+        if grep -qE \"^[[:space:]]*\${key}=\" \"\$ENV_FILE\"; then
+          sed \"s|^[[:space:]]*\${key}=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
+          cat \"\$tmp\" > \"\$ENV_FILE\"
+          rm -f \"\$tmp\"
+          echo \"[clickhouse-env] updated \${key} in \$ENV_FILE\"
+        else
+          printf '%s=%s\n' \"\$key\" \"\$val\" >> \"\$ENV_FILE\"
+          echo \"[clickhouse-env] added \${key} to \$ENV_FILE\"
+        fi
+      }
+
+      _generate_password() {
+        if command -v openssl >/dev/null 2>&1; then
+          openssl rand -base64 48 | tr -d '\n' | sed 's#[/=+]#A#g' | cut -c1-32
+          return 0
+        fi
+        if command -v python3 >/dev/null 2>&1; then
+          python3 - <<'PY'
+import secrets
+alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%._-'
+print(''.join(secrets.choice(alphabet) for _ in range(32)))
+PY
+          return 0
+        fi
+        date +%s | sha256sum | awk '{print substr(\$1,1,32)}'
+      }
+
+      requested_user='${CLICKHOUSE_USER}'
+      requested_password='${CLICKHOUSE_PASSWORD}'
+
+      current_user=\$(_get_env_var CLICKHOUSE_USER)
+      current_password=\$(_get_env_var CLICKHOUSE_PASSWORD)
+
+      if [ -n \"\$requested_user\" ] && [ \"\$requested_user\" != '__AUTO_GENERATE__' ]; then
+        final_user=\"\$requested_user\"
+      elif [ -n \"\$current_user\" ]; then
+        final_user=\"\$current_user\"
+      else
+        final_user='superset_clickhouse'
+      fi
+
+      if [ -n \"\$requested_password\" ] && [ \"\$requested_password\" != '__AUTO_GENERATE__' ] && [ \"\$requested_password\" != 'change_me_securely' ]; then
+        final_password=\"\$requested_password\"
+      elif [ -n \"\$current_password\" ]; then
+        final_password=\"\$current_password\"
+      else
+        final_password=\$(_generate_password)
+      fi
+
+      _upsert_env_var CLICKHOUSE_USER \"\$final_user\"
+      _upsert_env_var CLICKHOUSE_PASSWORD \"\$final_password\"
+      _upsert_env_var CLICKHOUSE_HOST '${CLICKHOUSE_HOST}'
+      _upsert_env_var CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
+      _upsert_env_var CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
+      _upsert_env_var CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
+      _upsert_env_var CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+      _upsert_env_var CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+
+      echo \"FINAL_CLICKHOUSE_USER=\$final_user\"
+      echo \"FINAL_CLICKHOUSE_PASSWORD=\$final_password\"
+    ")"
+
+    final_user="$(printf '%s\n' "$out" | sed -n 's/^FINAL_CLICKHOUSE_USER=//p' | tail -n1)"
+    final_password="$(printf '%s\n' "$out" | sed -n 's/^FINAL_CLICKHOUSE_PASSWORD=//p' | tail -n1)"
+
+    [[ -n "$final_user" ]] || die "Failed to determine final ClickHouse user"
+    [[ -n "$final_password" ]] || die "Failed to determine final ClickHouse password"
+
+    CLICKHOUSE_USER="$final_user"
+    CLICKHOUSE_PASSWORD="$final_password"
+  }
+
+  show_clickhouse_credentials() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    echo
+    echo "============================================================"
+    echo "ClickHouse credentials"
+    echo "  Env file : $CLICKHOUSE_ENV_FILE"
+    echo "  User     : $CLICKHOUSE_USER"
+    echo "  Password : $CLICKHOUSE_PASSWORD"
+    echo "============================================================"
+    echo
+  }
 
   ensure_duckdb_env_vars() {
     [[ "${DUCKDB_ENABLED:-0}" == "1" ]] || return 0
@@ -317,7 +490,6 @@ EOS
       DUCKDB_DATA_DIR=\${DHIS2_DUCKDB_DIR:-/var/lib/superset}
       DUCKDB_DB_PATH=\${DHIS2_DUCKDB_PATH:-\$DUCKDB_DATA_DIR/dhis2_staging.duckdb}
 
-      # Create DuckDB data directory if missing
       if [ ! -d \"\$DUCKDB_DATA_DIR\" ]; then
         mkdir -p \"\$DUCKDB_DATA_DIR\"
         chown www-data:www-data \"\$DUCKDB_DATA_DIR\" 2>/dev/null || true
@@ -325,7 +497,6 @@ EOS
         echo \"[duckdb] created data directory \$DUCKDB_DATA_DIR\"
       fi
 
-      # Helper: append KEY=VALUE to ENV_FILE only when KEY is absent
       _add_env_var() {
         local key=\"\$1\"
         local val=\"\$2\"
@@ -335,22 +506,16 @@ EOS
         fi
       }
 
-      _add_env_var DHIS2_DUCKDB_PATH               \"\$DUCKDB_DB_PATH\"
-      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_COUNT  3
-      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_DELAY_MS  300
-      _add_env_var DHIS2_DUCKDB_SINGLE_WRITER_ENABLED     true
-      _add_env_var DHIS2_DUCKDB_ENABLE_TEMP_SWAP_LOADS    true
-      _add_env_var DHIS2_DUCKDB_VISIBLE_DATASET_MODE      canonical_only
+      _add_env_var DHIS2_DUCKDB_PATH \$DUCKDB_DB_PATH
+      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_COUNT 3
+      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_DELAY_MS 300
+      _add_env_var DHIS2_DUCKDB_SINGLE_WRITER_ENABLED true
+      _add_env_var DHIS2_DUCKDB_ENABLE_TEMP_SWAP_LOADS true
+      _add_env_var DHIS2_DUCKDB_VISIBLE_DATASET_MODE canonical_only
 
       echo '[duckdb] env vars OK'
     "
   }
-
-  # ---------------------------------------------------------------------------
-  # ClickHouse .env variable management
-  # Idempotently writes DHIS2_CLICKHOUSE_* variables into ENV_FILE when
-  # CLICKHOUSE_ENABLED=1.  Only adds variables that are not already present.
-  # ---------------------------------------------------------------------------
 
   ensure_clickhouse_env_vars() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -361,40 +526,41 @@ EOS
 
       ENV_FILE='$ENV_FILE'
 
-      _add_env_var() {
+      _add_or_update_env_var() {
         local key=\"\$1\"
         local val=\"\$2\"
-        if ! grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
+        local tmp
+        tmp=\$(mktemp)
+        if grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
+          sed \"s|^[[:space:]]*\${key}[[:space:]]*=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
+          cat \"\$tmp\" > \"\$ENV_FILE\"
+          rm -f \"\$tmp\"
+          echo \"[clickhouse] updated \${key} in \$ENV_FILE\"
+        else
           echo \"\${key}=\${val}\" >> \"\$ENV_FILE\"
           echo \"[clickhouse] added \${key} to \$ENV_FILE\"
         fi
       }
 
-      _add_env_var DHIS2_SERVING_ENGINE              clickhouse
-      _add_env_var DHIS2_CLICKHOUSE_ENABLED          true
-      _add_env_var DHIS2_CLICKHOUSE_HOST             '${CLICKHOUSE_HOST}'
-      _add_env_var DHIS2_CLICKHOUSE_PORT             '${CLICKHOUSE_NATIVE_PORT}'
-      _add_env_var DHIS2_CLICKHOUSE_HTTP_PORT        '${CLICKHOUSE_HTTP_PORT}'
-      _add_env_var DHIS2_CLICKHOUSE_DATABASE         '${CLICKHOUSE_STAGING_DATABASE}'
-      _add_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
-      _add_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
-      _add_env_var DHIS2_CLICKHOUSE_USER             '${CLICKHOUSE_USER}'
-      _add_env_var DHIS2_CLICKHOUSE_PASSWORD         '${CLICKHOUSE_PASSWORD}'
-      _add_env_var DHIS2_CLICKHOUSE_SECURE           false
-      _add_env_var DHIS2_CLICKHOUSE_HTTP_PROTOCOL    http
-      _add_env_var DHIS2_CLICKHOUSE_SUPERSET_DB_NAME '${CLICKHOUSE_SUPERSET_DB_NAME}'
-      _add_env_var DHIS2_CLICKHOUSE_REFRESH_STRATEGY versioned_view_swap
-      _add_env_var DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS 2
+      _add_or_update_env_var DHIS2_SERVING_ENGINE clickhouse
+      _add_or_update_env_var DHIS2_CLICKHOUSE_ENABLED true
+      _add_or_update_env_var DHIS2_CLICKHOUSE_HOST '${CLICKHOUSE_HOST}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_USER '${CLICKHOUSE_USER}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_PASSWORD '${CLICKHOUSE_PASSWORD}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_SECURE false
+      _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PROTOCOL http
+      _add_or_update_env_var DHIS2_CLICKHOUSE_SUPERSET_DB_NAME '${CLICKHOUSE_SUPERSET_DB_NAME}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_REFRESH_STRATEGY versioned_view_swap
+      _add_or_update_env_var DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS 2
 
       echo '[clickhouse] env vars OK'
     "
   }
-
-  # ---------------------------------------------------------------------------
-  # ClickHouse installation
-  # Installs the official ClickHouse server package if not already present.
-  # Safe to call on repeat deployments — skips if already installed.
-  # ---------------------------------------------------------------------------
 
   install_clickhouse() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -402,19 +568,17 @@ EOS
 
     exec_in_ct "$CT_SUP" "
       set -euo pipefail
-      export DEBIAN_FRONTEND=noninteractive
 
       if command -v clickhouse-server >/dev/null 2>&1; then
         echo '[clickhouse] already installed, skipping'
         clickhouse-server --version 2>/dev/null | head -1 || true
-        return 0
+        exit 0
       fi
 
       echo '[clickhouse] installing ClickHouse server + client'
-      apt-get update -y -qq
-      apt-get install -y -qq apt-transport-https ca-certificates curl gnupg
+      safe_apt_update
+      safe_apt_install apt-transport-https ca-certificates curl gnupg
 
-      # Official ClickHouse APT repo
       curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' >/dev/null 2>&1 || true
       curl -fsSL 'https://packages.clickhouse.com/deb/archive-keyring.gpg' \
         | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
@@ -422,18 +586,13 @@ EOS
       echo 'deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main' \
         > /etc/apt/sources.list.d/clickhouse.list
 
-      apt-get update -y -qq
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        clickhouse-server clickhouse-client
+      safe_apt_update
+      safe_apt_install clickhouse-server clickhouse-client
 
       echo '[clickhouse] installation complete'
       clickhouse-server --version 2>/dev/null | head -1 || true
     "
   }
-
-  # ---------------------------------------------------------------------------
-  # ClickHouse service startup
-  # ---------------------------------------------------------------------------
 
   start_clickhouse() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -447,7 +606,6 @@ EOS
         exit 60
       fi
 
-      # Try systemd first; fall back to service; fall back to direct start
       if systemctl is-enabled clickhouse-server >/dev/null 2>&1; then
         systemctl enable clickhouse-server || true
         systemctl restart clickhouse-server
@@ -457,7 +615,6 @@ EOS
         clickhouse-server --daemon --config-file=/etc/clickhouse-server/config.xml || true
       fi
 
-      # Wait for HTTP port to be ready
       tries=0
       while ! curl -sf 'http://localhost:${CLICKHOUSE_HTTP_PORT}/ping' >/dev/null 2>&1; do
         tries=\$((tries + 1))
@@ -467,12 +624,6 @@ EOS
       echo '[clickhouse] server ready'
     "
   }
-
-  # ---------------------------------------------------------------------------
-  # ClickHouse database/user bootstrap
-  # Creates staging + serving + control databases and a dedicated user with
-  # required grants.  Idempotent — safe on repeat runs.
-  # ---------------------------------------------------------------------------
 
   setup_clickhouse_dbs() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -513,10 +664,6 @@ EOS
     "
   }
 
-  # ---------------------------------------------------------------------------
-  # Install Python clickhouse-connect into the Superset venv
-  # ---------------------------------------------------------------------------
-
   install_clickhouse_python_package() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
     log "[supersets] install clickhouse-connect Python package"
@@ -540,16 +687,10 @@ try:
     print('CLICKHOUSE_CONNECT_OK', result.result_rows[0][0])
 except Exception as e:
     print(f'CLICKHOUSE_CONNECT_WARN: {e}', file=sys.stderr)
-    sys.exit(0)  # non-fatal — server may not yet be accepting auth
+    sys.exit(0)
 PY
     "
   }
-
-  # ---------------------------------------------------------------------------
-  # Sync ClickHouse connection config into Superset's local_staging_settings
-  # so the UI and engine use the correct user/password/database without any
-  # manual re-entry after deployment.
-  # ---------------------------------------------------------------------------
 
   sync_superset_clickhouse_config_in_ct() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -589,7 +730,7 @@ try:
         print('CONFIG_SYNC_OK host=${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT} user=${CLICKHOUSE_USER}')
 except Exception as e:
     print(f'CONFIG_SYNC_WARN: {e}', file=sys.stderr)
-    sys.exit(0)  # non-fatal — operator can update via the UI
+    sys.exit(0)
 PY
     "
   }
@@ -609,12 +750,6 @@ PY
       systemctl daemon-reload >/dev/null 2>&1 || true
     " || true
   }
-
-  # ---------------------------------------------------------------------------
-  # Safe process stopping helpers
-  # Avoid pkill -f inside inline bash -c payloads because the payload text can
-  # match its own command line and kill the current exec shell.
-  # ---------------------------------------------------------------------------
 
   stop_pidfile_proc_in_ct() {
     local ct="$1"
@@ -703,8 +838,7 @@ PY
 
   ensure_host_tools() {
     if ! has_cmd git; then
-      sudo apt-get update -y
-      sudo apt-get install -y git ca-certificates
+      sudo bash -lc "$(declare -f apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install); safe_apt_update; safe_apt_install git ca-certificates"
     fi
   }
 
@@ -802,9 +936,8 @@ PY
   install_supersets_base_tools() {
     log "[supersets] ensure OS packages"
     exec_in_ct "$CT_SUP" "
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y
-      apt-get install -y \
+      safe_apt_update
+      safe_apt_install \
         python3 python3-venv python3-dev build-essential \
         libffi-dev libssl-dev libsasl2-dev libldap2-dev libpq-dev \
         libjpeg-dev zlib1g-dev pkg-config ca-certificates curl \
@@ -815,9 +948,8 @@ PY
   ensure_redis_present() {
     log "[supersets] ensure redis-server present"
     exec_in_ct "$CT_SUP" "
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y
-      apt-get install -y redis-server
+      safe_apt_update
+      safe_apt_install redis-server
       if command -v systemctl >/dev/null 2>&1; then
         systemctl enable --now redis-server >/dev/null 2>&1 || true
       else
@@ -901,9 +1033,8 @@ PY
 
     log "[db-sync] ensuring role/database exist"
     exec_in_ct "$CT_PG" "
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y postgresql-client >/dev/null 2>&1 || true
+      safe_apt_update >/dev/null 2>&1 || true
+      safe_apt_install postgresql-client >/dev/null 2>&1 || true
     " || true
 
     exec_in_ct_as_postgres "$CT_PG" "psql -v ON_ERROR_STOP=1 -v usr=$(printf '%q' "$user") -v pwd=$(printf '%q' "$pw") -v db=$(printf '%q' "$db") <<'SQL'
@@ -1104,13 +1235,12 @@ PY
     exec_in_ct "$CT_SUP" "
       [ -d '$repo_root/superset-frontend' ] || { echo 'ERROR: superset-frontend missing under $repo_root'; exit 6; }
 
-      export DEBIAN_FRONTEND=noninteractive
       if ! command -v node >/dev/null 2>&1; then
         curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1 || true
-        apt-get install -y nodejs >/dev/null 2>&1 || true
+        safe_apt_install nodejs >/dev/null 2>&1 || true
       fi
 
-      apt-get install -y coreutils >/dev/null 2>&1 || true
+      safe_apt_install coreutils >/dev/null 2>&1 || true
       cd '$repo_root/superset-frontend'
 
       if [ '$FRONTEND_CLEAN' = '1' ]; then
@@ -1159,18 +1289,15 @@ PY
           echo \"ERROR: \$desc failed with rc=\$rc\"
           echo '----- frontend log tail -----'
           tail -n 200 '$FRONTEND_LOG_IN_CT' || true
-          exit \$rc
+          return \$rc
         fi
 
         echo \"[frontend] END \$desc: \$(date -Iseconds)\"
+        return 0
       }
 
       if [ -f package-lock.json ]; then
-        set +e
-        run_with_log 'npm ci' npm ci --legacy-peer-deps
-        rc=\$?
-        set -e
-        if [ \$rc -ne 0 ]; then
+        if ! run_with_log 'npm ci' npm ci --legacy-peer-deps; then
           echo 'WARN: npm ci failed, falling back to npm install --legacy-peer-deps'
           run_with_log 'npm install fallback' npm install --legacy-peer-deps
         fi
@@ -1868,7 +1995,7 @@ PY
     exec_in_ct "$CT_SUP" "
       mkdir -p '$LOG_DIR'
 
-      cat > /etc/systemd/system/superset-celery-worker.service <<'UNIT'
+      cat > /etc/systemd/system/superset-celery-worker.service <<UNIT
 [Unit]
 Description=Superset Celery Worker
 After=network.target redis-server.service
@@ -1890,7 +2017,7 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-      cat > /etc/systemd/system/superset-celery-beat.service <<'UNIT'
+      cat > /etc/systemd/system/superset-celery-beat.service <<UNIT
 [Unit]
 Description=Superset Celery Beat
 After=network.target redis-server.service
@@ -1994,9 +2121,8 @@ UNIT
     log "[proxy] apply Apache cache helper config"
 
     exec_in_ct "$CT_PROXY" "
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y apache2 >/dev/null 2>&1 || true
+      safe_apt_update >/dev/null 2>&1 || true
+      safe_apt_install apache2 >/dev/null 2>&1 || true
       a2enmod headers >/dev/null 2>&1 || true
 
       CONF=/etc/apache2/conf-available/superset-nocache.conf
@@ -2086,6 +2212,7 @@ AP
     deploy|update)
       ensure_env_exists
       ensure_duckdb_env_vars
+      ensure_clickhouse_credentials_file
       ensure_clickhouse_env_vars
       ensure_superset_config_exists
       disable_systemd_superset_services
@@ -2118,10 +2245,12 @@ AP
       restart_celery_beat
       apache_cache_fix
       proxy_verify
+      show_clickhouse_credentials
       ;;
     restart)
       ensure_env_exists
       ensure_duckdb_env_vars
+      ensure_clickhouse_credentials_file
       ensure_clickhouse_env_vars
       ensure_superset_config_exists
       restart_gunicorn
