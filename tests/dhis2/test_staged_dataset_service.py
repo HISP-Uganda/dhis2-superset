@@ -217,26 +217,23 @@ def test_clear_staged_dataset_data_truncates_local_rows_and_preserves_mappings()
 def test_get_staging_preview_uses_local_staging_engine():
     from superset.dhis2 import staged_dataset_service as svc
 
-    dataset = _dataset(database_id=10)
     preview = {
         "columns": ["dx_uid", "value"],
         "rows": [{"dx_uid": "abc", "value": "12"}],
         "limit": 25,
         "staging_table_ref": "dhis2_staging.ds_1_test",
     }
-    engine = MagicMock()
-    engine.get_staging_table_preview.return_value = preview
+    preview_service = MagicMock()
+    preview_service.preview_dataset.return_value = preview
 
     with patch(
-        "superset.dhis2.staged_dataset_service.get_staged_dataset",
-        return_value=dataset,
-    ), patch("superset.dhis2.staged_dataset_service._get_engine",
-        return_value=engine,
+        "superset.dhis2.staged_preview_service.StagedPreviewService",
+        return_value=preview_service,
     ):
-        result = svc.get_staging_preview(dataset.id, limit=25)
+        result = svc.get_staging_preview(1, limit=25)
 
     assert result == preview
-    engine.get_staging_table_preview.assert_called_once_with(dataset, limit=25)
+    preview_service.preview_dataset.assert_called_once_with(1, limit=25)
 
 
 def test_query_serving_data_uses_local_serving_engine():

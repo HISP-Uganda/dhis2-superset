@@ -386,6 +386,37 @@ function normalizeOrgUnitLevels(payload: unknown): OrgUnitLevel[] {
       typeof candidate.source_instance_name === 'string'
         ? candidate.source_instance_name
         : undefined;
+    const sourceInstanceIds = Array.isArray(candidate.source_instance_ids)
+      ? candidate.source_instance_ids
+          .map(value =>
+            typeof value === 'number'
+              ? value
+              : typeof value === 'string'
+                ? Number(value)
+                : NaN,
+          )
+          .filter(value => Number.isFinite(value))
+      : [];
+    const sourceInstanceNames = Array.isArray(candidate.source_instance_names)
+      ? candidate.source_instance_names.filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        )
+      : [];
+    const rawInstanceLevelNames =
+      candidate.instance_level_names && typeof candidate.instance_level_names === 'object'
+        ? (candidate.instance_level_names as Record<string, unknown>)
+        : {};
+    const instanceLevelNames = Object.fromEntries(
+      Object.entries(rawInstanceLevelNames)
+        .map(([key, value]) => {
+          const instanceId = Number(key);
+          if (!Number.isFinite(instanceId) || typeof value !== 'string' || !value) {
+            return null;
+          }
+          return [instanceId, value] as const;
+        })
+        .filter((entry): entry is readonly [number, string] => entry !== null),
+    );
 
     if (!current) {
       merged.set(level, {
@@ -393,9 +424,22 @@ function normalizeOrgUnitLevels(payload: unknown): OrgUnitLevel[] {
         displayName,
         name: typeof candidate.name === 'string' ? candidate.name : undefined,
         aliases: [displayName],
-        sourceInstanceIds: sourceInstanceId ? [sourceInstanceId] : [],
-        sourceInstanceNames: sourceInstanceName ? [sourceInstanceName] : [],
-        instanceLevelNames: sourceInstanceId ? { [sourceInstanceId]: displayName } : {},
+        sourceInstanceIds: Array.from(
+          new Set([
+            ...sourceInstanceIds,
+            ...(sourceInstanceId ? [sourceInstanceId] : []),
+          ]),
+        ),
+        sourceInstanceNames: Array.from(
+          new Set([
+            ...sourceInstanceNames,
+            ...(sourceInstanceName ? [sourceInstanceName] : []),
+          ]),
+        ),
+        instanceLevelNames: {
+          ...instanceLevelNames,
+          ...(sourceInstanceId ? { [sourceInstanceId]: displayName } : {}),
+        },
       });
       return;
     }
@@ -428,6 +472,22 @@ function normalizeOrgUnitLevels(payload: unknown): OrgUnitLevel[] {
         ...(current.sourceInstanceNames || []),
         sourceInstanceName,
       ];
+    }
+    sourceInstanceIds.forEach(instanceId => {
+      if (!(current.sourceInstanceIds || []).includes(instanceId)) {
+        current.sourceInstanceIds = [...(current.sourceInstanceIds || []), instanceId];
+      }
+    });
+    sourceInstanceNames.forEach(name => {
+      if (!(current.sourceInstanceNames || []).includes(name)) {
+        current.sourceInstanceNames = [...(current.sourceInstanceNames || []), name];
+      }
+    });
+    if (Object.keys(instanceLevelNames).length > 0) {
+      current.instanceLevelNames = {
+        ...(current.instanceLevelNames || {}),
+        ...instanceLevelNames,
+      };
     }
     // Track each instance's own name for this level
     if (sourceInstanceId && displayName) {

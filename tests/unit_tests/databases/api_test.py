@@ -2434,6 +2434,58 @@ def test_schemas_with_oauth2(
     }
 
 
+def test_dataset_sources_endpoint_filters_internal_connections(
+    mocker: MockerFixture,
+    session: Session,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    from superset.models.core import Database
+
+    Database.metadata.create_all(session.get_bind())  # pylint: disable=no-member
+    db.session.add_all(
+        [
+            Database(
+                database_name="Analytics Warehouse",
+                sqlalchemy_uri="sqlite://",
+            ),
+            Database(
+                database_name="DHIS2 Serving (ClickHouse)",
+                sqlalchemy_uri="sqlite://",
+                extra=json.dumps({"dhis2_staging_internal": True}),
+            ),
+            Database(
+                database_name="DHIS2 Local Staging",
+                sqlalchemy_uri="sqlite://",
+            ),
+            Database(
+                database_name="Explicit Internal Source",
+                sqlalchemy_uri="sqlite://",
+                extra=json.dumps(
+                    {
+                        "dhis2_staging_internal": True,
+                        "is_dataset_source": True,
+                    }
+                ),
+            ),
+        ]
+    )
+    db.session.commit()
+
+    mocker.patch(
+        "superset.dhis2.dataset_source_service.security_manager.can_access_database",
+        return_value=True,
+    )
+
+    response = client.get("/api/v1/database/dataset_sources/")
+
+    assert response.status_code == 200
+    assert [item["database_name"] for item in response.json["result"]] == [
+        "Analytics Warehouse",
+        "Explicit Internal Source",
+    ]
+
+
 def test_dhis2_metadata_federated_aggregates_configured_connections(
     mocker: MockerFixture,
     client: Any,
@@ -2662,9 +2714,40 @@ def test_dhis2_org_unit_levels_federated_aggregates_configured_connections(
     assert response.status_code == 200
     assert response.json["status"] == "success"
     assert response.json["result"] == [
-        {"displayName": "National", "level": 1},
-        {"displayName": "Region", "level": 2},
-        {"displayName": "District", "level": 3},
+        {
+            "displayName": "National",
+            "instance_level_names": {"101": "National"},
+            "level": 1,
+            "name": None,
+            "source_instance_id": 101,
+            "source_instance_ids": [101],
+            "source_instance_name": "National eHMIS DHIS2",
+            "source_instance_names": ["National eHMIS DHIS2"],
+        },
+        {
+            "displayName": "Region",
+            "instance_level_names": {
+                "101": "Region",
+                "102": "Region",
+            },
+            "level": 2,
+            "name": None,
+            "source_instance_ids": [101, 102],
+            "source_instance_names": [
+                "National eHMIS DHIS2",
+                "Non Routine DHIS2",
+            ],
+        },
+        {
+            "displayName": "District",
+            "instance_level_names": {"102": "District"},
+            "level": 3,
+            "name": None,
+            "source_instance_id": 102,
+            "source_instance_ids": [102],
+            "source_instance_name": "Non Routine DHIS2",
+            "source_instance_names": ["Non Routine DHIS2"],
+        },
     ]
     assert response.json["instance_results"] == [
         {
@@ -2749,6 +2832,10 @@ def test_dhis2_org_unit_groups_federated_returns_partial_results(
             "organisationUnits": [
                 {"displayName": "Mulago", "id": "ou1"},
             ],
+            "source_database_id": 9,
+            "source_database_name": "Malaria Repository Multiple Sources",
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
         }
     ]
     assert response.json["instance_results"] == [
@@ -2833,9 +2920,9 @@ def test_dhis2_metadata_staged_reads_from_local_snapshots_without_live_fetch(
         "superset.dhis2.instance_service.get_instances_with_legacy_fallback",
         return_value=[instance_one, instance_two],
     )
-    mocker.patch(
-        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
-        side_effect=[
+    cached_payloads = iter(
+        [
+            None,
             {
                 "status": "success",
                 "result": [
@@ -2860,7 +2947,11 @@ def test_dhis2_metadata_staged_reads_from_local_snapshots_without_live_fetch(
                     }
                 ],
             },
-        ],
+        ]
+    )
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda *_args, **_kwargs: next(cached_payloads),
     )
     schedule_refresh = mocker.patch(
         "superset.dhis2.metadata_staging_service.schedule_database_metadata_refresh"

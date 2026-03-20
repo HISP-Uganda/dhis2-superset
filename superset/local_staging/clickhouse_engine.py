@@ -1384,6 +1384,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             # Flag this DB as DHIS2-internal so the dataset wizard can hide it
             # from Step 1 (users should not pick staging/serving DBs directly).
             "dhis2_staging_internal": True,
+            "is_dataset_source": False,
         })
 
         # Look up by URI first; fall back to name in case URI changed
@@ -1415,6 +1416,8 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             current_extra.setdefault("engine_params", {}).setdefault(
                 "connect_args", {}
             )["password"] = password
+            current_extra["dhis2_staging_internal"] = True
+            current_extra["is_dataset_source"] = False
             existing.extra = _j.dumps(current_extra)
             superset_db.session.commit()
             return existing

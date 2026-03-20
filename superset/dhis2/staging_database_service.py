@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import json
+
 from flask import current_app
 
 from superset import db
@@ -98,6 +100,15 @@ def get_staging_database(always_create: bool = True):
             current_app.config.get("DHIS2_STAGING_DATABASE_EXPOSE_IN_SQLLAB", False)
         )
         changed = False
+        extra = database.get_extra()
+        if extra.get("dhis2_staging_internal") is not True:
+            extra["dhis2_staging_internal"] = True
+            changed = True
+        if extra.get("is_dataset_source") is not False:
+            extra["is_dataset_source"] = False
+            changed = True
+        if changed:
+            database.extra = json.dumps(extra)
         if database.expose_in_sqllab != desired_expose_in_sqllab:
             database.expose_in_sqllab = desired_expose_in_sqllab
             changed = True

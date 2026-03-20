@@ -1535,7 +1535,11 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         uri = f"duckdb:///{db_path}"
         # connect_args passed to SQLAlchemy create_engine for chart/SQL-Lab queries
         extra_json = _json.dumps(
-            {"engine_params": {"connect_args": {"read_only": True}}}
+            {
+                "engine_params": {"connect_args": {"read_only": True}},
+                "dhis2_staging_internal": True,
+                "is_dataset_source": False,
+            }
         )
 
         existing = (
@@ -1563,6 +1567,20 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 superset_db.session.commit()
                 logger.info(
                     "DuckDB: patched Database id=%s to use read_only=True", existing.id
+                )
+            needs_flag_patch = False
+            if current_extra.get("dhis2_staging_internal") is not True:
+                current_extra["dhis2_staging_internal"] = True
+                needs_flag_patch = True
+            if current_extra.get("is_dataset_source") is not False:
+                current_extra["is_dataset_source"] = False
+                needs_flag_patch = True
+            if needs_flag_patch:
+                existing.extra = _json.dumps(current_extra)
+                superset_db.session.commit()
+                logger.info(
+                    "DuckDB: patched Database id=%s with dataset-source visibility flags",
+                    existing.id,
                 )
             return existing
 

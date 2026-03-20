@@ -642,12 +642,9 @@ def get_staging_preview(
     limit: int = 50,
 ) -> dict[str, Any]:
     """Return a local row preview for a staged dataset."""
-    dataset = get_staged_dataset(dataset_id)
-    if dataset is None:
-        raise ValueError(f"Dataset with id={dataset_id} not found")
+    from superset.dhis2.staged_preview_service import StagedPreviewService
 
-    engine = _get_engine(dataset.database_id)
-    return engine.get_staging_table_preview(dataset, limit=limit)
+    return StagedPreviewService().preview_dataset(dataset_id, limit=limit)
 
 
 def query_serving_data(

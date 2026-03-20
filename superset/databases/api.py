@@ -118,6 +118,7 @@ from superset.databases.schemas import (
 )
 from superset.databases.utils import get_table_metadata
 from superset.db_engine_specs import get_available_engine_specs
+from superset.dhis2.org_unit_level_metadata import merge_org_unit_level_items
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import (
     DatabaseNotFoundException,
@@ -218,6 +219,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "validate_parameters",
         "validate_sql",
         "delete_ssh_tunnel",
+        "dataset_sources",
         "schemas_access_for_file_upload",
         "get_connection",
         "upload_metadata",
@@ -2267,6 +2269,16 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         return self._handle_dhis2_metadata_request(resolved_database, chart=chart)
 
+    @expose("/dataset_sources/", methods=("GET",))
+    @protect()
+    @safe
+    def dataset_sources(self) -> Response:
+        """Return only dataset-creation-eligible source databases."""
+        from superset.dhis2.dataset_source_service import list_dataset_source_databases
+
+        result = list_dataset_source_databases()
+        return self.response(200, count=len(result), result=result)
+
     def _handle_dhis2_metadata_request(
         self,
         database: Database,
@@ -3539,26 +3551,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     def _merge_org_unit_level_items(
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        merged: dict[int, dict[str, Any]] = {}
-        for item in items:
-            level_raw = item.get("level")
-            try:
-                level = int(level_raw)
-            except (TypeError, ValueError):
-                continue
-
-            current = merged.get(level)
-            if current is None:
-                merged[level] = dict(item)
-                merged[level]["level"] = level
-                continue
-
-            if not current.get("displayName") and item.get("displayName"):
-                current["displayName"] = item["displayName"]
-            if not current.get("name") and item.get("name"):
-                current["name"] = item["name"]
-
-        return [merged[level] for level in sorted(merged)]
+        return merge_org_unit_level_items(items)
 
     @staticmethod
     def _merge_org_unit_group_items(
@@ -3662,7 +3655,18 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                         "count": len(items),
                     }
                 )
-                aggregated_items.extend(items)
+                aggregated_items.extend(
+                    [
+                        {
+                            **item,
+                            "source_instance_id": context["instance_id"],
+                            "source_instance_name": context["instance_name"],
+                            "source_database_id": database.id,
+                            "source_database_name": database.database_name,
+                        }
+                        for item in items
+                    ]
+                )
             except Exception as ex:  # pylint: disable=broad-except
                 logger.warning(
                     "[DHIS2 Metadata] Failed to load %s for instance id=%s",

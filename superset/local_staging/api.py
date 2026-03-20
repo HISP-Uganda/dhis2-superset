@@ -342,63 +342,16 @@ class LocalStagingRestApi(BaseSupersetApi):
               description: Migration status per dataset
         """
         try:
-            from superset.dhis2.models import DHIS2StagedDataset
-            from superset.dhis2.staging_engine import DHIS2StagingEngine
-            from superset import db as superset_db
-            from sqlalchemy import inspect as _inspect
-
-            old_engine = DHIS2StagingEngine(0)
-            dialect = str(getattr(superset_db.engine.dialect, "name", "") or "").lower()
-            schema = old_engine.STAGING_SCHEMA if dialect != "sqlite" else None
-            inspector = _inspect(superset_db.engine)
-
-            datasets = (
-                superset_db.session.query(DHIS2StagedDataset).all()
+            from superset.dhis2.staging_engine_migration_service import (
+                StagingEngineMigrationService,
             )
-            result = []
-            for dataset in datasets:
-                old_table = old_engine._get_physical_table_name(dataset)
-                old_exists = inspector.has_table(old_table, schema=schema)
-                if not old_exists:
-                    continue
 
-                from superset.local_staging.engine_factory import get_active_staging_engine
-                active_engine = get_active_staging_engine(dataset.database_id)
-                new_exists = active_engine.table_exists(dataset)
-
-                # Count rows in source
-                src_rows = 0
-                if old_exists:
-                    try:
-                        from sqlalchemy import text as _text
-                        old_ref = old_engine.get_superset_sql_table_ref(dataset)
-                        with superset_db.engine.connect() as conn:
-                            row = conn.execute(
-                                _text(f"SELECT COUNT(*) FROM {old_ref}")
-                            ).fetchone()
-                            src_rows = int(row[0]) if row else 0
-                    except Exception:  # pylint: disable=broad-except
-                        src_rows = -1
-
-                dst_rows = 0
-                if new_exists:
-                    try:
-                        stats = active_engine.get_staging_table_stats(dataset)
-                        dst_rows = int(stats.get("row_count") or 0)
-                    except Exception:  # pylint: disable=broad-except
-                        dst_rows = -1
-
-                result.append({
-                    "dataset_id": dataset.id,
-                    "dataset_name": dataset.name,
-                    "source_table": old_engine.get_superset_sql_table_ref(dataset),
-                    "source_rows": src_rows,
-                    "destination_exists": new_exists,
-                    "destination_rows": dst_rows,
-                    "needs_migration": src_rows > 0 and (not new_exists or dst_rows == 0),
-                })
-
-            return self.response(200, result=result)
+            target_backend = LocalStagingSettings.get_active_engine_name()
+            plan = StagingEngineMigrationService().plan_migration(
+                source_backend=ENGINE_SUPERSET_DB,
+                target_backend=target_backend,
+            )
+            return self.response(200, **plan)
         except Exception as ex:  # pylint: disable=broad-except
             logger.exception("Failed to list migratable datasets")
             return self.response_500(message=str(ex))
@@ -431,61 +384,21 @@ class LocalStagingRestApi(BaseSupersetApi):
               description: Per-dataset migration results
         """
         try:
-            from superset.dhis2.models import DHIS2StagedDataset
-            from superset.dhis2.staged_dataset_service import ensure_serving_table
-            from superset.local_staging.engine_factory import get_active_staging_engine
-            from superset import db as superset_db
+            from superset.dhis2.staging_engine_migration_service import (
+                StagingEngineMigrationService,
+            )
 
             body = request.json or {}
             requested_ids: list[int] | None = body.get("dataset_ids") or None
-
-            if requested_ids is not None:
-                datasets = [
-                    superset_db.session.get(DHIS2StagedDataset, did)
-                    for did in requested_ids
-                    if superset_db.session.get(DHIS2StagedDataset, did) is not None
-                ]
-            else:
-                datasets = superset_db.session.query(DHIS2StagedDataset).all()
-
-            results = []
-            for dataset in datasets:
-                active_engine = get_active_staging_engine(dataset.database_id)
-                if not hasattr(active_engine, "import_from_superset_db"):
-                    results.append({
-                        "dataset_id": dataset.id,
-                        "dataset_name": dataset.name,
-                        "status": "skipped",
-                        "reason": "Active engine does not support superset_db import",
-                    })
-                    continue
-
-                migration_result = active_engine.import_from_superset_db(dataset)
-                if migration_result.get("error") and migration_result["imported"] == 0:
-                    results.append({
-                        "dataset_id": dataset.id,
-                        "dataset_name": dataset.name,
-                        "status": "skipped",
-                        "reason": migration_result["error"],
-                    })
-                    continue
-
-                # Rebuild the serving table from newly imported staging rows
-                serving_error = None
-                try:
-                    ensure_serving_table(dataset.id)
-                except Exception as exc:  # pylint: disable=broad-except
-                    serving_error = str(exc)
-
-                results.append({
-                    "dataset_id": dataset.id,
-                    "dataset_name": dataset.name,
-                    "status": "ok" if not serving_error else "partial",
-                    "imported": migration_result["imported"],
-                    "serving_error": serving_error,
-                })
-
-            return self.response(200, result=results)
+            replace_existing = bool(body.get("replace_existing"))
+            target_backend = LocalStagingSettings.get_active_engine_name()
+            migration_result = StagingEngineMigrationService().migrate_staging_objects(
+                source_backend=ENGINE_SUPERSET_DB,
+                target_backend=target_backend,
+                dataset_ids=requested_ids,
+                replace_existing=replace_existing,
+            )
+            return self.response(200, **migration_result)
         except Exception as ex:  # pylint: disable=broad-except
             logger.exception("Migration from superset_db failed")
             return self.response_500(message=str(ex))

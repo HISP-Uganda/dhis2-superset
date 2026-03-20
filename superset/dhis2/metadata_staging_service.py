@@ -15,6 +15,7 @@ from sqlalchemy.engine.url import make_url
 
 from superset import db
 from superset.dhis2.geojson_utils import convert_to_geojson
+from superset.dhis2.org_unit_level_metadata import merge_org_unit_level_items
 from superset.models.core import Database
 from superset.staging import metadata_cache_service
 from superset.staging.source_service import ensure_source_for_database
@@ -2207,21 +2208,7 @@ def _tag_items(
 
 
 def _merge_org_unit_level_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[int, dict[str, Any]] = {}
-    for item in items:
-        try:
-            level = int(item.get("level"))
-        except (TypeError, ValueError):
-            continue
-        current = merged.get(level)
-        if current is None:
-            merged[level] = {"level": level, **item}
-            continue
-        if not current.get("displayName") and item.get("displayName"):
-            current["displayName"] = item["displayName"]
-        if not current.get("name") and item.get("name"):
-            current["name"] = item["name"]
-    return [merged[level] for level in sorted(merged)]
+    return merge_org_unit_level_items(items)
 
 
 def _merge_org_unit_group_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

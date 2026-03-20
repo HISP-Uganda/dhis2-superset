@@ -34,7 +34,6 @@ import {
   Tabs,
   Tag,
 } from 'antd';
-import rison from 'rison';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import type { DatabaseObject } from 'src/components';
@@ -746,13 +745,7 @@ function useAvailableDatabases() {
     setError(null);
 
     try {
-      const endpoint = `/api/v1/database/?q=${rison.encode({
-        order_column: 'database_name',
-        order_direction: 'asc',
-        page: 0,
-        page_size: 500,
-        columns: ['id', 'database_name', 'backend', 'allow_multi_catalog', 'extra'],
-      })}`;
+      const endpoint = '/api/v1/database/dataset_sources/';
       const response = await SupersetClient.get({ endpoint });
       if (requestId !== requestIdRef.current) {
         return;
@@ -761,16 +754,6 @@ function useAvailableDatabases() {
       const nextDatabases = (
         (response.json as { result?: DatabaseObject[] })?.result || []
       )
-        .filter(database => {
-          // Hide internal staging/serving databases (ClickHouse serving,
-          // DuckDB staging, etc.) — users should not pick these as a dataset
-          // source. They are marked via extra.dhis2_staging_internal.
-          try {
-            const ex = JSON.parse((database as any).extra || '{}');
-            if (ex.dhis2_staging_internal === true) return false;
-          } catch { /* malformed extra — include the db */ }
-          return true;
-        })
         .map(database => ({
           id: database.id,
           database_name: database.database_name,
@@ -2237,6 +2220,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Input.Search
             aria-label={title}
+            data-test="dataset-source-search"
             onChange={event => setSourceSearch(event.target.value)}
             placeholder={t('Search Databases')}
             value={sourceSearch}
@@ -2245,6 +2229,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             {filteredDatabases.map(database => (
               <SourceOptionCard
                 key={database.id}
+                data-test="dataset-source-card"
+                data-backend={database.backend || 'unknown'}
+                data-database-id={database.id}
                 onClick={() => handleSourceSelect(database.id)}
                 selected={state.databaseId === database.id}
                 type="button"

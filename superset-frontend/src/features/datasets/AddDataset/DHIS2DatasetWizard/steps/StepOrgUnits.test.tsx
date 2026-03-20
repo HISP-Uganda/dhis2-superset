@@ -53,6 +53,27 @@ const baseWizardState = {
     cron: '0 5 * * *',
     timezone: 'UTC',
   },
+  levelMapping: {
+    enabled: true,
+    rows: [
+      {
+        merged_level: 1,
+        label: 'National',
+        instance_levels: {
+          '101': 1,
+          '102': 1,
+        },
+      },
+      {
+        merged_level: 2,
+        label: 'District',
+        instance_levels: {
+          '101': 2,
+          '102': 2,
+        },
+      },
+    ],
+  },
 };
 
 afterEach(() => {
@@ -173,7 +194,9 @@ test('shows partial-load diagnostics for organisation units and retries cleanly'
   expect(
     await screen.findByText(/Some configured connections could not be fully loaded/i),
   ).toBeVisible();
-  expect(await screen.findByText(/Non Routine DHIS2/i)).toBeVisible();
+  expect(
+    await screen.findByText(/Non Routine DHIS2: DHIS2 API error: 503 Gateway timeout/i),
+  ).toBeVisible();
 
   fetchMock.get(
     orgUnitsEndpoint,
@@ -230,6 +253,65 @@ test('asks the user to return to the database step when no configured connection
   expect(
     await screen.findByText(/No configured connections are currently selected/i),
   ).toBeVisible();
+});
+
+test('uses per-instance org-unit level names in repository level mapping', async () => {
+  const updateState = jest.fn();
+
+  fetchMock.get(orgUnitsEndpoint, {
+    status: 'success',
+    result: [
+      {
+        id: 'OU_1',
+        displayName: 'Uganda',
+        level: 1,
+        source_instance_id: 101,
+      },
+    ],
+  });
+  fetchMock.get(orgUnitLevelsEndpoint, {
+    status: 'success',
+    result: [
+      {
+        level: 1,
+        displayName: 'National',
+        source_instance_ids: [101, 102],
+        instance_level_names: {
+          101: 'National',
+          102: 'Country',
+        },
+      },
+      {
+        level: 2,
+        displayName: 'District',
+        source_instance_ids: [101, 102],
+        instance_level_names: {
+          101: 'District',
+          102: 'Province',
+        },
+      },
+    ],
+  });
+  fetchMock.get(orgUnitGroupsEndpoint, {
+    status: 'success',
+    result: [],
+  });
+
+  render(
+    <WizardStepOrgUnits
+      databaseId={9}
+      errors={{}}
+      instances={instances}
+      updateState={updateState}
+      wizardState={baseWizardState}
+    />,
+    { useRedux: true },
+  );
+
+  expect(await screen.findByText('1. National')).toBeVisible();
+  expect(await screen.findByText('1. Country')).toBeVisible();
+  expect(await screen.findByText('2. District')).toBeVisible();
+  expect(await screen.findByText('2. Province')).toBeVisible();
 });
 
 test('loads organisation units from the primary configured connection when primary mode is selected', async () => {

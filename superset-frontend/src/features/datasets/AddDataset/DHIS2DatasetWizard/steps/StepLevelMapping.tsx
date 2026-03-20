@@ -325,10 +325,11 @@ export default function StepLevelMapping({
   return (
     <SectionContainer>
       {instances.length > 1 && (
-        <DefaultInstanceRow>
+        <DefaultInstanceRow data-test="dhis2-level-mapping-default-instance-row">
           <Text style={{ flexShrink: 0 }}>{t('Populate labels from:')}</Text>
           <Select
             allowClear
+            data-test="dhis2-level-mapping-default-instance"
             placeholder={t('Select default instance')}
             value={defaultInstanceId ?? undefined}
             options={instanceOptions}
@@ -343,7 +344,7 @@ export default function StepLevelMapping({
         </DefaultInstanceRow>
       )}
 
-      <TableCard>
+      <TableCard data-test="dhis2-level-mapping">
         <TableHeader>
           <LevelNumCell>{t('#')}</LevelNumCell>
           <LabelCell>{t('Repo Level')}</LabelCell>

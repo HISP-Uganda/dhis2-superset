@@ -147,6 +147,60 @@ def test_prepare_metadata_item_normalizes_top_level_legend_set() -> None:
     }
 
 
+def test_merge_org_unit_level_items_preserves_per_instance_level_names() -> None:
+    from superset.dhis2.org_unit_level_metadata import merge_org_unit_level_items
+
+    merged = merge_org_unit_level_items(
+        [
+            {
+                "level": 1,
+                "displayName": "National",
+                "source_instance_id": 101,
+                "source_instance_name": "National eHMIS DHIS2",
+            },
+            {
+                "level": 1,
+                "displayName": "Country",
+                "source_instance_id": 102,
+                "source_instance_name": "Non Routine DHIS2",
+            },
+            {
+                "level": 2,
+                "displayName": "District",
+                "source_instance_id": 101,
+                "source_instance_name": "National eHMIS DHIS2",
+            },
+        ]
+    )
+
+    assert merged == [
+        {
+            "level": 1,
+            "displayName": "National",
+            "name": None,
+            "source_instance_ids": [101, 102],
+            "source_instance_names": [
+                "National eHMIS DHIS2",
+                "Non Routine DHIS2",
+            ],
+            "instance_level_names": {
+                "101": "National",
+                "102": "Country",
+            },
+        },
+        {
+            "level": 2,
+            "displayName": "District",
+            "name": None,
+            "source_instance_ids": [101],
+            "source_instance_names": ["National eHMIS DHIS2"],
+            "instance_level_names": {"101": "District"},
+            "source_instance_id": 101,
+            "source_instance_name": "National eHMIS DHIS2",
+        },
+    ]
+
+
 def test_refresh_database_metadata_stores_snapshots(mocker) -> None:
     from superset.dhis2 import metadata_staging_service as svc
 

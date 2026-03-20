@@ -37,7 +37,7 @@ jest.mock('react-router-dom', () => ({
   }),
 }));
 
-const databasesEndpoint = 'glob:*/api/v1/database/?q=*';
+const databasesEndpoint = 'glob:*/api/v1/database/dataset_sources/';
 const stagingEndpoint = (databaseId: number) =>
   `glob:*/api/v1/staging/sources/?database_id=${databaseId}&ensure=true`;
 const instancesEndpoint = (databaseId: number) =>
