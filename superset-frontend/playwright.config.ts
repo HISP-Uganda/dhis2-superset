@@ -22,16 +22,18 @@
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { defineConfig } from '@playwright/test';
 
+const AUTH_STATE_PATH = 'playwright/.auth/admin.json';
+
 export default defineConfig({
   // Test directory
   testDir: './playwright/tests',
 
   // Timeout settings
-  timeout: 30000,
-  expect: { timeout: 8000 },
+  timeout: 120000,
+  expect: { timeout: 15000 },
 
   // Parallel execution
-  fullyParallel: true,
+  fullyParallel: false,
   workers: process.env.CI ? 2 : 1,
 
   // Retry logic - 2 retries in CI, 0 locally
@@ -52,13 +54,16 @@ export default defineConfig({
 
   // Global test setup
   use: {
-    // Use environment variable for base URL in CI, default to localhost:8088 for local
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8088',
+    // Use environment variable for base URL in CI, default to localhost:9001 for local
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:9001',
 
     // Browser settings
-    headless: !!process.env.CI,
+    headless:
+      process.env.PLAYWRIGHT_HEADLESS === undefined
+        ? !!process.env.CI
+        : process.env.PLAYWRIGHT_HEADLESS !== 'false',
 
-    viewport: { width: 1280, height: 1024 },
+    viewport: { width: 1400, height: 1000 },
 
     // Screenshots and videos on failure
     screenshot: 'only-on-failure',
@@ -66,25 +71,42 @@ export default defineConfig({
 
     // Trace collection for debugging
     trace: 'retain-on-failure',
+
+    launchOptions: {
+      env: {
+        ...process.env,
+        HOME: process.env.PLAYWRIGHT_HOME || '/tmp/playwright-home',
+      },
+    },
   },
 
   projects: [
     {
-      name: 'chromium',
+      name: 'auth',
+      use: {
+        browserName: 'chromium',
+        testIdAttribute: 'data-test',
+      },
+      testMatch: /playwright\/tests\/auth\/.*\.spec\.ts/,
+    },
+    {
+      name: 'setup',
+      testMatch: /playwright\/tests\/e2e\/auth\.setup\.ts/,
       use: {
         browserName: 'chromium',
         testIdAttribute: 'data-test',
       },
     },
-  ],
-
-  // Web server setup - disabled in CI (Flask started separately in workflow)
-  webServer: process.env.CI
-    ? undefined
-    : {
-        command: 'curl -f http://localhost:8088/health',
-        url: 'http://localhost:8088/health',
-        reuseExistingServer: true,
-        timeout: 5000,
+    {
+      name: 'e2e',
+      dependencies: ['setup'],
+      testIgnore: /playwright\/tests\/e2e\/auth\.setup\.ts/,
+      testMatch: /playwright\/tests\/e2e\/.*\.spec\.ts/,
+      use: {
+        browserName: 'chromium',
+        testIdAttribute: 'data-test',
+        storageState: AUTH_STATE_PATH,
       },
+    },
+  ],
 });

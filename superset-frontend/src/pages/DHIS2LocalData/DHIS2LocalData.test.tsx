@@ -123,6 +123,38 @@ beforeEach(() => {
         },
       } as any;
     }
+    if (endpoint.startsWith('/api/v1/dhis2/staged-datasets/11/preview?limit=')) {
+      const limit = Number(endpoint.split('limit=')[1] || 25);
+      return {
+        json: {
+          result: {
+            columns: ['source_instance_id', 'ou_name', 'pe', 'value'],
+            rows: [
+              {
+                source_instance_id: 1,
+                ou_name: 'Gulu Referral Hospital',
+                pe: '2024Q1',
+                value: 37,
+              },
+            ],
+            limit,
+            staging_table_ref: 'dhis2_staging.ds_11_anc_coverage',
+            serving_table_ref: 'dhis2_serving.sv_11_anc_coverage',
+            diagnostics: {
+              table_exists: true,
+              row_count: 2500,
+              sql_preview:
+                `SELECT * FROM dhis2_staging.ds_11_anc_coverage ` +
+                'ORDER BY "source_instance_id", "pe", "dx_uid", "ou" ' +
+                `LIMIT ${limit}`,
+              rows_returned: 1,
+              org_unit_columns: ['ou', 'ou_name', 'ou_level'],
+              period_columns: ['pe'],
+            },
+          },
+        },
+      } as any;
+    }
     throw new Error(`Unexpected GET ${endpoint}`);
   });
 
@@ -325,6 +357,38 @@ test('renders visible dataset actions and can query local staged data', async ()
   ).toBeInTheDocument();
   expect(
     screen.getByRole('button', { name: 'Run query' }),
+  ).toBeInTheDocument();
+});
+
+test('loads raw staged preview rows and diagnostics for the selected dataset', async () => {
+  render(
+    <MemoryRouter initialEntries={['/superset/dhis2/local-data/']}>
+      <DHIS2LocalData />
+    </MemoryRouter>,
+  );
+
+  expect((await screen.findAllByText('ANC Coverage')).length).toBeGreaterThan(0);
+
+  await waitFor(() => {
+    expect(mockClient.get).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint: '/api/v1/dhis2/staged-datasets/11/preview?limit=25',
+      }),
+    );
+  });
+
+  expect(await screen.findByText('Gulu Referral Hospital')).toBeInTheDocument();
+  expect(screen.getByText('Staging table detected')).toBeInTheDocument();
+  expect(screen.getByText('Staging rows: 2,500')).toBeInTheDocument();
+  expect(screen.getByText('Preview rows returned: 1')).toBeInTheDocument();
+  expect(
+    screen.getByText('Org unit columns: ou, ou_name, ou_level'),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Period columns: pe')).toBeInTheDocument();
+  expect(
+    screen.getByDisplayValue(
+      'SELECT * FROM dhis2_staging.ds_11_anc_coverage ORDER BY "source_instance_id", "pe", "dx_uid", "ou" LIMIT 25',
+    ),
   ).toBeInTheDocument();
 });
 

@@ -191,6 +191,7 @@ class DHIS2StagedDatasetApi(BaseApi):
         include_variables: bool = False,
         include_stats: bool = False,
         include_dataset_config: bool = True,
+        include_serving_definition: bool = True,
     ) -> dict[str, Any] | None:
         """Serialise a staged dataset, optionally enriching with variables/stats.
 
@@ -211,19 +212,43 @@ class DHIS2StagedDatasetApi(BaseApi):
         payload = dataset.to_json()
         if not include_dataset_config:
             payload.pop("dataset_config", None)
-        payload["staging_table_ref"] = _get_engine(
-            dataset.database_id
-        ).get_superset_sql_table_ref(dataset)
+        engine = _get_engine(dataset.database_id)
+        payload["staging_table_ref"] = engine.get_superset_sql_table_ref(dataset)
+
         try:
-            serving_table_ref, serving_columns = svc.ensure_serving_table(pk)
-            # Reload so serving_superset_dataset_id (set by ensure_serving_table) is fresh
-            dataset = svc.get_staged_dataset(pk) or dataset
+            serving_columns = svc.get_serving_columns(pk)
         except Exception:  # pylint: disable=broad-except
             logger.exception(
-                "Failed to build serving definition for staged dataset id=%s", pk
+                "Failed to compute serving manifest for staged dataset id=%s", pk
             )
-            serving_table_ref = None
             serving_columns = []
+
+        serving_table_ref = engine.get_serving_sql_table_ref(dataset)
+        if include_serving_definition:
+            try:
+                serving_table_ref, serving_columns = svc.ensure_serving_table(pk)
+                # Reload so serving_superset_dataset_id (set by ensure_serving_table) is fresh
+                dataset = svc.get_staged_dataset(pk) or dataset
+            except Exception:  # pylint: disable=broad-except
+                logger.exception(
+                    "Failed to build serving definition for staged dataset id=%s", pk
+                )
+        else:
+            try:
+                live_column_names = set(engine.get_serving_table_columns(dataset))
+                if live_column_names:
+                    serving_columns = [
+                        column
+                        for column in serving_columns
+                        if str(column.get("column_name") or "").strip()
+                        in live_column_names
+                    ]
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed to inspect current serving columns for staged dataset id=%s",
+                    pk,
+                    exc_info=True,
+                )
         payload["serving_table_ref"] = serving_table_ref
         payload["serving_columns"] = serving_columns
 
@@ -334,6 +359,7 @@ class DHIS2StagedDatasetApi(BaseApi):
                 dataset.id,
                 include_stats=include_stats,
                 include_dataset_config=False,
+                include_serving_definition=False,
             )
             results.append(payload or dataset.to_json())
         return self.response(

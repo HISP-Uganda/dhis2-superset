@@ -328,6 +328,14 @@ export interface DHIS2StagedDatasetPreview {
   limit: number;
   staging_table_ref: string;
   serving_table_ref?: string;
+  diagnostics?: {
+    table_exists?: boolean;
+    row_count?: number | null;
+    sql_preview?: string | null;
+    rows_returned?: number | null;
+    org_unit_columns?: string[];
+    period_columns?: string[];
+  } | null;
 }
 
 export interface DHIS2LocalDataFilter {

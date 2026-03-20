@@ -41,14 +41,13 @@ from superset import db
 from superset.dhis2.analytical_serving import (
     build_serving_manifest,
     dataset_columns_payload,
-    materialize_serving_rows,
-    prune_empty_hierarchy_columns,
 )
 from superset.dhis2.models import (
     DHIS2DatasetVariable,
     DHIS2Instance,
     DHIS2StagedDataset,
 )
+from superset.dhis2.serving_build_service import build_serving_table
 from superset.dhis2.staging_engine import DHIS2StagingEngine
 from superset.local_staging.engine_factory import get_active_staging_engine
 from superset.staging.compat import (
@@ -647,7 +646,6 @@ def get_staging_preview(
     if dataset is None:
         raise ValueError(f"Dataset with id={dataset_id} not found")
 
-    ensure_serving_table(dataset.id)
     engine = _get_engine(dataset.database_id)
     return engine.get_staging_table_preview(dataset, limit=limit)
 
@@ -864,9 +862,43 @@ def _serving_table_needs_rebuild(
     if not engine.serving_table_exists(dataset):
         return True
 
+    def _serving_table_is_empty_with_populated_staging() -> bool:
+        try:
+            staging_total_rows = int(
+                (engine.get_staging_table_stats(dataset) or {}).get("total_rows") or 0
+            )
+        except Exception:  # pylint: disable=broad-except
+            staging_total_rows = 0
+
+        if staging_total_rows <= 0:
+            return False
+
+        try:
+            serving_result = engine.query_serving_table(
+                dataset,
+                selected_columns=[],
+                filters=None,
+                limit=1,
+                page=1,
+                count_rows=True,
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "ensure_serving_table: failed to query serving row count for dataset id=%s",
+                dataset.id,
+                exc_info=True,
+            )
+            return True
+
+        try:
+            serving_total_rows = int(serving_result.get("total_rows") or 0)
+        except (TypeError, ValueError, AttributeError):
+            serving_total_rows = 0
+        return serving_total_rows == 0
+
     current_columns = list(engine.get_serving_table_columns(dataset))
     if current_columns == expected_columns:
-        return False
+        return _serving_table_is_empty_with_populated_staging()
 
     # Additive-column tolerance: do not trigger a rebuild when the only
     # missing columns are system columns that are populated on the next
@@ -893,7 +925,7 @@ def _serving_table_needs_rebuild(
             # Verify relative order of retained columns is still intact
             expected_without_missing = [c for c in expected_columns if c in current_set]
             if expected_without_missing == current_columns:
-                return False
+                return _serving_table_is_empty_with_populated_staging()
     return True
 
 
@@ -908,25 +940,14 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
     # When a rebuild runs, pruned columns replace the full manifest set.
     serving_columns = dataset_columns_payload(manifest["columns"])
     if _serving_table_needs_rebuild(engine, dataset, manifest):
-        from superset.dhis2.sync_service import _build_ou_filter_for_dataset
-
-        ou_filter = _build_ou_filter_for_dataset(dataset)
-        raw_rows = engine.fetch_staging_rows(dataset, limit=0, ou_filter=ou_filter)
-        serving_rows_columns, serving_rows = materialize_serving_rows(
-            dataset,
-            raw_rows,
-            manifest,
+        build_result = build_serving_table(dataset, engine=engine)
+        serving_columns = build_result.serving_columns
+        logger.info(
+            "ensure_serving_table: rebuilt dataset id=%s source_rows=%s target_rows=%s",
+            dataset.id,
+            build_result.diagnostics.get("source_row_count"),
+            build_result.diagnostics.get("live_serving_row_count"),
         )
-        serving_rows_columns, serving_rows = prune_empty_hierarchy_columns(
-            serving_rows_columns, serving_rows
-        )
-        engine.create_or_replace_serving_table(
-            dataset,
-            columns=serving_rows_columns,
-            rows=serving_rows,
-        )
-        # Use the pruned column set for Superset dataset registration
-        serving_columns = dataset_columns_payload(serving_rows_columns)
     serving_table_ref = engine.get_serving_sql_table_ref(dataset)
 
     # Auto-register the serving table as a Superset virtual dataset

@@ -24,7 +24,7 @@ import json
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch, call
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import requests
@@ -825,10 +825,16 @@ def test_schedule_staged_dataset_sync_prefers_immediate_thread(mocker) -> None:
     app = Flask(__name__)
     thread = mocker.MagicMock()
     job = SimpleNamespace(id=44)
+    query = mocker.MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = None
 
     mocker.patch(
         "superset.dhis2.sync_service.DHIS2SyncService.create_sync_job",
         return_value=job,
+    )
+    mocker.patch(
+        "superset.dhis2.sync_service.reset_stale_running_jobs",
+        return_value={"reset_jobs": 0, "reset_datasets": 0},
     )
     update_job_status = mocker.patch(
         "superset.dhis2.sync_service.DHIS2SyncService.update_job_status",
@@ -836,6 +842,7 @@ def test_schedule_staged_dataset_sync_prefers_immediate_thread(mocker) -> None:
     update_dataset_sync_state = mocker.patch(
         "superset.dhis2.sync_service.DHIS2SyncService.update_dataset_sync_state",
     )
+    mocker.patch("superset.dhis2.sync_service.db.session.query", return_value=query)
     thread_cls = mocker.patch(
         "superset.dhis2.sync_service.threading.Thread",
         return_value=thread,
@@ -866,6 +873,79 @@ def test_schedule_staged_dataset_sync_prefers_immediate_thread(mocker) -> None:
     )
     thread_cls.assert_called_once()
     thread.start.assert_called_once()
+
+
+def test_schedule_staged_dataset_sync_reuses_existing_active_job(mocker) -> None:
+    from superset.dhis2.sync_service import schedule_staged_dataset_sync
+
+    existing_job = SimpleNamespace(id=88, status="running", task_id="task-88")
+    query = mocker.MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = existing_job
+
+    mocker.patch(
+        "superset.dhis2.sync_service.reset_stale_running_jobs",
+        return_value={"reset_jobs": 1, "reset_datasets": 1},
+    )
+    create_sync_job = mocker.patch(
+        "superset.dhis2.sync_service.DHIS2SyncService.create_sync_job",
+    )
+    mocker.patch("superset.dhis2.sync_service.db.session.query", return_value=query)
+
+    result = schedule_staged_dataset_sync(
+        7,
+        job_type="manual",
+        prefer_immediate=True,
+    )
+
+    assert result == {
+        "scheduled": True,
+        "mode": "existing",
+        "job_id": 88,
+        "task_id": "task-88",
+        "status": "running",
+    }
+    create_sync_job.assert_not_called()
+
+
+def test_reset_stale_running_jobs_marks_job_failed_and_dataset_pending(mocker) -> None:
+    from superset.dhis2 import sync_service
+
+    now = datetime(2026, 3, 20, 12, 0, 0)
+    stale_job = SimpleNamespace(
+        id=9,
+        staged_dataset_id=7,
+        status="running",
+        changed_on=now - timedelta(minutes=45),
+        started_at=now - timedelta(minutes=50),
+        created_on=now - timedelta(minutes=50),
+    )
+    dataset = _make_dataset(id=7, last_sync_status="running")
+
+    running_jobs_query = MagicMock()
+    running_jobs_query.filter.return_value.all.return_value = [stale_job]
+    dataset_query = MagicMock()
+    dataset_query.filter.return_value.all.return_value = [dataset]
+    active_job_query = MagicMock()
+    active_job_query.filter.return_value.first.return_value = None
+
+    session = mocker.patch("superset.dhis2.sync_service.db.session")
+    session.query.side_effect = [running_jobs_query, dataset_query, active_job_query]
+    update_job_status = mocker.patch(
+        "superset.dhis2.sync_service.DHIS2SyncService.update_job_status",
+    )
+    update_dataset_sync_state = mocker.patch(
+        "superset.dhis2.sync_service.DHIS2SyncService.update_dataset_sync_state",
+    )
+
+    result = sync_service.reset_stale_running_jobs(now=now)
+
+    assert result == {"reset_jobs": 1, "reset_datasets": 1}
+    update_job_status.assert_called_once_with(
+        stale_job,
+        status="failed",
+        error_message="Auto-reset: job was stuck in running state (server restart?)",
+    )
+    update_dataset_sync_state.assert_called_once_with(7, status="pending")
 
 
 def test_sync_staged_dataset_publishes_partial_serving_rows_while_running(mocker) -> None:

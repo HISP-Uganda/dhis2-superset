@@ -952,6 +952,80 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
+    def get_staging_table_preview(
+        self,
+        staged_dataset: Any,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        conn = None
+        safe_limit = max(1, min(int(limit or 50), 500))
+        staging_ref = self.get_superset_sql_table_ref(staged_dataset)
+        serving_ref = self.get_serving_sql_table_ref(staged_dataset)
+        try:
+            conn = self._connect_read_only()
+            qualified = (
+                f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
+            )
+            row_count = int(
+                (conn.execute(f"SELECT COUNT(*) FROM {qualified}").fetchone() or [0])[0]
+                or 0
+            )
+            preview_sql = (
+                f"SELECT * FROM {qualified} "
+                "ORDER BY source_instance_id, pe, dx_uid, ou "
+                f"LIMIT {safe_limit}"
+            )
+            result = conn.execute(preview_sql).fetchall()
+            columns = [
+                d[0]
+                for d in conn.execute(f"SELECT * FROM {qualified} LIMIT 0").description
+            ]
+            rows = [dict(zip(columns, row)) for row in result]
+            return {
+                "columns": columns,
+                "rows": rows,
+                "limit": safe_limit,
+                "staging_table_ref": staging_ref,
+                "serving_table_ref": serving_ref,
+                "diagnostics": {
+                    "table_exists": True,
+                    "row_count": row_count,
+                    "sql_preview": preview_sql,
+                    "rows_returned": len(rows),
+                    "org_unit_columns": [
+                        column_name
+                        for column_name in ("ou", "ou_name", "ou_level")
+                        if column_name in columns
+                    ],
+                    "period_columns": [
+                        column_name for column_name in ("pe",) if column_name in columns
+                    ],
+                },
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                "columns": [],
+                "rows": [],
+                "limit": safe_limit,
+                "staging_table_ref": staging_ref,
+                "serving_table_ref": serving_ref,
+                "diagnostics": {
+                    "table_exists": False,
+                    "row_count": 0,
+                    "sql_preview": f"SELECT * FROM {staging_ref} LIMIT {safe_limit}",
+                    "rows_returned": 0,
+                    "error": str(exc),
+                    "org_unit_columns": [],
+                    "period_columns": [],
+                },
+            }
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
     # ------------------------------------------------------------------
     # Filter options (for local cascade filters in the Data Workspace)
     # ------------------------------------------------------------------

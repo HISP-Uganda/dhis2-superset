@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import json
+import logging
 import re
 from typing import Any, Mapping, Sequence
 
@@ -29,6 +30,8 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from superset import db
 from superset.dhis2.models import DHIS2DatasetVariable, DHIS2StagedDataset
+from superset.dhis2.org_unit_hierarchy_service import OrgUnitHierarchyService
+from superset.dhis2.period_hierarchy_service import PeriodHierarchyService
 from superset.staging import metadata_cache_service
 
 _ORG_UNIT_HIERARCHY_NAMESPACE = "dhis2_snapshot:orgUnitHierarchy"
@@ -40,6 +43,8 @@ _DHIS2_LEGEND_EXTRA_KEY = "dhis2_legend"
 # Category Option Combo dimension columns (opt-in disaggregation-as-dimension)
 _DHIS2_COC_EXTRA_KEY = "dhis2_is_coc"
 _DHIS2_COC_UID_EXTRA_KEY = "dhis2_is_coc_uid"
+
+logger = logging.getLogger(__name__)
 
 _NUMERIC_VALUE_TYPES = {
     "AGE",
@@ -623,6 +628,8 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     used_identifiers: set[str] = set()
     columns: list[dict[str, Any]] = []
     dimension_column_names: list[str] = []
+    org_unit_service = OrgUnitHierarchyService(dataset.database_id)
+    period_service = PeriodHierarchyService()
 
     if include_instance_name:
         instance_column_name = _dedupe_identifier("dhis2_instance", used_identifiers)
@@ -642,41 +649,19 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         )
         dimension_column_names.append(instance_column_name)
 
-    mapping_rows = _get_level_mapping(dataset_config)
-    level_range = _resolve_level_range(dataset, selected_instance_ids, mapping_rows)
-    hierarchy_columns: list[dict[str, Any]] = []
-    if level_range:
-        level_labels = _resolve_level_labels(
-            dataset.database_id,
-            selected_instance_ids,
-            max(level_range),
-            mapping_rows,
-        )
-        for level_number in level_range:
-            label = level_labels.get(level_number, f"Level {level_number}")
-            column_name = _dedupe_identifier(label, used_identifiers)
-            column = {
-                "column_name": column_name,
-                "verbose_name": label,
-                "type": "STRING",
-                "sql_type": "TEXT",
-                "is_dttm": False,
-                "is_dimension": True,
-                "level": level_number,
-                "extra": {
-                    _DHIS2_OU_HIERARCHY_EXTRA_KEY: True,
-                    _DHIS2_OU_LEVEL_EXTRA_KEY: level_number,
-                },
-            }
-            hierarchy_columns.append(column)
-            columns.append(column)
-            dimension_column_names.append(column_name)
-
-    if not hierarchy_columns:
-        org_unit_column_name = _dedupe_identifier("organisation_unit", used_identifiers)
+    org_unit_context = org_unit_service.augment_serving_schema(
+        dataset_config,
+        selected_instance_ids,
+        used_identifiers,
+    )
+    hierarchy_columns = list(org_unit_context.hierarchy_columns)
+    if hierarchy_columns:
+        columns.extend(hierarchy_columns)
+        dimension_column_names.extend(org_unit_context.dimension_column_names)
+    elif org_unit_context.fallback_org_unit_column:
         columns.append(
             {
-                "column_name": org_unit_column_name,
+                "column_name": org_unit_context.fallback_org_unit_column,
                 "verbose_name": "Organisation Unit",
                 "type": "STRING",
                 "sql_type": "TEXT",
@@ -685,23 +670,24 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
                 "is_org_unit_fallback": True,
             }
         )
-        dimension_column_names.append(org_unit_column_name)
+        dimension_column_names.extend(org_unit_context.dimension_column_names)
 
-    period_column_name = _dedupe_identifier("period", used_identifiers)
-    columns.append(
-        {
-            "column_name": period_column_name,
-            "verbose_name": "Period",
-            "type": "STRING",
-            "sql_type": "TEXT",
-            "is_dttm": False,
-            "is_dimension": True,
-            "extra": {
-                _DHIS2_PERIOD_EXTRA_KEY: True,
-            },
-        }
+    period_context = period_service.augment_serving_schema(
+        dataset_config,
+        used_identifiers,
     )
-    dimension_column_names.append(period_column_name)
+    primary_period_column = next(
+        (
+            column
+            for column in period_context.columns
+            if column["column_name"] == period_context.primary_period_column
+        ),
+        None,
+    )
+    if primary_period_column is None:
+        raise ValueError("Serving manifest must define a primary period column")
+    columns.append(primary_period_column)
+    dimension_column_names.append(period_context.primary_period_column)
 
     # ou_level column — allows buildQuery to filter rows to a specific OU level
     # and prevents double-counting when data is loaded at multiple levels.
@@ -720,6 +706,11 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         }
     )
     dimension_column_names.append(ou_level_column_name)
+    columns.extend(
+        column
+        for column in period_context.columns
+        if column["column_name"] != period_context.primary_period_column
+    )
 
     # ── Disaggregation dimension (opt-in) ─────────────────────────────────────
     # When ``include_disaggregation_dimension`` is true the staging co_uid / co_name
@@ -842,29 +833,21 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
             columns.append(col)
             variable_lookup[(str(variable.variable_id), None)] = col
 
-    hierarchy_lookup = _build_hierarchy_lookup(
-        dataset, selected_instance_ids, hierarchy_columns, mapping_rows
-    )
-
     return {
         "columns": columns,
         "dimension_column_names": dimension_column_names,
         "variable_columns": variable_columns,
         "variable_lookup": variable_lookup,
-        "hierarchy_lookup": hierarchy_lookup,
+        "hierarchy_lookup": org_unit_context.hierarchy_lookup,
         "include_instance_name": include_instance_name,
-        "fallback_org_unit_column": next(
-            (
-                column["column_name"]
-                for column in columns
-                if column.get("is_org_unit_fallback")
-            ),
-            None,
-        ),
-        "period_column_name": period_column_name,
+        "fallback_org_unit_column": org_unit_context.fallback_org_unit_column,
+        "period_column_name": period_context.primary_period_column,
+        "period_column_names_by_key": period_context.column_names_by_key,
         "ou_level_column_name": ou_level_column_name,
         "coc_uid_column_name": coc_uid_column_name,
         "coc_name_column_name": coc_name_column_name,
+        "org_unit_hierarchy_diagnostics": org_unit_context.diagnostics,
+        "period_hierarchy_diagnostics": period_context.diagnostics,
     }
 
 
@@ -881,6 +864,8 @@ def materialize_serving_rows(
     include_instance_name = bool(manifest["include_instance_name"])
     fallback_org_unit_column = manifest.get("fallback_org_unit_column")
     period_column_name = str(manifest["period_column_name"])
+    period_column_names_by_key = dict(manifest.get("period_column_names_by_key") or {})
+    period_service = PeriodHierarchyService()
 
     grouped_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
     for raw_row in raw_rows:
@@ -903,7 +888,11 @@ def materialize_serving_rows(
         if fallback_org_unit_column:
             row_values[fallback_org_unit_column] = raw_row.get("ou_name") or raw_row.get("ou")
 
-        row_values[period_column_name] = raw_row.get("pe")
+        normalized_period = period_service.normalize_period(raw_row.get("pe"))
+        for period_key, column_name in period_column_names_by_key.items():
+            row_values[column_name] = normalized_period.get(period_key)
+        if period_column_name not in row_values:
+            row_values[period_column_name] = raw_row.get("pe")
 
         ou_level_column_name = str(manifest.get("ou_level_column_name") or "ou_level")
         try:

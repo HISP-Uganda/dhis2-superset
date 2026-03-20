@@ -226,7 +226,13 @@ def sync_all_scheduled_datasets() -> dict[str, Any]:
 
     # Reset any datasets that are stuck in "running" state from a previous
     # crashed thread/worker — jobs older than 30 minutes are considered stale.
-    _reset_stuck_running_datasets(db, DHIS2StagedDataset, DHIS2SyncJob, DHIS2SyncService, now)
+    _reset_stuck_running_datasets(
+        db,
+        DHIS2StagedDataset,
+        DHIS2SyncJob,
+        DHIS2SyncService,
+        now,
+    )
 
     datasets = (
         db.session.query(DHIS2StagedDataset)
@@ -381,54 +387,14 @@ def _reset_stuck_running_datasets(
         stale_after_minutes: How many minutes a 'running' job may remain
             before it is considered stale.  Defaults to 30.
     """
-    from datetime import timedelta
+    from superset.dhis2.sync_service import reset_stale_running_jobs
 
     stale_cutoff = now - timedelta(minutes=stale_after_minutes)
-    service = DHIS2SyncService()
 
-    # Find sync jobs that have been running too long.
-    stuck_jobs = (
-        db.session.query(DHIS2SyncJob)
-        .filter(
-            DHIS2SyncJob.status == "running",
-            DHIS2SyncJob.created_on < stale_cutoff,
-        )
-        .all()
+    reset_stale_running_jobs(
+        stale_after_minutes=stale_after_minutes,
+        now=now,
     )
-    for job in stuck_jobs:
-        logger.warning(
-            "dhis2_sync_all: resetting stale running job id=%d dataset=%d",
-            job.id,
-            job.staged_dataset_id,
-        )
-        service.update_job_status(
-            job,
-            status="failed",
-            error_message="Auto-reset: job was stuck in running state (server restart?)",
-        )
-
-    # Reset dataset-level sync_status for any that are still flagged running
-    # but have no active job.
-    stuck_datasets = (
-        db.session.query(DHIS2StagedDataset)
-        .filter(DHIS2StagedDataset.last_sync_status == "running")
-        .all()
-    )
-    for dataset in stuck_datasets:
-        active_job = (
-            db.session.query(DHIS2SyncJob)
-            .filter_by(staged_dataset_id=dataset.id, status="running")
-            .first()
-        )
-        if active_job is None:
-            logger.warning(
-                "dhis2_sync_all: resetting orphaned running status for dataset id=%d",
-                dataset.id,
-            )
-            service.update_dataset_sync_state(dataset.id, status="pending")
-
-    if stuck_jobs or stuck_datasets:
-        db.session.commit()
 
     # Also reset stale DHIS2MetadataJob records stuck in running state
     try:

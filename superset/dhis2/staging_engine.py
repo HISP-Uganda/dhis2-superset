@@ -1858,25 +1858,40 @@ class DHIS2StagingEngine:
         staged_dataset: DHIS2StagedDataset,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Return a preview of rows from a staged dataset's local serving table."""
+        """Return a preview of rows from a staged dataset's raw staging table."""
         safe_limit = max(1, min(int(limit or 50), 500))
-        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        full_name = self.get_superset_sql_table_ref(staged_dataset)
+        serving_ref = self.get_serving_sql_table_ref(staged_dataset)
 
-        if not self.serving_table_exists(staged_dataset):
+        if not self.table_exists(staged_dataset):
             return {
                 "columns": [],
                 "rows": [],
                 "limit": safe_limit,
                 "staging_table_ref": full_name,
-                "serving_table_ref": full_name,
+                "serving_table_ref": serving_ref,
+                "diagnostics": {
+                    "table_exists": False,
+                    "row_count": 0,
+                    "sql_preview": f"SELECT * FROM {full_name} LIMIT {safe_limit}",
+                    "rows_returned": 0,
+                    "org_unit_columns": ["ou", "ou_name", "ou_level"],
+                    "period_columns": ["pe"],
+                },
             }
 
         with db.engine.connect() as conn:
+            row_count_result = conn.execute(
+                text(f"SELECT COUNT(*) FROM {full_name}")  # noqa: S608
+            ).fetchone()
+            row_count = int(row_count_result[0]) if row_count_result else 0
+            preview_sql = (
+                f"SELECT * FROM {full_name} "  # noqa: S608
+                'ORDER BY "source_instance_id", "pe", "dx_uid", "ou" '
+                "LIMIT :limit"
+            )
             result = conn.execute(
-                text(
-                    f"SELECT * FROM {full_name} "  # noqa: S608
-                    "LIMIT :limit"
-                ),
+                text(preview_sql),
                 {"limit": safe_limit},
             )
             columns = list(result.keys())
@@ -1887,5 +1902,19 @@ class DHIS2StagingEngine:
             "rows": rows,
             "limit": safe_limit,
             "staging_table_ref": full_name,
-            "serving_table_ref": full_name,
+            "serving_table_ref": serving_ref,
+            "diagnostics": {
+                "table_exists": True,
+                "row_count": row_count,
+                "sql_preview": preview_sql.replace(":limit", str(safe_limit)),
+                "rows_returned": len(rows),
+                "org_unit_columns": [
+                    column_name
+                    for column_name in ("ou", "ou_name", "ou_level")
+                    if column_name in columns
+                ],
+                "period_columns": [
+                    column_name for column_name in ("pe",) if column_name in columns
+                ],
+            },
         }

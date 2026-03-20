@@ -22,6 +22,7 @@ import type {
   DHIS2LocalFilterOptionsResult,
   DHIS2LocalDataQueryResult,
   DHIS2StagedDatasetSummary,
+  DHIS2StagedDatasetPreview,
   DHIS2SyncJob,
 } from 'src/features/dhis2/types';
 import SyncProgressPanel from 'src/features/dhis2/SyncProgressPanel';
@@ -142,6 +143,12 @@ export default function DHIS2LocalData() {
   const [queryResult, setQueryResult] = useState<DHIS2LocalDataQueryResult | null>(
     null,
   );
+  const [stagingPreviewLimit, setStagingPreviewLimit] = useState(
+    PREVIEW_LIMIT_OPTIONS[0],
+  );
+  const [stagingPreviewLoading, setStagingPreviewLoading] = useState(false);
+  const [stagingPreview, setStagingPreview] =
+    useState<DHIS2StagedDatasetPreview | null>(null);
   const [refreshingDatasetId, setRefreshingDatasetId] = useState<number | null>(
     null,
   );
@@ -346,12 +353,57 @@ export default function DHIS2LocalData() {
 
   useEffect(() => {
     setQueryResult(null);
+    setStagingPreview(null);
     setQueryFilters([]);
     setLocalFilterOptions(EMPTY_LOCAL_FILTER_OPTIONS);
     setOrgUnitSelections({});
     setSelectedPeriods([]);
     setQueryPage(1);
   }, [activeDatasetId]);
+
+  const loadStagingPreview = useCallback(
+    async (
+      dataset: DHIS2StagedDatasetSummary = activeDataset!,
+      limit = stagingPreviewLimit,
+    ) => {
+      if (!dataset) {
+        return;
+      }
+      setStagingPreviewLoading(true);
+      try {
+        const response = await SupersetClient.get({
+          endpoint: `/api/v1/dhis2/staged-datasets/${dataset.id}/preview?limit=${limit}`,
+        });
+        if (!isMountedRef.current) {
+          return;
+        }
+        setStagingPreview(
+          (response.json.result || null) as DHIS2StagedDatasetPreview | null,
+        );
+      } catch (error) {
+        if (!isMountedRef.current) {
+          return;
+        }
+        addDangerToast(
+          getErrorMessage(error, t('Failed to load raw staged preview')),
+        );
+        setStagingPreview(null);
+      } finally {
+        if (isMountedRef.current) {
+          setStagingPreviewLoading(false);
+        }
+      }
+    },
+    [activeDataset, addDangerToast, stagingPreviewLimit],
+  );
+
+  useEffect(() => {
+    if (!activeDataset) {
+      setStagingPreview(null);
+      return;
+    }
+    void loadStagingPreview(activeDataset, stagingPreviewLimit);
+  }, [activeDataset, loadStagingPreview, stagingPreviewLimit]);
 
   const structuredFilters = useMemo<StructuredFilter[]>(() => {
     const nextFilters: StructuredFilter[] = [];
@@ -640,6 +692,7 @@ export default function DHIS2LocalData() {
       );
       if (activeDatasetId === dataset.id) {
         setQueryResult(null);
+        setStagingPreview(null);
       }
       await loadDatasets();
     } catch (error) {
@@ -665,6 +718,7 @@ export default function DHIS2LocalData() {
       );
       if (activeDatasetId === dataset.id) {
         setQueryResult(null);
+        setStagingPreview(null);
       }
       await loadDatasets();
     } catch (error) {
@@ -802,6 +856,12 @@ export default function DHIS2LocalData() {
       ? getSqlLabQueryRoute(activeDataset.serving_database_id, sqlPreview)
       : undefined;
 
+  const stagingPreviewDiagnostics = stagingPreview?.diagnostics || null;
+  const hasPreviewRowMismatch =
+    Boolean(stagingPreviewDiagnostics?.table_exists) &&
+    Number(stagingPreviewDiagnostics?.row_count || 0) > 0 &&
+    Number(stagingPreviewDiagnostics?.rows_returned || 0) === 0;
+
   return (
     <DHIS2PageLayout
       activeTab="local-data"
@@ -921,6 +981,159 @@ export default function DHIS2LocalData() {
                 'No staged datasets are available for this database yet.',
               )}
             />
+          )}
+        </Card>
+
+        <Card
+          data-test="dhis2-staging-preview-card"
+          extra={
+            activeDataset ? (
+              <Space wrap>
+                <Select
+                  aria-label={t('Staging preview row limit')}
+                  data-test="dhis2-staging-preview-limit"
+                  options={PREVIEW_LIMIT_OPTIONS.map(value => ({
+                    label: t('%s rows', value),
+                    value,
+                  }))}
+                  style={{ width: 160 }}
+                  value={stagingPreviewLimit}
+                  onChange={value => setStagingPreviewLimit(value)}
+                />
+                <Button
+                  data-test="dhis2-staging-preview-refresh"
+                  loading={stagingPreviewLoading}
+                  onClick={() =>
+                    void loadStagingPreview(activeDataset, stagingPreviewLimit)
+                  }
+                >
+                  {t('Refresh staging preview')}
+                </Button>
+              </Space>
+            ) : null
+          }
+          title={t('Raw staging preview')}
+        >
+          {activeDataset ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Text type="secondary">
+                {t(
+                  'This preview reads directly from the physical staging table so you can verify raw ds_* rows before the serving build runs.',
+                )}
+              </Text>
+              <Space wrap>
+                <Tag data-test="dhis2-staging-preview-staging-ref" color="blue">
+                  {stagingPreview?.staging_table_ref ||
+                    activeDataset.staging_table_ref ||
+                    t('No staging table')}
+                </Tag>
+                {stagingPreview?.serving_table_ref ? (
+                  <Tag
+                    data-test="dhis2-staging-preview-serving-ref"
+                    color="purple"
+                  >
+                    {stagingPreview.serving_table_ref}
+                  </Tag>
+                ) : null}
+                <Text data-test="dhis2-staging-preview-row-count">
+                  {t(
+                    'Staging rows: %s',
+                    formatCount(stagingPreviewDiagnostics?.row_count),
+                  )}
+                </Text>
+                <Text data-test="dhis2-staging-preview-returned-rows">
+                  {t(
+                    'Preview rows returned: %s',
+                    formatCount(stagingPreviewDiagnostics?.rows_returned),
+                  )}
+                </Text>
+              </Space>
+              {stagingPreviewDiagnostics ? (
+                <Space wrap>
+                  <Tag color={stagingPreviewDiagnostics.table_exists ? 'green' : 'red'}>
+                    {stagingPreviewDiagnostics.table_exists
+                      ? t('Staging table detected')
+                      : t('Staging table missing')}
+                  </Tag>
+                  {(stagingPreviewDiagnostics.org_unit_columns || []).length ? (
+                    <Tag data-test="dhis2-staging-preview-orgunit-columns" color="gold">
+                      {t(
+                        'Org unit columns: %s',
+                        stagingPreviewDiagnostics.org_unit_columns?.join(', '),
+                      )}
+                    </Tag>
+                  ) : null}
+                  {(stagingPreviewDiagnostics.period_columns || []).length ? (
+                    <Tag data-test="dhis2-staging-preview-period-columns" color="cyan">
+                      {t(
+                        'Period columns: %s',
+                        stagingPreviewDiagnostics.period_columns?.join(', '),
+                      )}
+                    </Tag>
+                  ) : null}
+                </Space>
+              ) : null}
+              {hasPreviewRowMismatch ? (
+                <Alert
+                  data-test="dhis2-staging-preview-mismatch"
+                  message={t('The staging table has rows, but the preview returned none')}
+                  showIcon
+                  type="error"
+                  description={t(
+                    'This indicates a preview-path issue rather than an empty ds_* table.',
+                  )}
+                />
+              ) : null}
+              <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                <Text strong>{t('Preview SQL')}</Text>
+                <QueryPreview
+                  autoSize={{ minRows: 3, maxRows: 8 }}
+                  readOnly
+                  value={
+                    stagingPreviewDiagnostics?.sql_preview ||
+                    `SELECT * FROM ${activeDataset.staging_table_ref || ''} LIMIT ${stagingPreviewLimit}`
+                  }
+                />
+              </Space>
+              {stagingPreview?.rows?.length ? (
+                <div data-test="dhis2-staging-preview-table">
+                  <Table
+                    columns={stagingPreview.columns.map(column => ({
+                      title: column,
+                      dataIndex: column,
+                      key: column,
+                      render: (value: unknown) =>
+                        value === null || value === undefined || value === '' ? (
+                          <Text type="secondary">{t('Empty')}</Text>
+                        ) : (
+                          String(value)
+                        ),
+                    }))}
+                    dataSource={stagingPreview.rows}
+                    loading={stagingPreviewLoading}
+                    pagination={false}
+                    rowKey={(_row, index) => `staging_preview_${index}`}
+                    scroll={{ x: true }}
+                  />
+                </div>
+              ) : (
+                <Empty
+                  description={
+                    stagingPreviewLoading
+                      ? t('Loading raw staged rows...')
+                      : stagingPreviewDiagnostics?.table_exists === false
+                        ? t('The staging table does not exist yet for this dataset.')
+                        : Number(stagingPreviewDiagnostics?.row_count || 0) > 0
+                          ? t(
+                              'The staging table has rows, but this preview did not return any. Review the diagnostics above.',
+                            )
+                          : t('The staging table is currently empty.')
+                  }
+                />
+              )}
+            </Space>
+          ) : (
+            <Empty description={t('Select a staged dataset to inspect raw ds_* rows.')} />
           )}
         </Card>
 
@@ -1148,7 +1361,7 @@ export default function DHIS2LocalData() {
           )}
         </Card>
 
-        <Card title={t('Query results')}>
+        <Card data-test="dhis2-local-data-query-results-card" title={t('Query results')}>
           {activeDataset?.last_sync_status &&
           ['pending', 'queued', 'running'].includes(activeDataset.last_sync_status) ? (
             <Alert
@@ -1162,37 +1375,40 @@ export default function DHIS2LocalData() {
             />
           ) : null}
           {queryResult?.rows?.length ? (
-            <Table
-              columns={queryResult.columns.map(column => ({
-                title:
-                  availableColumns.find(option => option.value === column)?.label || column,
-                dataIndex: column,
-                key: column,
-                render: (value: unknown) =>
-                  value === null || value === undefined || value === '' ? (
-                    <Text type="secondary">{t('Empty')}</Text>
-                  ) : (
-                    String(value)
-                  ),
-              }))}
-              dataSource={queryResult.rows}
-              loading={queryLoading}
-              pagination={{
-                current: queryResult.page || queryPage,
-                pageSize: queryResult.limit,
-                total: queryResult.total_rows,
-                showSizeChanger: false,
-                onChange: page => {
-                  if (activeDataset && page !== (queryResult.page || queryPage)) {
-                    void runQuery(activeDataset, page);
-                  }
-                },
-              }}
-              rowKey={(_row, index) =>
-                `${queryResult.page || queryPage}_${index}`
-              }
-              scroll={{ x: true }}
-            />
+            <div data-test="dhis2-local-data-query-results-table">
+              <Table
+                columns={queryResult.columns.map(column => ({
+                  title:
+                    availableColumns.find(option => option.value === column)?.label ||
+                    column,
+                  dataIndex: column,
+                  key: column,
+                  render: (value: unknown) =>
+                    value === null || value === undefined || value === '' ? (
+                      <Text type="secondary">{t('Empty')}</Text>
+                    ) : (
+                      String(value)
+                    ),
+                }))}
+                dataSource={queryResult.rows}
+                loading={queryLoading}
+                pagination={{
+                  current: queryResult.page || queryPage,
+                  pageSize: queryResult.limit,
+                  total: queryResult.total_rows,
+                  showSizeChanger: false,
+                  onChange: page => {
+                    if (activeDataset && page !== (queryResult.page || queryPage)) {
+                      void runQuery(activeDataset, page);
+                    }
+                  },
+                }}
+                rowKey={(_row, index) =>
+                  `${queryResult.page || queryPage}_${index}`
+                }
+                scroll={{ x: true }}
+              />
+            </div>
           ) : (
             <Empty
               description={

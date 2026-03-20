@@ -38,13 +38,13 @@ import requests
 from flask import current_app, has_app_context
 
 from superset import db
-from superset.dhis2.analytical_serving import materialize_serving_rows, prune_empty_hierarchy_columns
 from superset.dhis2.models import (
     DHIS2DatasetVariable,
     DHIS2Instance,
     DHIS2StagedDataset,
     DHIS2SyncJob,
 )
+from superset.dhis2.serving_build_service import build_serving_table
 from superset.dhis2.staging_engine import DHIS2StagingEngine
 from superset.local_staging.engine_factory import get_active_staging_engine
 from superset.staging.compat import sync_dhis2_staged_dataset, sync_dhis2_sync_job
@@ -123,6 +123,7 @@ _VARIABLE_TYPE_TO_METADATA_TYPE = {
     "eventdataelement": "eventDataItems",
 }
 _RETRYABLE_ANALYTICS_STATUS_CODES = {408, 429, 500, 502, 503, 504, 520, 522, 524}
+_ACTIVE_SYNC_JOB_STATUSES = {"pending", "queued", "running", "retry_pending"}
 _FIXED_PERIOD_PATTERNS = (
     re.compile(r"^\d{8}$"),
     re.compile(r"^\d{4}(?:Wed|Thu|Sat|Sun)?W\d{1,2}$"),
@@ -521,6 +522,66 @@ def _sync_compat_job(
         )
 
 
+def reset_stale_running_jobs(
+    *,
+    dataset_id: int | None = None,
+    stale_after_minutes: int = 30,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Reset stale sync jobs and orphaned dataset statuses back to retryable states."""
+    stale_now = now or datetime.utcnow()
+    stale_cutoff = stale_now - timedelta(minutes=stale_after_minutes)
+    service = DHIS2SyncService()
+
+    job_query = db.session.query(DHIS2SyncJob).filter(DHIS2SyncJob.status == "running")
+    if dataset_id is not None:
+        job_query = job_query.filter(DHIS2SyncJob.staged_dataset_id == dataset_id)
+
+    reset_jobs = 0
+    for job in job_query.all():
+        heartbeat = job.changed_on or job.started_at or job.created_on
+        if heartbeat is not None and heartbeat >= stale_cutoff:
+            continue
+        logger.warning(
+            "reset_stale_running_jobs: auto-resetting stale job id=%s dataset=%s",
+            job.id,
+            job.staged_dataset_id,
+        )
+        service.update_job_status(
+            job,
+            status="failed",
+            error_message="Auto-reset: job was stuck in running state (server restart?)",
+        )
+        reset_jobs += 1
+
+    dataset_query = db.session.query(DHIS2StagedDataset).filter(
+        DHIS2StagedDataset.last_sync_status == "running"
+    )
+    if dataset_id is not None:
+        dataset_query = dataset_query.filter(DHIS2StagedDataset.id == dataset_id)
+
+    reset_datasets = 0
+    for dataset in dataset_query.all():
+        active_job = (
+            db.session.query(DHIS2SyncJob)
+            .filter(
+                DHIS2SyncJob.staged_dataset_id == dataset.id,
+                DHIS2SyncJob.status.in_(tuple(_ACTIVE_SYNC_JOB_STATUSES)),
+            )
+            .first()
+        )
+        if active_job is not None:
+            continue
+        logger.warning(
+            "reset_stale_running_jobs: clearing orphaned running status for dataset id=%s",
+            dataset.id,
+        )
+        service.update_dataset_sync_state(dataset.id, status="pending")
+        reset_datasets += 1
+
+    return {"reset_jobs": reset_jobs, "reset_datasets": reset_datasets}
+
+
 def _normalize_org_unit_scope(scope: Any) -> str:
     candidate = str(scope or _ORG_UNIT_SCOPE_SELECTED).strip().lower()
     if candidate in {
@@ -651,18 +712,6 @@ def _expand_org_units_for_scope(
                 continue
             expanded.add(node_id)
 
-    # Leaf-only rule: remove any expanded node that has at least one child
-    # also in the expanded set.  Querying a parent alongside its children
-    # causes double-counting because DHIS2 returns the parent's aggregate
-    # value (which already includes its children) as a separate row.
-    ancestors_in_expanded: set[str] = set()
-    for unit_id in expanded:
-        node = node_lookup.get(unit_id) or {}
-        for ancestor_id in (node.get("ancestorIds") or []):
-            if ancestor_id in expanded:
-                ancestors_in_expanded.add(ancestor_id)
-    expanded -= ancestors_in_expanded
-
     ordered_units = [unit for unit in allowed_units if unit in expanded]
     ordered_units.extend(
         unit_id
@@ -713,14 +762,18 @@ def _selected_org_unit_is_descendant(
 def _prune_ancestor_org_units(
     allowed_units: list[str],
     selected_detail_map: dict[str, dict[str, Any]],
+    *,
+    prefer_roots: bool = False,
 ) -> list[str]:
-    """Keep only leaf org units — remove any unit that has a descendant in the set.
+    """Prune overlapping org-unit selections to a stable, non-duplicated set.
 
     When a user selects both a parent (e.g., District) and one of its children
     (e.g., Parish), querying DHIS2 for both produces double-counting: the
-    parent row already aggregates all child values.  This function discards
-    every unit whose ID appears in a sibling unit's ancestor path, so only
-    the most-granular selections reach the analytics API.
+    parent row already aggregates all child values.  By default this function
+    keeps the most-granular leaves.  When ``prefer_roots`` is true it instead
+    keeps the shallowest roots, which is useful before scope-expansion so
+    ``children`` / ``grandchildren`` calculations start from the user-facing
+    parent selection rather than an explicitly chosen descendant.
 
     Path/parentId metadata from ``selected_detail_map`` is used.  Units whose
     detail is missing are conservatively kept (no false removal).
@@ -743,6 +796,7 @@ def _prune_ancestor_org_units(
     # unit in the set.  We read this from the *descendant* unit's path/parentId
     # so the check is O(n × path_depth) rather than O(n²).
     ancestors_in_set: set[str] = set()
+    descendants_in_set: set[str] = set()
     for unit in unique_units:
         detail = detail_by_source_id.get(unit, {})
 
@@ -753,6 +807,7 @@ def _prune_ancestor_org_units(
             for ancestor_seg in segments[:-1]:
                 if ancestor_seg in unit_set:
                     ancestors_in_set.add(ancestor_seg)
+                    descendants_in_set.add(unit)
             continue  # path is authoritative; skip parentId check
 
         # parentId-based fallback (direct parent only)
@@ -763,6 +818,11 @@ def _prune_ancestor_org_units(
             )
             if normalized in unit_set:
                 ancestors_in_set.add(normalized)
+                descendants_in_set.add(unit)
+
+    if prefer_roots:
+        roots = [u for u in unique_units if u not in descendants_in_set]
+        return roots if roots else unique_units
 
     leaves = [u for u in unique_units if u not in ancestors_in_set]
     # If no ancestry information was available, return all units unchanged so
@@ -2168,6 +2228,7 @@ class DHIS2SyncService:
             primary_units = _prune_ancestor_org_units(
                 list(dict.fromkeys(primary_units)),
                 selected_detail_map,
+                prefer_roots=True,
             )
             scoped_units = _expand_org_units_for_scope(
                 instance=instance,
@@ -2584,14 +2645,12 @@ class DHIS2SyncService:
 
     def _materialize_serving_table(self, dataset: DHIS2StagedDataset) -> None:
         staging_engine = get_active_staging_engine(dataset.database_id)
-        ou_filter = _build_ou_filter_for_dataset(dataset)
-        raw_rows = staging_engine.fetch_staging_rows(dataset, limit=0, ou_filter=ou_filter)
-        serving_columns, serving_rows = materialize_serving_rows(dataset, raw_rows)
-        serving_columns, serving_rows = prune_empty_hierarchy_columns(serving_columns, serving_rows)
-        staging_engine.create_or_replace_serving_table(
-            dataset,
-            columns=serving_columns,
-            rows=serving_rows,
+        build_result = build_serving_table(dataset, engine=staging_engine)
+        logger.info(
+            "sync_service: rebuilt serving table for dataset id=%s source_rows=%s target_rows=%s",
+            dataset.id,
+            build_result.diagnostics.get("source_row_count"),
+            build_result.diagnostics.get("live_serving_row_count"),
         )
 
     # ------------------------------------------------------------------
@@ -2784,6 +2843,32 @@ def schedule_staged_dataset_sync(
     incremental: bool = True,
 ) -> dict[str, Any]:
     service = DHIS2SyncService()
+    recovery_result = reset_stale_running_jobs(dataset_id=staged_dataset_id)
+    existing_job = (
+        db.session.query(DHIS2SyncJob)
+        .filter(
+            DHIS2SyncJob.staged_dataset_id == staged_dataset_id,
+            DHIS2SyncJob.status.in_(tuple(_ACTIVE_SYNC_JOB_STATUSES)),
+        )
+        .order_by(DHIS2SyncJob.created_on.desc())
+        .first()
+    )
+    if existing_job is not None:
+        logger.info(
+            "schedule_staged_dataset_sync: reusing active job id=%s dataset=%s status=%s recovery=%s",
+            existing_job.id,
+            staged_dataset_id,
+            existing_job.status,
+            recovery_result,
+        )
+        return {
+            "scheduled": True,
+            "mode": "existing",
+            "job_id": existing_job.id,
+            "task_id": getattr(existing_job, "task_id", None),
+            "status": existing_job.status,
+        }
+
     job = service.create_sync_job(staged_dataset_id, job_type=job_type)
 
     app = current_app._get_current_object() if has_app_context() else None

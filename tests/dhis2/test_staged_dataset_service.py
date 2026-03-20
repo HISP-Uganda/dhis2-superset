@@ -230,17 +230,12 @@ def test_get_staging_preview_uses_local_staging_engine():
     with patch(
         "superset.dhis2.staged_dataset_service.get_staged_dataset",
         return_value=dataset,
-    ), patch(
-        "superset.dhis2.staged_dataset_service.ensure_serving_table",
-        return_value=("dhis2_staging.sv_1_dataset", []),
-    ) as ensure_mock, patch(
-        "superset.dhis2.staged_dataset_service._get_engine",
+    ), patch("superset.dhis2.staged_dataset_service._get_engine",
         return_value=engine,
     ):
         result = svc.get_staging_preview(dataset.id, limit=25)
 
     assert result == preview
-    ensure_mock.assert_called_once_with(dataset.id)
     engine.get_staging_table_preview.assert_called_once_with(dataset, limit=25)
 
 
@@ -291,6 +286,7 @@ def test_query_serving_data_uses_local_serving_engine():
         metric_column=None,
         metric_alias=None,
         aggregation_method=None,
+        count_rows=True,
     )
 
 
@@ -348,6 +344,7 @@ def test_query_serving_data_forwards_grouped_aggregation():
         metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
         metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
         aggregation_method="sum",
+        count_rows=True,
     )
 
 
@@ -472,6 +469,8 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
             "value_numeric": 12.0,
         }
     ]
+    engine.get_staging_table_stats.return_value = {"total_rows": 1}
+    engine.query_serving_table.return_value = {"total_rows": 0}
     manifest = {
         "columns": [
             {"column_name": "dhis2_instance", "sql_type": "TEXT"},
@@ -504,11 +503,17 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
         "superset.dhis2.staged_dataset_service.build_serving_manifest",
         return_value=manifest,
     ), patch(
+        "superset.dhis2.staged_dataset_service.build_serving_table",
+        return_value=SimpleNamespace(
+            serving_columns=[{"column_name": column["column_name"]} for column in rebuilt_columns],
+            diagnostics={
+                "source_row_count": 1,
+                "live_serving_row_count": 1,
+            },
+        ),
+    ) as build_mock, patch(
         "superset.dhis2.staged_dataset_service.dataset_columns_payload",
         return_value=[{"column_name": column["column_name"]} for column in rebuilt_columns],
-    ), patch(
-        "superset.dhis2.staged_dataset_service.materialize_serving_rows",
-        return_value=(rebuilt_columns, rebuilt_rows),
     ):
         table_ref, serving_columns = svc.ensure_serving_table(dataset.id)
 
@@ -521,11 +526,7 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
         "period",
         "anc_1st_visit",
     ]
-    engine.create_or_replace_serving_table.assert_called_once_with(
-        dataset,
-        columns=rebuilt_columns,
-        rows=rebuilt_rows,
-    )
+    build_mock.assert_called_once_with(dataset, engine=engine)
 
 
 def test_add_variable_coerces_instance_id_to_integer():

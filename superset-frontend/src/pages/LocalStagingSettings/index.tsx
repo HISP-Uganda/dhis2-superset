@@ -605,6 +605,7 @@ function ExplorerTab() {
 
       {/* Table browser */}
       <SectionCard
+        data-test="local-staging-tables-card"
         title={
           <Space>
             <TableOutlined />
@@ -623,6 +624,7 @@ function ExplorerTab() {
         }
       >
         <Table
+          data-test="local-staging-tables-table"
           dataSource={tables}
           columns={tableColumns}
           rowKey={r => `${r.schema}.${r.name}`}
@@ -635,6 +637,7 @@ function ExplorerTab() {
 
       {/* Query runner */}
       <SectionCard
+        data-test="local-staging-query-card"
         title={
           <Space>
             <CodeOutlined />
@@ -643,6 +646,7 @@ function ExplorerTab() {
         }
         extra={
           <Button
+            data-test="local-staging-query-run"
             type="primary"
             icon={<PlayCircleOutlined />}
             loading={queryRunning}
@@ -652,24 +656,27 @@ function ExplorerTab() {
           </Button>
         }
       >
-        <SqlEditor
-          value={sql}
-          onChange={e => setSql(e.target.value)}
-          onKeyDown={e => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-              e.preventDefault();
-              void handleRunQuery();
-            }
-          }}
-          placeholder={t('Enter a SELECT query… (Ctrl+Enter to run)')}
-          spellCheck={false}
-        />
+        <div data-test="local-staging-query-editor">
+          <SqlEditor
+            value={sql}
+            onChange={e => setSql(e.target.value)}
+            onKeyDown={e => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                void handleRunQuery();
+              }
+            }}
+            placeholder={t('Enter a SELECT query… (Ctrl+Enter to run)')}
+            spellCheck={false}
+          />
+        </div>
         {queryResult && (
           <div style={{ marginTop: 16 }}>
-            <Text type="secondary">
+            <Text data-test="local-staging-query-rowcount" type="secondary">
               {t('%s rows returned', queryResult.rowcount)}
             </Text>
             <Table
+              data-test="local-staging-query-results-table"
               dataSource={queryResult.rows.map((r, i) => ({ ...r, __key: i }))}
               columns={resultColumns}
               rowKey="__key"

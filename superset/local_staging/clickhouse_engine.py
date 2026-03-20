@@ -57,6 +57,7 @@ import csv
 import json as _json
 import logging
 import re
+import time
 from io import StringIO
 from typing import Any, Iterator
 
@@ -130,6 +131,14 @@ def _map_type(col_type: str) -> str:
     return _TYPE_MAP.get(col_type.upper().strip(), "String")
 
 
+def _wrap_nullable_type(col_type: str) -> str:
+    """Wrap a ClickHouse type in Nullable(...) when needed."""
+    normalized = str(col_type or "").strip()
+    if normalized.startswith("Nullable("):
+        return normalized
+    return f"Nullable({normalized})"
+
+
 class ClickHouseStagingEngine(LocalStagingEngineBase):
     """ClickHouse-backed staging engine.
 
@@ -166,6 +175,75 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         keep staging and serving in separate ClickHouse databases.
         """
         return self._config.get("serving_database") or self._database
+
+    @staticmethod
+    def _load_column_extra(column: dict[str, Any]) -> dict[str, Any]:
+        raw_extra = column.get("extra")
+        if isinstance(raw_extra, dict):
+            return raw_extra
+        if isinstance(raw_extra, str) and raw_extra.strip():
+            try:
+                parsed = _json.loads(raw_extra)
+            except Exception:  # pylint: disable=broad-except
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _table_row_count(self, table_ref: str) -> int:
+        result = self._qry(f"SELECT count() FROM {table_ref}")
+        return int(result.result_rows[0][0] if result.result_rows else 0)
+
+    def _serving_order_by_sql(
+        self,
+        columns: list[dict[str, Any]] | None,
+    ) -> str:
+        if not columns:
+            return "tuple()"
+
+        priority_keys = [
+            "dhis2_instance",
+            "period",
+            "period_year",
+            "period_quarter",
+            "period_month",
+            "period_week",
+            "period_parent",
+            "ou_level",
+            "co_uid",
+            "disaggregation",
+        ]
+        named_columns = [
+            str(column.get("column_name") or "").strip()
+            for column in columns
+            if str(column.get("column_name") or "").strip()
+        ]
+        selected: list[str] = []
+        for key in priority_keys:
+            if key in named_columns and key not in selected:
+                selected.append(key)
+
+        hierarchy_columns: list[tuple[int, str]] = []
+        for column in columns:
+            column_name = str(column.get("column_name") or "").strip()
+            if not column_name:
+                continue
+            extra = self._load_column_extra(column)
+            if extra.get("dhis2_is_ou_hierarchy") is not True:
+                continue
+            try:
+                hierarchy_columns.append(
+                    (int(extra.get("dhis2_ou_level") or 0), column_name)
+                )
+            except (TypeError, ValueError):
+                continue
+
+        for _level, column_name in sorted(hierarchy_columns):
+            if column_name not in selected:
+                selected.append(column_name)
+
+        if not selected:
+            return "tuple()"
+        return f"({', '.join(f'`{column}`' for column in selected)})"
 
     # ------------------------------------------------------------------
     # Connection management
@@ -211,6 +289,9 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 send_receive_timeout=int(
                     self._config.get("send_receive_timeout", 300)
                 ),
+                settings={
+                    "max_query_size": 104857600,  # 100MB (default is 256KB)
+                },
             )
         return self._client
 
@@ -453,12 +534,18 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         instance_id: int,
     ) -> list[str]:
         table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
-        result = self._qry(
-            f"SELECT DISTINCT pe FROM {table} "
-            f"WHERE source_instance_id = {{id:Int32}} ORDER BY pe",
-            parameters={"id": instance_id},
-        )
-        return [r[0] for r in result.result_rows if r[0]]
+        try:
+            result = self._qry(
+                f"SELECT DISTINCT pe FROM {table} "
+                f"WHERE source_instance_id = {{id:Int32}} ORDER BY pe",
+                parameters={"id": instance_id},
+            )
+            return [r[0] for r in result.result_rows if r[0]]
+        except Exception as exc:
+            # Code 60 = Unknown table
+            if "Code: 60" in str(exc):
+                return []
+            raise
 
     def delete_rows_for_instance_periods(
         self,
@@ -511,9 +598,10 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         self.ensure_schema_exists(None)
         serving_db = self._serving_database
         serving_name = _serving_table_name(staged_dataset)
-        loading_name = f"{serving_name}__loading"
+        loading_name = f"{serving_name}__build_{int(time.time() * 1000)}"
         serving_ref = f"`{serving_db}`.`{serving_name}`"
         loading_ref = f"`{serving_db}`.`{loading_name}`"
+        self._last_serving_build_name = loading_name
 
         # Drop any abandoned loading table from a previous failed run
         self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
@@ -524,19 +612,29 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             if effective_cols:
                 col_ddl_parts: list[str] = []
                 col_names: list[str] = []
+                nullable_column_names: set[str] = set()
+                if rows:
+                    for col in effective_cols:
+                        col_name = str(col.get("column_name") or "").strip()
+                        if col_name and any(row.get(col_name) is None for row in rows):
+                            nullable_column_names.add(col_name)
                 for col in effective_cols:
                     col_name = str(col.get("column_name") or "").strip()
                     if not col_name:
                         continue
                     col_type = _map_type(str(col.get("type") or "TEXT"))
+                    if col_name in nullable_column_names:
+                        col_type = _wrap_nullable_type(col_type)
                     col_ddl_parts.append(f"`{col_name}` {col_type}")
                     col_names.append(col_name)
 
                 if col_ddl_parts:
+                    order_by_sql = self._serving_order_by_sql(effective_cols)
                     self._cmd(
                         f"CREATE TABLE {loading_ref} "
                         f"({', '.join(col_ddl_parts)}) "
-                        f"ENGINE = MergeTree() ORDER BY tuple()"
+                        f"ENGINE = MergeTree() ORDER BY {order_by_sql} "
+                        f"SETTINGS allow_nullable_key = 1, index_granularity = 8192"
                     )
                     if rows:
                         col_list = ", ".join(f"`{c}`" for c in col_names)
@@ -553,9 +651,16 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                                 data[i : i + batch_size],
                                 column_names=col_names,
                             )
+                    loaded_row_count = self._table_row_count(loading_ref)
+                    if rows is not None and loaded_row_count != len(rows):
+                        raise RuntimeError(
+                            "ClickHouse serving build row-count mismatch: "
+                            f"expected {len(rows)}, loaded {loaded_row_count}"
+                        )
                     logger.info(
                         "ClickHouse: loaded %d rows into %s; promoting to live",
-                        len(rows) if rows else 0, loading_ref,
+                        loaded_row_count,
+                        loading_ref,
                     )
                     self._promote_loading_to_live(
                         serving_db, serving_name, loading_name
@@ -574,6 +679,11 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 f"CREATE TABLE {loading_ref} "
                 f"ENGINE = MergeTree() ORDER BY (source_instance_id, dx_uid, pe, ou) "
                 f"AS SELECT * FROM `{staging_db}`.`{staging_name}` {where}"
+            )
+            logger.info(
+                "ClickHouse: staged-copy build created %s with %s rows",
+                loading_ref,
+                self._table_row_count(loading_ref),
             )
             logger.info(
                 "ClickHouse: loaded staging copy into %s; promoting to live",
@@ -680,10 +790,76 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             if ou_clauses:
                 where_parts.append(f"({' OR '.join(ou_clauses)})")
         where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-        sql = f"SELECT * FROM {table} {where} LIMIT {int(limit)} OFFSET {int(offset)}"
-        result = self._qry(sql, parameters=params if params else None)
-        cols = result.column_names
-        yield from (dict(zip(cols, r)) for r in result.result_rows)
+        if limit and int(limit) > 0:
+            sql = f"SELECT * FROM {table} {where} LIMIT {int(limit)} OFFSET {int(offset)}"
+        else:
+            sql = f"SELECT * FROM {table} {where}"
+            if offset and int(offset) > 0:
+                sql = f"{sql} LIMIT 18446744073709551615 OFFSET {int(offset)}"
+        try:
+            result = self._qry(sql, parameters=params if params else None)
+            cols = result.column_names
+            yield from (dict(zip(cols, r)) for r in result.result_rows)
+        except Exception as exc:
+            # Code 60 = Unknown table
+            if "Code: 60" in str(exc):
+                return
+            raise
+
+    def get_staging_table_preview(
+        self,
+        staged_dataset: Any,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 50), 500))
+        staging_ref = self.get_superset_sql_table_ref(staged_dataset)
+        serving_ref = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.table_exists(staged_dataset):
+            return {
+                "columns": [],
+                "rows": [],
+                "limit": safe_limit,
+                "staging_table_ref": staging_ref,
+                "serving_table_ref": serving_ref,
+                "diagnostics": {
+                    "table_exists": False,
+                    "row_count": 0,
+                    "sql_preview": f"SELECT * FROM {staging_ref} LIMIT {safe_limit}",
+                    "rows_returned": 0,
+                    "org_unit_columns": [],
+                    "period_columns": [],
+                },
+            }
+
+        preview_sql = (
+            f"SELECT * FROM {staging_ref} "
+            "ORDER BY source_instance_id, pe, dx_uid, ou "
+            f"LIMIT {safe_limit}"
+        )
+        result = self._qry(preview_sql)
+        columns = list(result.column_names)
+        rows = [dict(zip(columns, record)) for record in result.result_rows]
+        return {
+            "columns": columns,
+            "rows": rows,
+            "limit": safe_limit,
+            "staging_table_ref": staging_ref,
+            "serving_table_ref": serving_ref,
+            "diagnostics": {
+                "table_exists": True,
+                "row_count": self._table_row_count(staging_ref),
+                "sql_preview": preview_sql,
+                "rows_returned": len(rows),
+                "org_unit_columns": [
+                    column_name
+                    for column_name in ("ou", "ou_name", "ou_level")
+                    if column_name in columns
+                ],
+                "period_columns": [
+                    column_name for column_name in ("pe",) if column_name in columns
+                ],
+            },
+        }
 
     _AGGREGATION_FN_MAP = {
         "sum": "sum",
@@ -717,6 +893,8 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             f"`{self._serving_database}`."
             f"`{_serving_table_name(staged_dataset)}`"
         )
+        available_columns = self.get_serving_table_columns(staged_dataset)
+        available_column_names = set(available_columns)
         effective_limit = int(limit or 1000)
         safe_page = max(1, int(page or 1))
         effective_offset = int(offset or (safe_page - 1) * effective_limit)
@@ -728,7 +906,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 continue
             col = str(filt.get("column") or "").strip()
             val = filt.get("value")
-            if col and val is not None:
+            if col and col in available_column_names and val is not None:
                 if isinstance(val, (list, tuple)):
                     vals_sql = ", ".join(f"'{v}'" for v in val)
                     where_parts.append(f"`{col}` IN ({vals_sql})")
@@ -738,8 +916,14 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
 
         # Resolve aggregation
         eff_agg = aggregation_method or aggregation
-        eff_group = group_by_columns or group_by
-        eff_metric = metric_column
+        eff_group = [
+            column_name
+            for column_name in list(group_by_columns or group_by or [])
+            if column_name in available_column_names
+        ]
+        eff_metric = (
+            metric_column if metric_column in available_column_names else None
+        )
         eff_alias = metric_alias
 
         if eff_agg and eff_group and eff_metric:
@@ -758,10 +942,17 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             )
             resolved_columns = list(eff_group) + [alias]
         else:
-            effective_cols = selected_columns or columns
+            effective_cols = [
+                column_name
+                for column_name in list(selected_columns or columns or [])
+                if column_name in available_column_names
+            ]
             if effective_cols:
                 col_list = ", ".join(f"`{c}`" for c in effective_cols)
                 resolved_columns = list(effective_cols)
+            elif available_columns:
+                col_list = ", ".join(f"`{c}`" for c in available_columns)
+                resolved_columns = list(available_columns)
             else:
                 col_list = "*"
                 resolved_columns = []
@@ -848,6 +1039,15 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 "database": self._database,
             }
         except Exception as exc:  # pylint: disable=broad-except
+            # Code 60 = Unknown table
+            if "Code: 60" in str(exc):
+                return {
+                    "row_count": 0,
+                    "total_rows": 0,
+                    "engine": "clickhouse",
+                    "host": self._config.get("host"),
+                    "database": self._database,
+                }
             return {
                 "row_count": 0,
                 "total_rows": 0,

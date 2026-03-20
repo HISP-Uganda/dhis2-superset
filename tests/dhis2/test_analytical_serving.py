@@ -168,6 +168,16 @@ def test_build_serving_manifest_uses_user_facing_dimensions_and_variables():
         "District",
         "Period",
         "OU Level",
+        "Period Level",
+        "Parent Period",
+        "Period Year",
+        "Period Half",
+        "Period Quarter",
+        "Period Month",
+        "Period Week",
+        "Period Biweek",
+        "Period Bimonth",
+        "Period Variant",
         "ANC 1st Visit",
         "Reporting Rate",
     ]
@@ -274,6 +284,16 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "district",
         "period",
         "ou_level",
+        "period_level",
+        "period_parent",
+        "period_year",
+        "period_half",
+        "period_quarter",
+        "period_month",
+        "period_week",
+        "period_biweek",
+        "period_bimonth",
+        "period_variant",
         "anc_1st_visit",
         "reporting_rate",
     ]
@@ -284,6 +304,16 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "district": "Kampala",
             "period": "2024Q1",
             "ou_level": None,
+            "period_level": "quarter",
+            "period_parent": "2024",
+            "period_year": "2024",
+            "period_half": "2024S1",
+            "period_quarter": "2024Q1",
+            "period_month": None,
+            "period_week": None,
+            "period_biweek": None,
+            "period_bimonth": None,
+            "period_variant": None,
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
         },
@@ -293,6 +323,16 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "district": "Mbale",
             "period": "2024Q1",
             "ou_level": None,
+            "period_level": "quarter",
+            "period_parent": "2024",
+            "period_year": "2024",
+            "period_half": "2024S1",
+            "period_quarter": "2024Q1",
+            "period_month": None,
+            "period_week": None,
+            "period_biweek": None,
+            "period_bimonth": None,
+            "period_variant": None,
             "reporting_rate": 95.3,
             "anc_1st_visit": None,
         },
@@ -394,6 +434,16 @@ def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_
         "District",
         "Period",
         "OU Level",
+        "Period Level",
+        "Parent Period",
+        "Period Year",
+        "Period Half",
+        "Period Quarter",
+        "Period Month",
+        "Period Week",
+        "Period Biweek",
+        "Period Bimonth",
+        "Period Variant",
         "Malaria Cases",
     ]
 
@@ -508,6 +558,16 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         "Subcounty",
         "Period",
         "OU Level",
+        "Period Level",
+        "Parent Period",
+        "Period Year",
+        "Period Half",
+        "Period Quarter",
+        "Period Month",
+        "Period Week",
+        "Period Biweek",
+        "Period Bimonth",
+        "Period Variant",
         "Malaria Cases",
     ]
 
@@ -682,8 +742,6 @@ def test_build_serving_manifest_without_coc_dimension_has_no_co_columns():
         side_effect=lambda database_id, namespace, key_parts: payloads.get(
             (namespace, key_parts["instance_id"])
         ),
-    ), patch(
-        "superset.dhis2.analytical_serving.db.engine.connect",
     ):
         manifest = build_serving_manifest(dataset)
 
@@ -713,7 +771,11 @@ def test_build_serving_manifest_with_coc_dimension_adds_co_columns():
             (namespace, key_parts["instance_id"])
         ),
     ), patch(
-        "superset.dhis2.analytical_serving.db.engine.connect",
+        "superset.dhis2.analytical_serving._load_distinct_cocs_for_variable",
+        return_value=[
+            {"co_uid": "coc-male", "co_name": "Male"},
+            {"co_uid": "coc-female", "co_name": "Female"},
+        ],
     ):
         manifest = build_serving_manifest(dataset)
 
@@ -787,7 +849,11 @@ def test_materialize_serving_rows_with_coc_dimension_keeps_rows_separate():
             (namespace, key_parts["instance_id"])
         ),
     ), patch(
-        "superset.dhis2.analytical_serving.db.engine.connect",
+        "superset.dhis2.analytical_serving._load_distinct_cocs_for_variable",
+        return_value=[
+            {"co_uid": "coc-male", "co_name": "Male"},
+            {"co_uid": "coc-female", "co_name": "Female"},
+        ],
     ):
         manifest = build_serving_manifest(dataset)
         columns, rows = materialize_serving_rows(dataset, raw_rows, manifest)
@@ -849,8 +915,6 @@ def test_materialize_serving_rows_without_coc_dimension_merges_coc_rows():
         side_effect=lambda database_id, namespace, key_parts: payloads.get(
             (namespace, key_parts["instance_id"])
         ),
-    ), patch(
-        "superset.dhis2.analytical_serving.db.engine.connect",
     ):
         manifest = build_serving_manifest(dataset)
         columns, rows = materialize_serving_rows(dataset, raw_rows, manifest)
@@ -883,7 +947,11 @@ def test_coc_dimension_columns_have_correct_extra_metadata():
             (namespace, key_parts["instance_id"])
         ),
     ), patch(
-        "superset.dhis2.analytical_serving.db.engine.connect",
+        "superset.dhis2.analytical_serving._load_distinct_cocs_for_variable",
+        return_value=[
+            {"co_uid": "coc-male", "co_name": "Male"},
+            {"co_uid": "coc-female", "co_name": "Female"},
+        ],
     ):
         manifest = build_serving_manifest(dataset)
 

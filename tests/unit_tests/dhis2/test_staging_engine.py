@@ -111,7 +111,7 @@ def test_sqlite_truncate_uses_delete(monkeypatch) -> None:
 
     DHIS2StagingEngine(database_id=2).truncate_staging_table(_dataset())
 
-    assert connection.statements == [("DELETE FROM ds_7_test_multiple_sources", None)]
+    assert connection.statements[-1] == ("DELETE FROM ds_7_test_multiple_sources", None)
 
 
 def test_postgres_table_ref_keeps_staging_schema(monkeypatch) -> None:

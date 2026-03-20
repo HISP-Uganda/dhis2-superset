@@ -244,6 +244,13 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
     def get_staging_table_stats(self, staged_dataset: Any) -> dict[str, Any]:
         return self._inner.get_staging_table_stats(staged_dataset)
 
+    def get_staging_table_preview(
+        self,
+        staged_dataset: Any,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return self._inner.get_staging_table_preview(staged_dataset, limit=limit)
+
     # ------------------------------------------------------------------
     # Superset database registration
     # ------------------------------------------------------------------

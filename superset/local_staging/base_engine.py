@@ -202,6 +202,14 @@ class LocalStagingEngineBase(ABC):
     def get_staging_table_stats(self, staged_dataset: Any) -> dict[str, Any]:
         """Return row count, size, last-sync info, etc."""
 
+    @abstractmethod
+    def get_staging_table_preview(
+        self,
+        staged_dataset: Any,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return a bounded preview sampled directly from the staging table."""
+
     # ------------------------------------------------------------------
     # Superset Database registration
     # ------------------------------------------------------------------
