@@ -152,6 +152,7 @@ _CSP_CONFIG = {
             "ws://localhost:8081",
             "ws://localhost:8088",
             "ws://localhost:9000",
+            "ws://localhost:9001",
             # Map tile providers
             "https://a.basemaps.cartocdn.com",
             "https://b.basemaps.cartocdn.com",
