@@ -16,6 +16,7 @@
 # under the License.
 
 from typing import Any
+from unittest.mock import Mock, patch
 
 from sqlalchemy.orm.session import Session
 
@@ -91,3 +92,63 @@ def test_post_schema_accepts_staged_local_dataset_fields() -> None:
     assert payload["extra"] == (
         '{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}'
     )
+
+
+def test_put_override_columns_skips_refresh_for_staged_local_dataset(
+    client: Any,
+    full_api_access: None,
+) -> None:
+    staged_local_dataset = Mock(id=7, is_dhis2_staged_local=True)
+
+    with patch(
+        "superset.datasets.api.UpdateDatasetCommand.run",
+        return_value=staged_local_dataset,
+    ), patch("superset.datasets.api.RefreshDatasetCommand.run") as refresh_mock:
+        response = client.put(
+            "/api/v1/dataset/7?override_columns=true",
+            json={
+                "columns": [
+                    {
+                        "column_name": "new_col",
+                        "description": "description",
+                        "expression": "expression",
+                        "type": "INTEGER",
+                        "advanced_data_type": "ADVANCED_DATA_TYPE",
+                        "verbose_name": "New Col",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    refresh_mock.assert_not_called()
+
+
+def test_put_override_columns_refreshes_standard_dataset(
+    client: Any,
+    full_api_access: None,
+) -> None:
+    standard_dataset = Mock(id=8, is_dhis2_staged_local=False)
+
+    with patch(
+        "superset.datasets.api.UpdateDatasetCommand.run",
+        return_value=standard_dataset,
+    ), patch("superset.datasets.api.RefreshDatasetCommand.run") as refresh_mock:
+        response = client.put(
+            "/api/v1/dataset/8?override_columns=true",
+            json={
+                "columns": [
+                    {
+                        "column_name": "new_col",
+                        "description": "description",
+                        "expression": "expression",
+                        "type": "INTEGER",
+                        "advanced_data_type": "ADVANCED_DATA_TYPE",
+                        "verbose_name": "New Col",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    refresh_mock.assert_called_once_with()

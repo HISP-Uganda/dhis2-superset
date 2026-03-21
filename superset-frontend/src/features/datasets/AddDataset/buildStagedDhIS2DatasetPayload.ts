@@ -43,13 +43,17 @@ export default function buildStagedDhIS2DatasetPayload({
 }: BuildStagedDhIS2DatasetPayloadArgs) {
   const resolvedServingDatabaseId = servingDatabaseId || sourceDatabaseId;
   const resolvedServingTableRef = servingTableRef || stagingTableRef;
+  const initialQueryTableRef = stagingTableRef || resolvedServingTableRef;
 
   return {
     database: resolvedServingDatabaseId,
     catalog: null,
     schema: null,
     table_name: datasetName.trim(),
-    sql: `SELECT * FROM ${resolvedServingTableRef}`,
+    // Create the Superset dataset against the already-existing staging table.
+    // The serving table is materialized asynchronously and later adopted via
+    // the staged-local repair path using the metadata persisted in `extra`.
+    sql: `SELECT * FROM ${initialQueryTableRef}`,
     is_sqllab_view: true,
     extra: JSON.stringify({
       dhis2_staged_local: true,

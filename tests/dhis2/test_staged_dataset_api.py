@@ -174,6 +174,62 @@ def test_dataset_to_dict_can_omit_heavy_dataset_config_for_list_views():
     assert "dataset_config" not in payload
 
 
+def test_dataset_to_dict_skips_serving_table_build_when_definition_is_omitted():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    dataset = SimpleNamespace(
+        id=5,
+        database_id=9,
+        staging_table_name="ds_5_anc",
+        serving_superset_dataset_id=None,
+        to_json=lambda: {"id": 5, "database_id": 9, "name": "ANC"},
+    )
+    ensure_mock = patch(
+        "superset.dhis2.staged_dataset_api.svc.ensure_serving_table",
+        side_effect=AssertionError("ensure_serving_table should not be called"),
+    )
+
+    with patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api._get_engine",
+        return_value=_FakeEngine(serving_column_names=["period"]),
+    ), ensure_mock, patch(
+        "superset.dhis2.staged_dataset_api.svc.get_serving_columns",
+        return_value=[
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "STRING",
+                "is_dttm": False,
+                "filterable": True,
+                "groupby": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "legacy_column",
+                "verbose_name": "Legacy Column",
+                "type": "STRING",
+                "is_dttm": False,
+                "filterable": True,
+                "groupby": True,
+                "is_active": True,
+            },
+        ],
+    ):
+        payload = DHIS2StagedDatasetApi()._dataset_to_dict(
+            5,
+            include_serving_definition=False,
+        )
+
+    assert payload is not None
+    assert payload["serving_table_ref"] == "dhis2_staging.sv_5_anc"
+    assert [column["column_name"] for column in payload["serving_columns"]] == [
+        "period"
+    ]
+
+
 def test_list_datasets_returns_lightweight_payload_without_dataset_config():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
@@ -227,6 +283,146 @@ def test_create_dataset_returns_400_for_non_serializable_dataset_config():
 
     assert response.status_code == 400
     assert response.get_json()["message"] == "'dataset_config' must be JSON serializable"
+
+
+def test_create_dataset_returns_immediately_and_queues_background_sync():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = _make_test_app()
+    dataset = SimpleNamespace(id=11)
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/",
+        method="POST",
+        json={
+            "database_id": 9,
+            "name": "ANC",
+            "dataset_config": {"configured_connection_ids": [1]},
+            "variables": [
+                {
+                    "instance_id": 1,
+                    "variable_id": "abc123",
+                    "variable_type": "dataElement",
+                    "variable_name": "ANC 1st Visit",
+                }
+            ],
+        },
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset_by_name",
+        return_value=None,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.create_staged_dataset",
+        return_value=dataset,
+    ) as create_mock, patch(
+        "superset.dhis2.staged_dataset_api.svc.get_dataset_variables",
+        return_value=[],
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.add_variable",
+    ) as add_variable_mock, patch.object(
+        DHIS2StagedDatasetApi,
+        "_dataset_to_dict",
+        return_value={"id": 11, "name": "ANC"},
+    ) as dataset_to_dict_mock, patch(
+        "superset.dhis2.staged_dataset_api.schedule_staged_dataset_sync",
+        return_value={"scheduled": True, "mode": "thread", "job_id": 91},
+    ) as schedule_mock, patch(
+        "superset.dhis2.staged_dataset_api.svc.ensure_serving_table",
+        side_effect=AssertionError("ensure_serving_table should not be called"),
+    ):
+        response = DHIS2StagedDatasetApi().create_dataset()
+
+    create_mock.assert_called_once()
+    add_variable_mock.assert_called_once_with(
+        11,
+        {
+            "instance_id": 1,
+            "variable_id": "abc123",
+            "variable_type": "dataElement",
+            "variable_name": "ANC 1st Visit",
+        },
+    )
+    dataset_to_dict_mock.assert_called_once_with(
+        11,
+        include_variables=True,
+        include_stats=False,
+        include_serving_definition=False,
+    )
+    schedule_mock.assert_called_once_with(
+        11,
+        job_type="scheduled",
+        prefer_immediate=False,
+    )
+    assert response.status_code == 201
+    assert response.get_json()["sync_schedule"]["mode"] == "thread"
+
+
+def test_update_dataset_returns_immediately_and_queues_background_sync():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = _make_test_app()
+    dataset = SimpleNamespace(id=11)
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/11",
+        method="PUT",
+        json={
+            "name": "ANC Updated",
+            "dataset_config": {"configured_connection_ids": [1]},
+            "variables": [
+                {
+                    "instance_id": 1,
+                    "variable_id": "abc123",
+                    "variable_type": "dataElement",
+                    "variable_name": "ANC 1st Visit",
+                }
+            ],
+        },
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.update_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_dataset_variables",
+        return_value=[SimpleNamespace(id=7)],
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.remove_variable",
+    ) as remove_variable_mock, patch(
+        "superset.dhis2.staged_dataset_api.svc.add_variable",
+    ) as add_variable_mock, patch.object(
+        DHIS2StagedDatasetApi,
+        "_dataset_to_dict",
+        return_value={"id": 11, "name": "ANC Updated"},
+    ) as dataset_to_dict_mock, patch(
+        "superset.dhis2.staged_dataset_api.schedule_staged_dataset_sync",
+        return_value={"scheduled": True, "mode": "thread", "job_id": 92},
+    ) as schedule_mock, patch(
+        "superset.dhis2.staged_dataset_api.svc.ensure_serving_table",
+        side_effect=AssertionError("ensure_serving_table should not be called"),
+    ):
+        response = DHIS2StagedDatasetApi().update_dataset(11)
+
+    remove_variable_mock.assert_called_once_with(7)
+    add_variable_mock.assert_called_once_with(
+        11,
+        {
+            "instance_id": 1,
+            "variable_id": "abc123",
+            "variable_type": "dataElement",
+            "variable_name": "ANC 1st Visit",
+        },
+    )
+    dataset_to_dict_mock.assert_called_once_with(
+        11,
+        include_variables=True,
+        include_stats=False,
+        include_serving_definition=False,
+    )
+    schedule_mock.assert_called_once_with(
+        11,
+        job_type="scheduled",
+        prefer_immediate=False,
+    )
+    assert response.status_code == 200
+    assert response.get_json()["sync_schedule"]["mode"] == "thread"
 
 
 def test_query_preview_returns_filtered_local_rows():

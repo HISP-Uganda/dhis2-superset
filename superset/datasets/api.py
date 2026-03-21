@@ -446,7 +446,11 @@ class DatasetRestApi(BaseSupersetModelRestApi):
             return self.response_400(message=error.messages)
         try:
             changed_model = UpdateDatasetCommand(pk, item, override_columns).run()
-            if override_columns:
+            if override_columns and not getattr(
+                changed_model,
+                "is_dhis2_staged_local",
+                False,
+            ):
                 RefreshDatasetCommand(pk).run()
             response = self.response(200, id=changed_model.id, result=item)
         except DatasetNotFoundError:

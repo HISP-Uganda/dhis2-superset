@@ -512,15 +512,17 @@ class DHIS2StagedDatasetApi(BaseApi):
                 variable_errors.append(str(exc))
 
         payload = self._dataset_to_dict(
-            dataset.id, include_variables=True, include_stats=False
+            dataset.id,
+            include_variables=True,
+            include_stats=False,
+            include_serving_definition=False,
         )
         sync_schedule = None
         try:
-            svc.ensure_serving_table(dataset.id)
             sync_schedule = schedule_staged_dataset_sync(
                 dataset.id,
                 job_type="scheduled",
-                prefer_immediate=True,
+                prefer_immediate=False,
             )
         except Exception:  # pylint: disable=broad-except
             logger.exception(
@@ -636,15 +638,17 @@ class DHIS2StagedDatasetApi(BaseApi):
                     variable_errors.append(str(exc))
 
         payload = self._dataset_to_dict(
-            dataset.id, include_variables=True, include_stats=False
+            dataset.id,
+            include_variables=True,
+            include_stats=False,
+            include_serving_definition=False,
         )
         sync_schedule = None
         try:
-            svc.ensure_serving_table(dataset.id)
             sync_schedule = schedule_staged_dataset_sync(
                 dataset.id,
                 job_type="scheduled",
-                prefer_immediate=True,
+                prefer_immediate=False,
             )
         except Exception:  # pylint: disable=broad-except
             logger.exception(

@@ -86,13 +86,14 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
         table_name = self._properties.get("table_name")
         sql = self._properties.get("sql")
         existing_staged_local_dataset = self._existing_staged_local_dataset
+        is_dhis2_staged_local = bool(self._get_extra_dict().get("dhis2_staged_local"))
 
         if existing_staged_local_dataset is not None:
             dataset = DatasetDAO.update(
                 item=existing_staged_local_dataset,
                 attributes=self._properties,
             )
-            if database and database.backend == "dhis2":
+            if database and (database.backend == "dhis2" or is_dhis2_staged_local):
                 logger.info(
                     "[DHIS2] Reused staged-local dataset id=%s without metadata fetch",
                     dataset.id,
@@ -187,8 +188,10 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
                 logger.info(f"[DHIS2] Auto-converted Query Builder dataset to virtual with SQL: {generated_sql[:200]}")
 
         dataset = DatasetDAO.create(attributes=self._properties)
-        if database and database.backend == "dhis2":
-            logger.info("[DHIS2] Skipping metadata fetch on create (will use UI-provided columns)")
+        if database and (database.backend == "dhis2" or is_dhis2_staged_local):
+            logger.info(
+                "[DHIS2] Skipping metadata fetch on create (will use UI-provided columns)"
+            )
             return dataset
         dataset.fetch_metadata()
         return dataset

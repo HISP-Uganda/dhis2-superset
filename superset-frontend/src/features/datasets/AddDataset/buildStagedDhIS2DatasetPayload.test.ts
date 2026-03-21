@@ -18,10 +18,11 @@
  */
 import buildStagedDhIS2DatasetPayload from './buildStagedDhIS2DatasetPayload';
 
-test('uses the local serving database when the staged dataset returns one', () => {
+test('targets the staging table while persisting the serving destination metadata', () => {
   const payload = buildStagedDhIS2DatasetPayload({
     datasetName: 'ANC Coverage',
     stagingTableRef: 'dhis2_staging.ds_1_anc_coverage',
+    servingTableRef: 'dhis2_serving.sv_1_anc_coverage',
     sourceDatabaseId: 9,
     sourceDatabaseName: 'HMIS Repository',
     servingDatabaseId: 13,
@@ -39,6 +40,7 @@ test('uses the local serving database when the staged dataset returns one', () =
     dhis2_staged_dataset_id: 41,
     dhis2_source_database_id: 9,
     dhis2_serving_database_id: 13,
+    dhis2_serving_table_ref: 'dhis2_serving.sv_1_anc_coverage',
     dhis2_source_instance_names: ['HMIS-Test', 'Non Routine'],
   });
 });
@@ -55,5 +57,6 @@ test('falls back to the source database when no local serving database is return
   expect(JSON.parse(payload.extra)).toMatchObject({
     dhis2_source_database_id: 9,
     dhis2_serving_database_id: 9,
+    dhis2_serving_table_ref: 'dhis2_staging.ds_1_anc_coverage',
   });
 });
