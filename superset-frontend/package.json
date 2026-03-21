@@ -77,7 +77,7 @@
     "test": "cross-env NODE_ENV=test NODE_OPTIONS=\"--max-old-space-size=8192\" jest --max-workers=80% --silent",
     "test-loud": "cross-env NODE_ENV=test NODE_OPTIONS=\"--max-old-space-size=8192\" jest --max-workers=80%",
     "type": "tsc --noEmit",
-    "type:refs": "tsc -b --pretty false --force packages/superset-core packages/superset-ui-core packages/superset-ui-chart-controls packages/superset-ui-switchboard",
+    "type:refs": "node ./scripts/type-refs.js",
     "update-maps": "cd plugins/legacy-plugin-chart-country-map/scripts && jupyter nbconvert --to notebook --execute --inplace --allow-errors --ExecutePreprocessor.timeout=1200 'Country Map GeoJSON Generator.ipynb'",
     "validate-release": "../RELEASING/validate_this_release.sh"
   },

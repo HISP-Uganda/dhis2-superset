@@ -29,6 +29,7 @@ import type {
   PortalChartSummary,
   PortalDashboardSummary,
   PortalHighlight,
+  PortalMediaAsset,
   PortalNavigationMenu,
   PortalPage,
   PortalPageBlock,
@@ -81,6 +82,27 @@ const Grid = styled.div<{ $columns?: number }>`
 
   @media (max-width: 960px) {
     grid-template-columns: 1fr;
+  }
+`;
+
+const BlockGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 18px;
+
+  @media (max-width: 960px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const BlockGridCell = styled.div<{ $span?: number; $minHeight?: number }>`
+  min-width: 0;
+  grid-column: span ${({ $span = 12 }) => Math.min(Math.max($span, 1), 12)};
+  ${({ $minHeight }) =>
+    $minHeight ? `min-height: ${Math.max($minHeight, 0)}px;` : ''}
+
+  @media (max-width: 960px) {
+    grid-column: span 1;
   }
 `;
 
@@ -287,6 +309,27 @@ function lookupDashboard(
   return dashboards.find(dashboard => dashboard.id === dashboardId) || null;
 }
 
+function lookupAsset(
+  block: PortalPageBlock,
+  mediaAssets: PortalMediaAsset[],
+): PortalMediaAsset | null {
+  if (block.asset) {
+    return block.asset;
+  }
+  if (block.content?.asset) {
+    return block.content.asset as PortalMediaAsset;
+  }
+  const assetId =
+    block.settings?.asset_ref?.id ||
+    block.settings?.assetRef?.id ||
+    block.content?.asset_ref?.id ||
+    block.content?.assetRef?.id;
+  if (!assetId) {
+    return null;
+  }
+  return mediaAssets.find(asset => asset.id === assetId) || null;
+}
+
 function findMenu(
   navigation: {
     header: PortalNavigationMenu[];
@@ -356,6 +399,7 @@ type RenderBlockTreeProps = {
   blocks: PortalPageBlock[];
   charts: PortalChartSummary[];
   dashboards: PortalDashboardSummary[];
+  mediaAssets?: PortalMediaAsset[];
   page?: PortalPage | null;
   navigation?: {
     header: PortalNavigationMenu[];
@@ -371,6 +415,7 @@ export function RenderBlockTree({
   blocks,
   charts,
   dashboards,
+  mediaAssets = [],
   page = null,
   navigation = { header: [], footer: [] },
   highlights = [],
@@ -378,13 +423,61 @@ export function RenderBlockTree({
   onOpenDashboard,
   mode = 'public',
 }: RenderBlockTreeProps) {
+  function blockSpan(block: PortalPageBlock, fallback = 12) {
+    const configured = Number(block.settings?.gridSpan);
+    if (Number.isFinite(configured) && configured > 0) {
+      return Math.min(Math.max(Math.round(configured), 1), 12);
+    }
+    return Math.min(Math.max(Math.round(fallback), 1), 12);
+  }
+
+  function blockMinHeight(block: PortalPageBlock) {
+    const configured = Number(
+      block.settings?.minHeight ?? block.styles?.minHeight ?? 0,
+    );
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return undefined;
+    }
+    return Math.round(configured);
+  }
+
+  function renderChildrenGrid(
+    childBlocks: PortalPageBlock[],
+    fallbackSpan = 12,
+  ) {
+    const visibleBlocks = (childBlocks || []).filter(
+      child => child.status !== 'hidden',
+    );
+    if (!visibleBlocks.length) {
+      return null;
+    }
+    return (
+      <BlockGrid>
+        {visibleBlocks.map(child => {
+          const renderedChild = renderBlock(child);
+          if (!renderedChild) {
+            return null;
+          }
+          return (
+            <BlockGridCell
+              key={`cell-${child.uid || child.id}`}
+              $span={blockSpan(child, fallbackSpan)}
+              $minHeight={blockMinHeight(child)}
+            >
+              {renderedChild}
+            </BlockGridCell>
+          );
+        })}
+      </BlockGrid>
+    );
+  }
+
   function renderBlock(block: PortalPageBlock): JSX.Element | null {
     if (block.status === 'hidden') {
       return null;
     }
     const style = blockStyle(block);
     const className = blockClassName(block);
-    const children = (block.children || []).map(child => renderBlock(child));
     const title = block.content?.title;
     const subtitle = block.content?.subtitle;
     const body = block.content?.body;
@@ -403,7 +496,12 @@ export function RenderBlockTree({
     }
 
     switch (block.block_type) {
-      case 'section':
+      case 'section': {
+        const sectionColumns = Number(block.settings?.columns) || 1;
+        const sectionSpan =
+          sectionColumns > 1
+            ? Math.max(Math.floor(12 / sectionColumns), 1)
+            : 12;
         return (
           <Section
             key={block.uid || block.id}
@@ -423,15 +521,10 @@ export function RenderBlockTree({
                 </SectionTitleGroup>
               </SectionHeader>
             )}
-            {Number(block.settings?.columns) > 1 ? (
-              <Grid $columns={Number(block.settings?.columns) || 1}>
-                {children.filter(Boolean)}
-              </Grid>
-            ) : (
-              <div>{children.filter(Boolean)}</div>
-            )}
+            {renderChildrenGrid(block.children || [], sectionSpan)}
           </Section>
         );
+      }
       case 'hero':
         return (
           <Hero key={block.uid || block.id} className={className} style={style}>
@@ -474,11 +567,16 @@ export function RenderBlockTree({
                 </HeroActions>
               ) : null}
             </div>
-            <div>{children.filter(Boolean)}</div>
+            <div>{renderChildrenGrid(block.children || [], 12)}</div>
           </Hero>
         );
       case 'group':
-      case 'column':
+      case 'column': {
+        const containerColumns = Number(block.settings?.columnCount) || 1;
+        const containerSpan =
+          containerColumns > 1
+            ? Math.max(Math.floor(12 / containerColumns), 1)
+            : 12;
         return (
           <Section
             key={block.uid || block.id}
@@ -493,29 +591,40 @@ export function RenderBlockTree({
                 </SectionTitleGroup>
               </SectionHeader>
             )}
-            {block.settings?.layout === 'grid' ? (
-              <Grid $columns={Number(block.settings?.columnCount) || 2}>
-                {children.filter(Boolean)}
-              </Grid>
-            ) : (
-              <div>{children.filter(Boolean)}</div>
-            )}
+            {renderChildrenGrid(block.children || [], containerSpan)}
           </Section>
         );
-      case 'columns':
+      }
+      case 'columns': {
+        const columnCount =
+          Number(block.settings?.columnCount) ||
+          Math.max(block.children.length, 1);
+        const columnSpan =
+          columnCount > 1 ? Math.max(Math.floor(12 / columnCount), 1) : 12;
         return (
-          <Grid
+          <BlockGrid
             key={block.uid || block.id}
             className={className}
             style={style}
-            $columns={
-              Number(block.settings?.columnCount) ||
-              Math.max(block.children.length, 1)
-            }
           >
-            {children.filter(Boolean)}
-          </Grid>
+            {(block.children || []).map(child => {
+              const renderedChild = renderBlock(child);
+              if (!renderedChild) {
+                return null;
+              }
+              return (
+                <BlockGridCell
+                  key={`cell-${child.uid || child.id}`}
+                  $span={blockSpan(child, columnSpan)}
+                  $minHeight={blockMinHeight(child)}
+                >
+                  {renderedChild}
+                </BlockGridCell>
+              );
+            })}
+          </BlockGrid>
         );
+      }
       case 'card':
         return (
           <SurfaceCard
@@ -529,7 +638,7 @@ export function RenderBlockTree({
                 <SafeMarkdown source={body} />
               </CardBody>
             ) : null}
-            {children.filter(Boolean)}
+            {renderChildrenGrid(block.children || [], 12)}
             {block.content?.buttonLabel && block.settings?.buttonUrl ? (
               <Button
                 type="primary"
@@ -644,7 +753,9 @@ export function RenderBlockTree({
             ) : null}
           </Quote>
         );
-      case 'image':
+      case 'image': {
+        const asset = lookupAsset(block, mediaAssets);
+        const imageUrl = block.content?.url || asset?.download_url;
         return (
           <SurfaceCard
             key={block.uid || block.id}
@@ -652,20 +763,23 @@ export function RenderBlockTree({
             style={style}
           >
             {title && <CardTitle>{title}</CardTitle>}
-            {block.content?.url ? (
+            {imageUrl ? (
               <img
-                src={block.content.url}
-                alt={block.content.alt || title || t('Image')}
+                src={imageUrl}
+                alt={
+                  block.content?.alt || asset?.alt_text || title || t('Image')
+                }
                 style={{ width: '100%', display: 'block' }}
               />
             ) : (
               <Empty description={t('No image configured yet.')} />
             )}
-            {block.content?.caption ? (
-              <CardBody>{block.content.caption}</CardBody>
+            {block.content?.caption || asset?.caption ? (
+              <CardBody>{block.content?.caption || asset?.caption}</CardBody>
             ) : null}
           </SurfaceCard>
         );
+      }
       case 'gallery':
         return (
           <Grid
@@ -693,7 +807,7 @@ export function RenderBlockTree({
         );
       case 'file':
       case 'download': {
-        const asset = block.asset || block.content?.asset || null;
+        const asset = lookupAsset(block, mediaAssets);
         const downloadUrl = block.settings?.download_url || asset?.download_url;
         return (
           <SurfaceCard
@@ -1086,5 +1200,5 @@ export function RenderBlockTree({
     }
   }
 
-  return <>{blocks.map(block => renderBlock(block))}</>;
+  return renderChildrenGrid(blocks, 12);
 }

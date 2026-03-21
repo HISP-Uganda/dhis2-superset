@@ -18,7 +18,12 @@
  */
 
 import fetchMock from 'fetch-mock';
-import { render, screen, userEvent } from 'spec/helpers/testing-library';
+import {
+  render,
+  screen,
+  userEvent,
+  waitFor,
+} from 'spec/helpers/testing-library';
 import CMSAdminPage from '.';
 
 jest.mock(
@@ -28,6 +33,41 @@ jest.mock(
       return <div data-testid="public-dashboard-embed" />;
     },
 );
+
+jest.mock('src/pages/PublicLandingPage/BlockRenderer', () => ({
+  __esModule: true,
+  RenderBlockTree: ({
+    blocks,
+  }: {
+    blocks: Array<{ content?: { title?: string } }>;
+  }) => (
+    <div data-testid="mock-block-tree">
+      {blocks.length
+        ? blocks.map((block, index) => (
+            <div key={`${block.content?.title || 'block'}-${index}`}>
+              {block.content?.title || 'Add content here.'}
+            </div>
+          ))
+        : 'No block preview'}
+    </div>
+  ),
+  groupBlocksBySlot: (blocks: Array<Record<string, any>>) =>
+    blocks.reduce(
+      (acc, block) => {
+        const slot = block.slot || 'content';
+        acc[slot] = [...(acc[slot] || []), block];
+        return acc;
+      },
+      {
+        header: [],
+        hero: [],
+        content: [],
+        sidebar: [],
+        cta: [],
+        footer: [],
+      } as Record<string, Array<Record<string, any>>>,
+    ),
+}));
 
 jest.mock('src/utils/getBootstrapData', () => ({
   __esModule: true,
@@ -248,6 +288,24 @@ test('renders the authenticated CMS studio shell', async () => {
   expect(screen.getAllByDisplayValue('Welcome').length).toBeGreaterThan(0);
 });
 
+test('renders the pages manager with create and filter controls', async () => {
+  window.history.pushState({}, '', '/superset/cms/?tab=pages');
+
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect((await screen.findAllByText('Pages')).length).toBeGreaterThan(0);
+  expect(
+    screen.getByPlaceholderText('Search title, slug, or path'),
+  ).toBeInTheDocument();
+  expect(
+    screen.getAllByRole('button', { name: /Create Page/i }).length,
+  ).toBeGreaterThan(0);
+  expect(screen.getAllByText('about/welcome').length).toBeGreaterThan(0);
+});
+
 test('disables in-canvas add content actions for published pages', async () => {
   render(<CMSAdminPage />, {
     useRouter: true,
@@ -276,4 +334,37 @@ test('allows adding a block when editing an unpublished page', async () => {
   await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
 
   expect(await screen.findByText('Add content here.')).toBeInTheDocument();
+});
+
+test('saves block pages without editor-only tree metadata', async () => {
+  bootstrapPayload = buildAdminPayload(false);
+  const savedPayloads: Record<string, any>[] = [];
+
+  fetchMock.post('glob:*/api/v1/public_page/admin/pages', (_url, options) => {
+    const body =
+      typeof options?.body === 'string' ? JSON.parse(options.body) : {};
+    savedPayloads.push(body);
+    return {
+      result: {
+        ...bootstrapPayload.current_page,
+        blocks: body.blocks || [],
+        sections: body.sections || [],
+      },
+    };
+  });
+
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
+  await userEvent.click(screen.getByRole('button', { name: /Save Draft/i }));
+
+  await waitFor(() => expect(savedPayloads).toHaveLength(1));
+  expect(savedPayloads[0].blocks).toHaveLength(1);
+  expect(savedPayloads[0].blocks[0]).not.toHaveProperty('tree_path');
+  expect(savedPayloads[0].blocks[0]).not.toHaveProperty('depth');
 });

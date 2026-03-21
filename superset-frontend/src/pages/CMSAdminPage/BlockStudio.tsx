@@ -16,9 +16,31 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-/* eslint-disable no-restricted-imports, theme-colors/no-literal-colors */
+/* eslint-disable no-restricted-imports, theme-colors/no-literal-colors, import/no-extraneous-dependencies */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  AppstoreOutlined,
+  BarChartOutlined,
+  BorderOutlined,
+  CodeOutlined,
+  ColumnHeightOutlined,
+  DashboardOutlined,
+  FileImageOutlined,
+  FileOutlined,
+  FileTextOutlined,
+  FontSizeOutlined,
+  HighlightOutlined,
+  LayoutOutlined,
+  LinkOutlined,
+  MenuOutlined,
+  NotificationOutlined,
+  PaperClipOutlined,
+  PictureOutlined,
+  ProfileOutlined,
+  TableOutlined,
+  VideoCameraOutlined,
+} from '@ant-design/icons';
 import { MarkdownEditor } from '@superset-ui/core/components';
 import { styled, t } from '@superset-ui/core';
 import {
@@ -32,7 +54,10 @@ import {
   Switch,
   Tag,
 } from 'antd';
-import { RenderBlockTree } from 'src/pages/PublicLandingPage/BlockRenderer';
+import {
+  groupBlocksBySlot,
+  RenderBlockTree,
+} from 'src/pages/PublicLandingPage/BlockRenderer';
 import {
   addRootBlock,
   createEmptyBlock,
@@ -57,6 +82,8 @@ import type {
   PortalPageBlock,
   PortalPageSummary,
   PortalStyleBundle,
+  PortalTemplate,
+  PortalTheme,
 } from 'src/pages/PublicLandingPage/types';
 
 const StudioLayout = styled.div`
@@ -161,6 +188,67 @@ const CanvasToolbarGroup = styled.div`
   flex-wrap: wrap;
 `;
 
+const CanvasSurface = styled.div`
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px dashed rgba(148, 163, 184, 0.5);
+  background:
+    linear-gradient(to right, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    #f8fafc;
+  background-size:
+    calc((100% - 22px) / 12) 100%,
+    100% 32px,
+    auto;
+`;
+
+const ViewportFrame = styled.div<{
+  $mode: 'desktop' | 'tablet' | 'mobile';
+}>`
+  width: 100%;
+  max-width: ${({ $mode }) =>
+    $mode === 'mobile' ? '430px' : $mode === 'tablet' ? '820px' : '100%'};
+  margin: 0 auto;
+  transition: max-width 0.2s ease;
+`;
+
+const RegionGrid = styled.div`
+  display: grid;
+  gap: 14px;
+`;
+
+const RegionCard = styled.section`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+`;
+
+const RegionHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const RegionTitle = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+`;
+
+const InlinePills = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
 type BlockStudioProps = {
   draftPage: PortalPage | null;
   pages: PortalPageSummary[];
@@ -172,6 +260,8 @@ type BlockStudioProps = {
     footer: PortalNavigationMenu[];
   };
   styleBundles: PortalStyleBundle[];
+  themes: PortalTheme[];
+  templates: PortalTemplate[];
   blockTypes?: PortalBlockDefinition[];
   search: string;
   onSearchChange: (value: string) => void;
@@ -182,8 +272,105 @@ type BlockStudioProps = {
 
 type Selection = { type: 'page' } | { type: 'block'; uid: string };
 
+const SLOT_OPTIONS = [
+  { value: 'header', label: t('Header') },
+  { value: 'hero', label: t('Hero') },
+  { value: 'content', label: t('Content') },
+  { value: 'sidebar', label: t('Sidebar') },
+  { value: 'cta', label: t('CTA') },
+  { value: 'footer', label: t('Footer') },
+] as const;
+
+const PAGE_TYPE_OPTIONS = [
+  { value: 'content', label: t('Standard Page') },
+  { value: 'landing', label: t('Landing Page') },
+  { value: 'dashboard', label: t('Dashboard Page') },
+  { value: 'documentation', label: t('Documentation') },
+  { value: 'faq', label: t('FAQ') },
+  { value: 'policy', label: t('Policy') },
+  { value: 'utility', label: t('Utility') },
+] as const;
+
+const PREVIEW_VIEWPORTS = [
+  { value: 'desktop', label: t('Desktop') },
+  { value: 'tablet', label: t('Tablet') },
+  { value: 'mobile', label: t('Mobile') },
+] as const;
+
 function blockKey(block: PortalPageBlock) {
   return block.uid || String(block.id);
+}
+
+function blockIcon(type?: string, iconName?: string | null) {
+  const resolved = iconName || type || 'paragraph';
+  switch (resolved) {
+    case 'layout':
+    case 'section':
+    case 'group':
+    case 'columns':
+    case 'column':
+    case 'hero':
+    case 'card':
+      return <LayoutOutlined />;
+    case 'paragraph':
+    case 'rich_text':
+    case 'heading':
+    case 'title':
+    case 'font-size':
+      return <FontSizeOutlined />;
+    case 'list':
+    case 'unordered-list':
+      return <ProfileOutlined />;
+    case 'quote':
+    case 'highlight':
+    case 'callout':
+      return <HighlightOutlined />;
+    case 'picture':
+    case 'image':
+    case 'gallery':
+      return <PictureOutlined />;
+    case 'video':
+    case 'video-camera':
+    case 'embed':
+      return <VideoCameraOutlined />;
+    case 'paper-clip':
+    case 'file':
+    case 'download':
+      return <PaperClipOutlined />;
+    case 'button':
+    case 'link':
+      return <LinkOutlined />;
+    case 'divider':
+    case 'minus':
+      return <BorderOutlined />;
+    case 'spacer':
+    case 'column-height':
+      return <ColumnHeightOutlined />;
+    case 'chart':
+    case 'bar-chart':
+      return <BarChartOutlined />;
+    case 'dashboard':
+      return <DashboardOutlined />;
+    case 'table':
+      return <TableOutlined />;
+    case 'page_title':
+    case 'breadcrumb':
+    case 'menu':
+      return <MenuOutlined />;
+    case 'dynamic_widget':
+      return <AppstoreOutlined />;
+    case 'html':
+    case 'code':
+      return <CodeOutlined />;
+    case 'statistic':
+      return <NotificationOutlined />;
+    case 'file-image':
+      return <FileImageOutlined />;
+    case 'file-outlined':
+      return <FileOutlined />;
+    default:
+      return <FileTextOutlined />;
+  }
 }
 
 const FALLBACK_BLOCK_TYPES: PortalBlockDefinition[] = [
@@ -421,6 +608,8 @@ export default function BlockStudio({
   mediaAssets,
   navigationMenus = { header: [], footer: [] },
   styleBundles,
+  themes,
+  templates,
   blockTypes = [],
   search,
   onSearchChange,
@@ -430,7 +619,12 @@ export default function BlockStudio({
 }: BlockStudioProps) {
   const [selection, setSelection] = useState<Selection>({ type: 'page' });
   const [quickInsertType, setQuickInsertType] = useState('paragraph');
+  const [quickInsertSlot, setQuickInsertSlot] = useState<string>('content');
+  const [previewViewport, setPreviewViewport] = useState<
+    'desktop' | 'tablet' | 'mobile'
+  >('desktop');
   const blocks = useMemo(() => ensurePageBlocks(draftPage), [draftPage]);
+  const slotGroups = useMemo(() => groupBlocksBySlot(blocks), [blocks]);
   const flattenedBlocks = useMemo(() => flattenBlocks(blocks), [blocks]);
   const isPublishedPage = Boolean(draftPage?.is_published);
   const selectedBlock =
@@ -469,6 +663,16 @@ export default function BlockStudio({
     ? blockTypes
     : FALLBACK_BLOCK_TYPES;
 
+  useEffect(() => {
+    setSelection({ type: 'page' });
+  }, [draftPage?.id]);
+
+  useEffect(() => {
+    if (selection.type === 'block' && !selectedBlock) {
+      setSelection({ type: 'page' });
+    }
+  }, [selectedBlock, selection.type]);
+
   function pushBlocks(nextBlocks: PortalPageBlock[]) {
     if (!draftPage || isPublishedPage) {
       return;
@@ -495,7 +699,7 @@ export default function BlockStudio({
       return;
     }
     const targetUid = selection.type === 'block' ? selection.uid : null;
-    const nextBlocks = targetUid
+    let nextBlocks = targetUid
       ? insertBlockRelative(
           blocks,
           targetUid,
@@ -505,13 +709,28 @@ export default function BlockStudio({
             : 'after',
         )
       : addRootBlock(blocks, blockType);
-    pushBlocks(nextBlocks);
     const existingKeys = new Set(
       flattenedBlocks.map(({ block }) => blockKey(block)),
     );
-    const insertedBlock = flattenBlocks(nextBlocks)
+    let insertedBlock = flattenBlocks(nextBlocks)
       .map(({ block }) => block)
       .find(block => !existingKeys.has(blockKey(block)));
+    if (insertedBlock) {
+      const insertedKey = blockKey(insertedBlock);
+      const resolvedSlot =
+        selectedBlock?.slot ||
+        quickInsertSlot ||
+        insertedBlock.slot ||
+        'content';
+      nextBlocks = updateBlockByUid(nextBlocks, insertedKey, {
+        slot: resolvedSlot,
+      });
+      insertedBlock =
+        flattenBlocks(nextBlocks)
+          .map(({ block }) => block)
+          .find(block => blockKey(block) === insertedKey) || insertedBlock;
+    }
+    pushBlocks(nextBlocks);
     if (insertedBlock) {
       setSelection({ type: 'block', uid: blockKey(insertedBlock) });
     }
@@ -560,6 +779,26 @@ export default function BlockStudio({
     pushBlocks(moveBlockByUid(blocks, blockKey(selectedBlock), direction));
   }
 
+  function resizeSelectedBlock(
+    axis: 'gridSpan' | 'minHeight',
+    direction: -1 | 1,
+  ) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    if (axis === 'gridSpan') {
+      const currentSpan = Number(selectedBlock.settings?.gridSpan) || 12;
+      updateSelectedBlockSettings({
+        gridSpan: Math.min(Math.max(currentSpan + direction, 1), 12),
+      });
+      return;
+    }
+    const currentHeight = Number(selectedBlock.settings?.minHeight) || 0;
+    updateSelectedBlockSettings({
+      minHeight: Math.max(currentHeight + direction * 40, 0),
+    });
+  }
+
   const quickInsertLabel =
     selection.type === 'block'
       ? selectedBlock && isContainerBlock(selectedBlock.block_type)
@@ -601,12 +840,24 @@ export default function BlockStudio({
               />
             </FieldBlock>
             <FieldBlock>
-              <FieldLabel>{t('Navigation Label')}</FieldLabel>
+              <FieldLabel>{t('Path Label')}</FieldLabel>
               <Input
                 disabled={isPublishedPage}
                 value={draftPage.navigation_label || ''}
                 onChange={event =>
                   updatePage({ navigation_label: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Display Order')}</FieldLabel>
+              <InputNumber
+                disabled={isPublishedPage}
+                style={{ width: '100%' }}
+                min={0}
+                value={draftPage.display_order ?? 0}
+                onChange={value =>
+                  updatePage({ display_order: Number(value) || 0 })
                 }
               />
             </FieldBlock>
@@ -631,6 +882,18 @@ export default function BlockStudio({
               />
             </FieldBlock>
             <FieldBlock>
+              <FieldLabel>{t('Page Type')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={draftPage.page_type || 'content'}
+                options={PAGE_TYPE_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value => updatePage({ page_type: value })}
+              />
+            </FieldBlock>
+            <FieldBlock>
               <FieldLabel>{t('Subtitle')}</FieldLabel>
               <Input
                 disabled={isPublishedPage}
@@ -652,6 +915,62 @@ export default function BlockStudio({
               />
             </FieldBlock>
             <FieldBlock>
+              <FieldLabel>{t('Theme')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                allowClear
+                value={draftPage.theme_id || undefined}
+                options={themes.map(theme => ({
+                  value: theme.id,
+                  label: theme.title,
+                }))}
+                onChange={value =>
+                  updatePage({
+                    theme_id: value || null,
+                    theme: themes.find(theme => theme.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Template')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                allowClear
+                value={draftPage.template_id || undefined}
+                options={templates.map(template => ({
+                  value: template.id,
+                  label: template.title,
+                }))}
+                onChange={value =>
+                  updatePage({
+                    template_id: value || null,
+                    template:
+                      templates.find(template => template.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Style Bundle')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                allowClear
+                value={draftPage.style_bundle_id || undefined}
+                options={styleBundles.map(bundle => ({
+                  value: bundle.id,
+                  label: bundle.title,
+                }))}
+                onChange={value =>
+                  updatePage({
+                    style_bundle_id: value || null,
+                    style_bundle:
+                      styleBundles.find(bundle => bundle.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
               <FieldLabel>{t('Published')}</FieldLabel>
               <Switch
                 disabled={isPublishedPage}
@@ -665,6 +984,35 @@ export default function BlockStudio({
                 disabled={isPublishedPage}
                 checked={draftPage.is_homepage}
                 onChange={checked => updatePage({ is_homepage: checked })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Template Key')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={draftPage.template_key || ''}
+                onChange={event =>
+                  updatePage({ template_key: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Scheduled Publish')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                type="datetime-local"
+                value={
+                  draftPage.scheduled_publish_at
+                    ? draftPage.scheduled_publish_at.slice(0, 16)
+                    : ''
+                }
+                onChange={event =>
+                  updatePage({
+                    scheduled_publish_at: event.target.value
+                      ? new Date(event.target.value).toISOString()
+                      : null,
+                  })
+                }
               />
             </FieldBlock>
             <FieldBlock>
@@ -715,6 +1063,15 @@ export default function BlockStudio({
             </FieldBlock>
           </FieldGrid>
           <FieldBlock>
+            <FieldLabel>{t('Excerpt')}</FieldLabel>
+            <Input.TextArea
+              disabled={isPublishedPage}
+              rows={3}
+              value={draftPage.excerpt || ''}
+              onChange={event => updatePage({ excerpt: event.target.value })}
+            />
+          </FieldBlock>
+          <FieldBlock>
             <FieldLabel>{t('Description')}</FieldLabel>
             <MarkdownEditor
               readOnly={isPublishedPage}
@@ -726,10 +1083,39 @@ export default function BlockStudio({
               onChange={(value: string) => updatePage({ description: value })}
             />
           </FieldBlock>
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('SEO Title')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={draftPage.seo_title || ''}
+                onChange={event =>
+                  updatePage({ seo_title: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('SEO Description')}</FieldLabel>
+              <Input.TextArea
+                disabled={isPublishedPage}
+                rows={3}
+                value={draftPage.seo_description || ''}
+                onChange={event =>
+                  updatePage({ seo_description: event.target.value })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
           <TinyMeta>
             {t('Public path')}: /superset/public/
             {draftPage.path || draftPage.slug || t('page-slug')}/
           </TinyMeta>
+          {draftPage.parent_page ? (
+            <TinyMeta>
+              {t('Parent')}:{' '}
+              {draftPage.parent_page.title || draftPage.parent_page.slug}
+            </TinyMeta>
+          ) : null}
         </SectionList>
       );
     }
@@ -755,13 +1141,28 @@ export default function BlockStudio({
                 value: definition.type,
                 label: definition.label,
               }))}
-              onChange={value =>
+              onChange={value => {
+                const nextDefinition = createEmptyBlock(value);
                 updateSelectedBlock({
-                  ...createEmptyBlock(value),
-                  id: selectedBlock.id,
-                  uid: selectedBlock.uid,
-                })
-              }
+                  block_type: nextDefinition.block_type,
+                  is_container: nextDefinition.is_container,
+                  content: nextDefinition.content,
+                  settings: {
+                    ...selectedBlock.settings,
+                    ...nextDefinition.settings,
+                  },
+                  styles: nextDefinition.styles,
+                  metadata: {
+                    ...selectedBlock.metadata,
+                    ...nextDefinition.metadata,
+                  },
+                  children:
+                    nextDefinition.is_container ||
+                    !selectedBlock.children.length
+                      ? selectedBlock.children
+                      : [],
+                });
+              }}
             />
           </FieldBlock>
           <FieldBlock>
@@ -770,14 +1171,10 @@ export default function BlockStudio({
               disabled={isPublishedPage}
               value={selectedBlock.slot || 'content'}
               onChange={value => updateSelectedBlock({ slot: value })}
-              options={[
-                { value: 'header', label: t('Header') },
-                { value: 'hero', label: t('Hero') },
-                { value: 'content', label: t('Content') },
-                { value: 'sidebar', label: t('Sidebar') },
-                { value: 'cta', label: t('CTA') },
-                { value: 'footer', label: t('Footer') },
-              ]}
+              options={SLOT_OPTIONS.map(option => ({
+                value: option.value,
+                label: option.label,
+              }))}
             />
           </FieldBlock>
         </FieldGrid>
@@ -806,6 +1203,53 @@ export default function BlockStudio({
               }))}
               onChange={value =>
                 updateSelectedBlock({ style_bundle_id: value || null })
+              }
+            />
+          </FieldBlock>
+        </FieldGrid>
+        <FieldGrid>
+          <FieldBlock>
+            <FieldLabel>{t('Label')}</FieldLabel>
+            <Input
+              disabled={isPublishedPage}
+              value={selectedBlock.metadata?.label || ''}
+              onChange={event =>
+                updateSelectedBlock({
+                  metadata: {
+                    ...(selectedBlock.metadata || {}),
+                    label: event.target.value,
+                  },
+                })
+              }
+            />
+          </FieldBlock>
+          <FieldBlock>
+            <FieldLabel>{t('Column Span')}</FieldLabel>
+            <InputNumber
+              disabled={isPublishedPage}
+              style={{ width: '100%' }}
+              min={1}
+              max={12}
+              value={Number(selectedBlock.settings?.gridSpan) || 12}
+              onChange={value =>
+                updateSelectedBlockSettings({
+                  gridSpan: Math.min(Math.max(Number(value) || 12, 1), 12),
+                })
+              }
+            />
+          </FieldBlock>
+          <FieldBlock>
+            <FieldLabel>{t('Min Height')}</FieldLabel>
+            <InputNumber
+              disabled={isPublishedPage}
+              style={{ width: '100%' }}
+              min={0}
+              step={40}
+              value={Number(selectedBlock.settings?.minHeight) || 0}
+              onChange={value =>
+                updateSelectedBlockSettings({
+                  minHeight: Math.max(Number(value) || 0, 0),
+                })
               }
             />
           </FieldBlock>
@@ -1566,6 +2010,30 @@ export default function BlockStudio({
         <Space wrap>
           <Button
             disabled={isPublishedPage}
+            onClick={() => resizeSelectedBlock('gridSpan', -1)}
+          >
+            ← {t('Narrower')}
+          </Button>
+          <Button
+            disabled={isPublishedPage}
+            onClick={() => resizeSelectedBlock('gridSpan', 1)}
+          >
+            → {t('Wider')}
+          </Button>
+          <Button
+            disabled={isPublishedPage}
+            onClick={() => resizeSelectedBlock('minHeight', -1)}
+          >
+            ↓ {t('Shorter')}
+          </Button>
+          <Button
+            disabled={isPublishedPage}
+            onClick={() => resizeSelectedBlock('minHeight', 1)}
+          >
+            ↑ {t('Taller')}
+          </Button>
+          <Button
+            disabled={isPublishedPage}
             onClick={() => moveSelectedBlock(-1)}
           >
             ↑ {t('Move')}
@@ -1679,10 +2147,21 @@ export default function BlockStudio({
                       }}
                     >
                       <strong>
-                        {block.content?.title ||
-                          block.content?.text ||
-                          block.metadata?.label ||
-                          t('Block')}
+                        <InlinePills>
+                          {blockIcon(
+                            block.block_type,
+                            insertableBlockTypes.find(
+                              definition =>
+                                definition.type === block.block_type,
+                            )?.icon,
+                          )}
+                          <span>
+                            {block.content?.title ||
+                              block.content?.text ||
+                              block.metadata?.label ||
+                              t('Block')}
+                          </span>
+                        </InlinePills>
                       </strong>
                       <Tag>{block.block_type}</Tag>
                     </div>
@@ -1732,6 +2211,17 @@ export default function BlockStudio({
                     label: `${definition.label} · ${definition.category}`,
                   }))}
                 />
+                <Select
+                  disabled={isPublishedPage || selection.type === 'block'}
+                  size="small"
+                  style={{ minWidth: 150 }}
+                  value={quickInsertSlot}
+                  onChange={value => setQuickInsertSlot(value)}
+                  options={SLOT_OPTIONS.map(option => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
+                />
                 <Button
                   disabled={isPublishedPage}
                   type="primary"
@@ -1740,28 +2230,83 @@ export default function BlockStudio({
                   {`+ ${quickInsertLabel}`}
                 </Button>
               </CanvasToolbarGroup>
-              <TinyMeta>
-                {selection.type === 'block'
-                  ? selectedBlock && isContainerBlock(selectedBlock.block_type)
-                    ? t(
-                        'New content will be inserted inside the selected container block.',
-                      )
-                    : t(
-                        'New content will be inserted after the selected block.',
-                      )
-                  : t(
-                      'Use the add action to insert content directly into this page.',
-                    )}
-              </TinyMeta>
+              <CanvasToolbarGroup>
+                {PREVIEW_VIEWPORTS.map(viewport => (
+                  <Button
+                    key={viewport.value}
+                    size="small"
+                    type={
+                      previewViewport === viewport.value ? 'primary' : 'default'
+                    }
+                    onClick={() => setPreviewViewport(viewport.value)}
+                  >
+                    {viewport.label}
+                  </Button>
+                ))}
+              </CanvasToolbarGroup>
             </CanvasToolbar>
-            <RenderBlockTree
-              blocks={blocks}
-              charts={charts}
-              dashboards={dashboards}
-              page={draftPage}
-              navigation={navigationMenus}
-              mode="editor"
-            />
+            <TinyMeta style={{ marginBottom: 12 }}>
+              {selection.type === 'block'
+                ? selectedBlock && isContainerBlock(selectedBlock.block_type)
+                  ? t(
+                      'New content will be inserted inside the selected container block.',
+                    )
+                  : t('New content will be inserted after the selected block.')
+                : t(
+                    'Use the slot selector to place new root blocks into the correct page region.',
+                  )}
+            </TinyMeta>
+            <CanvasSurface>
+              <ViewportFrame $mode={previewViewport}>
+                <RegionGrid>
+                  {SLOT_OPTIONS.map(slotOption => {
+                    const slotBlocks = slotGroups[slotOption.value] || [];
+                    return (
+                      <RegionCard key={slotOption.value}>
+                        <RegionHeader>
+                          <RegionTitle>
+                            {blockIcon(slotOption.value, 'layout')}
+                            <span>{slotOption.label}</span>
+                          </RegionTitle>
+                          <InlinePills>
+                            <Tag>{t('%s blocks', slotBlocks.length)}</Tag>
+                            <Button
+                              size="small"
+                              disabled={
+                                isPublishedPage || selection.type === 'block'
+                              }
+                              onClick={() => {
+                                setQuickInsertSlot(slotOption.value);
+                                addBlock(quickInsertType);
+                              }}
+                            >
+                              {t('Add Here')}
+                            </Button>
+                          </InlinePills>
+                        </RegionHeader>
+                        {slotBlocks.length ? (
+                          <RenderBlockTree
+                            blocks={slotBlocks}
+                            charts={charts}
+                            dashboards={dashboards}
+                            mediaAssets={mediaAssets}
+                            page={draftPage}
+                            navigation={navigationMenus}
+                            mode="editor"
+                          />
+                        ) : (
+                          <Empty
+                            description={t(
+                              'No blocks in this region yet. Use Add Here to place content.',
+                            )}
+                          />
+                        )}
+                      </RegionCard>
+                    );
+                  })}
+                </RegionGrid>
+              </ViewportFrame>
+            </CanvasSurface>
           </>
         ) : (
           <Empty description={t('Choose a page or create a new one.')} />

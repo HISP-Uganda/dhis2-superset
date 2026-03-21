@@ -105,24 +105,12 @@ const blocks: PortalPageBlock[] = [
       buttonLabel: 'Download PDF',
     },
     settings: {
+      asset_ref: { id: 9 },
       download_url: '/api/v1/public_page/assets/9/download',
       open_in_new_tab: false,
     },
     styles: {},
     metadata: {},
-    asset: {
-      id: 9,
-      slug: 'malaria-response-plan',
-      title: 'Malaria Response Plan',
-      asset_type: 'file',
-      original_filename: 'response-plan.pdf',
-      file_extension: 'pdf',
-      visibility: 'public',
-      is_public: true,
-      status: 'active',
-      settings: {},
-      download_url: '/api/v1/public_page/assets/9/download',
-    },
     children: [],
   },
   {
@@ -185,6 +173,21 @@ test('renders breadcrumb, file download, and nested chart blocks', () => {
         },
       ]}
       dashboards={[]}
+      mediaAssets={[
+        {
+          id: 9,
+          slug: 'malaria-response-plan',
+          title: 'Malaria Response Plan',
+          asset_type: 'file',
+          original_filename: 'response-plan.pdf',
+          file_extension: 'pdf',
+          visibility: 'public',
+          is_public: true,
+          status: 'active',
+          settings: {},
+          download_url: '/api/v1/public_page/assets/9/download',
+        },
+      ]}
       page={page}
       navigation={{ header: [], footer: [] }}
       onNavigate={onNavigate}

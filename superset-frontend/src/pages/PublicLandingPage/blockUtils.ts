@@ -34,6 +34,28 @@ const CONTAINER_BLOCK_TYPES = new Set([
   'card',
 ]);
 
+function defaultGridSpan(blockType?: string | null) {
+  switch ((blockType || '').trim().toLowerCase()) {
+    case 'button':
+      return 3;
+    case 'statistic':
+      return 4;
+    case 'image':
+    case 'gallery':
+    case 'video':
+    case 'embed':
+    case 'file':
+    case 'download':
+    case 'card':
+    case 'chart':
+    case 'dashboard':
+    case 'table':
+      return 6;
+    default:
+      return 12;
+  }
+}
+
 function makeUid(prefix = 'blk') {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -78,7 +100,10 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
     schema_version: 1,
     style_bundle_id: null,
     content: {},
-    settings: {},
+    settings: {
+      gridSpan: defaultGridSpan(normalizedType),
+      minHeight: null,
+    },
     styles: {},
     metadata: {
       label:
@@ -97,9 +122,11 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
     case 'section':
       base.content = { title: t('Section'), subtitle: '' };
       base.settings = {
+        ...base.settings,
         anchor: '',
         container: 'default',
         background: '',
+        layout: 'grid',
         columns: 1,
       };
       break;
@@ -126,6 +153,7 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
     case 'download':
       base.content = { title: t('Download resource'), body: '' };
       base.settings = {
+        ...base.settings,
         asset_ref: null,
         download_url: '',
         open_in_new_tab: false,
@@ -133,13 +161,23 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'button':
       base.content = { label: t('Open link') };
-      base.settings = { url: '', variant: 'primary' };
+      base.settings = {
+        ...base.settings,
+        url: '',
+        variant: 'primary',
+      };
       break;
     case 'spacer':
-      base.settings = { height: 48 };
+      base.settings = {
+        ...base.settings,
+        height: 48,
+      };
       break;
     case 'divider':
-      base.settings = { style: 'solid' };
+      base.settings = {
+        ...base.settings,
+        style: 'solid',
+      };
       break;
     case 'hero':
       base.content = {
@@ -150,20 +188,34 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'group':
       base.content = { title: t('Section'), subtitle: '' };
+      base.settings = {
+        ...base.settings,
+        layout: 'grid',
+        columnCount: 1,
+      };
       break;
     case 'card':
       base.content = { title: t('Card'), body: '' };
       break;
     case 'columns':
-      base.settings = { columnCount: 2, gap: 24 };
+      base.settings = {
+        ...base.settings,
+        columnCount: 2,
+        gap: 24,
+      };
       base.children = [createEmptyBlock('column'), createEmptyBlock('column')];
       break;
     case 'column':
       base.content = { title: '' };
+      base.settings = {
+        ...base.settings,
+        gridSpan: 6,
+      };
       break;
     case 'chart':
       base.content = { title: t('Chart'), caption: '' };
       base.settings = {
+        ...base.settings,
         provider: 'superset',
         mode: 'saved_chart',
         chart_ref: null,
@@ -174,28 +226,50 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'dashboard':
       base.content = { title: t('Dashboard'), caption: '' };
-      base.settings = { dashboard_ref: null, height: 720 };
+      base.settings = {
+        ...base.settings,
+        dashboard_ref: null,
+        height: 720,
+      };
       break;
     case 'dynamic_widget':
       base.content = { title: t('Dynamic Widget'), body: '' };
-      base.settings = { widgetType: 'indicator_highlights', limit: 6 };
+      base.settings = {
+        ...base.settings,
+        widgetType: 'indicator_highlights',
+        limit: 6,
+      };
       break;
     case 'page_title':
-      base.settings = { showSubtitle: true, showExcerpt: false };
+      base.settings = {
+        ...base.settings,
+        showSubtitle: true,
+        showExcerpt: false,
+      };
       break;
     case 'breadcrumb':
-      base.settings = { showCurrentPage: true };
+      base.settings = {
+        ...base.settings,
+        showCurrentPage: true,
+      };
       break;
     case 'menu':
       base.content = { title: t('Menu') };
-      base.settings = { menu_slug: 'header', location: 'header' };
+      base.settings = {
+        ...base.settings,
+        menu_slug: 'header',
+        location: 'header',
+      };
       break;
     case 'callout':
       base.content = {
         title: t('Callout'),
         body: t('Highlight an important note.'),
       };
-      base.settings = { tone: 'info' };
+      base.settings = {
+        ...base.settings,
+        tone: 'info',
+      };
       break;
     case 'statistic':
       base.content = { title: t('Statistic'), value: '0', caption: '' };
@@ -263,6 +337,7 @@ function convertLegacyComponent(
   } else if (mappedType === 'button') {
     block.content = { label: component.body || component.title || '' };
     block.settings = {
+      ...block.settings,
       ...component.settings,
       url: component.settings?.url || '',
       variant: component.settings?.variant || 'primary',
@@ -273,13 +348,14 @@ function convertLegacyComponent(
       body: component.body || '',
       buttonLabel: component.settings?.buttonLabel || '',
     };
-    block.settings = { ...component.settings };
+    block.settings = { ...block.settings, ...(component.settings || {}) };
   } else if (mappedType === 'chart') {
     block.content = {
       title: component.title || '',
       caption: component.body || '',
     };
     block.settings = {
+      ...block.settings,
       ...component.settings,
       provider: 'superset',
       mode: 'saved_chart',
@@ -292,6 +368,7 @@ function convertLegacyComponent(
       caption: component.body || '',
     };
     block.settings = {
+      ...block.settings,
       ...component.settings,
       dashboard_ref: component.dashboard_id
         ? { id: component.dashboard_id }
@@ -304,6 +381,7 @@ function convertLegacyComponent(
       body: component.body || '',
     };
     block.settings = {
+      ...block.settings,
       ...component.settings,
       widgetType:
         componentType === 'indicator_highlights'
@@ -317,7 +395,7 @@ function convertLegacyComponent(
       title: component.title || '',
       body: component.body || '',
     };
-    block.settings = { ...(component.settings || {}) };
+    block.settings = { ...block.settings, ...(component.settings || {}) };
   }
   return block;
 }
@@ -352,7 +430,7 @@ function convertLegacySection(section: PortalPageSection): PortalPageBlock {
       title: section.title || '',
       subtitle: section.subtitle || '',
     };
-    block.settings = { ...(section.settings || {}) };
+    block.settings = { ...block.settings, ...(section.settings || {}) };
   }
   block.children = (section.components || []).map(convertLegacyComponent);
   if (!block.children.length && sectionType === 'dashboard_catalog') {
@@ -567,10 +645,7 @@ export function duplicateBlockByUid(
   });
 }
 
-export function normalizeBlocks(
-  blocks: PortalPageBlock[],
-  depth = 0,
-): PortalPageBlock[] {
+export function normalizeBlocks(blocks: PortalPageBlock[]): PortalPageBlock[] {
   return (blocks || []).map((block, index) => ({
     id: block.id,
     uid: block.uid || makeUid(block.block_type.slice(0, 3) || 'blk'),
@@ -578,8 +653,6 @@ export function normalizeBlocks(
     block_type: block.block_type,
     slot: block.slot || 'content',
     sort_order: index,
-    tree_path: block.tree_path || null,
-    depth,
     is_container: block.is_container || isContainerBlock(block.block_type),
     visibility: block.visibility || 'public',
     status: block.status || 'active',
@@ -589,7 +662,7 @@ export function normalizeBlocks(
     settings: { ...(block.settings || {}) },
     styles: { ...(block.styles || {}) },
     metadata: { ...(block.metadata || {}) },
-    children: normalizeBlocks(block.children || [], depth + 1),
+    children: normalizeBlocks(block.children || []),
   }));
 }
 

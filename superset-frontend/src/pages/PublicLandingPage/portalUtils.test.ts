@@ -105,6 +105,8 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
         },
         styles: {},
         metadata: { label: 'Chart' },
+        tree_path: '0000',
+        depth: 0,
         chart: {
           id: 7,
           slice_name: 'Coverage Map',
@@ -177,4 +179,6 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
     }),
   );
   expect(normalized.blocks[0]).not.toHaveProperty('chart');
+  expect(normalized.blocks[0]).not.toHaveProperty('tree_path');
+  expect(normalized.blocks[0]).not.toHaveProperty('depth');
 });

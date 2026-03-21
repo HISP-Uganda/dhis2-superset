@@ -16,10 +16,32 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-/* eslint-disable no-restricted-imports, theme-colors/no-literal-colors */
+/* eslint-disable no-restricted-imports, theme-colors/no-literal-colors, import/no-extraneous-dependencies */
 
 import { CSSProperties, useEffect, useMemo, useState } from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
+import {
+  AppstoreOutlined,
+  ArrowLeftOutlined,
+  BgColorsOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  EyeOutlined,
+  FileImageOutlined,
+  FileTextOutlined,
+  FilterOutlined,
+  FundProjectionScreenOutlined,
+  GlobalOutlined,
+  LayoutOutlined,
+  MenuOutlined,
+  PlusOutlined,
+  RocketOutlined,
+  SaveOutlined,
+  SearchOutlined,
+  SettingOutlined,
+  SkinOutlined,
+  UnorderedListOutlined,
+} from '@ant-design/icons';
 import {
   Alert,
   Badge,
@@ -32,7 +54,6 @@ import {
   Space,
   Spin,
   Switch,
-  Tabs,
   Tag,
   message,
 } from 'antd';
@@ -49,6 +70,7 @@ import type {
   PortalNavigationItem,
   PortalNavigationMenu,
   PortalPage,
+  PortalPageSummary,
   PortalStyleBundle,
   PortalTemplate,
   PortalTheme,
@@ -57,6 +79,7 @@ import BlockStudio from './BlockStudio';
 
 type AdminTab =
   | 'overview'
+  | 'pages'
   | 'studio'
   | 'media'
   | 'menus'
@@ -69,11 +92,140 @@ const PAGE_QUERY_PARAM = 'page';
 const TAB_QUERY_PARAM = 'tab';
 
 const SHELL_STYLE: CSSProperties = {
-  minHeight: '100%',
-  padding: 24,
-  background:
-    'radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 30%), linear-gradient(180deg, #f6f9fc, #eef3f7)',
+  minHeight: '100vh',
+  background: '#f0f2f5',
 };
+
+const AdminShell = styled.div`
+  min-height: 100vh;
+  color: #172b4d;
+`;
+
+const TopBar = styled.header`
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  background: #1e293b;
+  color: #f8fafc;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+`;
+
+const TopBarBrand = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+`;
+
+const TopBarBrandIcon = styled.div`
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 18px;
+`;
+
+const TopBarActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+`;
+
+const ShellBody = styled.div`
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: calc(100vh - 65px);
+
+  @media (max-width: 1080px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const LeftRail = styled.aside`
+  position: sticky;
+  top: 65px;
+  align-self: start;
+  height: calc(100vh - 65px);
+  overflow-y: auto;
+  padding: 20px 16px 28px;
+  background: #ffffff;
+  border-right: 1px solid rgba(148, 163, 184, 0.24);
+
+  @media (max-width: 1080px) {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+  }
+`;
+
+const RailSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 22px;
+`;
+
+const RailLabel = styled.div`
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+`;
+
+const RailButton = styled.button<{ $active?: boolean }>`
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: ${({ $active }) => ($active ? '#e2e8f0' : 'transparent')};
+  color: ${({ $active }) => ($active ? '#0f172a' : '#334155')};
+  font-weight: ${({ $active }) => ($active ? 700 : 600)};
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: ${({ $active }) => ($active ? '#e2e8f0' : '#f8fafc')};
+  }
+`;
+
+const RailButtonContent = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+`;
+
+const ShellMain = styled.main`
+  padding: 24px;
+
+  @media (max-width: 720px) {
+    padding: 16px;
+  }
+`;
+
+const ContentStack = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
 
 const Header = styled.div`
   display: flex;
@@ -235,6 +387,68 @@ const RevisionCard = styled.div`
   border: 1px solid rgba(148, 163, 184, 0.22);
 `;
 
+const PagesToolbar = styled.div`
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const PagesToolbarFilters = styled.div`
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) repeat(2, minmax(160px, 0.8fr));
+  gap: 12px;
+  flex: 1;
+
+  @media (max-width: 980px) {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+`;
+
+const PagesGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+`;
+
+const PageCard = styled.button<{ $active?: boolean }>`
+  width: 100%;
+  text-align: left;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid
+    ${({ $active }) =>
+      $active ? 'rgba(15, 118, 110, 0.34)' : 'rgba(148, 163, 184, 0.22)'};
+  background: ${({ $active }) => ($active ? '#f0fdfa' : '#ffffff')};
+  cursor: pointer;
+`;
+
+const PageCardMeta = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const PageCardActions = styled.div`
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+`;
+
+const StudioBanner = styled.div`
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+`;
+
 const DesignLayout = styled.div`
   display: grid;
   grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
@@ -297,6 +511,7 @@ const readPageSlug = (search: string) =>
 const readAdminTab = (search: string): AdminTab => {
   const value = new URLSearchParams(search).get(TAB_QUERY_PARAM);
   if (
+    value === 'pages' ||
     value === 'studio' ||
     value === 'media' ||
     value === 'menus' ||
@@ -493,6 +708,13 @@ export default function CMSAdminPage() {
   const [data, setData] = useState<PortalAdminPayload | null>(null);
   const [draftPage, setDraftPage] = useState<PortalPage | null>(null);
   const [search, setSearch] = useState('');
+  const [pagesSearch, setPagesSearch] = useState('');
+  const [pagesStatusFilter, setPagesStatusFilter] = useState<
+    'all' | 'published' | 'draft' | 'private' | 'archived'
+  >('all');
+  const [pagesSort, setPagesSort] = useState<
+    'updated_desc' | 'updated_asc' | 'title_asc' | 'order_asc'
+  >('updated_desc');
   const [menus, setMenus] = useState<{
     header: PortalNavigationMenu[];
     footer: PortalNavigationMenu[];
@@ -614,6 +836,43 @@ export default function CMSAdminPage() {
       ) || null,
     [data?.style_bundles, selectedStyleBundleId],
   );
+  const filteredPages = useMemo(() => {
+    const normalizedQuery = pagesSearch.trim().toLowerCase();
+    const pages = [...(data?.pages || [])].filter(page => {
+      const matchesQuery = normalizedQuery
+        ? `${page.title} ${page.slug || ''} ${page.path || ''}`
+            .toLowerCase()
+            .includes(normalizedQuery)
+        : true;
+      const pageStatus =
+        page.status === 'archived'
+          ? 'archived'
+          : page.visibility === 'authenticated'
+            ? 'private'
+            : page.is_published
+              ? 'published'
+              : 'draft';
+      const matchesStatus =
+        pagesStatusFilter === 'all' ? true : pageStatus === pagesStatusFilter;
+      return matchesQuery && matchesStatus;
+    });
+
+    pages.sort((left, right) => {
+      if (pagesSort === 'title_asc') {
+        return left.title.localeCompare(right.title);
+      }
+      if (pagesSort === 'order_asc') {
+        return (left.display_order || 0) - (right.display_order || 0);
+      }
+      const leftChanged = left.changed_on || '';
+      const rightChanged = right.changed_on || '';
+      if (pagesSort === 'updated_asc') {
+        return leftChanged.localeCompare(rightChanged);
+      }
+      return rightChanged.localeCompare(leftChanged);
+    });
+    return pages;
+  }, [data?.pages, pagesSearch, pagesStatusFilter, pagesSort]);
 
   useEffect(() => {
     if (!selectedTheme) {
@@ -650,6 +909,55 @@ export default function CMSAdminPage() {
     history.push(`/superset/cms/${buildCmsSearch(next)}`);
   }
 
+  function pageStateLabel(page: PortalPageSummary | PortalPage | null) {
+    if (!page) {
+      return t('Draft');
+    }
+    if (page.status === 'archived') {
+      return t('Archived');
+    }
+    if (page.visibility === 'authenticated') {
+      return page.is_published ? t('Private') : t('Private Draft');
+    }
+    return page.is_published ? t('Published') : t('Draft');
+  }
+
+  function pageStateColor(page: PortalPageSummary | PortalPage | null) {
+    if (!page) {
+      return 'default';
+    }
+    if (page.status === 'archived') {
+      return 'default';
+    }
+    if (page.visibility === 'authenticated') {
+      return 'blue';
+    }
+    return page.is_published ? 'green' : 'gold';
+  }
+
+  function openStudioPage(pageSlug?: string | null) {
+    setQueryState({
+      pageSlug,
+      tab: 'studio',
+    });
+    loadBootstrap(pageSlug || undefined);
+  }
+
+  function previewPage(page: PortalPageSummary | PortalPage | null) {
+    if (!page) {
+      return;
+    }
+    if (page.slug && page.visibility === 'public' && page.is_published) {
+      window.open(
+        `/superset/public/${page.path || page.slug}/`,
+        '_blank',
+        'noopener',
+      );
+      return;
+    }
+    openStudioPage(page.slug || null);
+  }
+
   function loadNewPage() {
     setDraftPage(
       createDraftPage({
@@ -677,6 +985,7 @@ export default function CMSAdminPage() {
         featured_image_asset_id: null,
         og_image_asset_id: null,
         settings: {},
+        blocks: [],
         sections: [createEmptySection('hero'), createEmptySection('content')],
       } as PortalPage),
     );
@@ -790,6 +1099,30 @@ export default function CMSAdminPage() {
         caughtError instanceof Error
           ? caughtError.message
           : t('Failed to archive page.'),
+      );
+    } finally {
+      setSavingPage(false);
+    }
+  }
+
+  async function deletePage(pageId: number, pageSlug?: string | null) {
+    setSavingPage(true);
+    try {
+      await SupersetClient.delete({
+        endpoint: `/api/v1/public_page/admin/pages/${pageId}`,
+      });
+      const fallbackSlug =
+        draftPage?.id === pageId ? null : draftPage?.slug || undefined;
+      await loadBootstrap(fallbackSlug);
+      if (draftPage?.id === pageId || pageSlug === requestedPageSlug) {
+        setQueryState({ pageSlug: null, tab: 'pages' });
+      }
+      messageApi.success(t('Page deleted.'));
+    } catch (caughtError) {
+      messageApi.error(
+        caughtError instanceof Error
+          ? caughtError.message
+          : t('Failed to delete page.'),
       );
     } finally {
       setSavingPage(false);
@@ -2170,6 +2503,864 @@ export default function CMSAdminPage() {
     );
   }
 
+  function renderPagesManager() {
+    return (
+      <Stack>
+        <PagesToolbar>
+          <PagesToolbarFilters>
+            <FieldBlock>
+              <FieldLabel>{t('Search Pages')}</FieldLabel>
+              <Input
+                value={pagesSearch}
+                onChange={event => setPagesSearch(event.target.value)}
+                prefix={<SearchOutlined />}
+                placeholder={t('Search title, slug, or path')}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Status')}</FieldLabel>
+              <Select
+                value={pagesStatusFilter}
+                onChange={value => setPagesStatusFilter(value)}
+                suffixIcon={<FilterOutlined />}
+                options={[
+                  { value: 'all', label: t('All Pages') },
+                  { value: 'published', label: t('Published') },
+                  { value: 'draft', label: t('Drafts') },
+                  { value: 'private', label: t('Private') },
+                  { value: 'archived', label: t('Archived') },
+                ]}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Sort')}</FieldLabel>
+              <Select
+                value={pagesSort}
+                onChange={value => setPagesSort(value)}
+                options={[
+                  { value: 'updated_desc', label: t('Recently Updated') },
+                  { value: 'updated_asc', label: t('Oldest Updated') },
+                  { value: 'title_asc', label: t('Title A-Z') },
+                  { value: 'order_asc', label: t('Display Order') },
+                ]}
+              />
+            </FieldBlock>
+          </PagesToolbarFilters>
+          <Button type="primary" icon={<PlusOutlined />} onClick={loadNewPage}>
+            {t('Create Page')}
+          </Button>
+        </PagesToolbar>
+        <PagesGrid>
+          {filteredPages.length ? (
+            filteredPages.map(page => (
+              <PageCard
+                key={page.id || page.slug}
+                $active={page.slug === draftPage?.slug}
+                onClick={() => openStudioPage(page.slug || null)}
+              >
+                <PageCardMeta>
+                  <Space wrap>
+                    <Tag color={pageStateColor(page)}>
+                      {pageStateLabel(page)}
+                    </Tag>
+                    {page.is_homepage ? (
+                      <Tag color="gold">{t('Homepage')}</Tag>
+                    ) : null}
+                    {page.page_type ? <Tag>{page.page_type}</Tag> : null}
+                  </Space>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>
+                    {page.title}
+                  </div>
+                  <TinyMeta>{page.path || page.slug || '—'}</TinyMeta>
+                  <TinyMeta>
+                    {page.changed_on
+                      ? t('Updated %s', page.changed_on)
+                      : t('Not yet published')}
+                  </TinyMeta>
+                </PageCardMeta>
+                <PageCardActions onClick={event => event.stopPropagation()}>
+                  <Button
+                    size="small"
+                    icon={<FileTextOutlined />}
+                    onClick={() => openStudioPage(page.slug || null)}
+                  >
+                    {t('Edit')}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<EyeOutlined />}
+                    onClick={() => previewPage(page)}
+                  >
+                    {t('Preview')}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    disabled={!page.id || savingPage}
+                    onClick={async () => {
+                      if (!page.id) {
+                        return;
+                      }
+                      setSavingPage(true);
+                      try {
+                        const response = await SupersetClient.post({
+                          endpoint: `/api/v1/public_page/admin/pages/${page.id}/duplicate`,
+                        });
+                        const duplicatedPage = response.json
+                          ?.result as PortalPage;
+                        await loadBootstrap(duplicatedPage.slug);
+                        openStudioPage(duplicatedPage.slug || null);
+                        messageApi.success(t('Page duplicated.'));
+                      } catch (caughtError) {
+                        messageApi.error(
+                          caughtError instanceof Error
+                            ? caughtError.message
+                            : t('Failed to duplicate page.'),
+                        );
+                      } finally {
+                        setSavingPage(false);
+                      }
+                    }}
+                  >
+                    {t('Duplicate')}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={
+                      page.is_published ? (
+                        <GlobalOutlined />
+                      ) : (
+                        <RocketOutlined />
+                      )
+                    }
+                    disabled={!page.id || savingPage}
+                    onClick={() => {
+                      if (!page.id) {
+                        return;
+                      }
+                      (async () => {
+                        setSavingPage(true);
+                        try {
+                          await SupersetClient.post({
+                            endpoint: `/api/v1/public_page/admin/pages/${page.id}/publish`,
+                            jsonPayload: {
+                              is_published: !page.is_published,
+                              visibility:
+                                !page.is_published &&
+                                page.visibility === 'draft'
+                                  ? 'public'
+                                  : page.visibility,
+                              scheduled_publish_at:
+                                page.scheduled_publish_at || null,
+                            },
+                          });
+                          await loadBootstrap(draftPage?.slug || undefined);
+                          messageApi.success(
+                            page.is_published
+                              ? t('Page unpublished.')
+                              : t('Page published.'),
+                          );
+                        } catch (caughtError) {
+                          messageApi.error(
+                            caughtError instanceof Error
+                              ? caughtError.message
+                              : t('Failed to update page status.'),
+                          );
+                        } finally {
+                          setSavingPage(false);
+                        }
+                      })();
+                    }}
+                  >
+                    {page.is_published ? t('Unpublish') : t('Publish')}
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    disabled={!page.id || savingPage}
+                    onClick={() => {
+                      if (!page.id) {
+                        return;
+                      }
+                      deletePage(page.id, page.slug || null);
+                    }}
+                  >
+                    {t('Delete')}
+                  </Button>
+                </PageCardActions>
+              </PageCard>
+            ))
+          ) : (
+            <Panel>
+              <Empty description={t('No pages match the current filters.')} />
+            </Panel>
+          )}
+        </PagesGrid>
+      </Stack>
+    );
+  }
+
+  const adminNavItems: Array<{
+    key: AdminTab;
+    label: string;
+    icon: JSX.Element;
+    hidden?: boolean;
+  }> = [
+    {
+      key: 'overview' as const,
+      label: t('Overview'),
+      icon: <AppstoreOutlined />,
+    },
+    {
+      key: 'pages' as const,
+      label: t('Pages'),
+      icon: <UnorderedListOutlined />,
+    },
+    {
+      key: 'studio' as const,
+      label: t('Page Studio'),
+      icon: <LayoutOutlined />,
+    },
+    {
+      key: 'media' as const,
+      label: t('Media Library'),
+      icon: <FileImageOutlined />,
+      hidden: !data?.permissions.can_manage_media,
+    },
+    { key: 'menus' as const, label: t('Menus'), icon: <MenuOutlined /> },
+    { key: 'portal' as const, label: t('Portal'), icon: <SettingOutlined /> },
+    {
+      key: 'themes' as const,
+      label: t('Themes'),
+      icon: <SkinOutlined />,
+      hidden: !data?.permissions.can_manage_themes,
+    },
+    {
+      key: 'templates' as const,
+      label: t('Templates'),
+      icon: <BgColorsOutlined />,
+      hidden: !data?.permissions.can_manage_templates,
+    },
+    {
+      key: 'styles' as const,
+      label: t('Styles'),
+      icon: <FundProjectionScreenOutlined />,
+      hidden: !data?.permissions.can_manage_styles,
+    },
+  ].filter(item => !item.hidden);
+
+  function renderActiveTab() {
+    if (requestedTab === 'overview') {
+      return (
+        <Stack>
+          <StatsGrid>
+            <StatCard>
+              <StatValue>{data?.stats.total_pages || 0}</StatValue>
+              <StatLabel>{t('Total Pages')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.published_pages || 0}</StatValue>
+              <StatLabel>{t('Published Pages')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.draft_pages || 0}</StatValue>
+              <StatLabel>{t('Drafts')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.private_pages || 0}</StatValue>
+              <StatLabel>{t('Private Pages')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.menus || 0}</StatValue>
+              <StatLabel>{t('Menus')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.chart_enabled_pages || 0}</StatValue>
+              <StatLabel>{t('Chart-enabled Pages')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.themes || 0}</StatValue>
+              <StatLabel>{t('Themes')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.templates || 0}</StatValue>
+              <StatLabel>{t('Templates')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.style_bundles || 0}</StatValue>
+              <StatLabel>{t('Style Bundles')}</StatLabel>
+            </StatCard>
+            <StatCard>
+              <StatValue>{data?.stats.media_assets || 0}</StatValue>
+              <StatLabel>{t('Media Assets')}</StatLabel>
+            </StatCard>
+          </StatsGrid>
+          <RevisionList>
+            {(data?.recent_edits || []).map(revision => (
+              <RevisionCard key={revision.id}>
+                <Badge
+                  color={
+                    revision.action === 'published' ? '#0f766e' : '#1d4ed8'
+                  }
+                  text={revision.action}
+                />
+                <PreviewTitle style={{ fontSize: 16, marginTop: 10 }}>
+                  {revision.summary ||
+                    t('Revision %s', revision.revision_number)}
+                </PreviewTitle>
+                <TinyMeta>
+                  {revision.created_by?.name ||
+                    revision.created_by?.username ||
+                    t('System')}
+                  {' · '}
+                  {revision.created_on || '—'}
+                </TinyMeta>
+              </RevisionCard>
+            ))}
+          </RevisionList>
+        </Stack>
+      );
+    }
+
+    if (requestedTab === 'pages') {
+      return renderPagesManager();
+    }
+
+    if (requestedTab === 'studio') {
+      return (
+        <ContentStack>
+          <StudioBanner>
+            <div>
+              <Eyebrow>{t('Page Studio')}</Eyebrow>
+              <Title style={{ fontSize: 28 }}>
+                {draftPage?.title || t('Select or create a page')}
+              </Title>
+              <Subtitle>
+                {draftPage
+                  ? t(
+                      'Compose blocks, manage metadata, and preview the page across responsive regions.',
+                    )
+                  : t(
+                      'Choose a page from the Pages view or create a new page to start authoring.',
+                    )}
+              </Subtitle>
+            </div>
+            {draftPage ? (
+              <Space wrap>
+                <Tag color={pageStateColor(draftPage)}>
+                  {pageStateLabel(draftPage)}
+                </Tag>
+                {draftPage.path ? <Tag>{draftPage.path}</Tag> : null}
+              </Space>
+            ) : null}
+          </StudioBanner>
+          <BlockStudio
+            draftPage={draftPage}
+            pages={data?.pages || []}
+            charts={data?.available_charts || []}
+            dashboards={data?.dashboards || []}
+            mediaAssets={data?.media_assets || []}
+            navigationMenus={menus}
+            styleBundles={data?.style_bundles || []}
+            blockTypes={data?.block_types || []}
+            themes={data?.themes || []}
+            templates={data?.templates || []}
+            search={search}
+            onSearchChange={setSearch}
+            onNewPage={loadNewPage}
+            onSelectPage={pageSlug => openStudioPage(pageSlug)}
+            onChangeDraftPage={nextPage => {
+              setDraftPage(nextPage);
+            }}
+          />
+        </ContentStack>
+      );
+    }
+
+    if (requestedTab === 'media' && data?.permissions.can_manage_media) {
+      return (
+        <DesignLayout>
+          <Panel>
+            <PanelHeader>
+              <PanelTitle>{t('Upload Asset')}</PanelTitle>
+            </PanelHeader>
+            <Stack>
+              <FieldBlock>
+                <FieldLabel>{t('File')}</FieldLabel>
+                <input
+                  type="file"
+                  onChange={event =>
+                    setAssetDraft(previous => ({
+                      ...previous,
+                      file: event.target.files?.[0] || null,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldGrid>
+                <FieldBlock>
+                  <FieldLabel>{t('Title')}</FieldLabel>
+                  <Input
+                    value={assetDraft.title}
+                    onChange={event =>
+                      setAssetDraft(previous => ({
+                        ...previous,
+                        title: event.target.value,
+                      }))
+                    }
+                  />
+                </FieldBlock>
+                <FieldBlock>
+                  <FieldLabel>{t('Visibility')}</FieldLabel>
+                  <Select
+                    value={assetDraft.visibility}
+                    onChange={value =>
+                      setAssetDraft(previous => ({
+                        ...previous,
+                        visibility: value,
+                      }))
+                    }
+                    options={[
+                      { value: 'private', label: t('Private') },
+                      {
+                        value: 'authenticated',
+                        label: t('Authenticated'),
+                      },
+                      { value: 'public', label: t('Public') },
+                    ]}
+                  />
+                </FieldBlock>
+                <FieldBlock>
+                  <FieldLabel>{t('Alt Text')}</FieldLabel>
+                  <Input
+                    value={assetDraft.alt_text}
+                    onChange={event =>
+                      setAssetDraft(previous => ({
+                        ...previous,
+                        alt_text: event.target.value,
+                      }))
+                    }
+                  />
+                </FieldBlock>
+                <FieldBlock>
+                  <FieldLabel>{t('Caption')}</FieldLabel>
+                  <Input
+                    value={assetDraft.caption}
+                    onChange={event =>
+                      setAssetDraft(previous => ({
+                        ...previous,
+                        caption: event.target.value,
+                      }))
+                    }
+                  />
+                </FieldBlock>
+              </FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Description')}</FieldLabel>
+                <Input.TextArea
+                  rows={4}
+                  value={assetDraft.description}
+                  onChange={event =>
+                    setAssetDraft(previous => ({
+                      ...previous,
+                      description: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                loading={uploadingAsset}
+                onClick={uploadAsset}
+              >
+                {t('Upload Asset')}
+              </Button>
+            </Stack>
+          </Panel>
+          <Panel>
+            <PanelHeader>
+              <PanelTitle>{t('Assets')}</PanelTitle>
+              <Tag>{data?.stats.media_assets || 0}</Tag>
+            </PanelHeader>
+            <SectionList>
+              {(data?.media_assets || []).length ? (
+                (data?.media_assets || []).map(asset => (
+                  <DesignCard key={asset.id}>
+                    <Stack>
+                      <div>
+                        <strong>{asset.title}</strong>
+                        <TinyMeta>
+                          {asset.asset_type} ·{' '}
+                          {asset.original_filename || asset.slug}
+                        </TinyMeta>
+                      </div>
+                      <Space wrap>
+                        <Tag>{asset.visibility}</Tag>
+                        <Tag>{asset.status}</Tag>
+                        {asset.file_extension ? (
+                          <Tag>{asset.file_extension}</Tag>
+                        ) : null}
+                      </Space>
+                      <Space wrap>
+                        <Button
+                          size="small"
+                          icon={<EyeOutlined />}
+                          onClick={() =>
+                            window.open(
+                              asset.download_url || '#',
+                              '_blank',
+                              'noopener',
+                            )
+                          }
+                        >
+                          {t('Preview')}
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => archiveAsset(asset.id)}
+                        >
+                          {t('Archive')}
+                        </Button>
+                      </Space>
+                    </Stack>
+                  </DesignCard>
+                ))
+              ) : (
+                <Empty description={t('No media assets yet.')} />
+              )}
+            </SectionList>
+          </Panel>
+        </DesignLayout>
+      );
+    }
+
+    if (requestedTab === 'menus') {
+      return (
+        <Stack>
+          <Panel>
+            <PanelHeader>
+              <PanelTitle>{t('Header Menus')}</PanelTitle>
+              <Button
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() =>
+                  setMenus(previous => ({
+                    ...previous,
+                    header: [...previous.header, defaultMenu('header')],
+                  }))
+                }
+              >
+                {t('Add Header Menu')}
+              </Button>
+            </PanelHeader>
+            {menus.header.map((menu, menuIndex) => (
+              <Stack key={`${menu.slug}-${menuIndex}`}>
+                <FieldGrid>
+                  <FieldBlock>
+                    <FieldLabel>{t('Menu Title')}</FieldLabel>
+                    <Input
+                      value={menu.title}
+                      onChange={event =>
+                        updateMenu('header', menuIndex, {
+                          title: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Slug')}</FieldLabel>
+                    <Input
+                      value={menu.slug}
+                      onChange={event =>
+                        updateMenu('header', menuIndex, {
+                          slug: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                </FieldGrid>
+                <FieldGrid>
+                  <FieldBlock>
+                    <FieldLabel>{t('Description')}</FieldLabel>
+                    <Input
+                      value={menu.description || ''}
+                      onChange={event =>
+                        updateMenu('header', menuIndex, {
+                          description: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Visibility')}</FieldLabel>
+                    <Select
+                      value={menu.visibility || 'public'}
+                      onChange={value =>
+                        updateMenu('header', menuIndex, {
+                          visibility: value,
+                        })
+                      }
+                      options={[
+                        { value: 'public', label: t('Public') },
+                        { value: 'authenticated', label: t('Authenticated') },
+                        { value: 'draft', label: t('Draft') },
+                      ]}
+                    />
+                  </FieldBlock>
+                </FieldGrid>
+                <Space>
+                  <Switch
+                    checked={menu.is_enabled !== false}
+                    onChange={checked =>
+                      updateMenu('header', menuIndex, {
+                        is_enabled: checked,
+                      })
+                    }
+                  />
+                  <Button
+                    size="small"
+                    onClick={() =>
+                      updateMenu('header', menuIndex, {
+                        items: [...menu.items, defaultMenuItem()],
+                      })
+                    }
+                  >
+                    {t('Add Item')}
+                  </Button>
+                </Space>
+                {renderMenuItems('header', menuIndex, menu.items || [])}
+              </Stack>
+            ))}
+          </Panel>
+          <Panel>
+            <PanelHeader>
+              <PanelTitle>{t('Footer Menus')}</PanelTitle>
+              <Button
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() =>
+                  setMenus(previous => ({
+                    ...previous,
+                    footer: [...previous.footer, defaultMenu('footer')],
+                  }))
+                }
+              >
+                {t('Add Footer Menu')}
+              </Button>
+            </PanelHeader>
+            {menus.footer.map((menu, menuIndex) => (
+              <Stack key={`${menu.slug}-${menuIndex}`}>
+                <FieldGrid>
+                  <FieldBlock>
+                    <FieldLabel>{t('Menu Title')}</FieldLabel>
+                    <Input
+                      value={menu.title}
+                      onChange={event =>
+                        updateMenu('footer', menuIndex, {
+                          title: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Slug')}</FieldLabel>
+                    <Input
+                      value={menu.slug}
+                      onChange={event =>
+                        updateMenu('footer', menuIndex, {
+                          slug: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                </FieldGrid>
+                <Space>
+                  <Switch
+                    checked={menu.is_enabled !== false}
+                    onChange={checked =>
+                      updateMenu('footer', menuIndex, {
+                        is_enabled: checked,
+                      })
+                    }
+                  />
+                  <Button
+                    size="small"
+                    onClick={() =>
+                      updateMenu('footer', menuIndex, {
+                        items: [...menu.items, defaultMenuItem()],
+                      })
+                    }
+                  >
+                    {t('Add Item')}
+                  </Button>
+                </Space>
+                {renderMenuItems('footer', menuIndex, menu.items || [])}
+              </Stack>
+            ))}
+          </Panel>
+          <Button
+            type="primary"
+            loading={savingMenus}
+            icon={<SaveOutlined />}
+            onClick={saveMenuConfiguration}
+          >
+            {t('Save Menus')}
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (requestedTab === 'portal') {
+      return (
+        <Panel>
+          <Stack>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Portal Layout Title')}</FieldLabel>
+                <Input
+                  value={portalLayout.title || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      title: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Portal Title')}</FieldLabel>
+                <Input
+                  value={portalLayout.portalTitle || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      portalTitle: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Portal Subtitle')}</FieldLabel>
+              <Input
+                value={portalLayout.portalSubtitle || ''}
+                onChange={event =>
+                  setPortalLayout(previous => ({
+                    ...previous,
+                    portalSubtitle: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Welcome Badge')}</FieldLabel>
+                <Input
+                  value={portalLayout.welcomeBadge || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      welcomeBadge: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Page Max Width')}</FieldLabel>
+                <InputNumber
+                  style={{ width: '100%' }}
+                  value={Number(portalLayout.pageMaxWidth) || 1280}
+                  onChange={value =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      pageMaxWidth: Number(value) || 1280,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Accent Color')}</FieldLabel>
+                <Input
+                  value={portalLayout.accentColor || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      accentColor: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Secondary Color')}</FieldLabel>
+                <Input
+                  value={portalLayout.secondaryColor || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      secondaryColor: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Surface Color')}</FieldLabel>
+                <Input
+                  value={portalLayout.surfaceColor || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      surfaceColor: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Theme Toggle')}</FieldLabel>
+                <Switch
+                  checked={portalLayout.showThemeToggle !== false}
+                  onChange={checked =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      showThemeToggle: checked,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={savingLayout}
+              onClick={savePortalLayout}
+            >
+              {t('Save Portal Settings')}
+            </Button>
+          </Stack>
+        </Panel>
+      );
+    }
+
+    if (requestedTab === 'themes') {
+      return renderThemeManager();
+    }
+    if (requestedTab === 'templates') {
+      return renderTemplateManager();
+    }
+    if (requestedTab === 'styles') {
+      return renderStyleManager();
+    }
+
+    return null;
+  }
+
   if (!canViewCms) {
     return (
       <Result
@@ -2181,695 +3372,234 @@ export default function CMSAdminPage() {
   }
 
   const currentStatus = draftPage?.status || 'draft';
-  const adminActions = (
-    <Space wrap>
-      <Button onClick={loadNewPage}>{t('New Page')}</Button>
-      <Button onClick={duplicatePage} disabled={!draftPage?.id || savingPage}>
-        {t('Duplicate')}
-      </Button>
-      <Button
-        type="primary"
-        loading={savingPage}
-        onClick={savePage}
-        disabled={!draftPage || draftPage.is_published}
-      >
-        {t('Save')}
-      </Button>
-      <Button
-        onClick={() => togglePublish(!draftPage?.is_published)}
-        disabled={!draftPage?.id || savingPage}
-      >
-        {draftPage?.is_published ? t('Unpublish') : t('Publish')}
-      </Button>
-      <Button
-        danger
-        onClick={archivePage}
-        disabled={!draftPage?.id || currentStatus === 'archived' || savingPage}
-      >
-        {t('Archive')}
-      </Button>
-      <Button
-        disabled={!draftPage?.slug || draftPage.visibility !== 'public'}
-        onClick={() =>
-          window.open(
-            `/superset/public/${draftPage?.path || draftPage?.slug}/`,
-            '_blank',
-            'noopener',
-          )
-        }
-      >
-        {t('Open Public Page')}
-      </Button>
-    </Space>
-  );
-
-  return (
-    <div style={SHELL_STYLE}>
-      {contextHolder}
-      <Header>
-        <TitleGroup>
-          <Eyebrow>{t('Portal Administration')}</Eyebrow>
-          <Title>{t('CMS Pages')}</Title>
-          <Subtitle>
-            {t(
-              'Manage public pages, menus, layouts, and serving-table chart embeds from the authenticated portal studio.',
-            )}
-          </Subtitle>
-        </TitleGroup>
-        {adminActions}
-      </Header>
-
-      {error && (
-        <Alert
-          type="error"
-          showIcon
-          message={error}
-          style={{ marginBottom: 16 }}
-          action={<Button onClick={() => loadBootstrap()}>{t('Retry')}</Button>}
-        />
-      )}
-
-      {loading && !data ? (
-        <Spin size="large" />
-      ) : (
-        <Tabs
-          activeKey={requestedTab}
-          onChange={value =>
+  const currentPath = draftPage?.path || draftPage?.slug || null;
+  const tabTitleMap: Record<AdminTab, string> = {
+    overview: t('Portal Administration'),
+    pages: t('Pages'),
+    studio: t('Page Studio'),
+    media: t('Media Library'),
+    menus: t('Navigation Menus'),
+    portal: t('Portal Settings'),
+    themes: t('Themes'),
+    templates: t('Templates'),
+    styles: t('Styles'),
+  };
+  const tabSubtitleMap: Record<AdminTab, string> = {
+    overview: t(
+      'Track recent publishing activity, page volume, and CMS design-system coverage.',
+    ),
+    pages: t(
+      'Search, filter, and manage CMS pages, routing, hierarchy, and publish state.',
+    ),
+    studio: t(
+      'Compose pages with reusable blocks, responsive regions, and typed content settings.',
+    ),
+    media: t(
+      'Upload and manage images, files, and downloadable resources for CMS-authored pages.',
+    ),
+    menus: t(
+      'Configure header and footer navigation, nested menus, and page-linked items.',
+    ),
+    portal: t(
+      'Manage shared branding, portal chrome, and public layout defaults.',
+    ),
+    themes: t(
+      'Maintain active themes, token palettes, and portal-wide design settings.',
+    ),
+    templates: t(
+      'Design layout templates, slots, and reusable structural rules for pages.',
+    ),
+    styles: t(
+      'Control shared style bundles, CSS variables, and scoped presentation overrides.',
+    ),
+  };
+  const adminActions =
+    requestedTab === 'studio' ? (
+      <Space wrap>
+        <Button
+          icon={<ArrowLeftOutlined />}
+          onClick={() =>
             setQueryState({
               pageSlug: draftPage?.slug || requestedPageSlug,
-              tab: value as AdminTab,
+              tab: 'pages',
             })
           }
-          items={[
-            {
-              key: 'overview',
-              label: t('Overview'),
-              children: (
+        >
+          {t('Back to Pages')}
+        </Button>
+        <Button icon={<PlusOutlined />} onClick={loadNewPage}>
+          {t('New Page')}
+        </Button>
+        <Button
+          icon={<CopyOutlined />}
+          onClick={duplicatePage}
+          disabled={!draftPage?.id || savingPage}
+        >
+          {t('Duplicate')}
+        </Button>
+        <Button
+          type="primary"
+          icon={<SaveOutlined />}
+          loading={savingPage}
+          onClick={savePage}
+          disabled={!draftPage || draftPage.is_published}
+        >
+          {t('Save Draft')}
+        </Button>
+        <Button
+          icon={
+            draftPage?.is_published ? <GlobalOutlined /> : <RocketOutlined />
+          }
+          onClick={() => togglePublish(!draftPage?.is_published)}
+          disabled={!draftPage?.id || savingPage}
+        >
+          {draftPage?.is_published ? t('Unpublish') : t('Publish')}
+        </Button>
+        <Button
+          icon={<EyeOutlined />}
+          disabled={!draftPage?.slug || draftPage.visibility !== 'public'}
+          onClick={() => previewPage(draftPage)}
+        >
+          {t('Open Public Page')}
+        </Button>
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          onClick={archivePage}
+          disabled={
+            !draftPage?.id || currentStatus === 'archived' || savingPage
+          }
+        >
+          {t('Archive')}
+        </Button>
+      </Space>
+    ) : (
+      <Space wrap>
+        <Button type="primary" icon={<PlusOutlined />} onClick={loadNewPage}>
+          {t('Create Page')}
+        </Button>
+        <Button
+          icon={<LayoutOutlined />}
+          disabled={!draftPage}
+          onClick={() =>
+            setQueryState({
+              pageSlug: draftPage?.slug || requestedPageSlug,
+              tab: 'studio',
+            })
+          }
+        >
+          {t('Open Studio')}
+        </Button>
+      </Space>
+    );
+
+  return (
+    <AdminShell style={SHELL_STYLE}>
+      {contextHolder}
+      <TopBar>
+        <TopBarBrand>
+          <TopBarBrandIcon>
+            <LayoutOutlined />
+          </TopBarBrandIcon>
+          <div>
+            <Eyebrow style={{ color: '#93c5fd' }}>
+              {t('Portal Administration')}
+            </Eyebrow>
+            <div style={{ fontSize: 20, fontWeight: 700 }}>
+              {t('CMS Pages')}
+            </div>
+          </div>
+        </TopBarBrand>
+        <TopBarActions>{adminActions}</TopBarActions>
+      </TopBar>
+      <ShellBody>
+        <LeftRail>
+          <RailSection>
+            <RailLabel>{t('Workspace')}</RailLabel>
+            {adminNavItems.map(item => (
+              <RailButton
+                key={item.key}
+                $active={requestedTab === item.key}
+                onClick={() =>
+                  setQueryState({
+                    pageSlug: draftPage?.slug || requestedPageSlug,
+                    tab: item.key,
+                  })
+                }
+              >
+                <RailButtonContent>
+                  {item.icon}
+                  <span>{item.label}</span>
+                </RailButtonContent>
+              </RailButton>
+            ))}
+          </RailSection>
+          <RailSection>
+            <RailLabel>{t('Current Page')}</RailLabel>
+            <Panel>
+              {draftPage ? (
                 <Stack>
-                  <StatsGrid>
-                    <StatCard>
-                      <StatValue>{data?.stats.total_pages || 0}</StatValue>
-                      <StatLabel>{t('Total Pages')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.published_pages || 0}</StatValue>
-                      <StatLabel>{t('Published Pages')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.draft_pages || 0}</StatValue>
-                      <StatLabel>{t('Drafts')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.private_pages || 0}</StatValue>
-                      <StatLabel>{t('Private Pages')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.menus || 0}</StatValue>
-                      <StatLabel>{t('Menus')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>
-                        {data?.stats.chart_enabled_pages || 0}
-                      </StatValue>
-                      <StatLabel>{t('Chart-enabled Pages')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.themes || 0}</StatValue>
-                      <StatLabel>{t('Themes')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.templates || 0}</StatValue>
-                      <StatLabel>{t('Templates')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.style_bundles || 0}</StatValue>
-                      <StatLabel>{t('Style Bundles')}</StatLabel>
-                    </StatCard>
-                    <StatCard>
-                      <StatValue>{data?.stats.media_assets || 0}</StatValue>
-                      <StatLabel>{t('Media Assets')}</StatLabel>
-                    </StatCard>
-                  </StatsGrid>
-                  <RevisionList>
-                    {(data?.recent_edits || []).map(revision => (
-                      <RevisionCard key={revision.id}>
-                        <Badge
-                          color={
-                            revision.action === 'published'
-                              ? '#0f766e'
-                              : '#1d4ed8'
-                          }
-                          text={revision.action}
-                        />
-                        <PreviewTitle style={{ fontSize: 16, marginTop: 10 }}>
-                          {revision.summary ||
-                            t('Revision %s', revision.revision_number)}
-                        </PreviewTitle>
-                        <TinyMeta>
-                          {revision.created_by?.name ||
-                            revision.created_by?.username ||
-                            t('System')}
-                          {' · '}
-                          {revision.created_on || '—'}
-                        </TinyMeta>
-                      </RevisionCard>
-                    ))}
-                  </RevisionList>
+                  <div>
+                    <strong>{draftPage.title}</strong>
+                    <TinyMeta>{currentPath || t('Unsaved draft')}</TinyMeta>
+                  </div>
+                  <Space wrap>
+                    <Tag color={pageStateColor(draftPage)}>
+                      {pageStateLabel(draftPage)}
+                    </Tag>
+                    {draftPage.is_homepage ? (
+                      <Tag color="gold">{t('Homepage')}</Tag>
+                    ) : null}
+                  </Space>
                 </Stack>
-              ),
-            },
-            {
-              key: 'studio',
-              label: t('Page Studio'),
-              children: (
-                <BlockStudio
-                  draftPage={draftPage}
-                  pages={data?.pages || []}
-                  charts={data?.available_charts || []}
-                  dashboards={data?.dashboards || []}
-                  mediaAssets={data?.media_assets || []}
-                  navigationMenus={menus}
-                  styleBundles={data?.style_bundles || []}
-                  blockTypes={data?.block_types || []}
-                  search={search}
-                  onSearchChange={setSearch}
-                  onNewPage={loadNewPage}
-                  onSelectPage={pageSlug => {
-                    setQueryState({
-                      pageSlug,
-                      tab: 'studio',
-                    });
-                    loadBootstrap(pageSlug || undefined);
-                  }}
-                  onChangeDraftPage={nextPage => {
-                    setDraftPage(nextPage);
-                  }}
+              ) : (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={t('Select a page to start authoring.')}
                 />
-              ),
-            },
-            ...(data?.permissions.can_manage_media
-              ? [
-                  {
-                    key: 'media',
-                    label: t('Media Library'),
-                    children: (
-                      <DesignLayout>
-                        <Panel>
-                          <PanelHeader>
-                            <PanelTitle>{t('Upload Asset')}</PanelTitle>
-                          </PanelHeader>
-                          <Stack>
-                            <FieldBlock>
-                              <FieldLabel>{t('File')}</FieldLabel>
-                              <input
-                                type="file"
-                                onChange={event =>
-                                  setAssetDraft(previous => ({
-                                    ...previous,
-                                    file: event.target.files?.[0] || null,
-                                  }))
-                                }
-                              />
-                            </FieldBlock>
-                            <FieldGrid>
-                              <FieldBlock>
-                                <FieldLabel>{t('Title')}</FieldLabel>
-                                <Input
-                                  value={assetDraft.title}
-                                  onChange={event =>
-                                    setAssetDraft(previous => ({
-                                      ...previous,
-                                      title: event.target.value,
-                                    }))
-                                  }
-                                />
-                              </FieldBlock>
-                              <FieldBlock>
-                                <FieldLabel>{t('Visibility')}</FieldLabel>
-                                <Select
-                                  value={assetDraft.visibility}
-                                  onChange={value =>
-                                    setAssetDraft(previous => ({
-                                      ...previous,
-                                      visibility: value,
-                                    }))
-                                  }
-                                  options={[
-                                    { value: 'private', label: t('Private') },
-                                    {
-                                      value: 'authenticated',
-                                      label: t('Authenticated'),
-                                    },
-                                    { value: 'public', label: t('Public') },
-                                  ]}
-                                />
-                              </FieldBlock>
-                              <FieldBlock>
-                                <FieldLabel>{t('Alt Text')}</FieldLabel>
-                                <Input
-                                  value={assetDraft.alt_text}
-                                  onChange={event =>
-                                    setAssetDraft(previous => ({
-                                      ...previous,
-                                      alt_text: event.target.value,
-                                    }))
-                                  }
-                                />
-                              </FieldBlock>
-                              <FieldBlock>
-                                <FieldLabel>{t('Caption')}</FieldLabel>
-                                <Input
-                                  value={assetDraft.caption}
-                                  onChange={event =>
-                                    setAssetDraft(previous => ({
-                                      ...previous,
-                                      caption: event.target.value,
-                                    }))
-                                  }
-                                />
-                              </FieldBlock>
-                            </FieldGrid>
-                            <FieldBlock>
-                              <FieldLabel>{t('Description')}</FieldLabel>
-                              <Input.TextArea
-                                rows={4}
-                                value={assetDraft.description}
-                                onChange={event =>
-                                  setAssetDraft(previous => ({
-                                    ...previous,
-                                    description: event.target.value,
-                                  }))
-                                }
-                              />
-                            </FieldBlock>
-                            <Button
-                              type="primary"
-                              loading={uploadingAsset}
-                              onClick={uploadAsset}
-                            >
-                              {t('Upload Asset')}
-                            </Button>
-                          </Stack>
-                        </Panel>
-                        <Panel>
-                          <PanelHeader>
-                            <PanelTitle>{t('Assets')}</PanelTitle>
-                            <Tag>{data?.stats.media_assets || 0}</Tag>
-                          </PanelHeader>
-                          <SectionList>
-                            {(data?.media_assets || []).length ? (
-                              (data?.media_assets || []).map(asset => (
-                                <DesignCard key={asset.id}>
-                                  <Stack>
-                                    <div>
-                                      <strong>{asset.title}</strong>
-                                      <TinyMeta>
-                                        {asset.asset_type} ·{' '}
-                                        {asset.original_filename || asset.slug}
-                                      </TinyMeta>
-                                    </div>
-                                    <Space wrap>
-                                      <Tag>{asset.visibility}</Tag>
-                                      <Tag>{asset.status}</Tag>
-                                      {asset.file_extension ? (
-                                        <Tag>{asset.file_extension}</Tag>
-                                      ) : null}
-                                    </Space>
-                                    <Space wrap>
-                                      <Button
-                                        size="small"
-                                        onClick={() =>
-                                          window.open(
-                                            asset.download_url || '#',
-                                            '_blank',
-                                            'noopener',
-                                          )
-                                        }
-                                      >
-                                        {t('Preview')}
-                                      </Button>
-                                      <Button
-                                        size="small"
-                                        danger
-                                        onClick={() => archiveAsset(asset.id)}
-                                      >
-                                        {t('Archive')}
-                                      </Button>
-                                    </Space>
-                                  </Stack>
-                                </DesignCard>
-                              ))
-                            ) : (
-                              <Empty description={t('No media assets yet.')} />
-                            )}
-                          </SectionList>
-                        </Panel>
-                      </DesignLayout>
-                    ),
-                  },
-                ]
-              : []),
-            {
-              key: 'menus',
-              label: t('Menu Manager'),
-              children: (
-                <Stack>
-                  <Panel>
-                    <PanelHeader>
-                      <PanelTitle>{t('Header Menus')}</PanelTitle>
-                      <Button
-                        size="small"
-                        onClick={() =>
-                          setMenus(previous => ({
-                            ...previous,
-                            header: [...previous.header, defaultMenu('header')],
-                          }))
-                        }
-                      >
-                        {t('Add Header Menu')}
-                      </Button>
-                    </PanelHeader>
-                    {menus.header.map((menu, menuIndex) => (
-                      <Stack key={`${menu.slug}-${menuIndex}`}>
-                        <FieldGrid>
-                          <FieldBlock>
-                            <FieldLabel>{t('Menu Title')}</FieldLabel>
-                            <Input
-                              value={menu.title}
-                              onChange={event =>
-                                updateMenu('header', menuIndex, {
-                                  title: event.target.value,
-                                })
-                              }
-                            />
-                          </FieldBlock>
-                          <FieldBlock>
-                            <FieldLabel>{t('Slug')}</FieldLabel>
-                            <Input
-                              value={menu.slug}
-                              onChange={event =>
-                                updateMenu('header', menuIndex, {
-                                  slug: event.target.value,
-                                })
-                              }
-                            />
-                          </FieldBlock>
-                        </FieldGrid>
-                        <FieldGrid>
-                          <FieldBlock>
-                            <FieldLabel>{t('Description')}</FieldLabel>
-                            <Input
-                              value={menu.description || ''}
-                              onChange={event =>
-                                updateMenu('header', menuIndex, {
-                                  description: event.target.value,
-                                })
-                              }
-                            />
-                          </FieldBlock>
-                          <FieldBlock>
-                            <FieldLabel>{t('Visibility')}</FieldLabel>
-                            <Select
-                              value={menu.visibility || 'public'}
-                              onChange={value =>
-                                updateMenu('header', menuIndex, {
-                                  visibility: value,
-                                })
-                              }
-                              options={[
-                                { value: 'public', label: t('Public') },
-                                {
-                                  value: 'authenticated',
-                                  label: t('Authenticated'),
-                                },
-                                { value: 'draft', label: t('Draft') },
-                              ]}
-                            />
-                          </FieldBlock>
-                        </FieldGrid>
-                        <Space>
-                          <Switch
-                            checked={menu.is_enabled !== false}
-                            onChange={checked =>
-                              updateMenu('header', menuIndex, {
-                                is_enabled: checked,
-                              })
-                            }
-                          />
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              updateMenu('header', menuIndex, {
-                                items: [...menu.items, defaultMenuItem()],
-                              })
-                            }
-                          >
-                            {t('Add Item')}
-                          </Button>
-                        </Space>
-                        {renderMenuItems('header', menuIndex, menu.items || [])}
-                      </Stack>
-                    ))}
-                  </Panel>
-                  <Panel>
-                    <PanelHeader>
-                      <PanelTitle>{t('Footer Menus')}</PanelTitle>
-                      <Button
-                        size="small"
-                        onClick={() =>
-                          setMenus(previous => ({
-                            ...previous,
-                            footer: [...previous.footer, defaultMenu('footer')],
-                          }))
-                        }
-                      >
-                        {t('Add Footer Menu')}
-                      </Button>
-                    </PanelHeader>
-                    {menus.footer.map((menu, menuIndex) => (
-                      <Stack key={`${menu.slug}-${menuIndex}`}>
-                        <FieldGrid>
-                          <FieldBlock>
-                            <FieldLabel>{t('Menu Title')}</FieldLabel>
-                            <Input
-                              value={menu.title}
-                              onChange={event =>
-                                updateMenu('footer', menuIndex, {
-                                  title: event.target.value,
-                                })
-                              }
-                            />
-                          </FieldBlock>
-                          <FieldBlock>
-                            <FieldLabel>{t('Slug')}</FieldLabel>
-                            <Input
-                              value={menu.slug}
-                              onChange={event =>
-                                updateMenu('footer', menuIndex, {
-                                  slug: event.target.value,
-                                })
-                              }
-                            />
-                          </FieldBlock>
-                        </FieldGrid>
-                        <Space>
-                          <Switch
-                            checked={menu.is_enabled !== false}
-                            onChange={checked =>
-                              updateMenu('footer', menuIndex, {
-                                is_enabled: checked,
-                              })
-                            }
-                          />
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              updateMenu('footer', menuIndex, {
-                                items: [...menu.items, defaultMenuItem()],
-                              })
-                            }
-                          >
-                            {t('Add Item')}
-                          </Button>
-                        </Space>
-                        {renderMenuItems('footer', menuIndex, menu.items || [])}
-                      </Stack>
-                    ))}
-                  </Panel>
-                  <Button
-                    type="primary"
-                    loading={savingMenus}
-                    onClick={saveMenuConfiguration}
-                  >
-                    {t('Save Menus')}
-                  </Button>
-                </Stack>
-              ),
-            },
-            {
-              key: 'portal',
-              label: t('Portal Settings'),
-              children: (
-                <Panel>
-                  <Stack>
-                    <FieldGrid>
-                      <FieldBlock>
-                        <FieldLabel>{t('Portal Layout Title')}</FieldLabel>
-                        <Input
-                          value={portalLayout.title || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              title: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                      <FieldBlock>
-                        <FieldLabel>{t('Portal Title')}</FieldLabel>
-                        <Input
-                          value={portalLayout.portalTitle || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              portalTitle: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                    </FieldGrid>
-                    <FieldBlock>
-                      <FieldLabel>{t('Portal Subtitle')}</FieldLabel>
-                      <Input
-                        value={portalLayout.portalSubtitle || ''}
-                        onChange={event =>
-                          setPortalLayout(previous => ({
-                            ...previous,
-                            portalSubtitle: event.target.value,
-                          }))
-                        }
-                      />
-                    </FieldBlock>
-                    <FieldGrid>
-                      <FieldBlock>
-                        <FieldLabel>{t('Welcome Badge')}</FieldLabel>
-                        <Input
-                          value={portalLayout.welcomeBadge || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              welcomeBadge: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                      <FieldBlock>
-                        <FieldLabel>{t('Page Max Width')}</FieldLabel>
-                        <InputNumber
-                          style={{ width: '100%' }}
-                          value={Number(portalLayout.pageMaxWidth) || 1280}
-                          onChange={value =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              pageMaxWidth: Number(value) || 1280,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                    </FieldGrid>
-                    <FieldGrid>
-                      <FieldBlock>
-                        <FieldLabel>{t('Accent Color')}</FieldLabel>
-                        <Input
-                          value={portalLayout.accentColor || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              accentColor: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                      <FieldBlock>
-                        <FieldLabel>{t('Secondary Color')}</FieldLabel>
-                        <Input
-                          value={portalLayout.secondaryColor || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              secondaryColor: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                    </FieldGrid>
-                    <FieldGrid>
-                      <FieldBlock>
-                        <FieldLabel>{t('Surface Color')}</FieldLabel>
-                        <Input
-                          value={portalLayout.surfaceColor || ''}
-                          onChange={event =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              surfaceColor: event.target.value,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                      <FieldBlock>
-                        <FieldLabel>{t('Theme Toggle')}</FieldLabel>
-                        <Switch
-                          checked={portalLayout.showThemeToggle !== false}
-                          onChange={checked =>
-                            setPortalLayout(previous => ({
-                              ...previous,
-                              showThemeToggle: checked,
-                            }))
-                          }
-                        />
-                      </FieldBlock>
-                    </FieldGrid>
-                    <Button
-                      type="primary"
-                      loading={savingLayout}
-                      onClick={savePortalLayout}
-                    >
-                      {t('Save Portal Settings')}
-                    </Button>
-                  </Stack>
-                </Panel>
-              ),
-            },
-            ...(data?.permissions.can_manage_themes
-              ? [
-                  {
-                    key: 'themes',
-                    label: t('Themes'),
-                    children: renderThemeManager(),
-                  },
-                ]
-              : []),
-            ...(data?.permissions.can_manage_templates
-              ? [
-                  {
-                    key: 'templates',
-                    label: t('Templates'),
-                    children: renderTemplateManager(),
-                  },
-                ]
-              : []),
-            ...(data?.permissions.can_manage_styles
-              ? [
-                  {
-                    key: 'styles',
-                    label: t('Styles'),
-                    children: renderStyleManager(),
-                  },
-                ]
-              : []),
-          ]}
-        />
-      )}
-    </div>
+              )}
+            </Panel>
+          </RailSection>
+        </LeftRail>
+        <ShellMain>
+          <ContentStack>
+            <Header>
+              <TitleGroup>
+                <Eyebrow>{tabTitleMap[requestedTab]}</Eyebrow>
+                <Title>
+                  {requestedTab === 'studio'
+                    ? draftPage?.title || t('Page Studio')
+                    : tabTitleMap[requestedTab]}
+                </Title>
+                <Subtitle>{tabSubtitleMap[requestedTab]}</Subtitle>
+              </TitleGroup>
+              {requestedTab === 'pages' ? (
+                <Tag color="blue">{t('%s pages', data?.pages.length || 0)}</Tag>
+              ) : requestedTab === 'studio' && draftPage ? (
+                <Space wrap>
+                  <Tag color={pageStateColor(draftPage)}>
+                    {pageStateLabel(draftPage)}
+                  </Tag>
+                  {currentPath ? <Tag>{currentPath}</Tag> : null}
+                </Space>
+              ) : null}
+            </Header>
+
+            {error ? (
+              <Alert
+                type="error"
+                showIcon
+                message={error}
+                action={
+                  <Button onClick={() => loadBootstrap()}>{t('Retry')}</Button>
+                }
+              />
+            ) : null}
+
+            {loading && !data ? <Spin size="large" /> : renderActiveTab()}
+          </ContentStack>
+        </ShellMain>
+      </ShellBody>
+    </AdminShell>
   );
 }
