@@ -219,6 +219,160 @@ def test_serialize_page_derives_block_tree_from_legacy_sections(
     assert serialized["blocks"][0]["children"][0]["content"]["body"] == "Portal overview"
 
 
+def test_public_draft_page_save_does_not_require_public_references(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    captured: dict[str, list[bool]] = {"block_flags": [], "asset_flags": []}
+
+    monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_validate_template_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_style_bundle_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_parent_page_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_asset_reference",
+        lambda *_args, require_public=False, **_kwargs: captured["asset_flags"].append(
+            require_public
+        )
+        or None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_block_references",
+        lambda *_args, require_public=False, **_kwargs: captured["block_flags"].append(
+            require_public
+        ),
+    )
+    monkeypatch.setattr(api, "_upsert_blocks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_clear_legacy_sections", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_snapshot_page_revision",
+        lambda *_args, **_kwargs: None,
+    )
+
+    page = api._upsert_page(
+        {
+            "title": "Draft page",
+            "slug": "draft-page",
+            "visibility": "public",
+            "is_published": False,
+            "status": "draft",
+            "featured_image_asset_id": 11,
+            "og_image_asset_id": 12,
+            "settings": {},
+            "blocks": [
+                {
+                    "block_type": "chart",
+                    "content": {},
+                    "settings": {"chart_ref": {"id": 99}},
+                    "styles": {},
+                    "metadata": {},
+                    "children": [],
+                }
+            ],
+            "sections": [],
+        }
+    )
+
+    assert page.visibility == "public"
+    assert page.is_published is False
+    assert page.status == "draft"
+    assert captured["block_flags"] == [False]
+    assert captured["asset_flags"] == [False, False]
+
+
+def test_published_public_page_save_requires_public_references(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    captured: dict[str, list[bool]] = {"block_flags": [], "asset_flags": []}
+
+    monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_validate_template_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_style_bundle_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_parent_page_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_asset_reference",
+        lambda *_args, require_public=False, **_kwargs: captured["asset_flags"].append(
+            require_public
+        )
+        or None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_block_references",
+        lambda *_args, require_public=False, **_kwargs: captured["block_flags"].append(
+            require_public
+        ),
+    )
+    monkeypatch.setattr(api, "_upsert_blocks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_clear_legacy_sections", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_snapshot_page_revision",
+        lambda *_args, **_kwargs: None,
+    )
+
+    page = api._upsert_page(
+        {
+            "title": "Published page",
+            "slug": "published-page",
+            "visibility": "public",
+            "is_published": True,
+            "status": "published",
+            "featured_image_asset_id": 21,
+            "og_image_asset_id": 22,
+            "settings": {},
+            "blocks": [
+                {
+                    "block_type": "chart",
+                    "content": {},
+                    "settings": {"chart_ref": {"id": 101}},
+                    "styles": {},
+                    "metadata": {},
+                    "children": [],
+                }
+            ],
+            "sections": [],
+        }
+    )
+
+    assert page.visibility == "public"
+    assert page.is_published is True
+    assert page.status == "published"
+    assert captured["block_flags"] == [True]
+    assert captured["asset_flags"] == [True, True]
+
+
 def test_page_breadcrumbs_include_parent_hierarchy(app_context: None) -> None:
     api = PublicPageRestApi()
     about = Page(

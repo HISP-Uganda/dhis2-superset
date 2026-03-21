@@ -107,6 +107,19 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
         metadata: { label: 'Chart' },
         tree_path: '0000',
         depth: 0,
+        dashboard: null,
+        asset: null,
+        style_bundle: {
+          id: 13,
+          slug: 'chart-style',
+          title: 'Chart Style',
+          variables: {},
+          settings: {},
+        },
+        rendering: {
+          scope_class: 'portal-block',
+          css_text: '.portal-block { color: #000; }',
+        },
         chart: {
           id: 7,
           slice_name: 'Coverage Map',
@@ -181,4 +194,8 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
   expect(normalized.blocks[0]).not.toHaveProperty('chart');
   expect(normalized.blocks[0]).not.toHaveProperty('tree_path');
   expect(normalized.blocks[0]).not.toHaveProperty('depth');
+  expect(normalized.blocks[0]).not.toHaveProperty('rendering');
+  expect(normalized.blocks[0]).not.toHaveProperty('style_bundle');
+  expect(normalized.blocks[0]).not.toHaveProperty('asset');
+  expect(normalized.blocks[0]).not.toHaveProperty('dashboard');
 });

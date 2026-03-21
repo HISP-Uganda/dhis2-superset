@@ -26,6 +26,9 @@ import {
   CodeOutlined,
   ColumnHeightOutlined,
   DashboardOutlined,
+  DesktopOutlined,
+  EditOutlined,
+  EyeOutlined,
   FileImageOutlined,
   FileOutlined,
   FileTextOutlined,
@@ -33,19 +36,24 @@ import {
   HighlightOutlined,
   LayoutOutlined,
   LinkOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   MenuOutlined,
+  PlusOutlined,
   NotificationOutlined,
   PaperClipOutlined,
   PictureOutlined,
   ProfileOutlined,
+  SettingOutlined,
   TableOutlined,
+  TabletOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { MarkdownEditor } from '@superset-ui/core/components';
 import { styled, t } from '@superset-ui/core';
 import {
   Alert,
   Button,
+  Drawer,
   Empty,
   Input,
   InputNumber,
@@ -85,26 +93,19 @@ import type {
   PortalTemplate,
   PortalTheme,
 } from 'src/pages/PublicLandingPage/types';
+import RichTextComposer, { extractPlainText } from './RichTextComposer';
 
 const StudioLayout = styled.div`
-  display: grid;
-  grid-template-columns: minmax(280px, 0.95fr) minmax(0, 1.35fr) minmax(
-      320px,
-      1fr
-    );
-  gap: 16px;
-
-  @media (max-width: 1280px) {
-    grid-template-columns: 1fr;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 `;
 
 const Panel = styled.div`
-  padding: 18px;
-  border-radius: 20px;
+  padding: 18px 20px;
+  border-radius: 14px;
   background: #ffffff;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.18);
 `;
 
 const PanelHeader = styled.div`
@@ -172,34 +173,41 @@ const FieldLabel = styled.div`
   color: ${({ theme }) => theme.colorTextLabel};
 `;
 
-const CanvasToolbar = styled.div`
+const StudioBar = styled(Panel)`
+  position: sticky;
+  top: 76px;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
+  gap: 16px;
+  padding: 12px 16px;
 `;
 
-const CanvasToolbarGroup = styled.div`
+const StudioBarGroup = styled.div`
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 `;
 
+const StudioModeChip = styled.button<{ $active?: boolean }>`
+  border: 1px solid
+    ${({ $active }) =>
+      $active ? 'rgba(15, 118, 110, 0.45)' : 'rgba(148, 163, 184, 0.22)'};
+  border-radius: 999px;
+  background: ${({ $active }) => ($active ? '#ccfbf1' : '#ffffff')};
+  color: ${({ $active }) => ($active ? '#115e59' : '#334155')};
+  padding: 8px 14px;
+  font-weight: 700;
+  cursor: pointer;
+`;
+
 const CanvasSurface = styled.div`
-  padding: 16px;
-  border-radius: 18px;
-  border: 1px dashed rgba(148, 163, 184, 0.5);
-  background:
-    linear-gradient(to right, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
-    #f8fafc;
-  background-size:
-    calc((100% - 22px) / 12) 100%,
-    100% 32px,
-    auto;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #e2e8f0;
 `;
 
 const ViewportFrame = styled.div<{
@@ -212,6 +220,18 @@ const ViewportFrame = styled.div<{
   transition: max-width 0.2s ease;
 `;
 
+const StudioViewport = styled.div`
+  min-height: 72vh;
+  padding: 32px;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+
+  @media (max-width: 768px) {
+    padding: 18px;
+  }
+`;
+
 const RegionGrid = styled.div`
   display: grid;
   gap: 14px;
@@ -221,10 +241,32 @@ const RegionCard = styled.section`
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  padding: 18px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+`;
+
+const SlotLabel = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+`;
+
+const DrawerStack = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+`;
+
+const DrawerSection = styled(Panel)`
+  padding: 14px 16px;
 `;
 
 const RegionHeader = styled.div`
@@ -600,6 +642,34 @@ function parseTableRows(rawValue: string) {
     .map(line => line.split('|').map(cell => cell.trim()));
 }
 
+function viewportIcon(mode: 'desktop' | 'tablet' | 'mobile') {
+  switch (mode) {
+    case 'tablet':
+      return <TabletOutlined />;
+    case 'mobile':
+      return <ColumnHeightOutlined rotate={90} />;
+    case 'desktop':
+    default:
+      return <DesktopOutlined />;
+  }
+}
+
+function richTextValue(
+  block: PortalPageBlock | null,
+  fallback = t('No content yet.'),
+) {
+  if (!block) {
+    return '';
+  }
+  return (
+    block.content?.html ||
+    block.content?.body_html ||
+    block.content?.body ||
+    block.content?.quote ||
+    fallback
+  );
+}
+
 export default function BlockStudio({
   draftPage,
   pages,
@@ -623,9 +693,16 @@ export default function BlockStudio({
   const [previewViewport, setPreviewViewport] = useState<
     'desktop' | 'tablet' | 'mobile'
   >('desktop');
+  const [canvasMode, setCanvasMode] = useState<'compose' | 'preview'>(
+    'compose',
+  );
+  const [documentOpen, setDocumentOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(true);
   const blocks = useMemo(() => ensurePageBlocks(draftPage), [draftPage]);
   const slotGroups = useMemo(() => groupBlocksBySlot(blocks), [blocks]);
   const flattenedBlocks = useMemo(() => flattenBlocks(blocks), [blocks]);
+  const selectionKey = selection.type === 'block' ? selection.uid : 'page';
+  const hasDraftPage = Boolean(draftPage);
   const isPublishedPage = Boolean(draftPage?.is_published);
   const selectedBlock =
     selection.type === 'block'
@@ -673,6 +750,12 @@ export default function BlockStudio({
     }
   }, [selectedBlock, selection.type]);
 
+  useEffect(() => {
+    if (hasDraftPage) {
+      setSettingsOpen(true);
+    }
+  }, [draftPage?.id, hasDraftPage, selection.type, selectionKey]);
+
   function pushBlocks(nextBlocks: PortalPageBlock[]) {
     if (!draftPage || isPublishedPage) {
       return;
@@ -692,6 +775,12 @@ export default function BlockStudio({
       ...patch,
       blocks,
     });
+  }
+
+  function updatePageRichText(field: 'description' | 'excerpt', html: string) {
+    updatePage({
+      [field]: field === 'excerpt' ? extractPlainText(html) : html,
+    } as Partial<PortalPage>);
   }
 
   function addBlock(blockType: string) {
@@ -748,6 +837,54 @@ export default function BlockStudio({
       return;
     }
     pushBlocks(updateBlockContent(blocks, blockKey(selectedBlock), patch));
+  }
+
+  function updateSelectedRichText(
+    html: string,
+    field: 'body' | 'quote' = 'body',
+  ) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    const plainText = extractPlainText(html);
+    if (field === 'quote') {
+      updateSelectedBlockContent({
+        html,
+        body_html: html,
+        quote: plainText,
+      });
+      return;
+    }
+    updateSelectedBlockContent({
+      html,
+      body_html: html,
+      body: plainText,
+    });
+  }
+
+  function updateRichTextBlock(
+    block: PortalPageBlock,
+    html: string,
+    field: 'body' | 'quote' = 'body',
+  ) {
+    if (isPublishedPage) {
+      return;
+    }
+    const plainText = extractPlainText(html);
+    const patch =
+      field === 'quote'
+        ? {
+            html,
+            body_html: html,
+            quote: plainText,
+          }
+        : {
+            html,
+            body_html: html,
+            body: plainText,
+          };
+    pushBlocks(updateBlockContent(blocks, blockKey(block), patch));
+    setSelection({ type: 'block', uid: blockKey(block) });
   }
 
   function updateSelectedBlockSettings(patch: Record<string, any>) {
@@ -1073,14 +1210,14 @@ export default function BlockStudio({
           </FieldBlock>
           <FieldBlock>
             <FieldLabel>{t('Description')}</FieldLabel>
-            <MarkdownEditor
+            <RichTextComposer
               readOnly={isPublishedPage}
-              width="100%"
-              height="180px"
-              showGutter={false}
-              editorProps={{ $blockScrolling: true }}
+              minHeight={180}
               value={draftPage.description || ''}
-              onChange={(value: string) => updatePage({ description: value })}
+              helperText={t(
+                'Formatted page descriptions are shown in studio and preview surfaces.',
+              )}
+              onChange={value => updatePageRichText('description', value)}
             />
           </FieldBlock>
           <FieldGrid>
@@ -1262,18 +1399,11 @@ export default function BlockStudio({
           selectedBlock.block_type === 'callout') && (
           <FieldBlock>
             <FieldLabel>{t('Body')}</FieldLabel>
-            <MarkdownEditor
+            <RichTextComposer
               readOnly={isPublishedPage}
-              width="100%"
-              height={
-                selectedBlock.block_type === 'rich_text' ? '220px' : '180px'
-              }
-              showGutter={false}
-              editorProps={{ $blockScrolling: true }}
-              value={selectedBlock.content?.body || ''}
-              onChange={(value: string) =>
-                updateSelectedBlockContent({ body: value })
-              }
+              minHeight={selectedBlock.block_type === 'rich_text' ? 220 : 180}
+              value={richTextValue(selectedBlock)}
+              onChange={value => updateSelectedRichText(value)}
             />
           </FieldBlock>
         )}
@@ -1357,13 +1487,14 @@ export default function BlockStudio({
           <FieldGrid>
             <FieldBlock>
               <FieldLabel>{t('Quote')}</FieldLabel>
-              <Input.TextArea
-                disabled={isPublishedPage}
-                rows={4}
-                value={selectedBlock.content?.quote || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ quote: event.target.value })
-                }
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={140}
+                value={richTextValue(
+                  selectedBlock,
+                  selectedBlock.content?.quote,
+                )}
+                onChange={value => updateSelectedRichText(value, 'quote')}
               />
             </FieldBlock>
             <FieldBlock>
@@ -1568,16 +1699,11 @@ export default function BlockStudio({
             </FieldGrid>
             <FieldBlock>
               <FieldLabel>{t('Description')}</FieldLabel>
-              <MarkdownEditor
+              <RichTextComposer
                 readOnly={isPublishedPage}
-                width="100%"
-                height="160px"
-                showGutter={false}
-                editorProps={{ $blockScrolling: true }}
-                value={selectedBlock.content?.body || ''}
-                onChange={(value: string) =>
-                  updateSelectedBlockContent({ body: value })
-                }
+                minHeight={160}
+                value={richTextValue(selectedBlock)}
+                onChange={value => updateSelectedRichText(value)}
               />
             </FieldBlock>
           </SectionList>
@@ -2067,63 +2193,134 @@ export default function BlockStudio({
     );
   }
 
-  return (
-    <StudioLayout>
-      <Panel>
-        <PanelHeader>
-          <PanelTitle>{t('Pages & Outline')}</PanelTitle>
-          <Button size="small" onClick={onNewPage}>
-            {t('New')}
-          </Button>
-        </PanelHeader>
-        <FieldBlock>
-          <FieldLabel>{t('Find Page')}</FieldLabel>
-          <Input
-            value={search}
-            onChange={event => onSearchChange(event.target.value)}
-            placeholder={t('Search by title or slug')}
-          />
-        </FieldBlock>
-        <SectionList style={{ marginTop: 16 }}>
-          {filteredPages.map(page => (
-            <CardButton
-              key={page.id}
-              $active={page.slug === draftPage?.slug}
-              onClick={() => onSelectPage(page.slug || null)}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  gap: 8,
+  function handleSelectBlock(block: PortalPageBlock) {
+    setSelection({ type: 'block', uid: blockKey(block) });
+    setSettingsOpen(true);
+  }
+
+  function renderSlotRegion(
+    slot: (typeof SLOT_OPTIONS)[number],
+    showSlotChrome: boolean,
+  ) {
+    const slotBlocks = slotGroups[slot.value] || [];
+    if (!showSlotChrome && !slotBlocks.length) {
+      return null;
+    }
+    return (
+      <RegionCard key={slot.value}>
+        {showSlotChrome ? (
+          <RegionHeader>
+            <RegionTitle>
+              <SlotLabel>
+                {blockIcon(slot.value, 'layout')}
+                <span>{slot.label}</span>
+              </SlotLabel>
+            </RegionTitle>
+            <InlinePills>
+              <Tag>{t('%s blocks', slotBlocks.length)}</Tag>
+              <Button
+                size="small"
+                icon={<PlusOutlined />}
+                disabled={isPublishedPage || selection.type === 'block'}
+                onClick={() => {
+                  setQuickInsertSlot(slot.value);
+                  addBlock(quickInsertType);
                 }}
               >
-                <strong>{page.title}</strong>
-                <Tag color={page.visibility === 'public' ? 'green' : 'blue'}>
-                  {page.visibility || 'draft'}
-                </Tag>
-              </div>
-              <TinyMeta>{page.path || page.slug}</TinyMeta>
-            </CardButton>
-          ))}
-        </SectionList>
-        {draftPage ? (
-          <>
-            <PanelHeader style={{ marginTop: 18 }}>
-              <PanelTitle>{t('Inserter')}</PanelTitle>
-            </PanelHeader>
-            <Select
-              disabled={isPublishedPage}
-              style={{ width: '100%' }}
-              placeholder={t('Add a block')}
-              onChange={value => addBlock(value)}
-              options={insertableBlockTypes.map(definition => ({
-                value: definition.type,
-                label: `${definition.label} · ${definition.category}`,
-              }))}
+                {t('Add Here')}
+              </Button>
+            </InlinePills>
+          </RegionHeader>
+        ) : null}
+        {slotBlocks.length ? (
+          <RenderBlockTree
+            blocks={slotBlocks}
+            charts={charts}
+            dashboards={dashboards}
+            mediaAssets={mediaAssets}
+            page={draftPage}
+            navigation={navigationMenus}
+            mode={showSlotChrome ? 'editor' : 'public'}
+            selectedBlockUid={
+              showSlotChrome && selection.type === 'block'
+                ? selection.uid
+                : undefined
+            }
+            onSelectBlock={showSlotChrome ? handleSelectBlock : undefined}
+            onInlineRichTextChange={
+              showSlotChrome ? updateRichTextBlock : undefined
+            }
+          />
+        ) : showSlotChrome ? (
+          <Empty
+            description={t(
+              'No blocks in this region yet. Use Add Here to place content.',
+            )}
+          />
+        ) : null}
+      </RegionCard>
+    );
+  }
+
+  function renderDocumentDrawer() {
+    return (
+      <DrawerStack>
+        <DrawerSection>
+          <PanelHeader>
+            <PanelTitle>{t('Pages')}</PanelTitle>
+            <Button size="small" icon={<PlusOutlined />} onClick={onNewPage}>
+              {t('New')}
+            </Button>
+          </PanelHeader>
+          <FieldBlock>
+            <FieldLabel>{t('Find Page')}</FieldLabel>
+            <Input
+              value={search}
+              onChange={event => onSearchChange(event.target.value)}
+              placeholder={t('Search by title or slug')}
             />
-            <PanelHeader style={{ marginTop: 18 }}>
+          </FieldBlock>
+          <SectionList style={{ marginTop: 16 }}>
+            {filteredPages.map(page => (
+              <CardButton
+                key={page.id}
+                $active={page.slug === draftPage?.slug}
+                onClick={() => {
+                  onSelectPage(page.slug || null);
+                  setDocumentOpen(false);
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                  }}
+                >
+                  <strong>{page.title}</strong>
+                  <Tag color={page.visibility === 'public' ? 'green' : 'blue'}>
+                    {page.visibility || 'draft'}
+                  </Tag>
+                </div>
+                <TinyMeta>{page.path || page.slug}</TinyMeta>
+              </CardButton>
+            ))}
+          </SectionList>
+        </DrawerSection>
+        {draftPage ? (
+          <DrawerSection>
+            <PanelHeader>
               <PanelTitle>{t('Block Outline')}</PanelTitle>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setSelection({ type: 'page' });
+                  setSettingsOpen(true);
+                }}
+              >
+                {t('Page')}
+              </Button>
             </PanelHeader>
             <SectionList>
               {flattenedBlocks.length ? (
@@ -2135,9 +2332,11 @@ export default function BlockStudio({
                       selection.type === 'block' &&
                       selection.uid === blockKey(block)
                     }
-                    onClick={() =>
-                      setSelection({ type: 'block', uid: blockKey(block) })
-                    }
+                    onClick={() => {
+                      setSelection({ type: 'block', uid: blockKey(block) });
+                      setSettingsOpen(true);
+                      setDocumentOpen(false);
+                    }}
                   >
                     <div
                       style={{
@@ -2174,16 +2373,130 @@ export default function BlockStudio({
                 />
               )}
             </SectionList>
-          </>
+          </DrawerSection>
         ) : null}
-      </Panel>
-      <Panel>
-        <PanelHeader>
-          <PanelTitle>{t('Canvas Preview')}</PanelTitle>
-          {draftPage ? (
+      </DrawerStack>
+    );
+  }
+
+  return (
+    <StudioLayout>
+      <StudioBar>
+        <StudioBarGroup>
+          <Button
+            icon={documentOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+            onClick={() => setDocumentOpen(true)}
+          >
+            {t('Document')}
+          </Button>
+          <Button
+            icon={<SettingOutlined />}
+            onClick={() => {
+              setSelection({ type: 'page' });
+              setSettingsOpen(true);
+            }}
+          >
+            {t('Page Settings')}
+          </Button>
+          {selection.type === 'block' && selectedBlock ? (
+            <Tag color="processing">
+              {selectedBlock.metadata?.label || selectedBlock.block_type}
+            </Tag>
+          ) : draftPage ? (
             <Tag color={draftPage.is_published ? 'green' : 'default'}>
               {draftPage.status || t('draft')}
             </Tag>
+          ) : null}
+        </StudioBarGroup>
+        <StudioBarGroup>
+          <StudioModeChip
+            type="button"
+            $active={canvasMode === 'compose'}
+            onClick={() => setCanvasMode('compose')}
+          >
+            <EditOutlined /> {t('Compose')}
+          </StudioModeChip>
+          <StudioModeChip
+            type="button"
+            $active={canvasMode === 'preview'}
+            onClick={() => setCanvasMode('preview')}
+          >
+            <EyeOutlined /> {t('Preview')}
+          </StudioModeChip>
+          {PREVIEW_VIEWPORTS.map(viewport => (
+            <Button
+              key={viewport.value}
+              size="small"
+              type={previewViewport === viewport.value ? 'primary' : 'default'}
+              icon={viewportIcon(viewport.value)}
+              onClick={() => setPreviewViewport(viewport.value)}
+            >
+              {viewport.label}
+            </Button>
+          ))}
+          <Select
+            disabled={isPublishedPage}
+            size="small"
+            style={{ minWidth: 180 }}
+            value={quickInsertType}
+            onChange={value => setQuickInsertType(value)}
+            options={insertableBlockTypes.map(definition => ({
+              value: definition.type,
+              label: `${definition.label} · ${definition.category}`,
+            }))}
+          />
+          <Select
+            disabled={isPublishedPage || selection.type === 'block'}
+            size="small"
+            style={{ minWidth: 150 }}
+            value={quickInsertSlot}
+            onChange={value => setQuickInsertSlot(value)}
+            options={SLOT_OPTIONS.map(option => ({
+              value: option.value,
+              label: option.label,
+            }))}
+          />
+          <Button
+            disabled={isPublishedPage}
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => addBlock(quickInsertType)}
+          >
+            {quickInsertLabel}
+          </Button>
+          <Button
+            onClick={() => setSettingsOpen(true)}
+            icon={<SettingOutlined />}
+          >
+            {t('Settings')}
+          </Button>
+        </StudioBarGroup>
+      </StudioBar>
+      <Panel>
+        <PanelHeader>
+          <div>
+            <PanelTitle>{t('Page Studio')}</PanelTitle>
+            <TinyMeta>
+              {draftPage
+                ? canvasMode === 'preview'
+                  ? t('Full-page preview of the current draft.')
+                  : t(
+                      'Compose blocks in-page and open Settings for block details.',
+                    )
+                : t('Choose a page or create a new one.')}
+            </TinyMeta>
+          </div>
+          {draftPage ? (
+            <InlinePills>
+              <Tag>
+                {draftPage.path || draftPage.slug || t('untitled-page')}
+              </Tag>
+              {selection.type === 'block' ? (
+                <Tag color="processing">{t('Block selected')}</Tag>
+              ) : (
+                <Tag>{t('Page settings')}</Tag>
+              )}
+            </InlinePills>
           ) : null}
         </PanelHeader>
         {draftPage ? (
@@ -2198,113 +2511,28 @@ export default function BlockStudio({
                 )}
               />
             ) : null}
-            <CanvasToolbar>
-              <CanvasToolbarGroup>
-                <Select
-                  disabled={isPublishedPage}
-                  size="small"
-                  style={{ minWidth: 180 }}
-                  value={quickInsertType}
-                  onChange={value => setQuickInsertType(value)}
-                  options={insertableBlockTypes.map(definition => ({
-                    value: definition.type,
-                    label: `${definition.label} · ${definition.category}`,
-                  }))}
-                />
-                <Select
-                  disabled={isPublishedPage || selection.type === 'block'}
-                  size="small"
-                  style={{ minWidth: 150 }}
-                  value={quickInsertSlot}
-                  onChange={value => setQuickInsertSlot(value)}
-                  options={SLOT_OPTIONS.map(option => ({
-                    value: option.value,
-                    label: option.label,
-                  }))}
-                />
-                <Button
-                  disabled={isPublishedPage}
-                  type="primary"
-                  onClick={() => addBlock(quickInsertType)}
-                >
-                  {`+ ${quickInsertLabel}`}
-                </Button>
-              </CanvasToolbarGroup>
-              <CanvasToolbarGroup>
-                {PREVIEW_VIEWPORTS.map(viewport => (
-                  <Button
-                    key={viewport.value}
-                    size="small"
-                    type={
-                      previewViewport === viewport.value ? 'primary' : 'default'
-                    }
-                    onClick={() => setPreviewViewport(viewport.value)}
-                  >
-                    {viewport.label}
-                  </Button>
-                ))}
-              </CanvasToolbarGroup>
-            </CanvasToolbar>
             <TinyMeta style={{ marginBottom: 12 }}>
               {selection.type === 'block'
                 ? selectedBlock && isContainerBlock(selectedBlock.block_type)
                   ? t(
-                      'New content will be inserted inside the selected container block.',
+                      'The selected container can receive child blocks. Click any block in the canvas to edit it.',
                     )
-                  : t('New content will be inserted after the selected block.')
+                  : t(
+                      'Click any block in the canvas to edit it. New blocks insert after the current selection.',
+                    )
                 : t(
-                    'Use the slot selector to place new root blocks into the correct page region.',
+                    'Use Document to switch pages or choose blocks, and Settings to format the selected content.',
                   )}
             </TinyMeta>
             <CanvasSurface>
               <ViewportFrame $mode={previewViewport}>
-                <RegionGrid>
-                  {SLOT_OPTIONS.map(slotOption => {
-                    const slotBlocks = slotGroups[slotOption.value] || [];
-                    return (
-                      <RegionCard key={slotOption.value}>
-                        <RegionHeader>
-                          <RegionTitle>
-                            {blockIcon(slotOption.value, 'layout')}
-                            <span>{slotOption.label}</span>
-                          </RegionTitle>
-                          <InlinePills>
-                            <Tag>{t('%s blocks', slotBlocks.length)}</Tag>
-                            <Button
-                              size="small"
-                              disabled={
-                                isPublishedPage || selection.type === 'block'
-                              }
-                              onClick={() => {
-                                setQuickInsertSlot(slotOption.value);
-                                addBlock(quickInsertType);
-                              }}
-                            >
-                              {t('Add Here')}
-                            </Button>
-                          </InlinePills>
-                        </RegionHeader>
-                        {slotBlocks.length ? (
-                          <RenderBlockTree
-                            blocks={slotBlocks}
-                            charts={charts}
-                            dashboards={dashboards}
-                            mediaAssets={mediaAssets}
-                            page={draftPage}
-                            navigation={navigationMenus}
-                            mode="editor"
-                          />
-                        ) : (
-                          <Empty
-                            description={t(
-                              'No blocks in this region yet. Use Add Here to place content.',
-                            )}
-                          />
-                        )}
-                      </RegionCard>
-                    );
-                  })}
-                </RegionGrid>
+                <StudioViewport>
+                  <RegionGrid>
+                    {SLOT_OPTIONS.map(slot =>
+                      renderSlotRegion(slot, canvasMode === 'compose'),
+                    )}
+                  </RegionGrid>
+                </StudioViewport>
               </ViewportFrame>
             </CanvasSurface>
           </>
@@ -2312,16 +2540,32 @@ export default function BlockStudio({
           <Empty description={t('Choose a page or create a new one.')} />
         )}
       </Panel>
-      <Panel>
-        <PanelHeader>
-          <PanelTitle>
-            {selection.type === 'page'
-              ? t('Page Settings')
-              : selectedBlock?.metadata?.label || t('Block Settings')}
-          </PanelTitle>
-        </PanelHeader>
+      <Drawer
+        placement="left"
+        width={380}
+        title={t('Document')}
+        open={documentOpen}
+        getContainer={false}
+        mask={false}
+        onClose={() => setDocumentOpen(false)}
+      >
+        {renderDocumentDrawer()}
+      </Drawer>
+      <Drawer
+        placement="right"
+        width={420}
+        title={
+          selection.type === 'page'
+            ? t('Page Settings')
+            : selectedBlock?.metadata?.label || t('Block Settings')
+        }
+        open={settingsOpen}
+        getContainer={false}
+        mask={false}
+        onClose={() => setSettingsOpen(false)}
+      >
         {renderInspector()}
-      </Panel>
+      </Drawer>
     </StudioLayout>
   );
 }

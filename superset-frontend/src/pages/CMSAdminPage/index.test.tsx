@@ -18,12 +18,7 @@
  */
 
 import fetchMock from 'fetch-mock';
-import {
-  render,
-  screen,
-  userEvent,
-  waitFor,
-} from 'spec/helpers/testing-library';
+import { render, screen, userEvent } from 'spec/helpers/testing-library';
 import CMSAdminPage from '.';
 
 jest.mock(
@@ -282,7 +277,15 @@ test('renders the authenticated CMS studio shell', async () => {
 
   expect(await screen.findByText('CMS Pages')).toBeInTheDocument();
   expect(screen.getByText('Portal Administration')).toBeInTheDocument();
-  expect(screen.getByText('Canvas Preview')).toBeInTheDocument();
+  expect(
+    screen.getByRole('heading', { name: 'Page Studio' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Document' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Page Settings' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Compose' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
   expect(screen.getByText('Media Library')).toBeInTheDocument();
   expect(screen.getByText('Themes')).toBeInTheDocument();
   expect(screen.getAllByDisplayValue('Welcome').length).toBeGreaterThan(0);
@@ -312,7 +315,9 @@ test('disables in-canvas add content actions for published pages', async () => {
     useTheme: true,
   });
 
-  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+  expect(
+    await screen.findByRole('heading', { name: 'Page Studio' }),
+  ).toBeInTheDocument();
   expect(
     screen.getAllByText(
       'Published pages are read-only. Unpublish to edit content.',
@@ -329,28 +334,23 @@ test('allows adding a block when editing an unpublished page', async () => {
     useTheme: true,
   });
 
-  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+  expect(
+    await screen.findByRole('heading', { name: 'Page Studio' }),
+  ).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
 
   expect(await screen.findByText('Add content here.')).toBeInTheDocument();
 });
 
-test('saves block pages without editor-only tree metadata', async () => {
+test('surfaces backend validation details when page save fails', async () => {
   bootstrapPayload = buildAdminPayload(false);
-  const savedPayloads: Record<string, any>[] = [];
 
-  fetchMock.post('glob:*/api/v1/public_page/admin/pages', (_url, options) => {
-    const body =
-      typeof options?.body === 'string' ? JSON.parse(options.body) : {};
-    savedPayloads.push(body);
-    return {
-      result: {
-        ...bootstrapPayload.current_page,
-        blocks: body.blocks || [],
-        sections: body.sections || [],
-      },
-    };
+  fetchMock.post('glob:*/api/v1/public_page/admin/pages', {
+    status: 400,
+    body: {
+      message: "{'chart_ref': ['Chart must be marked public']}",
+    },
   });
 
   render(<CMSAdminPage />, {
@@ -358,13 +358,13 @@ test('saves block pages without editor-only tree metadata', async () => {
     useTheme: true,
   });
 
-  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+  expect(
+    await screen.findByRole('heading', { name: 'Page Studio' }),
+  ).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
   await userEvent.click(screen.getByRole('button', { name: /Save Draft/i }));
 
-  await waitFor(() => expect(savedPayloads).toHaveLength(1));
-  expect(savedPayloads[0].blocks).toHaveLength(1);
-  expect(savedPayloads[0].blocks[0]).not.toHaveProperty('tree_path');
-  expect(savedPayloads[0].blocks[0]).not.toHaveProperty('depth');
+  expect(
+    await screen.findByText("{'chart_ref': ['Chart must be marked public']}"),
+  ).toBeInTheDocument();
 });

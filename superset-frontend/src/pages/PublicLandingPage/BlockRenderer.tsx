@@ -20,8 +20,9 @@
 
 import { CSSProperties } from 'react';
 import { SafeMarkdown } from '@superset-ui/core/components';
-import { styled, t } from '@superset-ui/core';
+import { sanitizeHtml, styled, t } from '@superset-ui/core';
 import { Button, Empty, Tag } from 'antd';
+import RichTextComposer from 'src/pages/CMSAdminPage/RichTextComposer';
 import PublicChartContainer from './PublicChartContainer';
 import PublicDashboardEmbed from './PublicDashboardEmbed';
 import { cloneBlockTree } from './blockUtils';
@@ -104,6 +105,43 @@ const BlockGridCell = styled.div<{ $span?: number; $minHeight?: number }>`
   @media (max-width: 960px) {
     grid-column: span 1;
   }
+`;
+
+const EditorSelectable = styled.div<{ $selected?: boolean }>`
+  position: relative;
+  min-width: 0;
+  border: 1px solid
+    ${({ $selected }) =>
+      $selected ? 'rgba(15, 118, 110, 0.55)' : 'rgba(148, 163, 184, 0.18)'};
+  border-radius: 16px;
+  padding: 8px;
+  background: ${({ $selected }) =>
+    $selected ? 'rgba(240, 253, 250, 0.8)' : 'transparent'};
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: rgba(15, 118, 110, 0.4);
+    box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.08);
+  }
+`;
+
+const EditorSelectableLabel = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--portal-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 `;
 
 const SurfaceCard = styled.div`
@@ -409,6 +447,13 @@ type RenderBlockTreeProps = {
   onNavigate?: (path?: string | null, openInNewTab?: boolean) => void;
   onOpenDashboard?: (dashboard: PortalDashboardSummary) => void;
   mode?: 'public' | 'editor';
+  selectedBlockUid?: string | null;
+  onSelectBlock?: (block: PortalPageBlock) => void;
+  onInlineRichTextChange?: (
+    block: PortalPageBlock,
+    html: string,
+    field?: 'body' | 'quote',
+  ) => void;
 };
 
 export function RenderBlockTree({
@@ -422,6 +467,9 @@ export function RenderBlockTree({
   onNavigate,
   onOpenDashboard,
   mode = 'public',
+  selectedBlockUid = null,
+  onSelectBlock,
+  onInlineRichTextChange,
 }: RenderBlockTreeProps) {
   function blockSpan(block: PortalPageBlock, fallback = 12) {
     const configured = Number(block.settings?.gridSpan);
@@ -458,17 +506,81 @@ export function RenderBlockTree({
           if (!renderedChild) {
             return null;
           }
+          const childNode =
+            mode === 'editor' && renderedChild.type !== EditorSelectable
+              ? wrapEditorBlock(child, renderedChild)
+              : renderedChild;
           return (
             <BlockGridCell
               key={`cell-${child.uid || child.id}`}
               $span={blockSpan(child, fallbackSpan)}
               $minHeight={blockMinHeight(child)}
             >
-              {renderedChild}
+              {childNode}
             </BlockGridCell>
           );
         })}
       </BlockGrid>
+    );
+  }
+
+  function renderRichContent(content?: string | null, fallback?: string) {
+    const html = (content || '').trim();
+    if (html) {
+      return <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(html) }} />;
+    }
+    return <SafeMarkdown source={fallback || ''} />;
+  }
+
+  function wrapEditorBlock(
+    block: PortalPageBlock,
+    rendered: JSX.Element,
+  ): JSX.Element {
+    if (mode !== 'editor') {
+      return rendered;
+    }
+    const blockId = block.uid || String(block.id || '');
+    const label = block.metadata?.label || block.block_type || t('Block');
+    return (
+      <EditorSelectable
+        key={`editor-${blockId}`}
+        $selected={selectedBlockUid === blockId}
+        onClick={event => {
+          event.preventDefault();
+          event.stopPropagation();
+          onSelectBlock?.(block);
+        }}
+      >
+        <EditorSelectableLabel>{label}</EditorSelectableLabel>
+        {rendered}
+      </EditorSelectable>
+    );
+  }
+
+  function isSelectedForInlineEditing(block: PortalPageBlock) {
+    const blockId = block.uid || String(block.id || '');
+    return (
+      mode === 'editor' &&
+      selectedBlockUid === blockId &&
+      typeof onInlineRichTextChange === 'function'
+    );
+  }
+
+  function renderInlineBodyEditor(
+    block: PortalPageBlock,
+    value: string,
+    field: 'body' | 'quote' = 'body',
+    minHeight = 180,
+  ) {
+    return (
+      <RichTextComposer
+        value={value}
+        minHeight={minHeight}
+        helperText={t(
+          'Formatting updates the selected block directly in the page canvas.',
+        )}
+        onChange={html => onInlineRichTextChange?.(block, html, field)}
+      />
     );
   }
 
@@ -626,7 +738,8 @@ export function RenderBlockTree({
         );
       }
       case 'card':
-        return (
+        return wrapEditorBlock(
+          block,
           <SurfaceCard
             key={block.uid || block.id}
             className={className}
@@ -635,7 +748,19 @@ export function RenderBlockTree({
             {title && <CardTitle>{title}</CardTitle>}
             {body ? (
               <CardBody>
-                <SafeMarkdown source={body} />
+                {isSelectedForInlineEditing(block)
+                  ? renderInlineBodyEditor(
+                      block,
+                      block.content?.html ||
+                        block.content?.body_html ||
+                        block.content?.body ||
+                        body ||
+                        '',
+                    )
+                  : renderRichContent(
+                      block.content?.html || block.content?.body_html,
+                      body,
+                    )}
               </CardBody>
             ) : null}
             {renderChildrenGrid(block.children || [], 12)}
@@ -648,10 +773,11 @@ export function RenderBlockTree({
                 {block.content.buttonLabel}
               </Button>
             ) : null}
-          </SurfaceCard>
+          </SurfaceCard>,
         );
       case 'heading':
-        return (
+        return wrapEditorBlock(
+          block,
           <SectionTitle
             key={block.uid || block.id}
             className={className}
@@ -661,22 +787,35 @@ export function RenderBlockTree({
             }
           >
             {block.content?.text || title || t('Heading')}
-          </SectionTitle>
+          </SectionTitle>,
         );
       case 'paragraph':
       case 'rich_text':
-        return (
+        return wrapEditorBlock(
+          block,
           <SurfaceCard
             key={block.uid || block.id}
             className={className}
             style={style}
           >
             <CardBody>
-              <SafeMarkdown
-                source={block.content?.body || body || t('No content yet.')}
-              />
+              {isSelectedForInlineEditing(block)
+                ? renderInlineBodyEditor(
+                    block,
+                    block.content?.html ||
+                      block.content?.body_html ||
+                      block.content?.body ||
+                      body ||
+                      '',
+                    'body',
+                    220,
+                  )
+                : renderRichContent(
+                    block.content?.html || block.content?.body_html,
+                    block.content?.body || body || t('No content yet.'),
+                  )}
             </CardBody>
-          </SurfaceCard>
+          </SurfaceCard>,
         );
       case 'page_title':
         return (
@@ -729,7 +868,8 @@ export function RenderBlockTree({
           </BreadcrumbNav>
         );
       case 'list':
-        return (
+        return wrapEditorBlock(
+          block,
           <SurfaceCard
             key={block.uid || block.id}
             className={className}
@@ -738,20 +878,35 @@ export function RenderBlockTree({
             <CardBody>
               <SafeMarkdown source={block.content?.items || body || ''} />
             </CardBody>
-          </SurfaceCard>
+          </SurfaceCard>,
         );
       case 'quote':
-        return (
+        return wrapEditorBlock(
+          block,
           <Quote
             key={block.uid || block.id}
             className={className}
             style={style}
           >
-            <SafeMarkdown source={block.content?.quote || body || ''} />
+            {isSelectedForInlineEditing(block)
+              ? renderInlineBodyEditor(
+                  block,
+                  block.content?.html ||
+                    block.content?.body_html ||
+                    block.content?.quote ||
+                    body ||
+                    '',
+                  'quote',
+                  140,
+                )
+              : renderRichContent(
+                  block.content?.html || block.content?.body_html,
+                  block.content?.quote || body || '',
+                )}
             {block.content?.citation ? (
               <footer>{block.content.citation}</footer>
             ) : null}
-          </Quote>
+          </Quote>,
         );
       case 'image': {
         const asset = lookupAsset(block, mediaAssets);
@@ -908,7 +1063,8 @@ export function RenderBlockTree({
         );
       }
       case 'callout':
-        return (
+        return wrapEditorBlock(
+          block,
           <CalloutCard
             key={block.uid || block.id}
             className={className}
@@ -917,9 +1073,21 @@ export function RenderBlockTree({
           >
             {title && <CardTitle>{title}</CardTitle>}
             <CardBody>
-              <SafeMarkdown source={body || t('Callout content goes here.')} />
+              {isSelectedForInlineEditing(block)
+                ? renderInlineBodyEditor(
+                    block,
+                    block.content?.html ||
+                      block.content?.body_html ||
+                      block.content?.body ||
+                      body ||
+                      '',
+                  )
+                : renderRichContent(
+                    block.content?.html || block.content?.body_html,
+                    body || t('Callout content goes here.'),
+                  )}
             </CardBody>
-          </CalloutCard>
+          </CalloutCard>,
         );
       case 'statistic':
         return (
@@ -980,7 +1148,8 @@ export function RenderBlockTree({
           </SurfaceCard>
         );
       case 'html':
-        return (
+        return wrapEditorBlock(
+          block,
           <SurfaceCard
             key={block.uid || block.id}
             className={className}
@@ -988,10 +1157,10 @@ export function RenderBlockTree({
           >
             <div
               dangerouslySetInnerHTML={{
-                __html: block.content?.html || '',
+                __html: sanitizeHtml(block.content?.html || ''),
               }}
             />
-          </SurfaceCard>
+          </SurfaceCard>,
         );
       case 'table':
         return (

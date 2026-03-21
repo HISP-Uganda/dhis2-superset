@@ -18,8 +18,13 @@
  */
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors, import/no-extraneous-dependencies */
 
-import { CSSProperties, useEffect, useMemo, useState } from 'react';
-import { styled, SupersetClient, t } from '@superset-ui/core';
+import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getClientErrorObject,
+  styled,
+  SupersetClient,
+  t,
+} from '@superset-ui/core';
 import {
   AppstoreOutlined,
   ArrowLeftOutlined,
@@ -413,7 +418,7 @@ const PagesGrid = styled.div`
   gap: 16px;
 `;
 
-const PageCard = styled.button<{ $active?: boolean }>`
+const PageCard = styled.div<{ $active?: boolean }>`
   width: 100%;
   text-align: left;
   padding: 18px;
@@ -459,7 +464,7 @@ const DesignLayout = styled.div`
   }
 `;
 
-const DesignCard = styled.button<{ $active?: boolean }>`
+const DesignCard = styled.div<{ $active?: boolean }>`
   width: 100%;
   text-align: left;
   padding: 16px;
@@ -614,6 +619,36 @@ function parseJsonInput(
   throw new Error(t('%s must be a JSON object.', fieldLabel));
 }
 
+async function resolveApiErrorMessage(
+  caughtError: unknown,
+  fallbackMessage: string,
+) {
+  if (
+    caughtError instanceof Error &&
+    caughtError.message &&
+    !/^Request failed with status \d+/i.test(caughtError.message)
+  ) {
+    return caughtError.message;
+  }
+  try {
+    const parsed = (await getClientErrorObject(
+      caughtError as Parameters<typeof getClientErrorObject>[0],
+    )) as {
+      error?: string;
+      message?: string;
+    };
+    return (
+      parsed.error ||
+      parsed.message ||
+      (caughtError instanceof Error ? caughtError.message : fallbackMessage)
+    );
+  } catch {
+    return caughtError instanceof Error && caughtError.message
+      ? caughtError.message
+      : fallbackMessage;
+  }
+}
+
 function updateItemAtPath(
   items: PortalNavigationItem[],
   path: number[],
@@ -747,6 +782,8 @@ export default function CMSAdminPage() {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [savingStyleBundle, setSavingStyleBundle] = useState(false);
   const [uploadingAsset, setUploadingAsset] = useState(false);
+  const isMountedRef = useRef(true);
+  const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
   const [assetDraft, setAssetDraft] = useState<{
     file: File | null;
     title: string;
@@ -767,13 +804,28 @@ export default function CMSAdminPage() {
     if (!canViewCms) {
       return null;
     }
-    setLoading(true);
-    setError(null);
+    bootstrapAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    bootstrapAbortControllerRef.current = controller;
+    if (isMountedRef.current) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const endpoint = pageSlug
         ? `/api/v1/public_page/admin/bootstrap?page=${encodeURIComponent(pageSlug)}`
         : '/api/v1/public_page/admin/bootstrap';
-      const response = await SupersetClient.get({ endpoint });
+      const response = await SupersetClient.get({
+        endpoint,
+        signal: controller.signal,
+      });
+      if (
+        controller.signal.aborted ||
+        bootstrapAbortControllerRef.current !== controller ||
+        !isMountedRef.current
+      ) {
+        return null;
+      }
       const payload = response.json?.result as PortalAdminPayload;
       setData(payload);
       setMenus(payload.menus);
@@ -802,16 +854,36 @@ export default function CMSAdminPage() {
       setStyleCssText(nextStyleBundle?.css_text || '');
       return payload;
     } catch (caughtError) {
-      const messageText =
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to load CMS Pages.');
+      if (
+        controller.signal.aborted ||
+        bootstrapAbortControllerRef.current !== controller ||
+        !isMountedRef.current
+      ) {
+        return null;
+      }
+      const messageText = await resolveApiErrorMessage(
+        caughtError,
+        t('Failed to load CMS Pages.'),
+      );
       setError(messageText);
       return null;
     } finally {
-      setLoading(false);
+      if (bootstrapAbortControllerRef.current === controller) {
+        bootstrapAbortControllerRef.current = null;
+      }
+      if (!controller.signal.aborted && isMountedRef.current) {
+        setLoading(false);
+      }
     }
   }
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+      bootstrapAbortControllerRef.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     loadBootstrap();
@@ -940,7 +1012,6 @@ export default function CMSAdminPage() {
       pageSlug,
       tab: 'studio',
     });
-    loadBootstrap(pageSlug || undefined);
   }
 
   function previewPage(page: PortalPageSummary | PortalPage | null) {
@@ -1007,18 +1078,22 @@ export default function CMSAdminPage() {
         jsonPayload: normalizeDraftPage(draftPage),
       });
       const savedPage = response.json?.result as PortalPage;
-      setDraftPage(createDraftPage(savedPage));
+      if (isMountedRef.current) {
+        setDraftPage(createDraftPage(savedPage));
+      }
       await loadBootstrap(savedPage.slug);
-      setQueryState({ pageSlug: savedPage.slug || null, tab: 'studio' });
-      messageApi.success(t('Page saved.'));
+      if (isMountedRef.current) {
+        setQueryState({ pageSlug: savedPage.slug || null, tab: 'studio' });
+        messageApi.success(t('Page saved.'));
+      }
     } catch (caughtError) {
       messageApi.error(
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to save page.'),
+        await resolveApiErrorMessage(caughtError, t('Failed to save page.')),
       );
     } finally {
-      setSavingPage(false);
+      if (isMountedRef.current) {
+        setSavingPage(false);
+      }
     }
   }
 
@@ -1033,8 +1108,13 @@ export default function CMSAdminPage() {
       });
       const duplicatedPage = response.json?.result as PortalPage;
       await loadBootstrap(duplicatedPage.slug);
-      setQueryState({ pageSlug: duplicatedPage.slug || null, tab: 'studio' });
-      messageApi.success(t('Page duplicated.'));
+      if (isMountedRef.current) {
+        setQueryState({
+          pageSlug: duplicatedPage.slug || null,
+          tab: 'studio',
+        });
+        messageApi.success(t('Page duplicated.'));
+      }
     } catch (caughtError) {
       messageApi.error(
         caughtError instanceof Error
@@ -1066,10 +1146,12 @@ export default function CMSAdminPage() {
       });
       const savedPage = response.json?.result as PortalPage;
       await loadBootstrap(savedPage.slug);
-      setQueryState({ pageSlug: savedPage.slug || null, tab: 'studio' });
-      messageApi.success(
-        isPublished ? t('Page published.') : t('Page unpublished.'),
-      );
+      if (isMountedRef.current) {
+        setQueryState({ pageSlug: savedPage.slug || null, tab: 'studio' });
+        messageApi.success(
+          isPublished ? t('Page published.') : t('Page unpublished.'),
+        );
+      }
     } catch (caughtError) {
       messageApi.error(
         caughtError instanceof Error
@@ -1092,8 +1174,10 @@ export default function CMSAdminPage() {
       });
       const archivedPage = response.json?.result as PortalPage;
       await loadBootstrap(archivedPage.slug);
-      setQueryState({ pageSlug: archivedPage.slug || null, tab: 'studio' });
-      messageApi.success(t('Page archived.'));
+      if (isMountedRef.current) {
+        setQueryState({ pageSlug: archivedPage.slug || null, tab: 'studio' });
+        messageApi.success(t('Page archived.'));
+      }
     } catch (caughtError) {
       messageApi.error(
         caughtError instanceof Error
@@ -1114,10 +1198,12 @@ export default function CMSAdminPage() {
       const fallbackSlug =
         draftPage?.id === pageId ? null : draftPage?.slug || undefined;
       await loadBootstrap(fallbackSlug);
-      if (draftPage?.id === pageId || pageSlug === requestedPageSlug) {
-        setQueryState({ pageSlug: null, tab: 'pages' });
+      if (isMountedRef.current) {
+        if (draftPage?.id === pageId || pageSlug === requestedPageSlug) {
+          setQueryState({ pageSlug: null, tab: 'pages' });
+        }
+        messageApi.success(t('Page deleted.'));
       }
-      messageApi.success(t('Page deleted.'));
     } catch (caughtError) {
       messageApi.error(
         caughtError instanceof Error
@@ -1837,6 +1923,14 @@ export default function CMSAdminPage() {
                 key={theme.id}
                 $active={theme.id === selectedThemeId}
                 onClick={() => setSelectedThemeId(theme.id)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedThemeId(theme.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <div
                   style={{
@@ -2087,6 +2181,14 @@ export default function CMSAdminPage() {
                 key={template.id}
                 $active={template.id === selectedTemplateId}
                 onClick={() => setSelectedTemplateId(template.id)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedTemplateId(template.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <div
                   style={{
@@ -2335,6 +2437,14 @@ export default function CMSAdminPage() {
                 key={bundle.id}
                 $active={bundle.id === selectedStyleBundleId}
                 onClick={() => setSelectedStyleBundleId(bundle.id)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedStyleBundleId(bundle.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <div
                   style={{
@@ -2557,6 +2667,14 @@ export default function CMSAdminPage() {
                 key={page.id || page.slug}
                 $active={page.slug === draftPage?.slug}
                 onClick={() => openStudioPage(page.slug || null)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openStudioPage(page.slug || null);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <PageCardMeta>
                   <Space wrap>

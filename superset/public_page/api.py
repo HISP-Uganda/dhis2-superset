@@ -1934,14 +1934,15 @@ class PublicPageRestApi(BaseApi):
     def _validate_component_references(
         self,
         component_data: dict[str, Any],
-        page_visibility: str = "public",
+        *,
+        require_public: bool = False,
     ) -> None:
         chart_id = component_data.get("chart_id")
         if chart_id:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
             if chart is None:
                 raise ValidationError({"chart_id": ["Chart not found"]})
-            if page_visibility == "public" and not getattr(chart, "is_public", False):
+            if require_public and not getattr(chart, "is_public", False):
                 raise ValidationError({"chart_id": ["Chart must be marked public"]})
             if not self._chart_uses_serving_tables(chart):
                 raise ValidationError(
@@ -1957,7 +1958,7 @@ class PublicPageRestApi(BaseApi):
             )
             if dash is None:
                 raise ValidationError({"dashboard_id": ["Dashboard not found"]})
-            if page_visibility == "public" and not getattr(dash, "published", False):
+            if require_public and not getattr(dash, "published", False):
                 raise ValidationError(
                     {"dashboard_id": ["Dashboard must be published for public use"]}
                 )
@@ -1965,7 +1966,8 @@ class PublicPageRestApi(BaseApi):
     def _validate_block_references(
         self,
         block_data: dict[str, Any],
-        page_visibility: str = "public",
+        *,
+        require_public: bool = False,
     ) -> None:
         content = block_data.get("content") or {}
         settings = block_data.get("settings") or {}
@@ -1975,7 +1977,7 @@ class PublicPageRestApi(BaseApi):
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
             if chart is None:
                 raise ValidationError({"chart_ref": ["Chart not found"]})
-            if page_visibility == "public" and not getattr(chart, "is_public", False):
+            if require_public and not getattr(chart, "is_public", False):
                 raise ValidationError({"chart_ref": ["Chart must be marked public"]})
             if not self._chart_uses_serving_tables(chart):
                 raise ValidationError(
@@ -1991,7 +1993,7 @@ class PublicPageRestApi(BaseApi):
             )
             if dash is None:
                 raise ValidationError({"dashboard_ref": ["Dashboard not found"]})
-            if page_visibility == "public" and not getattr(dash, "published", False):
+            if require_public and not getattr(dash, "published", False):
                 raise ValidationError(
                     {"dashboard_ref": ["Dashboard must be published for public use"]}
                 )
@@ -2001,11 +2003,24 @@ class PublicPageRestApi(BaseApi):
             self._validate_asset_reference(
                 asset_id,
                 field_name="asset_ref",
-                require_public=page_visibility == "public",
+                require_public=require_public,
             )
 
         for child in block_data.get("children") or []:
-            self._validate_block_references(child, page_visibility=page_visibility)
+            self._validate_block_references(
+                child,
+                require_public=require_public,
+            )
+
+    def _payload_requires_public_references(
+        self,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Only enforce public-only references when the page is being published."""
+        return (
+            (payload.get("visibility") or "public") == "public"
+            and bool(payload.get("is_published", True))
+        )
 
     def _coerce_page_blocks_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         block_payload = payload.get("blocks") or []
@@ -2506,6 +2521,7 @@ class PublicPageRestApi(BaseApi):
         now = _now()
         previous_was_public = self._page_is_publicly_viewable(page)
         page_visibility = payload.get("visibility") or "public"
+        require_public_references = self._payload_requires_public_references(payload)
         theme = self._validate_theme_reference(payload.get("theme_id"))
         template = self._validate_template_reference(payload.get("template_id"))
         page_style_bundle = self._validate_style_bundle_reference(
@@ -2515,7 +2531,7 @@ class PublicPageRestApi(BaseApi):
             payload.get("parent_page_id"),
             page=page,
         )
-        if parent_page is not None and page_visibility == "public":
+        if parent_page is not None and require_public_references:
             if not self._page_is_publicly_viewable(parent_page):
                 raise ValidationError(
                     {
@@ -2527,12 +2543,12 @@ class PublicPageRestApi(BaseApi):
         featured_image_asset = self._validate_asset_reference(
             payload.get("featured_image_asset_id"),
             field_name="featured_image_asset_id",
-            require_public=page_visibility == "public",
+            require_public=require_public_references,
         )
         og_image_asset = self._validate_asset_reference(
             payload.get("og_image_asset_id"),
             field_name="og_image_asset_id",
-            require_public=page_visibility == "public",
+            require_public=require_public_references,
         )
         page.slug = requested_slug
         page.title = payload["title"]
@@ -2629,7 +2645,7 @@ class PublicPageRestApi(BaseApi):
         for block_data in payload_blocks:
             self._validate_block_references(
                 block_data,
-                page_visibility=page.visibility,
+                require_public=require_public_references,
             )
         self._upsert_blocks(page, payload_blocks)
         self._clear_legacy_sections(page)

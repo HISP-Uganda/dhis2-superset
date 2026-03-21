@@ -43,6 +43,7 @@ REPO_URL="${REPO_URL:-https://github.com/HISP-Uganda/dhis2-superset.git}"
 GIT_REF="${GIT_REF:-main}"
 GIT_DEPTH="${GIT_DEPTH:-0}"
 GIT_SUBMODULES="${GIT_SUBMODULES:-0}"
+SOURCE_MODE="${SOURCE_MODE:-git}"   # git | local
 
 UPSTREAM_REPO_URL="${UPSTREAM_REPO_URL:-https://github.com/HISP-Uganda/dhis2-superset.git}"
 USE_UPSTREAM_MIGRATIONS="${USE_UPSTREAM_MIGRATIONS:-0}"
@@ -128,6 +129,11 @@ ADMIN_LAST="${ADMIN_LAST:-User}"
 HOST_LOG="${HOST_LOG:-/var/log/supersets-deploy-host.log}"
 REMOTE_SCRIPT_PATH="${REMOTE_SCRIPT_PATH:-/tmp/deploy-supersets.sh}"
 REMOTE_ENV_PATH="${REMOTE_ENV_PATH:-/tmp/deploy-supersets.env}"
+REMOTE_DETACH="${REMOTE_DETACH:-1}"
+REMOTE_POLL_INTERVAL_SECONDS="${REMOTE_POLL_INTERVAL_SECONDS:-2}"
+REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-/tmp/deploy-supersets-remote.log}"
+REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-/tmp/deploy-supersets-remote.pid}"
+REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-/tmp/deploy-supersets-remote.status}"
 
 usage() {
   cat <<'EOF'
@@ -202,8 +208,20 @@ ssh_tty() {
     "$TARGET" "$@"
 }
 
+ssh_cmd() {
+  ssh \
+    -o BatchMode=no \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=6 \
+    -p "$SSH_PORT" \
+    "$TARGET" "$@"
+}
+
 scp_to_remote() { scp -P "$SSH_PORT" "$1" "${TARGET}:$2"; }
 quote_env_value() { printf '%q' "$1"; }
+remote_sudo_prompt() {
+  printf '[remote sudo on %s] password for %%u: ' "$TARGET"
+}
 
 write_remote_env_file() {
   local f="$1"
@@ -212,7 +230,7 @@ write_remote_env_file() {
 
   local vars=(
     CT_SUP CT_PG CT_PROXY DOMAIN
-    REPO_URL GIT_REF GIT_DEPTH GIT_SUBMODULES
+    REPO_URL GIT_REF GIT_DEPTH GIT_SUBMODULES SOURCE_MODE
     UPSTREAM_REPO_URL USE_UPSTREAM_MIGRATIONS
     HOST_SRC_DIR CT_SRC_DIR LEGACY_SRC_DEVICE_NAME
     SUPERSET_HOME CONFIG_DIR BACKUP_DIR LOG_DIR WORK_DIR WORK_SRC VENV
@@ -221,6 +239,7 @@ write_remote_env_file() {
     CELERY_LOG CELERY_PID_FILE CELERY_BEAT_LOG CELERY_BEAT_PID_FILE
     DEPLOY_LOG_IN_CT FRONTEND_LOG_IN_CT
     FRONTEND FRONTEND_CLEAN NPM_LEGACY_PEER_DEPS NODE_OPTIONS_VALUE FRONTEND_TIMEOUT_MINUTES
+    FRONTEND_TYPECHECK FRONTEND_LOG_TAIL_LINES
     DB_SYNC PATCH_MIGRATIONS APACHE_CACHE_FIX
     ENABLE_CELERY_WORKER ENABLE_CELERY_BEAT CELERY_CONCURRENCY
     DUCKDB_ENABLED DUCKDB_PYTHON_PACKAGE DUCKDB_SQLALCHEMY_PACKAGE
@@ -233,6 +252,7 @@ write_remote_env_file() {
     ALEMBIC_FIX_MODE ALEMBIC_AUTO_FALLBACK
     ADMIN_USER ADMIN_EMAIL ADMIN_PASS ADMIN_FIRST ADMIN_LAST
     HOST_LOG
+    REMOTE_DETACH REMOTE_POLL_INTERVAL_SECONDS REMOTE_RUN_LOG REMOTE_RUN_PID_FILE REMOTE_RUN_STATUS_FILE
   )
 
   local v
@@ -380,19 +400,19 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   }
 
   exec_in_ct_as_postgres() {
-  local ct="$1"
-  shift || true
-  local inner="$*"
-  local quoted_inner
-  quoted_inner="$(printf '%q' "$inner")"
+    local ct="$1"
+    shift || true
+    local inner="$*"
+    local quoted_inner
+    quoted_inner="$(printf '%q' "$inner")"
 
-  lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "
+    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "
 set -Eeuo pipefail
 trap 'rc=\$?; echo \"[exec_in_ct_as_postgres:$ct] ERROR rc=\${rc} line=\${LINENO} cmd=\${BASH_COMMAND}\" >&2; exit \${rc}' ERR
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 su - postgres -s /bin/bash -c $quoted_inner
 "
-}
+  }
 
   ct_ip() {
     local ct="$1"
@@ -468,7 +488,7 @@ print(''.join(secrets.choice(alphabet) for _ in range(32)))
 PY
           return 0
         fi
-        date +%s | sha256sum | awk '{print substr(\$1,1,32)}'
+        date +%s | sha256sum | awk '{print substr($1,1,32)}'
       }
 
       requested_user='${CLICKHOUSE_USER}'
@@ -603,8 +623,8 @@ PY
       _add_or_update_env_var DHIS2_CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+      _add_or_update_ENV_VAR DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+      _add_or_update_ENV_VAR DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_USER '${CLICKHOUSE_USER}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_PASSWORD '${CLICKHOUSE_PASSWORD}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_SECURE false
@@ -849,9 +869,11 @@ PY
         [ -n \"\$pid\" ] || continue
         [ \"\$pid\" = \"\$me\" ] && continue
         [ \"\$pid\" = \"\$ppid\" ] && continue
+        [ -r /proc/\$pid/cmdline ] || continue
         cmdline=\$(tr '\0' ' ' < /proc/\$pid/cmdline 2>/dev/null || true)
         case \"\$cmdline\" in
           *'bash -c '*|*'pgrep -f '*)
+            continue
             ;;
         esac
         echo 'stopping $label pid='\$pid
@@ -922,13 +944,21 @@ PY
     " || true
   }
 
+  host_src_dir_is_safe() {
+    case "$HOST_SRC_DIR" in
+      /opt/superset-src|/tmp/superset-src-local|/tmp/superset-src-local-*|/var/tmp/superset-src-local|/var/tmp/superset-src-local-*)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
   cleanup_host_src_dir() {
     log "[host] cleanup host source checkout: $HOST_SRC_DIR"
 
-    case "$HOST_SRC_DIR" in
-      /opt/superset-src) ;;
-      *) die "Refusing to remove unexpected HOST_SRC_DIR: $HOST_SRC_DIR" ;;
-    esac
+    host_src_dir_is_safe || die "Refusing to remove unexpected HOST_SRC_DIR: $HOST_SRC_DIR"
 
     if sudo lxc config device show "$CT_SUP" | grep -q "^${LEGACY_SRC_DEVICE_NAME}:"; then
       die "Refusing to remove $HOST_SRC_DIR because LXD device '$LEGACY_SRC_DEVICE_NAME' is still attached"
@@ -984,10 +1014,30 @@ PY
     log "[host] revision: $(run_as_user "cd '$HOST_SRC_DIR' && git rev-parse --short HEAD")"
   }
 
-  verify_host_repo_checkout() {
-    [[ -d "$HOST_SRC_DIR/.git" ]] || die "Missing .git in $HOST_SRC_DIR"
+  verify_host_source_checkout() {
+    [[ -d "$HOST_SRC_DIR" ]] || die "Missing host source directory: $HOST_SRC_DIR"
     [[ -f "$HOST_SRC_DIR/setup.py" || -f "$HOST_SRC_DIR/pyproject.toml" || -d "$HOST_SRC_DIR/superset-frontend" ]] \
       || die "Host checkout at $HOST_SRC_DIR does not look like Superset"
+  }
+
+  prepare_host_source() {
+    case "$SOURCE_MODE" in
+      git)
+        git_clone_or_update
+        ;;
+      local)
+        ensure_host_src_dir
+        verify_host_source_checkout
+        if [[ -d "$HOST_SRC_DIR/.git" ]]; then
+          log "[host] using uploaded local source tree at $HOST_SRC_DIR (rev $(run_as_user "cd '$HOST_SRC_DIR' && git rev-parse --short HEAD" 2>/dev/null || echo unknown))"
+        else
+          log "[host] using uploaded local source tree at $HOST_SRC_DIR"
+        fi
+        ;;
+      *)
+        die "Unsupported SOURCE_MODE: $SOURCE_MODE"
+        ;;
+    esac
   }
 
   install_supersets_base_tools() {
@@ -1174,7 +1224,7 @@ SQL"
 
   sync_to_workdir() {
     log "[supersets] sync host repo -> container workdir"
-    verify_host_repo_checkout
+    verify_host_source_checkout
 
     exec_in_ct "$CT_SUP" "
       if [ -d '$WORK_SRC' ]; then
@@ -1401,7 +1451,7 @@ PY
         else
           run_with_log 'npm install' npm install
         fi
-      fi
+      }
 
       run_with_log 'npm run type:refs' npm run type:refs
 
@@ -1765,54 +1815,94 @@ PY")"
     "
   }
 
-  patch_dhis2_migrations_in_site_packages() {
-    [[ "$PATCH_MIGRATIONS" == "1" ]] || return 0
-    log "[supersets] patch DHIS2/custom migrations in installed package path"
+  patch_python_migration_tree() {
+    local target_root="$1"
+    local label="$2"
 
     exec_in_ct "$CT_SUP" "
       python3 - <<'PY'
-import glob
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-roots = glob.glob('${VENV}/lib/python3.*/site-packages/superset/migrations/versions')
-roots = [r for r in roots if Path(r).exists()]
+root = Path('$target_root')
+if not root.exists():
+    print('PATCH_SKIP missing_root=' + str(root))
+    raise SystemExit(0)
 
-def patch_groupby(text: str) -> str:
-    text = re.sub(r'(\\bAND\\b|\\bWHERE\\b)\\s+groupby\\s*=\\s*1\\b', r'\\1 groupby IS TRUE', text, flags=re.I)
-    text = re.sub(r'(\\bAND\\b|\\bWHERE\\b)\\s+groupby\\s*=\\s*0\\b', r'\\1 groupby IS FALSE', text, flags=re.I)
-    text = re.sub(r'\\bSET\\s+groupby\\s*=\\s*1\\b', 'SET groupby = TRUE', text, flags=re.I)
-    text = re.sub(r'\\bSET\\s+groupby\\s*=\\s*0\\b', 'SET groupby = FALSE', text, flags=re.I)
+BOOLEAN_COLUMNS = [
+    'groupby',
+    'is_published',
+    'show_in_navigation',
+    'require_auth',
+    'is_active',
+    'enabled',
+    'published',
+]
+
+def patch_boolean_sql(text: str) -> str:
+    for col in BOOLEAN_COLUMNS:
+        name = re.escape(col)
+
+        text = re.sub(rf'(\\bWHERE\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
+        text = re.sub(rf'(\\bWHERE\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
+        text = re.sub(rf'(\\bAND\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
+        text = re.sub(rf'(\\bAND\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
+        text = re.sub(rf'(\\bOR\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
+        text = re.sub(rf'(\\bOR\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
+        text = re.sub(rf'(\\bSET\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
+        text = re.sub(rf'(\\bSET\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
+
     return text
 
 def patch_sanitize(text: str) -> str:
     return text.replace('%(idd)s', '%(id)s').replace(':idd', ':id')
 
-for root in roots:
-    for file_path in glob.glob(str(Path(root) / '*.py')):
-        p = Path(file_path)
-        original = p.read_text(errors='ignore')
-        updated = original
-        lower = p.name.lower()
+patched = 0
+for p in sorted(root.glob('*.py')):
+    original = p.read_text(errors='ignore')
+    updated = original
+    lower = p.name.lower()
 
-        if 'dhis2' in lower:
-            updated = patch_groupby(updated)
+    if 'dhis2' in lower or 'portal' in lower or 'cms' in lower:
+        updated = patch_boolean_sql(updated)
 
-        if 'sanitize_dhis2_columns' in lower or 'preview' in lower:
-            updated = patch_sanitize(updated)
+    if 'sanitize_dhis2_columns' in lower or 'preview' in lower:
+        updated = patch_sanitize(updated)
 
-        if updated != original:
-            backup = str(p) + '.bak.' + datetime.now().strftime('%Y%m%d%H%M%S')
-            shutil.copy2(p, backup)
-            p.write_text(updated)
+    if updated != original:
+        backup = str(p) + '.bak.' + datetime.now().strftime('%Y%m%d%H%M%S')
+        shutil.copy2(p, backup)
+        p.write_text(updated)
+        patched += 1
+        print('PATCHED', p.name)
+
+print('PATCH_DONE label=$label count=' + str(patched))
 PY
     "
   }
 
+  patch_dhis2_migrations_in_workdir() {
+    [[ "$PATCH_MIGRATIONS" == "1" ]] || return 0
+    log "[supersets] patch DHIS2/custom migrations in workdir"
+    patch_python_migration_tree "$WORK_SRC/superset/migrations/versions" "workdir"
+  }
+
+  patch_dhis2_migrations_in_site_packages() {
+    [[ "$PATCH_MIGRATIONS" == "1" ]] || return 0
+    log "[supersets] patch DHIS2/custom migrations in installed package path"
+
+    local versions_dir
+    versions_dir="$(sitepkg_versions_dir || true)"
+    [[ -n "$versions_dir" ]] || { warn "site-packages migrations versions dir not found; skipping patch"; return 0; }
+
+    patch_python_migration_tree "$versions_dir" "site-packages"
+  }
+
   git_fetch_upstream_if_needed() {
     [[ "$USE_UPSTREAM_MIGRATIONS" == "1" ]] || return 0
+    [[ -d "$HOST_SRC_DIR/.git" ]] || { warn "Skipping upstream migration fetch: no git checkout in $HOST_SRC_DIR"; return 1; }
     run_as_user "cd '$HOST_SRC_DIR' && (git remote get-url upstream >/dev/null 2>&1 || git remote add upstream '$UPSTREAM_REPO_URL')"
     run_as_user "cd '$HOST_SRC_DIR' && git fetch upstream --prune --tags"
   }
@@ -1823,6 +1913,8 @@ PY
     local commit=""
     local destdir=""
     local tmpfile=""
+
+    [[ -d "$HOST_SRC_DIR/.git" ]] || { warn "Cannot inject missing revision $rev: no git checkout in $HOST_SRC_DIR"; return 4; }
 
     file="$(run_as_user "cd '$HOST_SRC_DIR' && grep -RslE \"revision\\s*=\\s*['\\\"]${rev}['\\\"]\" superset/migrations/versions 2>/dev/null | head -n1 || true")"
     if [[ -n "$file" ]]; then
@@ -2317,7 +2409,7 @@ AP
       ensure_superset_config_exists
       disable_systemd_superset_services
       detach_legacy_src_mount_if_present
-      git_clone_or_update
+      prepare_host_source
       install_supersets_base_tools
       ensure_redis_present
       install_clickhouse
@@ -2335,6 +2427,7 @@ AP
       sync_superset_clickhouse_config_in_ct
       install_runtime_db_drivers
       validate_metadata_source
+      patch_dhis2_migrations_in_workdir
       sync_repo_migrations_to_site_packages
       force_replace_installed_frontend_from_repo
       patch_dhis2_migrations_in_site_packages
@@ -2364,7 +2457,7 @@ AP
       restart_gunicorn
       ;;
     restart-celery)
-      ensure_env_exists
+      ensure_env_EXISTS
       ensure_superset_config_exists
       install_celery_systemd_units
       restart_celery_worker
@@ -2462,8 +2555,192 @@ main() {
   scp_to_remote "$env_tmp" "$REMOTE_ENV_PATH"
   rm -f "$env_tmp"
 
-  ssh_tty "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH'"
-  ssh_tty "sudo bash -lc 'set -a; . \"$REMOTE_ENV_PATH\"; set +a; exec bash \"$REMOTE_SCRIPT_PATH\" __remote \"$cmd\"'"
+  ssh_cmd "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH'"
+
+  local q_remote_script q_remote_env q_remote_log q_remote_pid q_remote_status q_cmd q_sudo_prompt
+  q_remote_script="$(quote_env_value "$REMOTE_SCRIPT_PATH")"
+  q_remote_env="$(quote_env_value "$REMOTE_ENV_PATH")"
+  q_remote_log="$(quote_env_value "$REMOTE_RUN_LOG")"
+  q_remote_pid="$(quote_env_value "$REMOTE_RUN_PID_FILE")"
+  q_remote_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
+  q_cmd="$(quote_env_value "$cmd")"
+  q_sudo_prompt="$(quote_env_value "$(remote_sudo_prompt)")"
+
+if [[ "$REMOTE_DETACH" != "1" ]]; then
+    ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt bash -s" <<'EOSSH'
+set -euo pipefail
+
+if ! sudo -p "$SUDO_PROMPT" -v; then
+  printf 'ERROR: remote sudo authentication failed for %s\n' "$(id -un)" >&2
+  exit 1
+fi
+
+exec sudo -n env \
+  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+  DEPLOY_CMD="$DEPLOY_CMD" \
+  bash -s
+set -euo pipefail
+set -a
+. "$REMOTE_ENV_PATH"
+set +a
+exec bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
+EOSSH
+    exit $?
+  fi
+
+  ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env REMOTE_RUN_LOG=$q_remote_log REMOTE_RUN_PID_FILE=$q_remote_pid REMOTE_RUN_STATUS_FILE=$q_remote_status DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt bash -s" <<'EOSSH'
+set -euo pipefail
+
+if ! sudo -p "$SUDO_PROMPT" -v; then
+  printf 'ERROR: remote sudo authentication failed for %s\n' "$(id -un)" >&2
+  exit 1
+fi
+
+exec sudo -n env \
+  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+  REMOTE_RUN_LOG="$REMOTE_RUN_LOG" \
+  REMOTE_RUN_PID_FILE="$REMOTE_RUN_PID_FILE" \
+  REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
+  DEPLOY_CMD="$DEPLOY_CMD" \
+  bash -s
+set -euo pipefail
+
+run_user="${SUDO_USER:-$(id -un)}"
+
+rm -f "$REMOTE_RUN_PID_FILE" "$REMOTE_RUN_STATUS_FILE"
+install -m 0664 /dev/null "$REMOTE_RUN_LOG"
+chown "$run_user":"$run_user" "$REMOTE_RUN_LOG" 2>/dev/null || true
+
+cat > /tmp/deploy-supersets-detached-runner.sh <<'EORUN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+. "$REMOTE_ENV_PATH"
+set +a
+
+rc=0
+if ! bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"; then
+  rc=$?
+fi
+
+printf '%s\n' "$rc" > "$REMOTE_RUN_STATUS_FILE"
+chmod 0664 "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+chown "$run_user":"$run_user" "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+exit "$rc"
+EORUN
+
+chmod 700 /tmp/deploy-supersets-detached-runner.sh
+
+nohup env \
+  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+  REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
+  DEPLOY_CMD="$DEPLOY_CMD" \
+  run_user="$run_user" \
+  /tmp/deploy-supersets-detached-runner.sh >> "$REMOTE_RUN_LOG" 2>&1 < /dev/null &
+pid=$!
+
+printf '%s\n' "$pid" > "$REMOTE_RUN_PID_FILE"
+chmod 0664 "$REMOTE_RUN_PID_FILE" || true
+chown "$run_user":"$run_user" "$REMOTE_RUN_PID_FILE" 2>/dev/null || true
+
+printf 'REMOTE_PID=%s\nREMOTE_LOG=%s\nREMOTE_STATUS=%s\n' "$pid" "$REMOTE_RUN_LOG" "$REMOTE_RUN_STATUS_FILE"
+EOSSH
+
+  log "Remote deploy started; polling $REMOTE_RUN_LOG"
+
+  local last_line=0
+  local poll_failures=0
+  local q_poll_log q_poll_status q_poll_pid
+  q_poll_log="$(quote_env_value "$REMOTE_RUN_LOG")"
+  q_poll_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
+  q_poll_pid="$(quote_env_value "$REMOTE_RUN_PID_FILE")"
+
+  while true; do
+    local poll_output poll_rc status_line body rc lines
+
+    set +e
+    poll_output="$(ssh_cmd "bash -lc '
+      log_file=$q_poll_log
+      status_file=$q_poll_status
+      pid_file=$q_poll_pid
+
+      lines=0
+      if [ -f \"\$log_file\" ]; then
+        lines=\$(wc -l < \"\$log_file\" 2>/dev/null || echo 0)
+        if [ \"\$lines\" -gt $last_line ]; then
+          sed -n \"$((last_line + 1)),\${lines}p\" \"\$log_file\"
+        fi
+      fi
+
+      if [ -f \"\$status_file\" ]; then
+        printf \"__REMOTE_STATUS__:%s:%s\n\" \"\$(cat \"\$status_file\" 2>/dev/null || echo 1)\" \"\$lines\"
+        exit 0
+      fi
+
+      pid=\"\"
+      running=0
+      if [ -f \"\$pid_file\" ]; then
+        pid=\$(cat \"\$pid_file\" 2>/dev/null || true)
+        if [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null; then
+          running=1
+        fi
+      fi
+
+      if [ \"\$running\" = \"1\" ]; then
+        printf \"__REMOTE_STATUS__:RUNNING:%s\n\" \"\$lines\"
+      else
+        printf \"__REMOTE_STATUS__:FAILED_NO_STATUS:%s\n\" \"\$lines\"
+      fi
+    '")"
+    poll_rc=$?
+    set -e
+
+    if [[ "$poll_rc" -ne 0 ]]; then
+      poll_failures=$((poll_failures + 1))
+      if [[ "$poll_failures" -ge 3 ]]; then
+        die "Lost connection while polling remote deploy log after $poll_failures attempt(s). Inspect $REMOTE_RUN_LOG on the remote host."
+      fi
+      warn "Polling remote deploy log failed (attempt $poll_failures); retrying in ${REMOTE_POLL_INTERVAL_SECONDS}s"
+      sleep "$REMOTE_POLL_INTERVAL_SECONDS"
+      continue
+    fi
+
+    poll_failures=0
+    status_line="$(printf '%s\n' "$poll_output" | tail -n 1)"
+    body="$(printf '%s\n' "$poll_output" | sed '$d')"
+    [[ -n "$body" ]] && printf '%s\n' "$body"
+
+    if [[ "${status_line#__REMOTE_STATUS__:}" == "$status_line" ]]; then
+      warn "Unexpected remote poll response; retrying"
+      sleep "$REMOTE_POLL_INTERVAL_SECONDS"
+      continue
+    fi
+
+    rc="${status_line#__REMOTE_STATUS__:}"
+    rc="${rc%%:*}"
+    lines="${status_line##*:}"
+    last_line="${lines:-$last_line}"
+
+    case "$rc" in
+      RUNNING)
+        ;;
+      0)
+        exit 0
+        ;;
+      FAILED_NO_STATUS)
+        die "Remote deploy process exited before writing status. Inspect $REMOTE_RUN_LOG on the remote host."
+        ;;
+      *)
+        die "Remote deploy failed with rc=$rc. Inspect $REMOTE_RUN_LOG on the remote host."
+        ;;
+    esac
+
+    sleep "$REMOTE_POLL_INTERVAL_SECONDS"
+  done
 }
 
 if [[ "${1:-}" == "__remote" ]]; then
