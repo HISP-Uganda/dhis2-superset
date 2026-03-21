@@ -19,7 +19,6 @@
 const packageConfig = require('./package');
 const currentEnv = process.env.BABEL_ENV || process.env.NODE_ENV;
 const isTestEnv = currentEnv === 'test';
-const isProductionEnv = currentEnv === 'production';
 
 module.exports = {
   sourceMaps: true,
@@ -47,7 +46,6 @@ module.exports = {
     '@babel/preset-typescript',
   ],
   plugins: [
-    ...(isProductionEnv ? ['lodash'] : []),
     '@babel/plugin-syntax-dynamic-import',
     '@babel/plugin-transform-export-namespace-from',
     ['@babel/plugin-transform-class-properties', { loose: true }],

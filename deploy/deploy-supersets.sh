@@ -1403,6 +1403,8 @@ PY
         fi
       fi
 
+      run_with_log 'npm run type:refs' npm run type:refs
+
       if [ '$FRONTEND_TYPECHECK' = '1' ]; then
         run_with_log 'npm run type' npm run type -- --pretty false
       fi

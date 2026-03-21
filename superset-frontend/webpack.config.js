@@ -323,6 +323,7 @@ const config = {
     },
   ],
   performance: {
+    hints: false,
     assetFilter(assetFilename) {
       // don't throw size limit warning on geojson and font files
       return !/\.(map|geojson|woff2)$/.test(assetFilename);

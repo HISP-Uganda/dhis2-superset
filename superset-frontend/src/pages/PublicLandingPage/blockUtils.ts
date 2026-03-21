@@ -107,11 +107,20 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
     case 'paragraph':
       base.content = { body: t('Add content here.') };
       break;
+    case 'list':
+      base.content = { items: `- ${t('First item')}\n- ${t('Second item')}` };
+      break;
+    case 'quote':
+      base.content = { quote: t('Quote'), citation: '' };
+      break;
     case 'heading':
       base.content = { text: t('Heading'), level: 2 };
       break;
     case 'image':
       base.content = { title: t('Image'), url: '', alt: '', caption: '' };
+      break;
+    case 'gallery':
+      base.content = { title: t('Gallery'), images: [] };
       break;
     case 'file':
     case 'download':
@@ -128,6 +137,9 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'spacer':
       base.settings = { height: 48 };
+      break;
+    case 'divider':
+      base.settings = { style: 'solid' };
       break;
     case 'hero':
       base.content = {
@@ -187,6 +199,12 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'statistic':
       base.content = { title: t('Statistic'), value: '0', caption: '' };
+      break;
+    case 'table':
+      base.content = {
+        columns: [t('Column 1'), t('Column 2')],
+        rows: [[t('Value 1'), t('Value 2')]],
+      };
       break;
     case 'embed':
     case 'video':

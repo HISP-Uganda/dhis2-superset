@@ -18,7 +18,7 @@
  */
 
 import fetchMock from 'fetch-mock';
-import { render, screen } from 'spec/helpers/testing-library';
+import { render, screen, userEvent } from 'spec/helpers/testing-library';
 import CMSAdminPage from '.';
 
 jest.mock(
@@ -58,41 +58,65 @@ jest.mock('src/dashboard/util/permissionUtils', () => ({
   userHasPermission: jest.fn(() => true),
 }));
 
-const adminPayload = {
-  config: {
-    navbar: {
-      title: { text: 'Portal' },
-    },
-  },
-  portal_layout: {
-    id: 1,
-    scope: 'public_portal',
-    title: 'Public Portal',
+function buildAdminPayload(isPublished = true) {
+  return {
     config: {
-      portalTitle: 'Uganda Malaria Analytics Portal',
-      portalSubtitle: 'Serving tables only.',
-      welcomeBadge: 'MOH',
-      accentColor: '#0f766e',
-      secondaryColor: '#1d4ed8',
-      surfaceColor: '#ffffff',
-      pageMaxWidth: 1280,
-      showThemeToggle: true,
+      navbar: {
+        title: { text: 'Portal' },
+      },
     },
-  },
-  stats: {
-    total_pages: 3,
-    published_pages: 2,
-    draft_pages: 1,
-    private_pages: 0,
-    menus: 2,
-    chart_enabled_pages: 1,
-    themes: 1,
-    templates: 1,
-    style_bundles: 1,
-    media_assets: 1,
-  },
-  pages: [
-    {
+    portal_layout: {
+      id: 1,
+      scope: 'public_portal',
+      title: 'Public Portal',
+      config: {
+        portalTitle: 'Uganda Malaria Analytics Portal',
+        portalSubtitle: 'Serving tables only.',
+        welcomeBadge: 'MOH',
+        accentColor: '#0f766e',
+        secondaryColor: '#1d4ed8',
+        surfaceColor: '#ffffff',
+        pageMaxWidth: 1280,
+        showThemeToggle: true,
+      },
+    },
+    stats: {
+      total_pages: 3,
+      published_pages: 2,
+      draft_pages: 1,
+      private_pages: 0,
+      menus: 2,
+      chart_enabled_pages: 1,
+      themes: 1,
+      templates: 1,
+      style_bundles: 1,
+      media_assets: 1,
+    },
+    pages: [
+      {
+        id: 1,
+        slug: 'welcome',
+        path: 'about/welcome',
+        title: 'Welcome',
+        subtitle: 'Overview',
+        description: 'Portal welcome page',
+        excerpt: 'Welcome',
+        is_published: isPublished,
+        is_homepage: true,
+        display_order: 0,
+        parent_page_id: null,
+        navigation_label: 'Welcome',
+        status: isPublished ? 'published' : 'draft',
+        visibility: isPublished ? 'public' : 'draft',
+        theme_id: 1,
+        template_id: 1,
+        style_bundle_id: 1,
+        featured_image_asset_id: null,
+        og_image_asset_id: null,
+        settings: {},
+      },
+    ],
+    current_page: {
       id: 1,
       slug: 'welcome',
       path: 'about/welcome',
@@ -100,128 +124,109 @@ const adminPayload = {
       subtitle: 'Overview',
       description: 'Portal welcome page',
       excerpt: 'Welcome',
-      is_published: true,
+      is_published: isPublished,
       is_homepage: true,
       display_order: 0,
       parent_page_id: null,
       navigation_label: 'Welcome',
-      status: 'published',
-      visibility: 'public',
+      status: isPublished ? 'published' : 'draft',
+      visibility: isPublished ? 'public' : 'draft',
+      page_type: 'content',
+      template_key: 'default',
       theme_id: 1,
       template_id: 1,
       style_bundle_id: 1,
       featured_image_asset_id: null,
       og_image_asset_id: null,
       settings: {},
+      blocks: [],
+      sections: [],
     },
-  ],
-  current_page: {
-    id: 1,
-    slug: 'welcome',
-    path: 'about/welcome',
-    title: 'Welcome',
-    subtitle: 'Overview',
-    description: 'Portal welcome page',
-    excerpt: 'Welcome',
-    is_published: true,
-    is_homepage: true,
-    display_order: 0,
-    parent_page_id: null,
-    navigation_label: 'Welcome',
-    status: 'published',
-    visibility: 'public',
-    page_type: 'content',
-    template_key: 'default',
-    theme_id: 1,
-    template_id: 1,
-    style_bundle_id: 1,
-    featured_image_asset_id: null,
-    og_image_asset_id: null,
-    settings: {},
-    blocks: [],
-    sections: [],
-  },
-  menus: {
-    header: [],
-    footer: [],
-  },
-  dashboards: [],
-  available_charts: [],
-  media_assets: [
-    {
-      id: 7,
-      slug: 'policy-brief',
-      title: 'Policy Brief',
-      asset_type: 'file',
-      visibility: 'private',
-      is_public: false,
-      status: 'active',
-      settings: {},
-      download_url: '/api/v1/public_page/assets/7/download',
+    menus: {
+      header: [],
+      footer: [],
     },
-  ],
-  themes: [
-    {
-      id: 1,
-      slug: 'default-theme',
-      title: 'Default Theme',
-      status: 'active',
-      is_active: true,
-      is_default: true,
-      tokens: {},
-      settings: {},
+    dashboards: [],
+    available_charts: [],
+    media_assets: [
+      {
+        id: 7,
+        slug: 'policy-brief',
+        title: 'Policy Brief',
+        asset_type: 'file',
+        visibility: 'private',
+        is_public: false,
+        status: 'active',
+        settings: {},
+        download_url: '/api/v1/public_page/assets/7/download',
+      },
+    ],
+    themes: [
+      {
+        id: 1,
+        slug: 'default-theme',
+        title: 'Default Theme',
+        status: 'active',
+        is_active: true,
+        is_default: true,
+        tokens: {},
+        settings: {},
+      },
+    ],
+    templates: [
+      {
+        id: 1,
+        slug: 'default-template',
+        title: 'Default Template',
+        status: 'active',
+        is_active: true,
+        is_default: true,
+        theme_id: 1,
+        style_bundle_id: 1,
+        structure: {},
+        settings: {},
+      },
+    ],
+    style_bundles: [
+      {
+        id: 1,
+        slug: 'portal-foundation',
+        title: 'Portal Foundation',
+        status: 'active',
+        is_active: true,
+        variables: {},
+        settings: {},
+        css_text: '',
+      },
+    ],
+    permissions: {
+      can_view_pages: true,
+      can_create_pages: true,
+      can_edit_pages: true,
+      can_delete_pages: true,
+      can_publish_pages: true,
+      can_manage_media: true,
+      can_manage_menus: true,
+      can_embed_charts: true,
+      can_manage_layout: true,
+      can_manage_themes: true,
+      can_manage_templates: true,
+      can_manage_styles: true,
     },
-  ],
-  templates: [
-    {
-      id: 1,
-      slug: 'default-template',
-      title: 'Default Template',
-      status: 'active',
-      is_active: true,
-      is_default: true,
-      theme_id: 1,
-      style_bundle_id: 1,
-      structure: {},
-      settings: {},
-    },
-  ],
-  style_bundles: [
-    {
-      id: 1,
-      slug: 'portal-foundation',
-      title: 'Portal Foundation',
-      status: 'active',
-      is_active: true,
-      variables: {},
-      settings: {},
-      css_text: '',
-    },
-  ],
-  permissions: {
-    can_view_pages: true,
-    can_create_pages: true,
-    can_edit_pages: true,
-    can_delete_pages: true,
-    can_publish_pages: true,
-    can_manage_media: true,
-    can_manage_menus: true,
-    can_embed_charts: true,
-    can_manage_layout: true,
-    can_manage_themes: true,
-    can_manage_templates: true,
-    can_manage_styles: true,
-  },
-  recent_edits: [],
-  recently_published_pages: [],
-  revisions: [],
-};
+    recent_edits: [],
+    recently_published_pages: [],
+    revisions: [],
+  };
+}
+
+let bootstrapPayload = buildAdminPayload(true);
 
 beforeEach(() => {
   fetchMock.restore();
-  fetchMock.get('glob:*/api/v1/public_page/admin/bootstrap*', {
-    result: adminPayload,
-  });
+  bootstrapPayload = buildAdminPayload(true);
+  fetchMock.get('glob:*/api/v1/public_page/admin/bootstrap*', () => ({
+    result: bootstrapPayload,
+  }));
   window.history.pushState({}, '', '/superset/cms/?tab=studio&page=welcome');
 });
 
@@ -241,4 +246,34 @@ test('renders the authenticated CMS studio shell', async () => {
   expect(screen.getByText('Media Library')).toBeInTheDocument();
   expect(screen.getByText('Themes')).toBeInTheDocument();
   expect(screen.getAllByDisplayValue('Welcome').length).toBeGreaterThan(0);
+});
+
+test('disables in-canvas add content actions for published pages', async () => {
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+  expect(
+    screen.getAllByText(
+      'Published pages are read-only. Unpublish to edit content.',
+    ).length,
+  ).toBeGreaterThan(0);
+  expect(screen.getByRole('button', { name: '+ Add Content' })).toBeDisabled();
+});
+
+test('allows adding a block when editing an unpublished page', async () => {
+  bootstrapPayload = buildAdminPayload(false);
+
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(await screen.findByText('Canvas Preview')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
+
+  expect(await screen.findByText('Add content here.')).toBeInTheDocument();
 });

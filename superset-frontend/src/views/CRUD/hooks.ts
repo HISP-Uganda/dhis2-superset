@@ -21,6 +21,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   makeApi,
   SupersetClient,
+  SupersetClientResponse,
   t,
   JsonObject,
   getClientErrorObject,
@@ -45,6 +46,29 @@ import { ensureAppRoot } from 'src/utils/pathUtils';
 import SupersetText from 'src/utils/textUtils';
 import { DatabaseObject } from 'src/features/databases/types';
 import { FavoriteStatus, ImportResourceName } from './types';
+
+type PermissionInfoResponse = {
+  permissions?: string[];
+};
+
+type ListResourceResponse<D extends object> = {
+  result?: D[];
+  count?: number;
+};
+
+type SingleResourceResponse<D extends object> = {
+  id?: number;
+  result?: D;
+};
+
+type ImportErrorPayload = JsonObject & {
+  errors?: Array<{
+    message: string;
+    extra?: Record<string, any> | null;
+  }>;
+  message?: string;
+  error?: string;
+};
 
 interface ListViewResourceState<D extends object = any> {
   loading: boolean;
@@ -124,15 +148,15 @@ export function useListViewResource<D extends object = any>(
       })}`,
       signal: controller.signal,
     }).then(
-      ({ json: infoJson = {} }) => {
+      ({ json: infoJson = {} as PermissionInfoResponse }) => {
         if (controller.signal.aborted) {
           return;
         }
         updateState({
-          permissions: infoJson.permissions,
+          permissions: infoJson.permissions || [],
         });
       },
-      error => {
+      (error: SupersetClientResponse | string) => {
         if (controller.signal.aborted) {
           return;
         }
@@ -211,7 +235,7 @@ export function useListViewResource<D extends object = any>(
         signal: controller.signal,
       })
         .then(
-          ({ json = {} }) => {
+          ({ json = {} as ListResourceResponse<D> }) => {
             if (
               controller.signal.aborted ||
               fetchAbortControllerRef.current !== controller
@@ -219,12 +243,12 @@ export function useListViewResource<D extends object = any>(
               return;
             }
             updateState({
-              collection: json.result,
-              count: json.count,
+              collection: json.result || defaultCollectionValue,
+              count: json.count || 0,
               lastFetched: new Date().toISOString(),
             });
           },
-          error => {
+          (error: SupersetClientResponse | string) => {
             if (
               controller.signal.aborted ||
               fetchAbortControllerRef.current !== controller
@@ -320,12 +344,12 @@ export function useSingleViewResource<D extends object = any>(
         endpoint,
       })
         .then(
-          ({ json = {} }) => {
+          ({ json = {} as SingleResourceResponse<D> }) => {
             updateState({
-              resource: json.result,
+              resource: json.result || null,
               error: null,
             });
-            return json.result;
+            return json.result || null;
           },
           createErrorHandler((errMsg: Record<string, string[] | string>) => {
             handleErrorMsg(
@@ -361,12 +385,16 @@ export function useSingleViewResource<D extends object = any>(
         headers: { 'Content-Type': 'application/json' },
       })
         .then(
-          ({ json = {} }) => {
+          ({ json = {} as SingleResourceResponse<D> }) => {
+            const nextResource =
+              json.result && json.id !== undefined
+                ? ({ ...json.result, id: json.id } as D)
+                : (json.result || null);
             updateState({
-              resource: { id: json.id, ...json.result },
+              resource: nextResource,
               error: null,
             });
-            return json.id;
+            return json.id || 0;
           },
           createErrorHandler((errMsg: Record<string, string[] | string>) => {
             // we did not want toasts for db-connection-ui but did not want to disable it everywhere
@@ -407,12 +435,16 @@ export function useSingleViewResource<D extends object = any>(
         headers: { 'Content-Type': 'application/json' },
       })
         .then(
-          ({ json = {} }) => {
+          ({ json = {} as SingleResourceResponse<D> }) => {
+            const nextResource =
+              json.result && json.id !== undefined
+                ? ({ ...json.result, id: json.id } as D)
+                : (json.result || null);
             updateState({
-              resource: { ...json.result, id: json.id },
+              resource: nextResource,
               error: null,
             });
-            return json.result;
+            return json.result || null;
           },
           createErrorHandler(errMsg => {
             if (!hideToast) {
@@ -566,41 +598,44 @@ export function useImportResource(
           });
           return true;
         })
-        .catch(response =>
+        .catch((response: SupersetClientResponse | string) =>
           getClientErrorObject(response).then(error => {
+            const importError = error as ImportErrorPayload;
             updateState({
               failed: true,
             });
-            if (!error.errors) {
+            if (!importError.errors) {
               handleErrorMsg(
                 t(
                   'An error occurred while importing %s: %s',
                   resourceLabel,
-                  error.message || error.error,
+                  importError.message || importError.error,
                 ),
               );
               return false;
             }
-            if (hasTerminalValidation(error.errors)) {
+            if (hasTerminalValidation(importError.errors)) {
               handleErrorMsg(
                 t(
                   'An error occurred while importing %s: %s',
                   resourceLabel,
                   [
-                    ...error.errors.map(payload => payload.message),
+                    ...importError.errors.map(payload => payload.message),
                     RE_EXPORT_TEXT,
                   ].join('.\n'),
                 ),
               );
             } else {
               updateState({
-                passwordsNeeded: getPasswordsNeeded(error.errors),
-                sshPasswordNeeded: getSSHPasswordsNeeded(error.errors),
-                sshPrivateKeyNeeded: getSSHPrivateKeysNeeded(error.errors),
-                sshPrivateKeyPasswordNeeded: getSSHPrivateKeyPasswordsNeeded(
-                  error.errors,
+                passwordsNeeded: getPasswordsNeeded(importError.errors),
+                sshPasswordNeeded: getSSHPasswordsNeeded(importError.errors),
+                sshPrivateKeyNeeded: getSSHPrivateKeysNeeded(
+                  importError.errors,
                 ),
-                alreadyExists: getAlreadyExists(error.errors),
+                sshPrivateKeyPasswordNeeded: getSSHPrivateKeyPasswordsNeeded(
+                  importError.errors,
+                ),
+                alreadyExists: getAlreadyExists(importError.errors),
               });
             }
             return false;
@@ -666,20 +701,20 @@ export function useFavoriteStatus(
     let isActive = true;
 
     favoriteApis[type](ids).then(
-      ({ result }) => {
+      ({ result }: FavoriteStatusResponse) => {
         if (!isMountedRef.current || !isActive) {
           return;
         }
-        const update = result.reduce<Record<string, boolean>>(
-          (acc, element) => {
+        const update = result.reduce(
+          (acc: Record<string, boolean>, element) => {
             acc[element.id] = element.value;
             return acc;
           },
-          {},
+          {} as Record<string, boolean>,
         );
         updateFavoriteStatus(update);
       },
-      error => {
+      (error: SupersetClientResponse | string) => {
         if (!isMountedRef.current || !isActive) {
           return;
         }
@@ -713,7 +748,7 @@ export function useFavoriteStatus(
             [id]: !isStarred,
           });
         },
-        error => {
+        (error: SupersetClientResponse | string) => {
           if (!isMountedRef.current) {
             return;
           }
@@ -819,7 +854,7 @@ export function useAvailableDatabases() {
   const getAvailable = useCallback(() => {
     SupersetClient.get({
       endpoint: `/api/v1/database/available/`,
-    }).then(({ json }) => {
+    }).then(({ json }: { json: JsonObject }) => {
       setAvailableDbs(json);
     });
   }, [setAvailableDbs]);

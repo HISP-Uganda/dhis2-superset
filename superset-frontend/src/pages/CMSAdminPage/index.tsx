@@ -2187,7 +2187,12 @@ export default function CMSAdminPage() {
       <Button onClick={duplicatePage} disabled={!draftPage?.id || savingPage}>
         {t('Duplicate')}
       </Button>
-      <Button type="primary" loading={savingPage} onClick={savePage}>
+      <Button
+        type="primary"
+        loading={savingPage}
+        onClick={savePage}
+        disabled={!draftPage || draftPage.is_published}
+      >
         {t('Save')}
       </Button>
       <Button

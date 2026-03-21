@@ -29,6 +29,24 @@ jest.mock(
     },
 );
 
+jest.mock(
+  './PublicChartContainer',
+  () =>
+    function MockPublicChartContainer({
+      title,
+      height,
+    }: {
+      title: string;
+      height?: number;
+    }) {
+      return (
+        <div data-testid="public-chart-container">
+          {title}:{height}
+        </div>
+      );
+    },
+);
+
 const page: PortalPage = {
   id: 12,
   slug: 'team',
@@ -107,15 +125,65 @@ const blocks: PortalPageBlock[] = [
     },
     children: [],
   },
+  {
+    uid: 'grp_1',
+    block_type: 'group',
+    slot: 'content',
+    sort_order: 2,
+    is_container: true,
+    visibility: 'public',
+    status: 'active',
+    schema_version: 1,
+    style_bundle_id: null,
+    content: {
+      title: 'Highlights',
+      body: 'Key analytics for this page.',
+    },
+    settings: {},
+    styles: {},
+    metadata: {},
+    children: [
+      {
+        uid: 'cht_1',
+        block_type: 'chart',
+        slot: 'content',
+        sort_order: 0,
+        is_container: false,
+        visibility: 'public',
+        status: 'active',
+        schema_version: 1,
+        style_bundle_id: null,
+        content: {
+          title: 'Coverage Trend',
+          caption: 'Last 12 months',
+        },
+        settings: {
+          chart_ref: { id: 21 },
+          height: 420,
+          show_header: true,
+        },
+        styles: {},
+        metadata: {},
+        children: [],
+      },
+    ],
+  },
 ];
 
-test('renders breadcrumb and file download blocks', () => {
+test('renders breadcrumb, file download, and nested chart blocks', () => {
   const onNavigate = jest.fn();
 
   render(
     <RenderBlockTree
       blocks={blocks}
-      charts={[]}
+      charts={[
+        {
+          id: 21,
+          slice_name: 'Coverage Trend',
+          viz_type: 'line',
+          url: '/superset/explore/?slice_id=21&standalone=true',
+        },
+      ]}
       dashboards={[]}
       page={page}
       navigation={{ header: [], footer: [] }}
@@ -131,4 +199,6 @@ test('renders breadcrumb and file download blocks', () => {
     screen.getByRole('button', { name: 'Download PDF' }),
   ).toBeInTheDocument();
   expect(screen.getByText('response-plan.pdf')).toBeInTheDocument();
+  expect(screen.getByText('Highlights')).toBeInTheDocument();
+  expect(screen.getByText('Coverage Trend:420')).toBeInTheDocument();
 });
