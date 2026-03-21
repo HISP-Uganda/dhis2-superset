@@ -424,6 +424,82 @@ class CMSTemplate(Model):
         self.settings_json = _json_dumps(value)
 
 
+class CMSMediaAsset(Model):
+    """Managed media/file asset used by CMS pages and blocks."""
+
+    __tablename__ = "public_cms_media_assets"
+
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_public_cms_media_asset_slug"),
+        sa.Index("ix_public_cms_media_assets_status", "status"),
+        sa.Index("ix_public_cms_media_assets_visibility", "visibility"),
+        sa.Index("ix_public_cms_media_assets_asset_type", "asset_type"),
+        sa.Index("ix_public_cms_media_assets_created_on", "created_on"),
+    )
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    slug = sa.Column(sa.String(255), nullable=False)
+    title = sa.Column(sa.String(255), nullable=False)
+    description = sa.Column(Text, nullable=True)
+    asset_type = sa.Column(sa.String(64), nullable=False, default="file")
+    mime_type = sa.Column(sa.String(255), nullable=True)
+    file_extension = sa.Column(sa.String(32), nullable=True)
+    original_filename = sa.Column(sa.String(512), nullable=True)
+    storage_path = sa.Column(sa.String(1024), nullable=False)
+    file_size = sa.Column(sa.BigInteger, nullable=True)
+    checksum = sa.Column(sa.String(128), nullable=True)
+    visibility = sa.Column(sa.String(32), nullable=False, default="private")
+    is_public = sa.Column(sa.Boolean, nullable=False, default=False)
+    status = sa.Column(sa.String(32), nullable=False, default="active")
+    alt_text = sa.Column(sa.String(500), nullable=True)
+    caption = sa.Column(Text, nullable=True)
+    width = sa.Column(sa.Integer, nullable=True)
+    height = sa.Column(sa.Integer, nullable=True)
+    settings_json = sa.Column(Text, nullable=True)
+    archived_on = sa.Column(sa.DateTime, nullable=True)
+    archived_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    changed_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=False)
+    changed_on = sa.Column(
+        sa.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    archived_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[archived_by_fk],
+    )
+    created_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[created_by_fk],
+    )
+    changed_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[changed_by_fk],
+    )
+
+    def get_settings(self) -> dict[str, Any]:
+        return _json_loads(self.settings_json)
+
+    def set_settings(self, value: dict[str, Any] | None) -> None:
+        self.settings_json = _json_dumps(value)
+
+
 class Page(Model):
     """CMS-like public portal page."""
 
@@ -437,6 +513,7 @@ class Page(Model):
         sa.Index("ix_public_pages_visibility", "visibility"),
         sa.Index("ix_public_pages_status", "status"),
         sa.Index("ix_public_pages_published_on", "published_on"),
+        sa.Index("ix_public_pages_parent_page_id", "parent_page_id"),
     )
 
     id = sa.Column(sa.Integer, primary_key=True)
@@ -452,6 +529,12 @@ class Page(Model):
     visibility = sa.Column(sa.String(32), nullable=False, default="public")
     page_type = sa.Column(sa.String(64), nullable=False, default="content")
     template_key = sa.Column(sa.String(128), nullable=False, default="default")
+    parent_page_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("public_pages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    navigation_label = sa.Column(sa.String(255), nullable=True)
     theme_id = sa.Column(
         sa.Integer,
         sa.ForeignKey("public_cms_themes.id", ondelete="SET NULL"),
@@ -465,6 +548,16 @@ class Page(Model):
     style_bundle_id = sa.Column(
         sa.Integer,
         sa.ForeignKey("public_cms_style_bundles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    featured_image_asset_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("public_cms_media_assets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    og_image_asset_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("public_cms_media_assets.id", ondelete="SET NULL"),
         nullable=True,
     )
     status = sa.Column(sa.String(32), nullable=False, default="published")
@@ -519,11 +612,31 @@ class Page(Model):
         security_manager.user_model,
         foreign_keys=[archived_by_fk],
     )
+    parent_page = relationship(
+        "Page",
+        remote_side=[id],
+        back_populates="child_pages",
+        foreign_keys=[parent_page_id],
+    )
+    child_pages: list[Page] = relationship(
+        "Page",
+        back_populates="parent_page",
+        foreign_keys=[parent_page_id],
+        order_by="Page.display_order.asc(), Page.id.asc()",
+    )
     theme: CMSTheme = relationship(CMSTheme, foreign_keys=[theme_id])
     template: CMSTemplate = relationship(CMSTemplate, foreign_keys=[template_id])
     style_bundle: CMSStyleBundle = relationship(
         CMSStyleBundle,
         foreign_keys=[style_bundle_id],
+    )
+    featured_image_asset: CMSMediaAsset = relationship(
+        CMSMediaAsset,
+        foreign_keys=[featured_image_asset_id],
+    )
+    og_image_asset: CMSMediaAsset = relationship(
+        CMSMediaAsset,
+        foreign_keys=[og_image_asset_id],
     )
     sections: list[PageSection] = relationship(
         "PageSection",
@@ -953,6 +1066,7 @@ class PageRevision(Model):
 
 # Backwards-compatible aliases for local imports. The mapped class names stay
 # CMS-prefixed to avoid collisions with Superset's existing Theme model.
+MediaAsset = CMSMediaAsset
 StyleBundle = CMSStyleBundle
 Theme = CMSTheme
 Template = CMSTemplate

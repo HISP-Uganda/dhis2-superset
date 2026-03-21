@@ -85,6 +85,34 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
     template_id: 10,
     style_bundle_id: 11,
     settings: { heroCtaLabel: 'Open' },
+    blocks: [
+      {
+        id: 33,
+        uid: 'coverage-chart',
+        block_type: 'chart',
+        slot: 'content',
+        sort_order: 0,
+        is_container: false,
+        style_bundle_id: 13,
+        content: {
+          title: ' Coverage ',
+          caption: 'Latest malaria coverage summary.',
+        },
+        settings: {
+          chart_ref: { id: 7 },
+          height: 300,
+          show_header: true,
+        },
+        styles: {},
+        metadata: { label: 'Chart' },
+        chart: {
+          id: 7,
+          slice_name: 'Coverage Map',
+          url: '/superset/explore/?slice_id=7&standalone=true',
+        },
+        children: [],
+      },
+    ],
     sections: [
       {
         id: 11,
@@ -139,4 +167,14 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
     }),
   );
   expect(normalized.sections[0].components[0]).not.toHaveProperty('chart');
+  expect(normalized.blocks[0]).toEqual(
+    expect.objectContaining({
+      block_type: 'chart',
+      style_bundle_id: 13,
+      settings: expect.objectContaining({
+        chart_ref: { id: 7 },
+      }),
+    }),
+  );
+  expect(normalized.blocks[0]).not.toHaveProperty('chart');
 });

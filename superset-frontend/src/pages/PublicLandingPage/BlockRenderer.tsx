@@ -24,11 +24,12 @@ import { styled, t } from '@superset-ui/core';
 import { Button, Empty, Tag } from 'antd';
 import PublicChartContainer from './PublicChartContainer';
 import PublicDashboardEmbed from './PublicDashboardEmbed';
-import { ensurePageBlocks } from './blockUtils';
+import { cloneBlockTree } from './blockUtils';
 import type {
   PortalChartSummary,
   PortalDashboardSummary,
   PortalHighlight,
+  PortalNavigationMenu,
   PortalPage,
   PortalPageBlock,
 } from './types';
@@ -187,6 +188,59 @@ const MetricMeta = styled.div`
   color: var(--portal-muted);
 `;
 
+const BreadcrumbNav = styled.nav`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--portal-muted);
+  font-size: 13px;
+`;
+
+const BreadcrumbItem = styled.button`
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+`;
+
+const MenuList = styled.div<{ $vertical?: boolean }>`
+  display: flex;
+  flex-direction: ${({ $vertical }) => ($vertical ? 'column' : 'row')};
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const MenuLink = styled.button`
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--portal-link);
+  font-weight: 600;
+  cursor: pointer;
+`;
+
+const FileMeta = styled.div`
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--portal-muted);
+  font-size: 12px;
+`;
+
+const CalloutCard = styled(SurfaceCard)<{ $tone?: string }>`
+  border-left: 4px solid
+    ${({ $tone }) =>
+      $tone === 'warning'
+        ? '#d97706'
+        : $tone === 'error'
+          ? '#dc2626'
+          : $tone === 'success'
+            ? '#0f766e'
+            : '#1d4ed8'};
+`;
+
 function blockStyle(block: PortalPageBlock): CSSProperties {
   return (block.rendering?.inline_style || {}) as CSSProperties;
 }
@@ -233,6 +287,27 @@ function lookupDashboard(
   return dashboards.find(dashboard => dashboard.id === dashboardId) || null;
 }
 
+function findMenu(
+  navigation: {
+    header: PortalNavigationMenu[];
+    footer: PortalNavigationMenu[];
+  },
+  slugOrLocation?: string | null,
+) {
+  const allMenus = [...(navigation.header || []), ...(navigation.footer || [])];
+  if (!slugOrLocation) {
+    return allMenus[0] || null;
+  }
+  return (
+    allMenus.find(
+      menu =>
+        menu.slug === slugOrLocation ||
+        menu.location === slugOrLocation ||
+        menu.title === slugOrLocation,
+    ) || null
+  );
+}
+
 function renderHighlights(highlights: PortalHighlight[], limit?: number) {
   const visible = highlights.slice(0, limit || highlights.length);
   if (!visible.length) {
@@ -257,10 +332,7 @@ function renderHighlights(highlights: PortalHighlight[], limit?: number) {
 }
 
 export function groupBlocksBySlot(blocks: PortalPageBlock[]) {
-  return ensurePageBlocks({
-    blocks,
-    sections: [],
-  } as PortalPage).reduce<Record<string, PortalPageBlock[]>>(
+  return cloneBlockTree(blocks).reduce<Record<string, PortalPageBlock[]>>(
     (acc, block) => {
       const slot = block.slot || 'content';
       if (!acc[slot]) {
@@ -284,6 +356,11 @@ type RenderBlockTreeProps = {
   blocks: PortalPageBlock[];
   charts: PortalChartSummary[];
   dashboards: PortalDashboardSummary[];
+  page?: PortalPage | null;
+  navigation?: {
+    header: PortalNavigationMenu[];
+    footer: PortalNavigationMenu[];
+  };
   highlights?: PortalHighlight[];
   onNavigate?: (path?: string | null, openInNewTab?: boolean) => void;
   onOpenDashboard?: (dashboard: PortalDashboardSummary) => void;
@@ -294,6 +371,8 @@ export function RenderBlockTree({
   blocks,
   charts,
   dashboards,
+  page = null,
+  navigation = { header: [], footer: [] },
   highlights = [],
   onNavigate,
   onOpenDashboard,
@@ -324,6 +403,35 @@ export function RenderBlockTree({
     }
 
     switch (block.block_type) {
+      case 'section':
+        return (
+          <Section
+            key={block.uid || block.id}
+            id={block.settings?.anchor || undefined}
+            className={className}
+            style={{
+              ...style,
+              background: block.settings?.background || undefined,
+              padding: block.styles?.padding || undefined,
+            }}
+          >
+            {(title || subtitle) && (
+              <SectionHeader>
+                <SectionTitleGroup>
+                  {title && <SectionTitle>{title}</SectionTitle>}
+                  {subtitle && <SectionSubtitle>{subtitle}</SectionSubtitle>}
+                </SectionTitleGroup>
+              </SectionHeader>
+            )}
+            {Number(block.settings?.columns) > 1 ? (
+              <Grid $columns={Number(block.settings?.columns) || 1}>
+                {children.filter(Boolean)}
+              </Grid>
+            ) : (
+              <div>{children.filter(Boolean)}</div>
+            )}
+          </Section>
+        );
       case 'hero':
         return (
           <Hero key={block.uid || block.id} className={className} style={style}>
@@ -461,6 +569,56 @@ export function RenderBlockTree({
             </CardBody>
           </SurfaceCard>
         );
+      case 'page_title':
+        return (
+          <Section
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+          >
+            <SectionHeader>
+              <SectionTitleGroup>
+                <SectionTitle>
+                  {page?.title || title || t('Untitled page')}
+                </SectionTitle>
+                {(block.settings?.showSubtitle ?? true) && page?.subtitle ? (
+                  <SectionSubtitle>{page.subtitle}</SectionSubtitle>
+                ) : null}
+                {block.settings?.showExcerpt && page?.excerpt ? (
+                  <CardBody>{page.excerpt}</CardBody>
+                ) : null}
+              </SectionTitleGroup>
+            </SectionHeader>
+          </Section>
+        );
+      case 'breadcrumb':
+        return (
+          <BreadcrumbNav
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+            aria-label={t('Breadcrumb')}
+          >
+            {(page?.breadcrumbs || []).map((crumb, index) => {
+              const isLast = index === (page?.breadcrumbs || []).length - 1;
+              if (isLast && block.settings?.showCurrentPage === false) {
+                return null;
+              }
+              return (
+                <span key={`${crumb.path}-${index}`}>
+                  {index > 0 ? ' / ' : null}
+                  <BreadcrumbItem
+                    type="button"
+                    onClick={() => onNavigate?.(crumb.path, false)}
+                    disabled={!crumb.path || isLast}
+                  >
+                    {crumb.title || crumb.slug || t('Page')}
+                  </BreadcrumbItem>
+                </span>
+              );
+            })}
+          </BreadcrumbNav>
+        );
       case 'list':
         return (
           <SurfaceCard
@@ -533,6 +691,53 @@ export function RenderBlockTree({
             )}
           </Grid>
         );
+      case 'file':
+      case 'download': {
+        const asset = block.asset || block.content?.asset || null;
+        const downloadUrl = block.settings?.download_url || asset?.download_url;
+        return (
+          <SurfaceCard
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+          >
+            <CardTitle>{title || asset?.title || t('Download file')}</CardTitle>
+            {body ? <CardBody>{body}</CardBody> : null}
+            {downloadUrl ? (
+              <Button
+                type={block.block_type === 'download' ? 'primary' : 'default'}
+                onClick={() =>
+                  onNavigate?.(
+                    downloadUrl,
+                    block.settings?.open_in_new_tab === true,
+                  )
+                }
+              >
+                {block.content?.buttonLabel ||
+                  block.content?.label ||
+                  t('Download')}
+              </Button>
+            ) : (
+              <Empty
+                description={t('Choose a file asset to render this block.')}
+              />
+            )}
+            {asset ? (
+              <FileMeta>
+                {asset.original_filename ? (
+                  <span>{asset.original_filename}</span>
+                ) : null}
+                {asset.file_extension ? (
+                  <Tag>{asset.file_extension.toUpperCase()}</Tag>
+                ) : null}
+                {asset.file_size ? (
+                  <span>{`${Math.max(asset.file_size / 1024, 1).toFixed(0)} KB`}</span>
+                ) : null}
+              </FileMeta>
+            ) : null}
+          </SurfaceCard>
+        );
+      }
       case 'button':
         return (
           <SurfaceCard
@@ -554,6 +759,67 @@ export function RenderBlockTree({
               {block.content?.label || title || t('Open link')}
             </Button>
           </SurfaceCard>
+        );
+      case 'menu': {
+        const menu = findMenu(
+          navigation,
+          block.settings?.menu_slug || block.settings?.location,
+        );
+        const items = menu?.items || [];
+        return (
+          <SurfaceCard
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+          >
+            {title ? <CardTitle>{title}</CardTitle> : null}
+            {items.length ? (
+              <MenuList $vertical={block.settings?.orientation === 'vertical'}>
+                {items.map(item => (
+                  <MenuLink
+                    key={item.id}
+                    type="button"
+                    onClick={() =>
+                      onNavigate?.(item.path, item.open_in_new_tab)
+                    }
+                  >
+                    {item.label}
+                  </MenuLink>
+                ))}
+              </MenuList>
+            ) : (
+              <Empty description={t('No menu items are available.')} />
+            )}
+          </SurfaceCard>
+        );
+      }
+      case 'callout':
+        return (
+          <CalloutCard
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+            $tone={block.settings?.tone}
+          >
+            {title && <CardTitle>{title}</CardTitle>}
+            <CardBody>
+              <SafeMarkdown source={body || t('Callout content goes here.')} />
+            </CardBody>
+          </CalloutCard>
+        );
+      case 'statistic':
+        return (
+          <MetricCard
+            key={block.uid || block.id}
+            className={className}
+            style={style}
+          >
+            <MetricValue>{block.content?.value || '0'}</MetricValue>
+            <MetricLabel>{title || t('Statistic')}</MetricLabel>
+            {block.content?.caption ? (
+              <MetricMeta>{block.content.caption}</MetricMeta>
+            ) : null}
+          </MetricCard>
         );
       case 'divider':
         return (

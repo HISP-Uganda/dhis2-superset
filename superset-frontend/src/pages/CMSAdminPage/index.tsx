@@ -19,7 +19,6 @@
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors */
 
 import { CSSProperties, useEffect, useMemo, useState } from 'react';
-import { SafeMarkdown } from '@superset-ui/core/components';
 import { styled, SupersetClient, t } from '@superset-ui/core';
 import {
   Alert,
@@ -40,23 +39,16 @@ import {
 import { useHistory, useLocation } from 'react-router-dom';
 import getBootstrapData from 'src/utils/getBootstrapData';
 import { userHasPermission } from 'src/dashboard/util/permissionUtils';
-import PublicChartContainer from 'src/pages/PublicLandingPage/PublicChartContainer';
 import {
   createDraftPage,
-  createEmptyComponent,
   createEmptySection,
-  moveArrayItem,
   normalizeDraftPage,
 } from 'src/pages/PublicLandingPage/portalUtils';
 import type {
   PortalAdminPayload,
-  PortalChartSummary,
-  PortalDashboardSummary,
   PortalNavigationItem,
   PortalNavigationMenu,
   PortalPage,
-  PortalPageComponent,
-  PortalPageSection,
   PortalStyleBundle,
   PortalTemplate,
   PortalTheme,
@@ -66,15 +58,12 @@ import BlockStudio from './BlockStudio';
 type AdminTab =
   | 'overview'
   | 'studio'
+  | 'media'
   | 'menus'
   | 'portal'
   | 'themes'
   | 'templates'
   | 'styles';
-type Selection =
-  | { type: 'page' }
-  | { type: 'section'; index: number }
-  | { type: 'component'; sectionIndex: number; componentIndex: number };
 
 const PAGE_QUERY_PARAM = 'page';
 const TAB_QUERY_PARAM = 'tab';
@@ -154,19 +143,6 @@ const Stack = styled.div`
   gap: 16px;
 `;
 
-const StudioLayout = styled.div`
-  display: grid;
-  grid-template-columns: minmax(280px, 0.95fr) minmax(0, 1.35fr) minmax(
-      320px,
-      1fr
-    );
-  gap: 16px;
-
-  @media (max-width: 1280px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
 const Panel = styled.div`
   padding: 18px;
   border-radius: 20px;
@@ -194,19 +170,6 @@ const SectionList = styled.div`
   display: flex;
   flex-direction: column;
   gap: 12px;
-`;
-
-const SectionCard = styled.button<{ $active?: boolean }>`
-  width: 100%;
-  text-align: left;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid
-    ${({ $active }) =>
-      $active ? 'rgba(15, 118, 110, 0.4)' : 'rgba(148, 163, 184, 0.22)'};
-  background: ${({ $active }) =>
-    $active ? 'rgba(15, 118, 110, 0.08)' : '#f8fafc'};
-  cursor: pointer;
 `;
 
 const ComponentCard = styled.button<{ $active?: boolean; $depth?: number }>`
@@ -253,56 +216,10 @@ const FieldGrid = styled.div`
   }
 `;
 
-const PreviewCanvas = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-`;
-
-const PreviewSection = styled.section<{ $background?: string }>`
-  padding: 20px;
-  border-radius: 20px;
-  background: ${({ $background }) => $background || '#ffffff'};
-  border: 1px solid rgba(148, 163, 184, 0.22);
-`;
-
-const PreviewGrid = styled.div<{ $columns: number }>`
-  display: grid;
-  grid-template-columns: repeat(${({ $columns }) => $columns}, minmax(0, 1fr));
-  gap: 16px;
-
-  @media (max-width: 980px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
-const PreviewCard = styled.div`
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(255, 255, 255, 0.94);
-`;
-
 const PreviewTitle = styled.h3`
   margin: 0 0 8px;
   font-size: 18px;
   letter-spacing: -0.02em;
-`;
-
-const PreviewSubtitle = styled.p`
-  margin: 0 0 14px;
-  color: ${({ theme }) => theme.colorTextSecondary};
-`;
-
-const PreviewImage = styled.img`
-  width: 100%;
-  border-radius: 16px;
-  object-fit: cover;
-`;
-
-const Divider = styled.hr`
-  border: 0;
-  border-top: 1px solid rgba(148, 163, 184, 0.28);
 `;
 
 const RevisionList = styled.div`
@@ -381,6 +298,7 @@ const readAdminTab = (search: string): AdminTab => {
   const value = new URLSearchParams(search).get(TAB_QUERY_PARAM);
   if (
     value === 'studio' ||
+    value === 'media' ||
     value === 'menus' ||
     value === 'portal' ||
     value === 'themes' ||
@@ -556,168 +474,6 @@ function appendChildAtPath(
   }));
 }
 
-function previewBlock(
-  component: PortalPageComponent,
-  charts: PortalChartSummary[],
-  dashboards: PortalDashboardSummary[],
-) {
-  const chart =
-    component.chart ||
-    charts.find(currentChart => currentChart.id === component.chart_id);
-  const dashboard =
-    component.dashboard ||
-    dashboards.find(
-      currentDashboard => currentDashboard.id === component.dashboard_id,
-    );
-
-  if (component.component_type === 'chart' && chart) {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>{component.title || chart.slice_name}</PreviewTitle>
-        {component.body && <PreviewSubtitle>{component.body}</PreviewSubtitle>}
-        <PublicChartContainer
-          title={chart.slice_name}
-          url={chart.url}
-          height={Number(component.settings?.height) || 320}
-        />
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'dashboard' && dashboard) {
-    const url = `${dashboard.url}${dashboard.url.includes('?') ? '&' : '?'}standalone=3`;
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>
-          {component.title || dashboard.dashboard_title}
-        </PreviewTitle>
-        {component.body && <PreviewSubtitle>{component.body}</PreviewSubtitle>}
-        <PublicChartContainer
-          title={dashboard.dashboard_title}
-          url={url}
-          height={Number(component.settings?.height) || 420}
-          loadingLabel={t('Loading dashboard...')}
-        />
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'image') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>{component.title || t('Image')}</PreviewTitle>
-        {component.settings?.imageUrl ? (
-          <PreviewImage
-            src={component.settings.imageUrl}
-            alt={component.settings.altText || component.title || t('Image')}
-          />
-        ) : (
-          <Empty description={t('Add an image URL to preview this block.')} />
-        )}
-        {component.settings?.caption && (
-          <PreviewSubtitle>{component.settings.caption}</PreviewSubtitle>
-        )}
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'button') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>{component.title || t('Button')}</PreviewTitle>
-        <Button type={component.settings?.variant || 'primary'}>
-          {component.body || t('Open link')}
-        </Button>
-        {component.settings?.url && (
-          <TinyMeta style={{ marginTop: 10 }}>
-            {component.settings.url}
-          </TinyMeta>
-        )}
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'cta') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>{component.title || t('Call To Action')}</PreviewTitle>
-        {component.body && <SafeMarkdown source={component.body} />}
-        <Button type="primary" style={{ marginTop: 12 }}>
-          {component.settings?.buttonLabel || t('Learn more')}
-        </Button>
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'divider') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <Divider />
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'spacer') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <div style={{ height: Number(component.settings?.height) || 48 }} />
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'heading') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>
-          {component.title || component.body || t('Heading')}
-        </PreviewTitle>
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'paragraph') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <SafeMarkdown source={component.body || t('Add content here.')} />
-      </PreviewCard>
-    );
-  }
-
-  if (component.component_type === 'indicator_highlights') {
-    return (
-      <PreviewCard key={component.component_key || component.id}>
-        <PreviewTitle>
-          {component.title || t('Indicator Highlights')}
-        </PreviewTitle>
-        <PreviewSubtitle>
-          {t('Highlights render from the public portal feed at runtime.')}
-        </PreviewSubtitle>
-      </PreviewCard>
-    );
-  }
-
-  return (
-    <PreviewCard key={component.component_key || component.id}>
-      {component.title && <PreviewTitle>{component.title}</PreviewTitle>}
-      <SafeMarkdown source={component.body || t('Add content here.')} />
-    </PreviewCard>
-  );
-}
-
-function getSelectionLabel(selection: Selection, draftPage: PortalPage | null) {
-  if (!draftPage || selection.type === 'page') {
-    return t('Page Settings');
-  }
-  if (selection.type === 'section') {
-    return draftPage.sections[selection.index]?.title || t('Section');
-  }
-  return (
-    draftPage.sections[selection.sectionIndex]?.components[
-      selection.componentIndex
-    ]?.title || t('Component')
-  );
-}
-
 export default function CMSAdminPage() {
   const history = useHistory();
   const location = useLocation();
@@ -736,7 +492,6 @@ export default function CMSAdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<PortalAdminPayload | null>(null);
   const [draftPage, setDraftPage] = useState<PortalPage | null>(null);
-  const [selection, setSelection] = useState<Selection>({ type: 'page' });
   const [search, setSearch] = useState('');
   const [menus, setMenus] = useState<{
     header: PortalNavigationMenu[];
@@ -769,6 +524,22 @@ export default function CMSAdminPage() {
   const [savingTheme, setSavingTheme] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [savingStyleBundle, setSavingStyleBundle] = useState(false);
+  const [uploadingAsset, setUploadingAsset] = useState(false);
+  const [assetDraft, setAssetDraft] = useState<{
+    file: File | null;
+    title: string;
+    description: string;
+    visibility: 'private' | 'authenticated' | 'public';
+    alt_text: string;
+    caption: string;
+  }>({
+    file: null,
+    title: '',
+    description: '',
+    visibility: 'private',
+    alt_text: '',
+    caption: '',
+  });
 
   async function loadBootstrap(pageSlug = requestedPageSlug) {
     if (!canViewCms) {
@@ -807,7 +578,6 @@ export default function CMSAdminPage() {
       setStyleVariablesText(stringifyJson(nextStyleBundle?.variables));
       setStyleSettingsText(stringifyJson(nextStyleBundle?.settings));
       setStyleCssText(nextStyleBundle?.css_text || '');
-      setSelection({ type: 'page' });
       return payload;
     } catch (caughtError) {
       const messageText =
@@ -824,18 +594,6 @@ export default function CMSAdminPage() {
   useEffect(() => {
     loadBootstrap();
   }, [requestedPageSlug, canViewCms]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filteredPages = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return data?.pages || [];
-    }
-    return (data?.pages || []).filter(
-      page =>
-        page.title.toLowerCase().includes(query) ||
-        (page.slug || '').toLowerCase().includes(query),
-    );
-  }, [data?.pages, search]);
 
   const selectedTheme = useMemo(
     () =>
@@ -893,7 +651,6 @@ export default function CMSAdminPage() {
   }
 
   function loadNewPage() {
-    setSelection({ type: 'page' });
     setDraftPage(
       createDraftPage({
         id: undefined,
@@ -905,6 +662,8 @@ export default function CMSAdminPage() {
         is_published: false,
         is_homepage: false,
         display_order: data?.pages.length || 0,
+        parent_page_id: null,
+        navigation_label: '',
         status: 'draft',
         visibility: 'draft',
         page_type: 'content',
@@ -915,177 +674,13 @@ export default function CMSAdminPage() {
         template_id:
           data?.templates.find(template => template.is_default)?.id || null,
         style_bundle_id: null,
+        featured_image_asset_id: null,
+        og_image_asset_id: null,
         settings: {},
         sections: [createEmptySection('hero'), createEmptySection('content')],
       } as PortalPage),
     );
     setQueryState({ pageSlug: null, tab: 'studio' });
-  }
-
-  function updateDraftPage(patch: Partial<PortalPage>) {
-    setDraftPage(previous => (previous ? { ...previous, ...patch } : previous));
-  }
-
-  function updateSection(index: number, patch: Partial<PortalPageSection>) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      sections[index] = { ...sections[index], ...patch };
-      return { ...previous, sections };
-    });
-  }
-
-  function updateSectionSetting(index: number, key: string, value: any) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      sections[index] = {
-        ...sections[index],
-        settings: { ...(sections[index].settings || {}), [key]: value },
-      };
-      return { ...previous, sections };
-    });
-  }
-
-  function addSection(sectionType = 'content') {
-    setDraftPage(previous =>
-      previous
-        ? {
-            ...previous,
-            sections: [...previous.sections, createEmptySection(sectionType)],
-          }
-        : previous,
-    );
-  }
-
-  function moveSection(index: number, direction: -1 | 1) {
-    setDraftPage(previous =>
-      previous
-        ? {
-            ...previous,
-            sections: moveArrayItem(
-              previous.sections,
-              index,
-              index + direction,
-            ),
-          }
-        : previous,
-    );
-  }
-
-  function removeSection(index: number) {
-    setDraftPage(previous =>
-      previous
-        ? {
-            ...previous,
-            sections: previous.sections.filter(
-              (_, sectionIndex) => sectionIndex !== index,
-            ),
-          }
-        : previous,
-    );
-    setSelection({ type: 'page' });
-  }
-
-  function addComponent(sectionIndex: number, componentType = 'markdown') {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      sections[sectionIndex] = {
-        ...sections[sectionIndex],
-        components: [
-          ...(sections[sectionIndex].components || []),
-          createEmptyComponent(componentType),
-        ],
-      };
-      return { ...previous, sections };
-    });
-  }
-
-  function updateComponent(
-    sectionIndex: number,
-    componentIndex: number,
-    patch: Partial<PortalPageComponent>,
-  ) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      const components = [...sections[sectionIndex].components];
-      components[componentIndex] = { ...components[componentIndex], ...patch };
-      sections[sectionIndex] = { ...sections[sectionIndex], components };
-      return { ...previous, sections };
-    });
-  }
-
-  function updateComponentSetting(
-    sectionIndex: number,
-    componentIndex: number,
-    key: string,
-    value: any,
-  ) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      const components = [...sections[sectionIndex].components];
-      components[componentIndex] = {
-        ...components[componentIndex],
-        settings: {
-          ...(components[componentIndex].settings || {}),
-          [key]: value,
-        },
-      };
-      sections[sectionIndex] = { ...sections[sectionIndex], components };
-      return { ...previous, sections };
-    });
-  }
-
-  function moveComponent(
-    sectionIndex: number,
-    componentIndex: number,
-    direction: -1 | 1,
-  ) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      sections[sectionIndex] = {
-        ...sections[sectionIndex],
-        components: moveArrayItem(
-          sections[sectionIndex].components,
-          componentIndex,
-          componentIndex + direction,
-        ),
-      };
-      return { ...previous, sections };
-    });
-  }
-
-  function removeComponent(sectionIndex: number, componentIndex: number) {
-    setDraftPage(previous => {
-      if (!previous) {
-        return previous;
-      }
-      const sections = [...previous.sections];
-      sections[sectionIndex] = {
-        ...sections[sectionIndex],
-        components: sections[sectionIndex].components.filter(
-          (_, index) => index !== componentIndex,
-        ),
-      };
-      return { ...previous, sections };
-    });
-    setSelection({ type: 'section', index: sectionIndex });
   }
 
   async function savePage() {
@@ -1201,759 +796,69 @@ export default function CMSAdminPage() {
     }
   }
 
-  function renderPreview() {
-    if (!draftPage) {
-      return <Empty description={t('Choose a page or create a new one.')} />;
+  async function uploadAsset() {
+    if (!assetDraft.file) {
+      messageApi.error(t('Choose a file to upload.'));
+      return;
     }
-
-    return (
-      <PreviewCanvas>
-        {draftPage.sections.length ? (
-          draftPage.sections
-            .filter(section => section.is_visible !== false)
-            .map((section, sectionIndex) => (
-              <PreviewSection
-                key={`${section.section_key}-${sectionIndex}`}
-                $background={section.settings?.backgroundColor}
-              >
-                {section.title && <PreviewTitle>{section.title}</PreviewTitle>}
-                {section.subtitle && (
-                  <PreviewSubtitle>{section.subtitle}</PreviewSubtitle>
-                )}
-                <PreviewGrid
-                  $columns={Math.max(Number(section.settings?.columns) || 1, 1)}
-                >
-                  {section.components
-                    .filter(component => component.is_visible !== false)
-                    .map(component =>
-                      previewBlock(
-                        component,
-                        data?.available_charts || [],
-                        data?.dashboards || [],
-                      ),
-                    )}
-                </PreviewGrid>
-              </PreviewSection>
-            ))
-        ) : (
-          <PreviewSection>
-            <Empty
-              description={t('This page does not have any sections yet.')}
-            />
-          </PreviewSection>
-        )}
-      </PreviewCanvas>
-    );
+    setUploadingAsset(true);
+    try {
+      const csrfToken = await SupersetClient.getCSRFToken();
+      const formData = new FormData();
+      formData.append('file', assetDraft.file);
+      formData.append('title', assetDraft.title || assetDraft.file.name);
+      formData.append('description', assetDraft.description);
+      formData.append('visibility', assetDraft.visibility);
+      formData.append('alt_text', assetDraft.alt_text);
+      formData.append('caption', assetDraft.caption);
+      if (assetDraft.visibility === 'public') {
+        formData.append('is_public', 'true');
+      }
+      const response = await fetch('/api/v1/public_page/admin/assets', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: csrfToken ? { 'X-CSRFToken': csrfToken } : undefined,
+        body: formData,
+      });
+      const json = await response.json();
+      if (!response.ok) {
+        throw new Error(json?.message || t('Failed to upload asset.'));
+      }
+      setAssetDraft({
+        file: null,
+        title: '',
+        description: '',
+        visibility: 'private',
+        alt_text: '',
+        caption: '',
+      });
+      await loadBootstrap(draftPage?.slug);
+      messageApi.success(t('Asset uploaded.'));
+    } catch (caughtError) {
+      messageApi.error(
+        caughtError instanceof Error
+          ? caughtError.message
+          : t('Failed to upload asset.'),
+      );
+    } finally {
+      setUploadingAsset(false);
+    }
   }
 
-  function renderPageProperties() {
-    if (!draftPage) {
-      return <Empty description={t('No page selected.')} />;
-    }
-
-    if (selection.type === 'section') {
-      const section = draftPage.sections[selection.index];
-      if (!section) {
-        return null;
-      }
-      return (
-        <Stack>
-          <FieldBlock>
-            <FieldLabel>{t('Section Title')}</FieldLabel>
-            <Input
-              value={section.title || ''}
-              onChange={event =>
-                updateSection(selection.index, { title: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldGrid>
-            <FieldBlock>
-              <FieldLabel>{t('Section Key')}</FieldLabel>
-              <Input
-                value={section.section_key || ''}
-                onChange={event =>
-                  updateSection(selection.index, {
-                    section_key: event.target.value,
-                  })
-                }
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Section Type')}</FieldLabel>
-              <Select
-                value={section.section_type}
-                onChange={value =>
-                  updateSection(selection.index, { section_type: value })
-                }
-                options={[
-                  { value: 'hero', label: t('Hero') },
-                  { value: 'content', label: t('Content') },
-                  { value: 'chart_grid', label: t('Chart Grid') },
-                  { value: 'kpi_band', label: t('KPI Band') },
-                  { value: 'dashboard_catalog', label: t('Dashboard Catalog') },
-                ]}
-              />
-            </FieldBlock>
-          </FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Subtitle')}</FieldLabel>
-            <Input
-              value={section.subtitle || ''}
-              onChange={event =>
-                updateSection(selection.index, { subtitle: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldGrid>
-            <FieldBlock>
-              <FieldLabel>{t('Columns')}</FieldLabel>
-              <InputNumber
-                style={{ width: '100%' }}
-                value={Number(section.settings?.columns) || 1}
-                onChange={value =>
-                  updateSectionSetting(
-                    selection.index,
-                    'columns',
-                    Number(value) || 1,
-                  )
-                }
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Region')}</FieldLabel>
-              <Select
-                value={section.settings?.region || 'content'}
-                onChange={value =>
-                  updateSectionSetting(selection.index, 'region', value)
-                }
-                options={[
-                  { value: 'header', label: t('Header') },
-                  { value: 'hero', label: t('Hero') },
-                  { value: 'content', label: t('Content') },
-                  { value: 'sidebar', label: t('Sidebar') },
-                  { value: 'cta', label: t('CTA') },
-                  { value: 'footer', label: t('Footer') },
-                ]}
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Padding')}</FieldLabel>
-              <Input
-                value={section.settings?.padding || ''}
-                onChange={event =>
-                  updateSectionSetting(
-                    selection.index,
-                    'padding',
-                    event.target.value,
-                  )
-                }
-              />
-            </FieldBlock>
-          </FieldGrid>
-          <FieldGrid>
-            <FieldBlock>
-              <FieldLabel>{t('Background')}</FieldLabel>
-              <Input
-                value={section.settings?.backgroundColor || ''}
-                onChange={event =>
-                  updateSectionSetting(
-                    selection.index,
-                    'backgroundColor',
-                    event.target.value,
-                  )
-                }
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Style Bundle')}</FieldLabel>
-              <Select
-                allowClear
-                value={section.style_bundle_id || undefined}
-                options={(data?.style_bundles || []).map(bundle => ({
-                  value: bundle.id,
-                  label: bundle.title,
-                }))}
-                onChange={value =>
-                  updateSection(selection.index, {
-                    style_bundle_id: value || null,
-                    style_bundle:
-                      data?.style_bundles.find(bundle => bundle.id === value) ||
-                      null,
-                  })
-                }
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Anchor')}</FieldLabel>
-              <Input
-                value={section.settings?.anchor || ''}
-                onChange={event =>
-                  updateSectionSetting(
-                    selection.index,
-                    'anchor',
-                    event.target.value,
-                  )
-                }
-              />
-            </FieldBlock>
-          </FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Visible')}</FieldLabel>
-            <Switch
-              checked={section.is_visible}
-              onChange={checked =>
-                updateSection(selection.index, { is_visible: checked })
-              }
-            />
-          </FieldBlock>
-        </Stack>
+  async function archiveAsset(assetId: number) {
+    try {
+      await SupersetClient.delete({
+        endpoint: `/api/v1/public_page/admin/assets/${assetId}`,
+      });
+      await loadBootstrap(draftPage?.slug);
+      messageApi.success(t('Asset archived.'));
+    } catch (caughtError) {
+      messageApi.error(
+        caughtError instanceof Error
+          ? caughtError.message
+          : t('Failed to archive asset.'),
       );
     }
-
-    if (selection.type === 'component') {
-      const component =
-        draftPage.sections[selection.sectionIndex]?.components[
-          selection.componentIndex
-        ];
-      if (!component) {
-        return null;
-      }
-      return (
-        <Stack>
-          <FieldGrid>
-            <FieldBlock>
-              <FieldLabel>{t('Component Type')}</FieldLabel>
-              <Select
-                value={component.component_type}
-                onChange={value =>
-                  updateComponent(
-                    selection.sectionIndex,
-                    selection.componentIndex,
-                    createEmptyComponent(value),
-                  )
-                }
-                options={[
-                  { value: 'markdown', label: t('Markdown') },
-                  { value: 'heading', label: t('Heading') },
-                  { value: 'paragraph', label: t('Paragraph') },
-                  { value: 'image', label: t('Image') },
-                  { value: 'button', label: t('Button') },
-                  { value: 'divider', label: t('Divider') },
-                  { value: 'spacer', label: t('Spacer') },
-                  { value: 'cta', label: t('CTA') },
-                  { value: 'chart', label: t('Chart') },
-                  { value: 'dashboard', label: t('Dashboard') },
-                  {
-                    value: 'indicator_highlights',
-                    label: t('Indicator Highlights'),
-                  },
-                ]}
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Title')}</FieldLabel>
-              <Input
-                value={component.title || ''}
-                onChange={event =>
-                  updateComponent(
-                    selection.sectionIndex,
-                    selection.componentIndex,
-                    {
-                      title: event.target.value,
-                    },
-                  )
-                }
-              />
-            </FieldBlock>
-          </FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Body')}</FieldLabel>
-            <Input.TextArea
-              rows={4}
-              value={component.body || ''}
-              onChange={event =>
-                updateComponent(
-                  selection.sectionIndex,
-                  selection.componentIndex,
-                  {
-                    body: event.target.value,
-                  },
-                )
-              }
-            />
-          </FieldBlock>
-          {component.component_type === 'chart' && (
-            <>
-              <FieldBlock>
-                <FieldLabel>{t('Chart')}</FieldLabel>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  value={component.chart_id || undefined}
-                  options={(data?.available_charts || []).map(chart => ({
-                    value: chart.id,
-                    label: `${chart.slice_name} (${chart.viz_type || t('Chart')})`,
-                  }))}
-                  onChange={value =>
-                    updateComponent(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      {
-                        chart_id: value,
-                        chart:
-                          data?.available_charts.find(
-                            chart => chart.id === value,
-                          ) || null,
-                      },
-                    )
-                  }
-                />
-              </FieldBlock>
-              <FieldBlock>
-                <FieldLabel>{t('Embed Height')}</FieldLabel>
-                <InputNumber
-                  style={{ width: '100%' }}
-                  value={Number(component.settings?.height) || 320}
-                  onChange={value =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'height',
-                      Number(value) || 320,
-                    )
-                  }
-                />
-              </FieldBlock>
-            </>
-          )}
-          {component.component_type === 'dashboard' && (
-            <>
-              <FieldBlock>
-                <FieldLabel>{t('Dashboard')}</FieldLabel>
-                <Select
-                  value={component.dashboard_id || undefined}
-                  options={(data?.dashboards || []).map(dashboard => ({
-                    value: dashboard.id,
-                    label: dashboard.dashboard_title,
-                  }))}
-                  onChange={value =>
-                    updateComponent(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      {
-                        dashboard_id: value,
-                        dashboard:
-                          data?.dashboards.find(
-                            dashboard => dashboard.id === value,
-                          ) || null,
-                      },
-                    )
-                  }
-                />
-              </FieldBlock>
-              <FieldBlock>
-                <FieldLabel>{t('Embed Height')}</FieldLabel>
-                <InputNumber
-                  style={{ width: '100%' }}
-                  value={Number(component.settings?.height) || 420}
-                  onChange={value =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'height',
-                      Number(value) || 420,
-                    )
-                  }
-                />
-              </FieldBlock>
-            </>
-          )}
-          {component.component_type === 'image' && (
-            <FieldGrid>
-              <FieldBlock>
-                <FieldLabel>{t('Image URL')}</FieldLabel>
-                <Input
-                  value={component.settings?.imageUrl || ''}
-                  onChange={event =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'imageUrl',
-                      event.target.value,
-                    )
-                  }
-                />
-              </FieldBlock>
-              <FieldBlock>
-                <FieldLabel>{t('Alt Text')}</FieldLabel>
-                <Input
-                  value={component.settings?.altText || ''}
-                  onChange={event =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'altText',
-                      event.target.value,
-                    )
-                  }
-                />
-              </FieldBlock>
-            </FieldGrid>
-          )}
-          {component.component_type === 'button' && (
-            <FieldGrid>
-              <FieldBlock>
-                <FieldLabel>{t('Button URL')}</FieldLabel>
-                <Input
-                  value={component.settings?.url || ''}
-                  onChange={event =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'url',
-                      event.target.value,
-                    )
-                  }
-                />
-              </FieldBlock>
-              <FieldBlock>
-                <FieldLabel>{t('Variant')}</FieldLabel>
-                <Select
-                  value={component.settings?.variant || 'primary'}
-                  onChange={value =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'variant',
-                      value,
-                    )
-                  }
-                  options={[
-                    { value: 'primary', label: t('Primary') },
-                    { value: 'default', label: t('Default') },
-                    { value: 'dashed', label: t('Dashed') },
-                  ]}
-                />
-              </FieldBlock>
-            </FieldGrid>
-          )}
-          {component.component_type === 'cta' && (
-            <FieldGrid>
-              <FieldBlock>
-                <FieldLabel>{t('Button Label')}</FieldLabel>
-                <Input
-                  value={component.settings?.buttonLabel || ''}
-                  onChange={event =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'buttonLabel',
-                      event.target.value,
-                    )
-                  }
-                />
-              </FieldBlock>
-              <FieldBlock>
-                <FieldLabel>{t('Button URL')}</FieldLabel>
-                <Input
-                  value={component.settings?.buttonUrl || ''}
-                  onChange={event =>
-                    updateComponentSetting(
-                      selection.sectionIndex,
-                      selection.componentIndex,
-                      'buttonUrl',
-                      event.target.value,
-                    )
-                  }
-                />
-              </FieldBlock>
-            </FieldGrid>
-          )}
-          {component.component_type === 'spacer' && (
-            <FieldBlock>
-              <FieldLabel>{t('Spacer Height')}</FieldLabel>
-              <InputNumber
-                style={{ width: '100%' }}
-                value={Number(component.settings?.height) || 48}
-                onChange={value =>
-                  updateComponentSetting(
-                    selection.sectionIndex,
-                    selection.componentIndex,
-                    'height',
-                    Number(value) || 48,
-                  )
-                }
-              />
-            </FieldBlock>
-          )}
-          <FieldBlock>
-            <FieldLabel>{t('Style Bundle')}</FieldLabel>
-            <Select
-              allowClear
-              value={component.style_bundle_id || undefined}
-              options={(data?.style_bundles || []).map(bundle => ({
-                value: bundle.id,
-                label: bundle.title,
-              }))}
-              onChange={value =>
-                updateComponent(
-                  selection.sectionIndex,
-                  selection.componentIndex,
-                  {
-                    style_bundle_id: value || null,
-                    style_bundle:
-                      data?.style_bundles.find(bundle => bundle.id === value) ||
-                      null,
-                  },
-                )
-              }
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Visible')}</FieldLabel>
-            <Switch
-              checked={component.is_visible}
-              onChange={checked =>
-                updateComponent(
-                  selection.sectionIndex,
-                  selection.componentIndex,
-                  {
-                    is_visible: checked,
-                  },
-                )
-              }
-            />
-          </FieldBlock>
-        </Stack>
-      );
-    }
-
-    return (
-      <Stack>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Title')}</FieldLabel>
-            <Input
-              value={draftPage.title}
-              onChange={event => updateDraftPage({ title: event.target.value })}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Slug')}</FieldLabel>
-            <Input
-              value={draftPage.slug || ''}
-              onChange={event => updateDraftPage({ slug: event.target.value })}
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Subtitle')}</FieldLabel>
-            <Input
-              value={draftPage.subtitle || ''}
-              onChange={event =>
-                updateDraftPage({ subtitle: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Excerpt')}</FieldLabel>
-            <Input
-              value={draftPage.excerpt || ''}
-              onChange={event =>
-                updateDraftPage({ excerpt: event.target.value })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldBlock>
-          <FieldLabel>{t('Description')}</FieldLabel>
-          <Input.TextArea
-            rows={4}
-            value={draftPage.description || ''}
-            onChange={event =>
-              updateDraftPage({ description: event.target.value })
-            }
-          />
-        </FieldBlock>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Visibility')}</FieldLabel>
-            <Select
-              value={draftPage.visibility || 'draft'}
-              onChange={value =>
-                updateDraftPage({
-                  visibility: value,
-                  is_published:
-                    value === 'public' ? draftPage.is_published : false,
-                })
-              }
-              options={[
-                { value: 'draft', label: t('Draft') },
-                { value: 'authenticated', label: t('Authenticated') },
-                { value: 'public', label: t('Public') },
-              ]}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Display Order')}</FieldLabel>
-            <InputNumber
-              style={{ width: '100%' }}
-              value={draftPage.display_order}
-              onChange={value =>
-                updateDraftPage({ display_order: Number(value) || 0 })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Published')}</FieldLabel>
-            <Switch
-              checked={draftPage.is_published}
-              onChange={checked => updateDraftPage({ is_published: checked })}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Homepage')}</FieldLabel>
-            <Switch
-              checked={draftPage.is_homepage}
-              onChange={checked => updateDraftPage({ is_homepage: checked })}
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Page Type')}</FieldLabel>
-            <Input
-              value={draftPage.page_type || 'content'}
-              onChange={event =>
-                updateDraftPage({ page_type: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Theme')}</FieldLabel>
-            <Select
-              allowClear
-              value={draftPage.theme_id || undefined}
-              options={(data?.themes || []).map(theme => ({
-                value: theme.id,
-                label: theme.title,
-              }))}
-              onChange={value =>
-                updateDraftPage({
-                  theme_id: value || null,
-                  theme: data?.themes.find(theme => theme.id === value) || null,
-                })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Template')}</FieldLabel>
-            <Select
-              allowClear
-              value={draftPage.template_id || undefined}
-              options={(data?.templates || []).map(template => ({
-                value: template.id,
-                label: template.title,
-              }))}
-              onChange={value => {
-                const selected = data?.templates.find(
-                  template => template.id === value,
-                );
-                const selectedTheme =
-                  data?.themes.find(theme => theme.id === selected?.theme_id) ||
-                  null;
-                updateDraftPage({
-                  template_id: value || null,
-                  template: selected || null,
-                  template_key: selected?.slug || draftPage.template_key,
-                  theme_id: draftPage.theme_id || selected?.theme_id || null,
-                  theme:
-                    draftPage.theme ||
-                    (draftPage.theme_id ? draftPage.theme : selectedTheme),
-                });
-              }}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Style Bundle')}</FieldLabel>
-            <Select
-              allowClear
-              value={draftPage.style_bundle_id || undefined}
-              options={(data?.style_bundles || []).map(bundle => ({
-                value: bundle.id,
-                label: bundle.title,
-              }))}
-              onChange={value =>
-                updateDraftPage({
-                  style_bundle_id: value || null,
-                  style_bundle:
-                    data?.style_bundles.find(bundle => bundle.id === value) ||
-                    null,
-                })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldBlock>
-          <FieldLabel>{t('Schedule Publish At')}</FieldLabel>
-          <Input
-            value={draftPage.scheduled_publish_at || ''}
-            placeholder={t('2026-03-20T14:00:00')}
-            onChange={event =>
-              updateDraftPage({
-                scheduled_publish_at: event.target.value || null,
-              })
-            }
-          />
-        </FieldBlock>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('SEO Title')}</FieldLabel>
-            <Input
-              value={draftPage.seo_title || ''}
-              onChange={event =>
-                updateDraftPage({ seo_title: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('SEO Description')}</FieldLabel>
-            <Input
-              value={draftPage.seo_description || ''}
-              onChange={event =>
-                updateDraftPage({ seo_description: event.target.value })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-        <FieldGrid>
-          <FieldBlock>
-            <FieldLabel>{t('Featured Image')}</FieldLabel>
-            <Input
-              value={draftPage.featured_image_url || ''}
-              onChange={event =>
-                updateDraftPage({ featured_image_url: event.target.value })
-              }
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('OG Image')}</FieldLabel>
-            <Input
-              value={draftPage.og_image_url || ''}
-              onChange={event =>
-                updateDraftPage({ og_image_url: event.target.value })
-              }
-            />
-          </FieldBlock>
-        </FieldGrid>
-      </Stack>
-    );
   }
 
   function updateMenu(
@@ -3302,7 +2207,7 @@ export default function CMSAdminPage() {
         disabled={!draftPage?.slug || draftPage.visibility !== 'public'}
         onClick={() =>
           window.open(
-            `/superset/public/${draftPage?.slug}/`,
+            `/superset/public/${draftPage?.path || draftPage?.slug}/`,
             '_blank',
             'noopener',
           )
@@ -3395,6 +2300,10 @@ export default function CMSAdminPage() {
                       <StatValue>{data?.stats.style_bundles || 0}</StatValue>
                       <StatLabel>{t('Style Bundles')}</StatLabel>
                     </StatCard>
+                    <StatCard>
+                      <StatValue>{data?.stats.media_assets || 0}</StatValue>
+                      <StatLabel>{t('Media Assets')}</StatLabel>
+                    </StatCard>
                   </StatsGrid>
                   <RevisionList>
                     {(data?.recent_edits || []).map(revision => (
@@ -3430,9 +2339,11 @@ export default function CMSAdminPage() {
               children: (
                 <BlockStudio
                   draftPage={draftPage}
-                  pages={filteredPages}
+                  pages={data?.pages || []}
                   charts={data?.available_charts || []}
                   dashboards={data?.dashboards || []}
+                  mediaAssets={data?.media_assets || []}
+                  navigationMenus={menus}
                   styleBundles={data?.style_bundles || []}
                   blockTypes={data?.block_types || []}
                   search={search}
@@ -3447,11 +2358,172 @@ export default function CMSAdminPage() {
                   }}
                   onChangeDraftPage={nextPage => {
                     setDraftPage(nextPage);
-                    setSelection({ type: 'page' });
                   }}
                 />
               ),
             },
+            ...(data?.permissions.can_manage_media
+              ? [
+                  {
+                    key: 'media',
+                    label: t('Media Library'),
+                    children: (
+                      <DesignLayout>
+                        <Panel>
+                          <PanelHeader>
+                            <PanelTitle>{t('Upload Asset')}</PanelTitle>
+                          </PanelHeader>
+                          <Stack>
+                            <FieldBlock>
+                              <FieldLabel>{t('File')}</FieldLabel>
+                              <input
+                                type="file"
+                                onChange={event =>
+                                  setAssetDraft(previous => ({
+                                    ...previous,
+                                    file: event.target.files?.[0] || null,
+                                  }))
+                                }
+                              />
+                            </FieldBlock>
+                            <FieldGrid>
+                              <FieldBlock>
+                                <FieldLabel>{t('Title')}</FieldLabel>
+                                <Input
+                                  value={assetDraft.title}
+                                  onChange={event =>
+                                    setAssetDraft(previous => ({
+                                      ...previous,
+                                      title: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </FieldBlock>
+                              <FieldBlock>
+                                <FieldLabel>{t('Visibility')}</FieldLabel>
+                                <Select
+                                  value={assetDraft.visibility}
+                                  onChange={value =>
+                                    setAssetDraft(previous => ({
+                                      ...previous,
+                                      visibility: value,
+                                    }))
+                                  }
+                                  options={[
+                                    { value: 'private', label: t('Private') },
+                                    {
+                                      value: 'authenticated',
+                                      label: t('Authenticated'),
+                                    },
+                                    { value: 'public', label: t('Public') },
+                                  ]}
+                                />
+                              </FieldBlock>
+                              <FieldBlock>
+                                <FieldLabel>{t('Alt Text')}</FieldLabel>
+                                <Input
+                                  value={assetDraft.alt_text}
+                                  onChange={event =>
+                                    setAssetDraft(previous => ({
+                                      ...previous,
+                                      alt_text: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </FieldBlock>
+                              <FieldBlock>
+                                <FieldLabel>{t('Caption')}</FieldLabel>
+                                <Input
+                                  value={assetDraft.caption}
+                                  onChange={event =>
+                                    setAssetDraft(previous => ({
+                                      ...previous,
+                                      caption: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </FieldBlock>
+                            </FieldGrid>
+                            <FieldBlock>
+                              <FieldLabel>{t('Description')}</FieldLabel>
+                              <Input.TextArea
+                                rows={4}
+                                value={assetDraft.description}
+                                onChange={event =>
+                                  setAssetDraft(previous => ({
+                                    ...previous,
+                                    description: event.target.value,
+                                  }))
+                                }
+                              />
+                            </FieldBlock>
+                            <Button
+                              type="primary"
+                              loading={uploadingAsset}
+                              onClick={uploadAsset}
+                            >
+                              {t('Upload Asset')}
+                            </Button>
+                          </Stack>
+                        </Panel>
+                        <Panel>
+                          <PanelHeader>
+                            <PanelTitle>{t('Assets')}</PanelTitle>
+                            <Tag>{data?.stats.media_assets || 0}</Tag>
+                          </PanelHeader>
+                          <SectionList>
+                            {(data?.media_assets || []).length ? (
+                              (data?.media_assets || []).map(asset => (
+                                <DesignCard key={asset.id}>
+                                  <Stack>
+                                    <div>
+                                      <strong>{asset.title}</strong>
+                                      <TinyMeta>
+                                        {asset.asset_type} ·{' '}
+                                        {asset.original_filename || asset.slug}
+                                      </TinyMeta>
+                                    </div>
+                                    <Space wrap>
+                                      <Tag>{asset.visibility}</Tag>
+                                      <Tag>{asset.status}</Tag>
+                                      {asset.file_extension ? (
+                                        <Tag>{asset.file_extension}</Tag>
+                                      ) : null}
+                                    </Space>
+                                    <Space wrap>
+                                      <Button
+                                        size="small"
+                                        onClick={() =>
+                                          window.open(
+                                            asset.download_url || '#',
+                                            '_blank',
+                                            'noopener',
+                                          )
+                                        }
+                                      >
+                                        {t('Preview')}
+                                      </Button>
+                                      <Button
+                                        size="small"
+                                        danger
+                                        onClick={() => archiveAsset(asset.id)}
+                                      >
+                                        {t('Archive')}
+                                      </Button>
+                                    </Space>
+                                  </Stack>
+                                </DesignCard>
+                              ))
+                            ) : (
+                              <Empty description={t('No media assets yet.')} />
+                            )}
+                          </SectionList>
+                        </Panel>
+                      </DesignLayout>
+                    ),
+                  },
+                ]
+              : []),
             {
               key: 'menus',
               label: t('Menu Manager'),

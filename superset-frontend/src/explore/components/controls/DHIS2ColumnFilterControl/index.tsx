@@ -48,7 +48,7 @@ import styled from '@emotion/styled';
 import {
   detectDHIS2Kind,
   DHIS2ColumnTag,
-} from '@superset-ui/chart-controls';
+} from '@superset-ui/chart-controls/components/ColumnTypeLabel/DHIS2ColumnTag';
 import { periodSelectLabel } from '../../../../utils/dhis2Period';
 
 // ---------------------------------------------------------------------------

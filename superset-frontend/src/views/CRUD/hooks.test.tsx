@@ -113,10 +113,13 @@ describe('useListViewResource', () => {
     jest
       .spyOn(SupersetClient, 'get')
       .mockImplementation(({ endpoint, signal }) => {
-        if (endpoint.includes('/_info')) {
-          infoSignal = signal;
+        const normalizedEndpoint = endpoint || '';
+        const normalizedSignal = signal ?? undefined;
+
+        if (normalizedEndpoint.includes('/_info')) {
+          infoSignal = normalizedSignal;
         } else {
-          dataSignal = signal;
+          dataSignal = normalizedSignal;
         }
 
         return new Promise(() => {}) as Promise<JsonResponse>;

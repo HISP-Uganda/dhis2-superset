@@ -16,10 +16,13 @@
 # under the License.
 import pytest
 from uuid import uuid4
+from marshmallow import ValidationError
 
+from superset.extensions import db
 from superset.models.dashboard import Dashboard
 from superset.public_page.api import PublicPageRestApi
 from superset.public_page.models import (
+    MediaAsset,
     Page,
     PageComponent,
     PageRevision,
@@ -214,3 +217,92 @@ def test_serialize_page_derives_block_tree_from_legacy_sections(
     assert serialized["blocks"][0]["block_type"] == "group"
     assert serialized["blocks"][0]["children"][0]["block_type"] == "rich_text"
     assert serialized["blocks"][0]["children"][0]["content"]["body"] == "Portal overview"
+
+
+def test_page_breadcrumbs_include_parent_hierarchy(app_context: None) -> None:
+    api = PublicPageRestApi()
+    about = Page(
+        id=1,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        status="published",
+    )
+    team = Page(
+        id=2,
+        slug="team",
+        title="Team",
+        parent_page=about,
+        visibility="public",
+        is_published=True,
+        status="published",
+    )
+
+    breadcrumbs = api._page_breadcrumbs(team, public_context=True)
+
+    assert api._page_path(team) == "about/team"
+    assert breadcrumbs == [
+        {
+            "id": 1,
+            "title": "About",
+            "slug": "about",
+            "path": "/superset/public/about/",
+        },
+        {
+            "id": 2,
+            "title": "Team",
+            "slug": "team",
+            "path": "/superset/public/about/team/",
+        },
+    ]
+
+
+def test_serialize_media_asset_exposes_download_url(app_context: None) -> None:
+    api = PublicPageRestApi()
+    asset = MediaAsset(
+        id=5,
+        slug="annual-report",
+        title="Annual Report",
+        asset_type="file",
+        storage_path="annual-report.pdf",
+        original_filename="Annual Report.pdf",
+        visibility="public",
+        is_public=True,
+        status="active",
+    )
+
+    serialized = api._serialize_media_asset(asset, include_admin=True)
+
+    assert serialized is not None
+    assert serialized["download_url"] == "/api/v1/public_page/assets/5/download"
+    assert serialized["original_filename"] == "Annual Report.pdf"
+
+
+def test_validate_parent_page_reference_rejects_cycles(app_context: None) -> None:
+    api = PublicPageRestApi()
+    page = Page(id=11, slug="policies", title="Policies")
+    child = Page(id=12, slug="privacy", title="Privacy", parent_page=page)
+
+    class QueryStub:
+        def __init__(self, result):
+            self.result = result
+
+        def filter(self, *args, **kwargs):
+            del args, kwargs
+            return self
+
+        def one_or_none(self):
+            return self.result
+
+    original_query = db.session.query
+
+    def fake_query(model):
+        if model is Page:
+            return QueryStub(child)
+        return original_query(model)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(db.session, "query", fake_query)
+        with pytest.raises(ValidationError):
+            api._validate_parent_page_reference(12, page=page)

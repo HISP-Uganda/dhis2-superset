@@ -18,7 +18,8 @@
  */
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors */
 
-import { CSSProperties, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { MarkdownEditor } from '@superset-ui/core/components';
 import { styled, t } from '@superset-ui/core';
 import {
   Button,
@@ -49,6 +50,8 @@ import type {
   PortalBlockDefinition,
   PortalChartSummary,
   PortalDashboardSummary,
+  PortalMediaAsset,
+  PortalNavigationMenu,
   PortalPage,
   PortalPageBlock,
   PortalPageSummary,
@@ -146,6 +149,11 @@ type BlockStudioProps = {
   pages: PortalPageSummary[];
   charts: PortalChartSummary[];
   dashboards: PortalDashboardSummary[];
+  mediaAssets: PortalMediaAsset[];
+  navigationMenus?: {
+    header: PortalNavigationMenu[];
+    footer: PortalNavigationMenu[];
+  };
   styleBundles: PortalStyleBundle[];
   blockTypes?: PortalBlockDefinition[];
   search: string;
@@ -166,6 +174,8 @@ export default function BlockStudio({
   pages,
   charts,
   dashboards,
+  mediaAssets,
+  navigationMenus = { header: [], footer: [] },
   styleBundles,
   blockTypes = [],
   search,
@@ -190,9 +200,34 @@ export default function BlockStudio({
       }),
     [pages, search],
   );
+  const mediaOptions = useMemo(
+    () =>
+      (mediaAssets || []).map(asset => ({
+        value: asset.id,
+        label: `${asset.title} · ${asset.asset_type || 'file'}`,
+      })),
+    [mediaAssets],
+  );
+  const menuOptions = useMemo(
+    () =>
+      [
+        ...(navigationMenus.header || []),
+        ...(navigationMenus.footer || []),
+      ].map(menu => ({
+        value: menu.slug,
+        label: `${menu.title} · ${menu.location}`,
+      })),
+    [navigationMenus],
+  );
   const insertableBlockTypes = blockTypes.length
     ? blockTypes
     : [
+        {
+          type: 'section',
+          label: t('Section'),
+          category: 'layout',
+          is_container: true,
+        },
         {
           type: 'rich_text',
           label: t('Rich Text'),
@@ -208,6 +243,18 @@ export default function BlockStudio({
         {
           type: 'image',
           label: t('Image'),
+          category: 'media',
+          is_container: false,
+        },
+        {
+          type: 'file',
+          label: t('File'),
+          category: 'media',
+          is_container: false,
+        },
+        {
+          type: 'download',
+          label: t('Download'),
           category: 'media',
           is_container: false,
         },
@@ -251,6 +298,24 @@ export default function BlockStudio({
           type: 'dynamic_widget',
           label: t('Dynamic Widget'),
           category: 'data',
+          is_container: false,
+        },
+        {
+          type: 'breadcrumb',
+          label: t('Breadcrumb'),
+          category: 'utility',
+          is_container: false,
+        },
+        {
+          type: 'page_title',
+          label: t('Page Title'),
+          category: 'utility',
+          is_container: false,
+        },
+        {
+          type: 'menu',
+          label: t('Menu'),
+          category: 'utility',
           is_container: false,
         },
       ];
@@ -340,55 +405,144 @@ export default function BlockStudio({
     }
     if (!selectedBlock) {
       return (
-        <FieldGrid>
+        <SectionList>
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Title')}</FieldLabel>
+              <Input
+                value={draftPage.title}
+                onChange={event => updatePage({ title: event.target.value })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Slug')}</FieldLabel>
+              <Input
+                value={draftPage.slug || ''}
+                onChange={event => updatePage({ slug: event.target.value })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Navigation Label')}</FieldLabel>
+              <Input
+                value={draftPage.navigation_label || ''}
+                onChange={event =>
+                  updatePage({ navigation_label: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Parent Page')}</FieldLabel>
+              <Select
+                allowClear
+                value={draftPage.parent_page_id || undefined}
+                options={(pages || [])
+                  .filter(page => page.id !== draftPage.id)
+                  .map(page => ({
+                    value: page.id,
+                    label: page.path || page.slug || page.title,
+                  }))}
+                onChange={value =>
+                  updatePage({
+                    parent_page_id: value || null,
+                    parent_page: pages.find(page => page.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Subtitle')}</FieldLabel>
+              <Input
+                value={draftPage.subtitle || ''}
+                onChange={event => updatePage({ subtitle: event.target.value })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Visibility')}</FieldLabel>
+              <Select
+                value={draftPage.visibility || 'draft'}
+                onChange={value => updatePage({ visibility: value })}
+                options={[
+                  { value: 'draft', label: t('Draft') },
+                  { value: 'authenticated', label: t('Authenticated') },
+                  { value: 'public', label: t('Public') },
+                ]}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Published')}</FieldLabel>
+              <Switch
+                checked={draftPage.is_published}
+                onChange={checked => updatePage({ is_published: checked })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Homepage')}</FieldLabel>
+              <Switch
+                checked={draftPage.is_homepage}
+                onChange={checked => updatePage({ is_homepage: checked })}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Featured Image')}</FieldLabel>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={draftPage.featured_image_asset_id || undefined}
+                options={mediaOptions.filter(option => {
+                  const asset = mediaAssets.find(
+                    item => item.id === option.value,
+                  );
+                  return asset?.asset_type === 'image';
+                })}
+                onChange={value =>
+                  updatePage({
+                    featured_image_asset_id: value || null,
+                    featured_image_asset:
+                      mediaAssets.find(asset => asset.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('OG Image')}</FieldLabel>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={draftPage.og_image_asset_id || undefined}
+                options={mediaOptions.filter(option => {
+                  const asset = mediaAssets.find(
+                    item => item.id === option.value,
+                  );
+                  return asset?.asset_type === 'image';
+                })}
+                onChange={value =>
+                  updatePage({
+                    og_image_asset_id: value || null,
+                    og_image_asset:
+                      mediaAssets.find(asset => asset.id === value) || null,
+                  })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
           <FieldBlock>
-            <FieldLabel>{t('Title')}</FieldLabel>
-            <Input
-              value={draftPage.title}
-              onChange={event => updatePage({ title: event.target.value })}
+            <FieldLabel>{t('Description')}</FieldLabel>
+            <MarkdownEditor
+              width="100%"
+              height="180px"
+              showGutter={false}
+              editorProps={{ $blockScrolling: true }}
+              value={draftPage.description || ''}
+              onChange={(value: string) => updatePage({ description: value })}
             />
           </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Slug')}</FieldLabel>
-            <Input
-              value={draftPage.slug || ''}
-              onChange={event => updatePage({ slug: event.target.value })}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Subtitle')}</FieldLabel>
-            <Input
-              value={draftPage.subtitle || ''}
-              onChange={event => updatePage({ subtitle: event.target.value })}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Visibility')}</FieldLabel>
-            <Select
-              value={draftPage.visibility || 'draft'}
-              onChange={value => updatePage({ visibility: value })}
-              options={[
-                { value: 'draft', label: t('Draft') },
-                { value: 'authenticated', label: t('Authenticated') },
-                { value: 'public', label: t('Public') },
-              ]}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Published')}</FieldLabel>
-            <Switch
-              checked={draftPage.is_published}
-              onChange={checked => updatePage({ is_published: checked })}
-            />
-          </FieldBlock>
-          <FieldBlock>
-            <FieldLabel>{t('Homepage')}</FieldLabel>
-            <Switch
-              checked={draftPage.is_homepage}
-              onChange={checked => updatePage({ is_homepage: checked })}
-            />
-          </FieldBlock>
-        </FieldGrid>
+          <TinyMeta>
+            {t('Public path')}: /superset/public/
+            {draftPage.path || draftPage.slug || t('page-slug')}/
+          </TinyMeta>
+        </SectionList>
       );
     }
 
@@ -458,14 +612,21 @@ export default function BlockStudio({
         {(selectedBlock.block_type === 'rich_text' ||
           selectedBlock.block_type === 'paragraph' ||
           selectedBlock.block_type === 'card' ||
-          selectedBlock.block_type === 'group') && (
+          selectedBlock.block_type === 'group' ||
+          selectedBlock.block_type === 'section' ||
+          selectedBlock.block_type === 'callout') && (
           <FieldBlock>
             <FieldLabel>{t('Body')}</FieldLabel>
-            <Input.TextArea
-              rows={selectedBlock.block_type === 'rich_text' ? 6 : 4}
+            <MarkdownEditor
+              width="100%"
+              height={
+                selectedBlock.block_type === 'rich_text' ? '220px' : '180px'
+              }
+              showGutter={false}
+              editorProps={{ $blockScrolling: true }}
               value={selectedBlock.content?.body || ''}
-              onChange={event =>
-                updateSelectedBlockContent({ body: event.target.value })
+              onChange={(value: string) =>
+                updateSelectedBlockContent({ body: value })
               }
             />
           </FieldBlock>
@@ -474,9 +635,14 @@ export default function BlockStudio({
           selectedBlock.block_type === 'hero' ||
           selectedBlock.block_type === 'card' ||
           selectedBlock.block_type === 'group' ||
+          selectedBlock.block_type === 'section' ||
           selectedBlock.block_type === 'chart' ||
           selectedBlock.block_type === 'dashboard' ||
-          selectedBlock.block_type === 'dynamic_widget') && (
+          selectedBlock.block_type === 'dynamic_widget' ||
+          selectedBlock.block_type === 'callout' ||
+          selectedBlock.block_type === 'statistic' ||
+          selectedBlock.block_type === 'file' ||
+          selectedBlock.block_type === 'download') && (
           <FieldBlock>
             <FieldLabel>{t('Title')}</FieldLabel>
             <Input
@@ -525,26 +691,115 @@ export default function BlockStudio({
           </FieldBlock>
         )}
         {selectedBlock.block_type === 'image' && (
-          <FieldGrid>
+          <SectionList>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Image Asset')}</FieldLabel>
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  value={
+                    selectedBlock.settings?.asset_ref?.id ||
+                    selectedBlock.content?.asset?.id ||
+                    undefined
+                  }
+                  options={mediaOptions.filter(option => {
+                    const asset = mediaAssets.find(
+                      item => item.id === option.value,
+                    );
+                    return asset?.asset_type === 'image';
+                  })}
+                  onChange={value =>
+                    updateSelectedBlockSettings({
+                      asset_ref: value ? { id: value } : null,
+                    })
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Image URL')}</FieldLabel>
+                <Input
+                  value={selectedBlock.content?.url || ''}
+                  onChange={event =>
+                    updateSelectedBlockContent({ url: event.target.value })
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Alt Text')}</FieldLabel>
+                <Input
+                  value={selectedBlock.content?.alt || ''}
+                  onChange={event =>
+                    updateSelectedBlockContent({ alt: event.target.value })
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Caption')}</FieldLabel>
+                <Input
+                  value={selectedBlock.content?.caption || ''}
+                  onChange={event =>
+                    updateSelectedBlockContent({ caption: event.target.value })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+          </SectionList>
+        )}
+        {(selectedBlock.block_type === 'file' ||
+          selectedBlock.block_type === 'download') && (
+          <SectionList>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('File Asset')}</FieldLabel>
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  value={
+                    selectedBlock.settings?.asset_ref?.id ||
+                    selectedBlock.content?.asset?.id ||
+                    undefined
+                  }
+                  options={mediaOptions}
+                  onChange={value =>
+                    updateSelectedBlockSettings({
+                      asset_ref: value ? { id: value } : null,
+                    })
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Button Label')}</FieldLabel>
+                <Input
+                  value={
+                    selectedBlock.content?.buttonLabel ||
+                    selectedBlock.content?.label ||
+                    ''
+                  }
+                  onChange={event =>
+                    updateSelectedBlockContent({
+                      buttonLabel: event.target.value,
+                    })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
             <FieldBlock>
-              <FieldLabel>{t('Image URL')}</FieldLabel>
-              <Input
-                value={selectedBlock.content?.url || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ url: event.target.value })
+              <FieldLabel>{t('Description')}</FieldLabel>
+              <MarkdownEditor
+                width="100%"
+                height="160px"
+                showGutter={false}
+                editorProps={{ $blockScrolling: true }}
+                value={selectedBlock.content?.body || ''}
+                onChange={(value: string) =>
+                  updateSelectedBlockContent({ body: value })
                 }
               />
             </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Alt Text')}</FieldLabel>
-              <Input
-                value={selectedBlock.content?.alt || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ alt: event.target.value })
-                }
-              />
-            </FieldBlock>
-          </FieldGrid>
+          </SectionList>
         )}
         {selectedBlock.block_type === 'button' && (
           <FieldGrid>
@@ -666,6 +921,188 @@ export default function BlockStudio({
             </FieldBlock>
           </FieldGrid>
         )}
+        {selectedBlock.block_type === 'section' && (
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Anchor')}</FieldLabel>
+              <Input
+                value={selectedBlock.settings?.anchor || ''}
+                onChange={event =>
+                  updateSelectedBlockSettings({ anchor: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Background')}</FieldLabel>
+              <Input
+                value={selectedBlock.settings?.background || ''}
+                onChange={event =>
+                  updateSelectedBlockSettings({
+                    background: event.target.value,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Columns')}</FieldLabel>
+              <InputNumber
+                style={{ width: '100%' }}
+                min={1}
+                max={4}
+                value={Number(selectedBlock.settings?.columns) || 1}
+                onChange={value =>
+                  updateSelectedBlockSettings({ columns: Number(value) || 1 })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Container')}</FieldLabel>
+              <Select
+                value={selectedBlock.settings?.container || 'default'}
+                onChange={value =>
+                  updateSelectedBlockSettings({ container: value })
+                }
+                options={[
+                  { value: 'default', label: t('Default') },
+                  { value: 'full', label: t('Full Width') },
+                  { value: 'narrow', label: t('Narrow') },
+                ]}
+              />
+            </FieldBlock>
+          </FieldGrid>
+        )}
+        {selectedBlock.block_type === 'dynamic_widget' && (
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Widget Type')}</FieldLabel>
+              <Select
+                value={
+                  selectedBlock.settings?.widgetType || 'indicator_highlights'
+                }
+                onChange={value =>
+                  updateSelectedBlockSettings({ widgetType: value })
+                }
+                options={[
+                  {
+                    value: 'indicator_highlights',
+                    label: t('Indicator Highlights'),
+                  },
+                  { value: 'dashboard_list', label: t('Dashboard List') },
+                ]}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Limit')}</FieldLabel>
+              <InputNumber
+                style={{ width: '100%' }}
+                min={1}
+                max={24}
+                value={Number(selectedBlock.settings?.limit) || 6}
+                onChange={value =>
+                  updateSelectedBlockSettings({ limit: Number(value) || 6 })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+        )}
+        {selectedBlock.block_type === 'page_title' && (
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Show Subtitle')}</FieldLabel>
+              <Switch
+                checked={selectedBlock.settings?.showSubtitle !== false}
+                onChange={checked =>
+                  updateSelectedBlockSettings({ showSubtitle: checked })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Show Excerpt')}</FieldLabel>
+              <Switch
+                checked={selectedBlock.settings?.showExcerpt === true}
+                onChange={checked =>
+                  updateSelectedBlockSettings({ showExcerpt: checked })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+        )}
+        {selectedBlock.block_type === 'breadcrumb' && (
+          <FieldBlock>
+            <FieldLabel>{t('Show Current Page')}</FieldLabel>
+            <Switch
+              checked={selectedBlock.settings?.showCurrentPage !== false}
+              onChange={checked =>
+                updateSelectedBlockSettings({ showCurrentPage: checked })
+              }
+            />
+          </FieldBlock>
+        )}
+        {selectedBlock.block_type === 'menu' && (
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Menu')}</FieldLabel>
+              <Select
+                allowClear
+                value={selectedBlock.settings?.menu_slug || undefined}
+                options={menuOptions}
+                onChange={value =>
+                  updateSelectedBlockSettings({ menu_slug: value || null })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Orientation')}</FieldLabel>
+              <Select
+                value={selectedBlock.settings?.orientation || 'horizontal'}
+                onChange={value =>
+                  updateSelectedBlockSettings({ orientation: value })
+                }
+                options={[
+                  { value: 'horizontal', label: t('Horizontal') },
+                  { value: 'vertical', label: t('Vertical') },
+                ]}
+              />
+            </FieldBlock>
+          </FieldGrid>
+        )}
+        {selectedBlock.block_type === 'callout' && (
+          <FieldBlock>
+            <FieldLabel>{t('Tone')}</FieldLabel>
+            <Select
+              value={selectedBlock.settings?.tone || 'info'}
+              onChange={value => updateSelectedBlockSettings({ tone: value })}
+              options={[
+                { value: 'info', label: t('Info') },
+                { value: 'success', label: t('Success') },
+                { value: 'warning', label: t('Warning') },
+                { value: 'error', label: t('Error') },
+              ]}
+            />
+          </FieldBlock>
+        )}
+        {selectedBlock.block_type === 'statistic' && (
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Value')}</FieldLabel>
+              <Input
+                value={selectedBlock.content?.value || ''}
+                onChange={event =>
+                  updateSelectedBlockContent({ value: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Caption')}</FieldLabel>
+              <Input
+                value={selectedBlock.content?.caption || ''}
+                onChange={event =>
+                  updateSelectedBlockContent({ caption: event.target.value })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+        )}
         <Space wrap>
           <Button onClick={() => moveSelectedBlock(-1)}>↑ {t('Move')}</Button>
           <Button onClick={() => moveSelectedBlock(1)}>↓ {t('Move')}</Button>
@@ -719,7 +1156,7 @@ export default function BlockStudio({
                   {page.visibility || 'draft'}
                 </Tag>
               </div>
-              <TinyMeta>{page.slug}</TinyMeta>
+              <TinyMeta>{page.path || page.slug}</TinyMeta>
             </CardButton>
           ))}
         </SectionList>
@@ -795,6 +1232,8 @@ export default function BlockStudio({
             blocks={blocks}
             charts={charts}
             dashboards={dashboards}
+            page={draftPage}
+            navigation={navigationMenus}
             mode="editor"
           />
         ) : (

@@ -26,6 +26,7 @@ import type {
 } from './types';
 
 const CONTAINER_BLOCK_TYPES = new Set([
+  'section',
   'group',
   'columns',
   'column',
@@ -93,6 +94,15 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
   };
 
   switch (normalizedType) {
+    case 'section':
+      base.content = { title: t('Section'), subtitle: '' };
+      base.settings = {
+        anchor: '',
+        container: 'default',
+        background: '',
+        columns: 1,
+      };
+      break;
     case 'rich_text':
     case 'paragraph':
       base.content = { body: t('Add content here.') };
@@ -102,6 +112,15 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       break;
     case 'image':
       base.content = { title: t('Image'), url: '', alt: '', caption: '' };
+      break;
+    case 'file':
+    case 'download':
+      base.content = { title: t('Download resource'), body: '' };
+      base.settings = {
+        asset_ref: null,
+        download_url: '',
+        open_in_new_tab: false,
+      };
       break;
     case 'button':
       base.content = { label: t('Open link') };
@@ -148,6 +167,26 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
     case 'dynamic_widget':
       base.content = { title: t('Dynamic Widget'), body: '' };
       base.settings = { widgetType: 'indicator_highlights', limit: 6 };
+      break;
+    case 'page_title':
+      base.settings = { showSubtitle: true, showExcerpt: false };
+      break;
+    case 'breadcrumb':
+      base.settings = { showCurrentPage: true };
+      break;
+    case 'menu':
+      base.content = { title: t('Menu') };
+      base.settings = { menu_slug: 'header', location: 'header' };
+      break;
+    case 'callout':
+      base.content = {
+        title: t('Callout'),
+        body: t('Highlight an important note.'),
+      };
+      base.settings = { tone: 'info' };
+      break;
+    case 'statistic':
+      base.content = { title: t('Statistic'), value: '0', caption: '' };
       break;
     case 'embed':
     case 'video':

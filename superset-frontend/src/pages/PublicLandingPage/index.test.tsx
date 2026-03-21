@@ -28,6 +28,89 @@ import { DEFAULT_PUBLIC_PAGE_CONFIG } from './config';
 import type { PortalPayload } from './types';
 import PublicLandingPage from '.';
 
+const welcomePageBlocks = [
+  {
+    uid: 'hero-block',
+    block_type: 'hero',
+    slot: 'hero',
+    sort_order: 0,
+    is_container: true,
+    content: {
+      title: 'Towards malaria elimination in Uganda',
+      subtitle: 'Serving-table powered public analytics.',
+      body: 'Explore curated pages and public charts.',
+    },
+    settings: {},
+    styles: {},
+    metadata: { label: 'Hero' },
+    children: [],
+  },
+  {
+    uid: 'featured-group',
+    block_type: 'group',
+    slot: 'content',
+    sort_order: 1,
+    is_container: true,
+    content: {
+      title: 'Featured Analytics',
+      subtitle: 'Public charts backed by serving datasets.',
+    },
+    settings: {},
+    styles: {},
+    metadata: { label: 'Group' },
+    children: [
+      {
+        uid: 'coverage-chart',
+        block_type: 'chart',
+        slot: 'content',
+        sort_order: 0,
+        is_container: false,
+        content: {
+          title: 'Coverage Map',
+          caption: 'Latest malaria coverage summary.',
+        },
+        settings: {
+          chart_ref: { id: 7 },
+          height: 240,
+          show_header: true,
+        },
+        styles: {},
+        metadata: { label: 'Chart' },
+        chart: {
+          id: 7,
+          slice_name: 'Coverage Map',
+          description: 'Serving chart',
+          viz_type: 'dhis2_map',
+          url: '/superset/explore/?slice_id=7&standalone=true',
+          is_public: true,
+          uses_serving_dataset: true,
+        },
+        children: [],
+      },
+    ],
+  },
+];
+
+const dashboardDirectoryBlocks = [
+  {
+    uid: 'dashboard-directory',
+    block_type: 'dynamic_widget',
+    slot: 'content',
+    sort_order: 0,
+    is_container: false,
+    content: {
+      title: 'Public Dashboards',
+      subtitle: 'Browse the published dashboard directory.',
+    },
+    settings: {
+      widgetType: 'dashboard_list',
+    },
+    styles: {},
+    metadata: { label: 'Dashboard Directory' },
+    children: [],
+  },
+];
+
 jest.mock(
   './PublicDashboardEmbed',
   () =>
@@ -184,6 +267,7 @@ const portalPayload: PortalPayload = {
         },
       },
     },
+    blocks: welcomePageBlocks,
     sections: [
       {
         id: 101,
@@ -341,6 +425,7 @@ const dashboardCatalogPayload: PortalPayload = {
     is_homepage: false,
     display_order: 1,
     settings: {},
+    blocks: dashboardDirectoryBlocks,
     sections: [
       {
         id: 103,

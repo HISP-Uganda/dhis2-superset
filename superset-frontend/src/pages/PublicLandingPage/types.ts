@@ -36,6 +36,35 @@ export type PortalUserRef = {
   name?: string | null;
 };
 
+export type PortalMediaAsset = {
+  id: number;
+  slug: string;
+  title: string;
+  description?: string | null;
+  asset_type?: string;
+  mime_type?: string | null;
+  file_extension?: string | null;
+  original_filename?: string | null;
+  file_size?: number | null;
+  visibility?: 'private' | 'authenticated' | 'public';
+  is_public?: boolean;
+  status?: string;
+  alt_text?: string | null;
+  caption?: string | null;
+  width?: number | null;
+  height?: number | null;
+  settings?: Record<string, any>;
+  download_url?: string | null;
+  storage_path?: string | null;
+  checksum?: string | null;
+  archived_on?: string | null;
+  created_on?: string | null;
+  changed_on?: string | null;
+  created_by?: PortalUserRef | null;
+  changed_by?: PortalUserRef | null;
+  archived_by?: PortalUserRef | null;
+};
+
 export type PortalStyleBundle = {
   id: number;
   slug: string;
@@ -137,8 +166,9 @@ export type PortalHighlight = {
 };
 
 export type PortalPageSummary = {
-  id: number;
+  id?: number;
   slug?: string;
+  path?: string;
   title: string;
   subtitle?: string | null;
   description?: string | null;
@@ -146,9 +176,13 @@ export type PortalPageSummary = {
   is_published: boolean;
   is_homepage: boolean;
   display_order: number;
+  parent_page_id?: number | null;
+  navigation_label?: string | null;
   theme_id?: number | null;
   template_id?: number | null;
   style_bundle_id?: number | null;
+  featured_image_asset_id?: number | null;
+  og_image_asset_id?: number | null;
   settings: Record<string, any>;
   status?: string;
   visibility?: 'draft' | 'authenticated' | 'public';
@@ -167,6 +201,15 @@ export type PortalPageSummary = {
   changed_by?: PortalUserRef | null;
   published_by?: PortalUserRef | null;
   archived_by?: PortalUserRef | null;
+  parent_page?: {
+    id?: number | null;
+    slug?: string | null;
+    path?: string | null;
+    title?: string | null;
+    navigation_label?: string | null;
+  } | null;
+  featured_image_asset?: PortalMediaAsset | null;
+  og_image_asset?: PortalMediaAsset | null;
   theme?: PortalTheme | null;
   template?: PortalTemplate | null;
   style_bundle?: PortalStyleBundle | null;
@@ -210,6 +253,7 @@ export type PortalPageBlock = {
   metadata: Record<string, any>;
   chart?: PortalChartSummary | null;
   dashboard?: PortalDashboardSummary | null;
+  asset?: PortalMediaAsset | null;
   children: PortalPageBlock[];
   style_bundle?: PortalStyleBundle | null;
   rendering?: PortalRendering;
@@ -234,6 +278,12 @@ export type PortalPage = PortalPageSummary & {
   status?: string;
   blocks: PortalPageBlock[];
   sections: PortalPageSection[];
+  breadcrumbs?: Array<{
+    id?: number | null;
+    title?: string | null;
+    slug?: string | null;
+    path?: string | null;
+  }>;
   rendering?: PortalRendering;
 };
 
@@ -341,6 +391,7 @@ export type PortalAdminPayload = {
     themes: number;
     templates: number;
     style_bundles: number;
+    media_assets?: number;
   };
   pages: PortalPageSummary[];
   current_page: PortalPage | null;
@@ -350,6 +401,7 @@ export type PortalAdminPayload = {
   };
   dashboards: PortalDashboardSummary[];
   available_charts: PortalChartSummary[];
+  media_assets?: PortalMediaAsset[];
   block_types?: PortalBlockDefinition[];
   themes: PortalTheme[];
   templates: PortalTemplate[];
@@ -360,6 +412,7 @@ export type PortalAdminPayload = {
     can_edit_pages: boolean;
     can_delete_pages: boolean;
     can_publish_pages: boolean;
+    can_manage_media?: boolean;
     can_manage_menus: boolean;
     can_embed_charts: boolean;
     can_manage_layout: boolean;

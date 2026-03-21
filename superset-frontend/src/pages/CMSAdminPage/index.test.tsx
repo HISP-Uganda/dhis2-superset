@@ -89,11 +89,13 @@ const adminPayload = {
     themes: 1,
     templates: 1,
     style_bundles: 1,
+    media_assets: 1,
   },
   pages: [
     {
       id: 1,
       slug: 'welcome',
+      path: 'about/welcome',
       title: 'Welcome',
       subtitle: 'Overview',
       description: 'Portal welcome page',
@@ -101,17 +103,22 @@ const adminPayload = {
       is_published: true,
       is_homepage: true,
       display_order: 0,
+      parent_page_id: null,
+      navigation_label: 'Welcome',
       status: 'published',
       visibility: 'public',
       theme_id: 1,
       template_id: 1,
       style_bundle_id: 1,
+      featured_image_asset_id: null,
+      og_image_asset_id: null,
       settings: {},
     },
   ],
   current_page: {
     id: 1,
     slug: 'welcome',
+    path: 'about/welcome',
     title: 'Welcome',
     subtitle: 'Overview',
     description: 'Portal welcome page',
@@ -119,6 +126,8 @@ const adminPayload = {
     is_published: true,
     is_homepage: true,
     display_order: 0,
+    parent_page_id: null,
+    navigation_label: 'Welcome',
     status: 'published',
     visibility: 'public',
     page_type: 'content',
@@ -126,7 +135,10 @@ const adminPayload = {
     theme_id: 1,
     template_id: 1,
     style_bundle_id: 1,
+    featured_image_asset_id: null,
+    og_image_asset_id: null,
     settings: {},
+    blocks: [],
     sections: [],
   },
   menus: {
@@ -135,6 +147,19 @@ const adminPayload = {
   },
   dashboards: [],
   available_charts: [],
+  media_assets: [
+    {
+      id: 7,
+      slug: 'policy-brief',
+      title: 'Policy Brief',
+      asset_type: 'file',
+      visibility: 'private',
+      is_public: false,
+      status: 'active',
+      settings: {},
+      download_url: '/api/v1/public_page/assets/7/download',
+    },
+  ],
   themes: [
     {
       id: 1,
@@ -179,6 +204,7 @@ const adminPayload = {
     can_edit_pages: true,
     can_delete_pages: true,
     can_publish_pages: true,
+    can_manage_media: true,
     can_manage_menus: true,
     can_embed_charts: true,
     can_manage_layout: true,
@@ -212,6 +238,7 @@ test('renders the authenticated CMS studio shell', async () => {
   expect(await screen.findByText('CMS Pages')).toBeInTheDocument();
   expect(screen.getByText('Portal Administration')).toBeInTheDocument();
   expect(screen.getByText('Canvas Preview')).toBeInTheDocument();
+  expect(screen.getByText('Media Library')).toBeInTheDocument();
   expect(screen.getByText('Themes')).toBeInTheDocument();
   expect(screen.getAllByDisplayValue('Welcome').length).toBeGreaterThan(0);
 });

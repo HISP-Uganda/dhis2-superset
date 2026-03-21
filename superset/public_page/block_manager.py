@@ -25,6 +25,14 @@ from uuid import uuid4
 
 BLOCK_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
+        "type": "section",
+        "label": "Section",
+        "category": "layout",
+        "description": "Page section container with anchor, spacing, and background settings.",
+        "icon": "layout",
+        "is_container": True,
+    },
+    {
         "type": "rich_text",
         "label": "Rich Text",
         "category": "text",
@@ -94,6 +102,22 @@ BLOCK_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "category": "media",
         "description": "External embed or iframe source.",
         "icon": "link",
+        "is_container": False,
+    },
+    {
+        "type": "file",
+        "label": "File",
+        "category": "media",
+        "description": "Downloadable file or document resource.",
+        "icon": "paper-clip",
+        "is_container": False,
+    },
+    {
+        "type": "download",
+        "label": "Download",
+        "category": "media",
+        "description": "Prominent download call-to-action for a CMS asset.",
+        "icon": "download",
         "is_container": False,
     },
     {
@@ -193,6 +217,46 @@ BLOCK_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "is_container": False,
     },
     {
+        "type": "page_title",
+        "label": "Page Title",
+        "category": "utility",
+        "description": "Render the current page title, subtitle, or excerpt.",
+        "icon": "font-size",
+        "is_container": False,
+    },
+    {
+        "type": "breadcrumb",
+        "label": "Breadcrumb",
+        "category": "utility",
+        "description": "Render the current page breadcrumb trail.",
+        "icon": "right",
+        "is_container": False,
+    },
+    {
+        "type": "menu",
+        "label": "Menu",
+        "category": "utility",
+        "description": "Render a managed navigation menu inside page content.",
+        "icon": "menu",
+        "is_container": False,
+    },
+    {
+        "type": "callout",
+        "label": "Callout",
+        "category": "design",
+        "description": "Highlighted alert or informational card.",
+        "icon": "notification",
+        "is_container": False,
+    },
+    {
+        "type": "statistic",
+        "label": "Statistic",
+        "category": "data",
+        "description": "Standalone metric/stat block.",
+        "icon": "number",
+        "is_container": False,
+    },
+    {
         "type": "html",
         "label": "HTML",
         "category": "advanced",
@@ -226,6 +290,7 @@ LEGACY_COMPONENT_TYPE_MAP = {
 
 LEGACY_SECTION_TYPE_MAP = {
     "hero": "hero",
+    "section": "section",
     "chart_grid": "group",
     "kpi_band": "group",
     "dashboard_catalog": "group",
@@ -265,6 +330,14 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
     }
     if definition["type"] in {"rich_text", "paragraph"}:
         payload["content"] = {"body": "Add content here."}
+    elif definition["type"] == "section":
+        payload["content"] = {"title": "Section", "subtitle": ""}
+        payload["settings"] = {
+            "anchor": "",
+            "container": "default",
+            "background": "",
+            "columns": 1,
+        }
     elif definition["type"] == "heading":
         payload["content"] = {"text": "Heading", "level": 2}
     elif definition["type"] == "quote":
@@ -277,6 +350,9 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
         payload["content"] = {"url": "", "caption": ""}
     elif definition["type"] == "embed":
         payload["content"] = {"url": "", "caption": ""}
+    elif definition["type"] in {"file", "download"}:
+        payload["content"] = {"title": "Download resource", "body": ""}
+        payload["settings"] = {"asset_ref": None, "download_url": "", "open_in_new_tab": False}
     elif definition["type"] == "button":
         payload["content"] = {"label": "Open link"}
         payload["settings"] = {"url": "", "variant": "primary"}
@@ -326,6 +402,18 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
     elif definition["type"] == "dynamic_widget":
         payload["content"] = {"title": "Dynamic Widget", "body": ""}
         payload["settings"] = {"widgetType": "indicator_highlights", "limit": 6}
+    elif definition["type"] == "page_title":
+        payload["settings"] = {"showSubtitle": True, "showExcerpt": False}
+    elif definition["type"] == "breadcrumb":
+        payload["settings"] = {"showCurrentPage": True}
+    elif definition["type"] == "menu":
+        payload["content"] = {"title": "Menu"}
+        payload["settings"] = {"menu_slug": "header", "location": "header"}
+    elif definition["type"] == "callout":
+        payload["content"] = {"title": "Callout", "body": "Highlight an important note."}
+        payload["settings"] = {"tone": "info"}
+    elif definition["type"] == "statistic":
+        payload["content"] = {"title": "Statistic", "value": "0", "caption": ""}
     elif definition["type"] == "html":
         payload["content"] = {"html": ""}
     return payload

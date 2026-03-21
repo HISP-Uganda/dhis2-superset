@@ -191,6 +191,14 @@ export function createDraftPage(page: PortalPage): PortalPage {
     style_bundle: page.style_bundle
       ? { ...page.style_bundle }
       : page.style_bundle,
+    parent_page: page.parent_page ? { ...page.parent_page } : page.parent_page,
+    featured_image_asset: page.featured_image_asset
+      ? { ...page.featured_image_asset }
+      : page.featured_image_asset,
+    og_image_asset: page.og_image_asset
+      ? { ...page.og_image_asset }
+      : page.og_image_asset,
+    breadcrumbs: [...(page.breadcrumbs || [])],
     rendering: page.rendering
       ? {
           ...page.rendering,
@@ -248,12 +256,18 @@ export function normalizeDraftPage(page: PortalPage): PortalPage {
     is_published: page.is_published,
     is_homepage: page.is_homepage,
     display_order: page.display_order ?? 0,
+    parent_page_id: page.parent_page_id ?? page.parent_page?.id ?? null,
+    navigation_label: page.navigation_label?.trim() || '',
     visibility: page.visibility || 'public',
     page_type: page.page_type || 'content',
     template_key: page.template_key || 'default',
     theme_id: page.theme_id ?? page.theme?.id ?? null,
     template_id: page.template_id ?? page.template?.id ?? null,
     style_bundle_id: page.style_bundle_id ?? page.style_bundle?.id ?? null,
+    featured_image_asset_id:
+      page.featured_image_asset_id ?? page.featured_image_asset?.id ?? null,
+    og_image_asset_id:
+      page.og_image_asset_id ?? page.og_image_asset?.id ?? null,
     seo_title: page.seo_title?.trim() || '',
     seo_description: page.seo_description?.trim() || '',
     og_image_url: page.og_image_url?.trim() || '',

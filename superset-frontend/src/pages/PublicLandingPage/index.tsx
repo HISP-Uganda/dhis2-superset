@@ -20,7 +20,6 @@
 
 import { CSSProperties, DragEvent, useEffect, useMemo, useState } from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
-import { SafeMarkdown } from '@superset-ui/core/components';
 import {
   Alert,
   Button,
@@ -33,7 +32,6 @@ import {
   Space,
   Spin,
   Switch,
-  Tag,
   Tooltip,
   message,
 } from 'antd';
@@ -41,7 +39,6 @@ import type { MenuProps } from 'antd';
 import { useHistory, useLocation } from 'react-router-dom';
 import logoImage from 'src/assets/images/loog.jpg';
 import {
-  applyUserLayoutToSections,
   createDraftPage,
   createEmptyComponent,
   createEmptySection,
@@ -50,12 +47,9 @@ import {
 } from './portalUtils';
 import { ensurePageBlocks } from './blockUtils';
 import { groupBlocksBySlot, RenderBlockTree } from './BlockRenderer';
-import PublicChartContainer from './PublicChartContainer';
 import PublicDashboardEmbed from './PublicDashboardEmbed';
 import type {
-  PortalChartSummary,
   PortalDashboardSummary,
-  PortalHighlight,
   PortalNavigationItem,
   PortalPage,
   PortalPageComponent,
@@ -192,112 +186,6 @@ const Main = styled.main<{ $maxWidth: string }>`
   padding: 28px 24px 72px;
 `;
 
-const Hero = styled.section`
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--portal-radius-lg, 0);
-  padding: 36px;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
-  gap: 28px;
-  background: var(--portal-hero-background, var(--portal-surface));
-  border: 1px solid var(--portal-border-strong);
-  box-shadow: var(--portal-shadow-hero, none);
-
-  @media (max-width: 980px) {
-    grid-template-columns: 1fr;
-    padding: 28px;
-  }
-`;
-
-const HeroCopy = styled.div`
-  position: relative;
-  z-index: 1;
-`;
-
-const Eyebrow = styled.div`
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 6px 12px;
-  border-radius: var(--portal-radius-md, 0);
-  background: rgba(15, 118, 110, 0.12);
-  color: var(--portal-accent);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-`;
-
-const HeroTitle = styled.h1`
-  margin: 0;
-  font-size: clamp(2.5rem, 5vw, 4rem);
-  line-height: 1;
-  letter-spacing: -0.05em;
-  color: var(--portal-text);
-`;
-
-const HeroSubtitle = styled.p`
-  margin: 18px 0 0;
-  max-width: 62ch;
-  font-size: 18px;
-  line-height: 1.7;
-  color: var(--portal-muted-strong);
-`;
-
-const HeroMarkdown = styled.div`
-  margin-top: 20px;
-  color: var(--portal-muted-strong);
-  font-size: 15px;
-  line-height: 1.8;
-
-  p:last-child {
-    margin-bottom: 0;
-  }
-`;
-
-const HeroActionRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 28px;
-`;
-
-const HeroMetaGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 24px;
-
-  @media (max-width: 640px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
-const HeroMetaCard = styled.div`
-  padding: 16px 18px;
-  border-radius: var(--portal-radius-md, 0);
-  background: var(--portal-surface);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-`;
-
-const HeroMetaValue = styled.div`
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  color: var(--portal-text);
-`;
-
-const HeroMetaLabel = styled.div`
-  margin-top: 6px;
-  color: var(--portal-muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-`;
-
 const Section = styled.section`
   margin-top: 28px;
 `;
@@ -337,26 +225,6 @@ const SectionNote = styled.span`
   font-size: 13px;
 `;
 
-const Grid = styled.div<{ $columns?: number }>`
-  display: grid;
-  grid-template-columns: repeat(
-    ${({ $columns = 1 }) => $columns},
-    minmax(0, 1fr)
-  );
-  gap: 18px;
-
-  @media (max-width: 1080px) {
-    grid-template-columns: repeat(
-      ${({ $columns = 1 }) => Math.min($columns, 2)},
-      minmax(0, 1fr)
-    );
-  }
-
-  @media (max-width: 720px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
 const SurfaceCard = styled.article`
   display: flex;
   flex-direction: column;
@@ -380,93 +248,6 @@ const CardBody = styled.div`
   color: var(--portal-muted-strong);
   font-size: 15px;
   line-height: 1.75;
-`;
-
-const MetricGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-`;
-
-const MetricCard = styled.div`
-  padding: 20px;
-  border-radius: var(--portal-radius-md, 0);
-  background: var(--portal-surface);
-  border: 1px solid var(--portal-border);
-  box-shadow: var(--portal-shadow-card, none);
-`;
-
-const MetricValue = styled.div`
-  font-size: 34px;
-  line-height: 1;
-  letter-spacing: -0.05em;
-  font-weight: 800;
-  color: var(--portal-text);
-`;
-
-const MetricLabel = styled.div`
-  margin-top: 10px;
-  font-size: 13px;
-  color: var(--portal-muted-strong);
-  font-weight: 700;
-`;
-
-const MetricMeta = styled.div`
-  margin-top: 10px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  color: var(--portal-muted);
-  font-size: 12px;
-`;
-
-const DashboardGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 18px;
-`;
-
-const DashboardCard = styled.a`
-  display: block;
-  padding: 22px;
-  border-radius: var(--portal-radius-lg, 0);
-  text-decoration: none;
-  background: var(--portal-surface);
-  border: 1px solid var(--portal-border);
-  box-shadow: var(--portal-shadow-card, none);
-  color: inherit;
-  transition:
-    background 0.18s ease,
-    border-color 0.18s ease;
-
-  &:hover {
-    border-color: rgba(15, 118, 110, 0.3);
-    text-decoration: none;
-  }
-`;
-
-const DashboardTitle = styled.div`
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.03em;
-  color: var(--portal-text);
-`;
-
-const DashboardMeta = styled.div`
-  margin-top: 10px;
-  color: var(--portal-muted-strong);
-  font-size: 14px;
-  line-height: 1.6;
-`;
-
-const DashboardCta = styled.div`
-  margin-top: 18px;
-  color: var(--portal-accent);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 `;
 
 const Footer = styled.footer`
@@ -666,13 +447,6 @@ function joinClassNames(...values: Array<string | undefined | null | false>) {
   return values.filter(Boolean).join(' ');
 }
 
-function resolveSectionRegion(section: PortalPageSection) {
-  return (
-    section.settings?.region ||
-    (section.section_type === 'hero' ? 'hero' : 'content')
-  );
-}
-
 function emptyDraftPage(displayOrder: number): PortalPage {
   return {
     title: t('New Page'),
@@ -684,66 +458,9 @@ function emptyDraftPage(displayOrder: number): PortalPage {
     is_homepage: false,
     display_order: displayOrder,
     settings: {},
+    blocks: [],
     sections: [createEmptySection('hero'), createEmptySection('content')],
   } as PortalPage;
-}
-
-function lookupChart(
-  component: PortalPageComponent,
-  charts: PortalChartSummary[],
-): PortalChartSummary | null {
-  if (component.chart) {
-    return component.chart;
-  }
-  if (!component.chart_id) {
-    return null;
-  }
-  return charts.find(chart => chart.id === component.chart_id) || null;
-}
-
-function lookupDashboard(
-  component: PortalPageComponent,
-  dashboards: PortalDashboardSummary[],
-): PortalDashboardSummary | null {
-  if (component.dashboard) {
-    return component.dashboard;
-  }
-  if (!component.dashboard_id) {
-    return null;
-  }
-  return (
-    dashboards.find(dashboard => dashboard.id === component.dashboard_id) ||
-    null
-  );
-}
-
-function renderHighlights(
-  highlights: PortalHighlight[],
-  limit?: number,
-): JSX.Element {
-  const visibleHighlights = highlights.slice(0, limit || highlights.length);
-
-  if (!visibleHighlights.length) {
-    return <Empty description={t('No highlights are available yet.')} />;
-  }
-
-  return (
-    <MetricGrid>
-      {visibleHighlights.map(highlight => (
-        <MetricCard
-          key={`${highlight.canonical_metric_key}-${highlight.period}`}
-        >
-          <MetricValue>{highlight.value}</MetricValue>
-          <MetricLabel>{highlight.indicator_name}</MetricLabel>
-          <MetricMeta>
-            <Tag>{highlight.dataset_name || t('Dataset')}</Tag>
-            <Tag>{highlight.period || t('Latest')}</Tag>
-            <span>{highlight.instance_name || t('National')}</span>
-          </MetricMeta>
-        </MetricCard>
-      ))}
-    </MetricGrid>
-  );
 }
 
 export default function PublicLandingPage() {
@@ -767,10 +484,6 @@ export default function PublicLandingPage() {
 
   const currentPage = data?.current_page || null;
   const pageBlocks = ensurePageBlocks(currentPage);
-  const renderedSections = applyUserLayoutToSections(
-    currentPage?.sections || [],
-    data?.user_layout,
-  );
   const themeTokens = currentPage?.rendering?.theme?.tokens || {};
   const themeColors = themeTokens.colors || {};
   const themeContainers = themeTokens.containers || {};
@@ -788,9 +501,6 @@ export default function PublicLandingPage() {
     data?.portal_layout.config.portalTitle ||
     data?.config.navbar.title.text ||
     t('Public Analytics Portal');
-  const portalSubtitle =
-    data?.portal_layout.config.portalSubtitle ||
-    data?.config.content.welcomeDescription;
   const accentColor =
     themeColors.accent || data?.portal_layout.config.accentColor || '#0f766e';
   const secondaryColor =
@@ -1296,296 +1006,6 @@ export default function PublicLandingPage() {
     }
   }
 
-  function renderComponentCard(
-    component: PortalPageComponent,
-    section: PortalPageSection,
-  ) {
-    const chart = lookupChart(component, data?.available_charts || []);
-    const dashboard = lookupDashboard(component, data?.dashboards || []);
-    const componentHeight = Number(component.settings?.height) || 360;
-    const componentKey = component.component_key || component.id;
-    const componentClassName = joinClassNames(
-      'cms-component-shell',
-      component.rendering?.scope_class,
-    );
-    const componentStyle = (component.rendering?.inline_style ||
-      {}) as CSSProperties;
-
-    if (component.settings?.render_error) {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          <CardTitle>{component.title || t('Unavailable block')}</CardTitle>
-          <CardBody>{component.settings.render_error}</CardBody>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'chart' && chart) {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {component.title && <CardTitle>{component.title}</CardTitle>}
-          {component.body && <CardBody>{component.body}</CardBody>}
-          <PublicChartContainer
-            title={chart.slice_name}
-            url={chart.url}
-            height={componentHeight}
-          />
-          <SectionNote>
-            {t('Serving dataset')} • {chart.viz_type || t('Chart')}
-          </SectionNote>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'dashboard' && dashboard) {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          <CardTitle>{component.title || dashboard.dashboard_title}</CardTitle>
-          {component.body && <CardBody>{component.body}</CardBody>}
-          <PublicDashboardEmbed
-            title={dashboard.dashboard_title}
-            dashboardId={dashboard.id}
-            dashboardUuid={dashboard.uuid}
-            height={componentHeight}
-            loadingLabel={t('Loading dashboard...')}
-          />
-          <Button
-            type="link"
-            style={{ paddingInline: 0 }}
-            onClick={() => navigateToPublicDashboard(dashboard)}
-          >
-            {t('Open dashboard')}
-          </Button>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'indicator_highlights') {
-      const limit = Number(component.settings?.limit) || 6;
-      return (
-        <div
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {renderHighlights(data?.indicator_highlights || [], limit)}
-        </div>
-      );
-    }
-
-    if (component.component_type === 'dashboard_list') {
-      return (
-        <div
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {renderDashboardCatalog(section.title, section.subtitle)}
-        </div>
-      );
-    }
-
-    if (component.component_type === 'image') {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {component.title && <CardTitle>{component.title}</CardTitle>}
-          {component.settings?.imageUrl ? (
-            <img
-              src={component.settings.imageUrl}
-              alt={component.settings.altText || component.title || t('Image')}
-              style={{
-                width: '100%',
-                borderRadius: 'var(--portal-radius-md, 0)',
-                objectFit: 'cover',
-              }}
-            />
-          ) : (
-            <Empty description={t('No image configured yet.')} />
-          )}
-          {component.settings?.caption && (
-            <CardBody>{component.settings.caption}</CardBody>
-          )}
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'button') {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {component.title && <CardTitle>{component.title}</CardTitle>}
-          <Button
-            type={
-              (component.settings?.variant as
-                | 'primary'
-                | 'default'
-                | 'dashed'
-                | 'link'
-                | 'text') || 'primary'
-            }
-            onClick={() => navigateToPath(component.settings?.url)}
-          >
-            {component.body || t('Open link')}
-          </Button>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'cta') {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          {component.title && <CardTitle>{component.title}</CardTitle>}
-          {component.body && (
-            <CardBody className="cms-rich-text">
-              <SafeMarkdown source={component.body} />
-            </CardBody>
-          )}
-          <Button
-            type="primary"
-            onClick={() => navigateToPath(component.settings?.buttonUrl)}
-          >
-            {component.settings?.buttonLabel || t('Learn more')}
-          </Button>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'divider') {
-      return (
-        <div
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          <ComponentDivider />
-        </div>
-      );
-    }
-
-    if (component.component_type === 'spacer') {
-      return (
-        <div
-          key={componentKey}
-          className={componentClassName}
-          style={{
-            ...componentStyle,
-            height: Number(component.settings?.height) || 48,
-          }}
-        />
-      );
-    }
-
-    if (component.component_type === 'heading') {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          <CardTitle>
-            {component.title || component.body || t('Heading')}
-          </CardTitle>
-        </SurfaceCard>
-      );
-    }
-
-    if (component.component_type === 'paragraph') {
-      return (
-        <SurfaceCard
-          key={componentKey}
-          className={componentClassName}
-          style={componentStyle}
-        >
-          <CardBody className="cms-rich-text">
-            <SafeMarkdown source={component.body || t('No content yet.')} />
-          </CardBody>
-        </SurfaceCard>
-      );
-    }
-
-    return (
-      <SurfaceCard
-        key={componentKey}
-        className={componentClassName}
-        style={componentStyle}
-      >
-        {component.title && <CardTitle>{component.title}</CardTitle>}
-        <CardBody className="cms-rich-text">
-          <SafeMarkdown source={component.body || t('No content yet.')} />
-        </CardBody>
-      </SurfaceCard>
-    );
-  }
-
-  function renderDashboardCatalog(
-    title?: string | null,
-    subtitle?: string | null,
-  ) {
-    if (!data?.dashboards.length) {
-      return <Empty description={t('No public dashboards are available.')} />;
-    }
-
-    return (
-      <>
-        {(title || subtitle) && (
-          <SectionHeader>
-            <SectionTitleGroup>
-              {title && <SectionTitle>{title}</SectionTitle>}
-              {subtitle && <SectionSubtitle>{subtitle}</SectionSubtitle>}
-            </SectionTitleGroup>
-            <SectionNote>{t('Published Superset dashboards')}</SectionNote>
-          </SectionHeader>
-        )}
-        <DashboardGrid>
-          {data.dashboards.map(dashboard => (
-            <DashboardCard
-              key={dashboard.id}
-              href={buildPortalSearch({
-                pageSlug: pageSlug || currentPage?.slug,
-                dashboardSlug: dashboard.slug || String(dashboard.id),
-              })}
-              onClick={event => {
-                event.preventDefault();
-                navigateToPublicDashboard(dashboard);
-              }}
-            >
-              <DashboardTitle>{dashboard.dashboard_title}</DashboardTitle>
-              <DashboardMeta>
-                {t(
-                  'Explore the latest published analytics and dashboard filters.',
-                )}
-              </DashboardMeta>
-              <DashboardCta>{t('Open dashboard')}</DashboardCta>
-            </DashboardCard>
-          ))}
-        </DashboardGrid>
-      </>
-    );
-  }
-
   function renderSelectedDashboardView(dashboard: PortalDashboardSummary) {
     return (
       <Section>
@@ -1609,180 +1029,6 @@ export default function PublicLandingPage() {
             loadingLabel={t('Loading dashboard...')}
           />
         </SurfaceCard>
-      </Section>
-    );
-  }
-
-  function renderHero(section: PortalPageSection) {
-    const heroMarkdown = section.components.find(
-      component => component.component_type === 'markdown',
-    );
-    const heroChart = section.components.find(
-      component => component.component_type === 'chart',
-    );
-    const badge =
-      data?.portal_layout.config.welcomeBadge || t('Public Health Analytics');
-    const heroTitle = section.title || currentPage?.title || portalTitle;
-    const heroSubtitle =
-      section.subtitle || currentPage?.subtitle || portalSubtitle;
-    const ctaLabel =
-      currentPage?.settings.heroCtaLabel ||
-      data?.config.navbar.loginButton.text ||
-      t('Browse dashboards');
-    const ctaTarget =
-      currentPage?.settings.heroCtaTarget || '/superset/public/dashboards/';
-
-    const sectionClassName = joinClassNames(
-      'cms-page-region',
-      'cms-section-shell',
-      section.rendering?.scope_class,
-    );
-    const sectionStyle = (section.rendering?.inline_style ||
-      {}) as CSSProperties;
-
-    return (
-      <Hero
-        key={section.section_key || section.id}
-        className={sectionClassName}
-        style={sectionStyle}
-      >
-        <HeroCopy>
-          <Eyebrow>{badge}</Eyebrow>
-          <HeroTitle>{heroTitle}</HeroTitle>
-          {heroSubtitle && <HeroSubtitle>{heroSubtitle}</HeroSubtitle>}
-          {heroMarkdown?.body && (
-            <HeroMarkdown>
-              <SafeMarkdown source={heroMarkdown.body} />
-            </HeroMarkdown>
-          )}
-          <HeroActionRow>
-            <Button
-              type="primary"
-              size="large"
-              onClick={() => navigateToPath(ctaTarget)}
-            >
-              {ctaLabel}
-            </Button>
-            <Button
-              size="large"
-              onClick={() => navigateToPath('/superset/public/about/')}
-            >
-              {t('Learn more')}
-            </Button>
-          </HeroActionRow>
-          <HeroMetaGrid>
-            <HeroMetaCard>
-              <HeroMetaValue>{data?.pages.length || 0}</HeroMetaValue>
-              <HeroMetaLabel>{t('Portal Pages')}</HeroMetaLabel>
-            </HeroMetaCard>
-            <HeroMetaCard>
-              <HeroMetaValue>{data?.dashboards.length || 0}</HeroMetaValue>
-              <HeroMetaLabel>{t('Public Dashboards')}</HeroMetaLabel>
-            </HeroMetaCard>
-            <HeroMetaCard>
-              <HeroMetaValue>
-                {data?.available_charts.length || 0}
-              </HeroMetaValue>
-              <HeroMetaLabel>{t('Serving Charts')}</HeroMetaLabel>
-            </HeroMetaCard>
-          </HeroMetaGrid>
-        </HeroCopy>
-        <div>
-          {heroChart ? (
-            renderComponentCard(heroChart, section)
-          ) : (
-            <SurfaceCard>
-              <CardTitle>{t('Portal Coverage')}</CardTitle>
-              <CardBody>
-                {t(
-                  'Pages, charts, and menus are managed from the backend so the public experience stays consistent and visible.',
-                )}
-              </CardBody>
-              {renderHighlights(data?.indicator_highlights || [], 3)}
-            </SurfaceCard>
-          )}
-        </div>
-      </Hero>
-    );
-  }
-
-  function renderSection(section: PortalPageSection) {
-    const sectionClassName = joinClassNames(
-      'cms-page-region',
-      'cms-section-shell',
-      section.rendering?.scope_class,
-    );
-    const sectionStyle = (section.rendering?.inline_style ||
-      {}) as CSSProperties;
-    if (section.section_type === 'hero') {
-      return renderHero(section);
-    }
-
-    if (section.section_type === 'kpi_band') {
-      const highlightsComponent = section.components.find(
-        component => component.component_type === 'indicator_highlights',
-      );
-      const limit = Number(highlightsComponent?.settings?.limit) || 6;
-      return (
-        <Section
-          key={section.section_key || section.id}
-          className={sectionClassName}
-          style={sectionStyle}
-        >
-          <SectionHeader>
-            <SectionTitleGroup>
-              {section.title && <SectionTitle>{section.title}</SectionTitle>}
-              {section.subtitle && (
-                <SectionSubtitle>{section.subtitle}</SectionSubtitle>
-              )}
-            </SectionTitleGroup>
-            <SectionNote>{t('Latest DHIS2 highlights')}</SectionNote>
-          </SectionHeader>
-          {renderHighlights(data?.indicator_highlights || [], limit)}
-        </Section>
-      );
-    }
-
-    if (section.section_type === 'dashboard_catalog') {
-      return (
-        <Section
-          key={section.section_key || section.id}
-          className={sectionClassName}
-          style={sectionStyle}
-        >
-          {renderDashboardCatalog(section.title, section.subtitle)}
-        </Section>
-      );
-    }
-
-    const columns =
-      Number(section.settings?.columns) ||
-      (section.section_type === 'chart_grid' ? 2 : 1);
-
-    return (
-      <Section
-        key={section.section_key || section.id}
-        className={sectionClassName}
-        style={sectionStyle}
-      >
-        {(section.title || section.subtitle) && (
-          <SectionHeader>
-            <SectionTitleGroup>
-              {section.title && <SectionTitle>{section.title}</SectionTitle>}
-              {section.subtitle && (
-                <SectionSubtitle>{section.subtitle}</SectionSubtitle>
-              )}
-            </SectionTitleGroup>
-            {section.section_type === 'chart_grid' && (
-              <SectionNote>{t('Public serving-table embeds')}</SectionNote>
-            )}
-          </SectionHeader>
-        )}
-        <Grid $columns={columns}>
-          {section.components.map(component =>
-            renderComponentCard(component, section),
-          )}
-        </Grid>
       </Section>
     );
   }
@@ -1962,6 +1208,8 @@ export default function PublicLandingPage() {
                 blocks={renderedRegions.header}
                 charts={data?.available_charts || []}
                 dashboards={data?.dashboards || []}
+                page={currentPage}
+                navigation={data?.navigation}
                 highlights={data?.indicator_highlights || []}
                 onNavigate={navigateToPath}
                 onOpenDashboard={navigateToPublicDashboard}
@@ -1970,6 +1218,8 @@ export default function PublicLandingPage() {
                 blocks={renderedRegions.hero}
                 charts={data?.available_charts || []}
                 dashboards={data?.dashboards || []}
+                page={currentPage}
+                navigation={data?.navigation}
                 highlights={data?.indicator_highlights || []}
                 onNavigate={navigateToPath}
                 onOpenDashboard={navigateToPublicDashboard}
@@ -1982,6 +1232,8 @@ export default function PublicLandingPage() {
                       blocks={renderedRegions.content}
                       charts={data?.available_charts || []}
                       dashboards={data?.dashboards || []}
+                      page={currentPage}
+                      navigation={data?.navigation}
                       highlights={data?.indicator_highlights || []}
                       onNavigate={navigateToPath}
                       onOpenDashboard={navigateToPublicDashboard}
@@ -1993,6 +1245,8 @@ export default function PublicLandingPage() {
                         blocks={renderedRegions.sidebar}
                         charts={data?.available_charts || []}
                         dashboards={data?.dashboards || []}
+                        page={currentPage}
+                        navigation={data?.navigation}
                         highlights={data?.indicator_highlights || []}
                         onNavigate={navigateToPath}
                         onOpenDashboard={navigateToPublicDashboard}
@@ -2005,6 +1259,8 @@ export default function PublicLandingPage() {
                 blocks={renderedRegions.cta}
                 charts={data?.available_charts || []}
                 dashboards={data?.dashboards || []}
+                page={currentPage}
+                navigation={data?.navigation}
                 highlights={data?.indicator_highlights || []}
                 onNavigate={navigateToPath}
                 onOpenDashboard={navigateToPublicDashboard}
@@ -2013,6 +1269,8 @@ export default function PublicLandingPage() {
                 blocks={renderedRegions.footer}
                 charts={data?.available_charts || []}
                 dashboards={data?.dashboards || []}
+                page={currentPage}
+                navigation={data?.navigation}
                 highlights={data?.indicator_highlights || []}
                 onNavigate={navigateToPath}
                 onOpenDashboard={navigateToPublicDashboard}

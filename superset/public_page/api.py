@@ -18,16 +18,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import mimetypes
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from flask import current_app, g, request, Response
+from flask import current_app, g, request, Response, send_file
 from flask_appbuilder.api import BaseApi, expose, protect, safe
 from marshmallow import Schema, ValidationError, fields, validate
 from sqlalchemy import func
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
 
 from superset import security_manager
 from superset.extensions import db, event_logger
@@ -43,6 +48,7 @@ from superset.public_page.block_manager import (
 from superset.public_page.models import (
     StyleBundle,
     Template,
+    MediaAsset,
     Theme,
     NavigationItem,
     NavigationMenu,
@@ -84,12 +90,33 @@ CMS_PAGE_CREATE_PERMISSION = "cms.pages.create"
 CMS_PAGE_EDIT_PERMISSION = "cms.pages.edit"
 CMS_PAGE_DELETE_PERMISSION = "cms.pages.delete"
 CMS_PAGE_PUBLISH_PERMISSION = "cms.pages.publish"
+CMS_MEDIA_MANAGE_PERMISSION = "cms.media.manage"
 CMS_MENU_MANAGE_PERMISSION = "cms.menus.manage"
 CMS_CHART_EMBED_PERMISSION = "cms.charts.embed"
 CMS_LAYOUT_MANAGE_PERMISSION = "cms.layout.manage"
 CMS_THEME_MANAGE_PERMISSION = "cms.themes.manage"
 CMS_TEMPLATE_MANAGE_PERMISSION = "cms.templates.manage"
 CMS_STYLE_MANAGE_PERMISSION = "cms.styles.manage"
+ASSET_STORAGE_SUBDIR = "public_page_assets"
+DEFAULT_PUBLIC_PAGE_ALLOWED_ASSET_EXTENSIONS = {
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "svg",
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "csv",
+    "txt",
+    "ppt",
+    "pptx",
+    "zip",
+    "json",
+}
 
 
 # Default configuration for public landing page
@@ -227,6 +254,10 @@ def _can_publish_pages() -> bool:
     return security_manager.can_access(CMS_PAGE_PUBLISH_PERMISSION, CMS_VIEW_NAME)
 
 
+def _can_manage_media() -> bool:
+    return security_manager.can_access(CMS_MEDIA_MANAGE_PERMISSION, CMS_VIEW_NAME)
+
+
 def _can_manage_menus() -> bool:
     return security_manager.can_access(CMS_MENU_MANAGE_PERMISSION, CMS_VIEW_NAME)
 
@@ -287,6 +318,22 @@ class PortalBlockSchema(Schema):
     children = fields.List(fields.Nested(lambda: PortalBlockSchema()), load_default=list)
 
 
+class PortalMediaAssetSchema(Schema):
+    id = fields.Int(load_default=None, allow_none=True)
+    slug = fields.Str(load_default=None, allow_none=True)
+    title = fields.Str(required=True)
+    description = fields.Str(load_default=None, allow_none=True)
+    asset_type = fields.Str(load_default="file")
+    visibility = fields.Str(
+        load_default="private",
+        validate=validate.OneOf(["private", "authenticated", "public"]),
+    )
+    is_public = fields.Bool(load_default=False)
+    alt_text = fields.Str(load_default=None, allow_none=True)
+    caption = fields.Str(load_default=None, allow_none=True)
+    settings = fields.Dict(load_default=dict)
+
+
 class PortalSectionSchema(Schema):
     id = fields.Int(load_default=None, allow_none=True)
     section_key = fields.Str(load_default=None, allow_none=True)
@@ -314,6 +361,8 @@ class PortalPageSchema(Schema):
     seo_description = fields.Str(load_default=None, allow_none=True)
     og_image_url = fields.Str(load_default=None, allow_none=True)
     featured_image_url = fields.Str(load_default=None, allow_none=True)
+    parent_page_id = fields.Int(load_default=None, allow_none=True)
+    navigation_label = fields.Str(load_default=None, allow_none=True)
     visibility = fields.Str(
         load_default="public",
         validate=validate.OneOf(["draft", "authenticated", "public"]),
@@ -323,6 +372,8 @@ class PortalPageSchema(Schema):
     theme_id = fields.Int(load_default=None, allow_none=True)
     template_id = fields.Int(load_default=None, allow_none=True)
     style_bundle_id = fields.Int(load_default=None, allow_none=True)
+    featured_image_asset_id = fields.Int(load_default=None, allow_none=True)
+    og_image_asset_id = fields.Int(load_default=None, allow_none=True)
     status = fields.Str(load_default="published")
     is_published = fields.Bool(load_default=True)
     is_homepage = fields.Bool(load_default=False)
@@ -885,6 +936,222 @@ class PublicPageRestApi(BaseApi):
             "name": name or getattr(user, "username", None),
         }
 
+    def _asset_is_publicly_viewable(self, asset: MediaAsset) -> bool:
+        if asset.status != "active":
+            return False
+        if asset.visibility != "public":
+            return False
+        return bool(asset.is_public)
+
+    def _serialize_media_asset(
+        self,
+        asset: MediaAsset | None,
+        *,
+        include_admin: bool = False,
+    ) -> dict[str, Any] | None:
+        if asset is None:
+            return None
+        payload = {
+            "id": asset.id,
+            "slug": asset.slug,
+            "title": asset.title,
+            "description": asset.description,
+            "asset_type": asset.asset_type,
+            "mime_type": asset.mime_type,
+            "file_extension": asset.file_extension,
+            "original_filename": asset.original_filename,
+            "file_size": asset.file_size,
+            "visibility": asset.visibility,
+            "is_public": asset.is_public,
+            "status": asset.status,
+            "alt_text": asset.alt_text,
+            "caption": asset.caption,
+            "width": asset.width,
+            "height": asset.height,
+            "settings": asset.get_settings(),
+            "download_url": f"/api/v1/public_page/assets/{asset.id}/download",
+        }
+        if include_admin:
+            payload.update(
+                {
+                    "storage_path": asset.storage_path,
+                    "checksum": asset.checksum,
+                    "archived_on": _to_iso(asset.archived_on),
+                    "created_on": _to_iso(asset.created_on),
+                    "changed_on": _to_iso(asset.changed_on),
+                    "created_by": self._serialize_user_ref(asset.created_by),
+                    "changed_by": self._serialize_user_ref(asset.changed_by),
+                    "archived_by": self._serialize_user_ref(asset.archived_by),
+                }
+            )
+        return payload
+
+    def _allowed_asset_extensions(self) -> set[str]:
+        configured = current_app.config.get("PUBLIC_PAGE_ALLOWED_UPLOAD_EXTENSIONS")
+        if configured:
+            return {str(extension).strip(".").lower() for extension in configured}
+        return set(DEFAULT_PUBLIC_PAGE_ALLOWED_ASSET_EXTENSIONS)
+
+    def _asset_upload_root(self) -> str:
+        upload_root = current_app.config.get("UPLOAD_FOLDER") or os.path.join(
+            current_app.root_path,
+            "static",
+            "uploads",
+        )
+        path = os.path.join(upload_root, ASSET_STORAGE_SUBDIR)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _resolve_asset_storage_path(self, asset: MediaAsset) -> str:
+        return os.path.join(self._asset_upload_root(), asset.storage_path)
+
+    def _asset_type_for_file(self, mimetype: str | None, extension: str | None) -> str:
+        normalized_extension = (extension or "").lower()
+        if mimetype and mimetype.startswith("image/"):
+            return "image"
+        if mimetype and mimetype.startswith("video/"):
+            return "video"
+        if mimetype and mimetype.startswith("audio/"):
+            return "audio"
+        if normalized_extension in {"png", "jpg", "jpeg", "gif", "webp", "svg"}:
+            return "image"
+        return "file"
+
+    def _generate_unique_asset_slug(self, candidate: str) -> str:
+        base = slugify(candidate, "asset")
+        next_slug = base
+        suffix = 2
+        while db.session.query(MediaAsset).filter(MediaAsset.slug == next_slug).one_or_none():
+            next_slug = f"{base}-{suffix}"
+            suffix += 1
+        return next_slug
+
+    def _store_uploaded_asset(
+        self,
+        upload: FileStorage,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        visibility: str = "private",
+        is_public: bool = False,
+        alt_text: str | None = None,
+        caption: str | None = None,
+    ) -> MediaAsset:
+        filename = secure_filename(upload.filename or "")
+        if not filename:
+            raise ValidationError({"file": ["A file is required"]})
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if extension not in self._allowed_asset_extensions():
+            raise ValidationError({"file": ["File type is not allowed"]})
+        slug = self._generate_unique_asset_slug(title or filename)
+        stored_name = f"{slug}-{uuid4().hex[:8]}.{extension}" if extension else slug
+        storage_root = self._asset_upload_root()
+        absolute_path = os.path.join(storage_root, stored_name)
+        upload.save(absolute_path)
+
+        with open(absolute_path, "rb") as saved_file:
+            checksum = hashlib.sha256(saved_file.read()).hexdigest()
+        file_size = os.path.getsize(absolute_path)
+        mimetype = upload.mimetype or mimetypes.guess_type(filename)[0]
+        asset = MediaAsset(
+            slug=slug,
+            title=(title or os.path.splitext(filename)[0] or "Asset").strip(),
+            description=description,
+            asset_type=self._asset_type_for_file(mimetype, extension),
+            mime_type=mimetype,
+            file_extension=extension or None,
+            original_filename=filename,
+            storage_path=stored_name,
+            file_size=file_size,
+            checksum=checksum,
+            visibility=visibility,
+            is_public=bool(is_public or visibility == "public"),
+            status="active",
+            alt_text=alt_text,
+            caption=caption,
+            created_by_fk=get_user_id(),
+            changed_by_fk=get_user_id(),
+        )
+        asset.set_settings({})
+        db.session.add(asset)
+        db.session.flush()
+        return asset
+
+    def _list_media_assets(self, admin: bool = False) -> list[MediaAsset]:
+        assets = (
+            db.session.query(MediaAsset)
+            .order_by(MediaAsset.created_on.desc(), MediaAsset.id.desc())
+            .all()
+        )
+        if admin:
+            return assets
+        return [asset for asset in assets if self._asset_is_publicly_viewable(asset)]
+
+    def _validate_asset_reference(
+        self,
+        asset_id: int | None,
+        *,
+        field_name: str = "asset_id",
+        require_public: bool = False,
+    ) -> MediaAsset | None:
+        if not asset_id:
+            return None
+        asset = db.session.query(MediaAsset).filter(MediaAsset.id == asset_id).one_or_none()
+        if asset is None or asset.status != "active":
+            raise ValidationError({field_name: ["Asset not found"]})
+        if require_public and not self._asset_is_publicly_viewable(asset):
+            raise ValidationError({field_name: ["Asset must be public for public pages"]})
+        return asset
+
+    def _page_path_parts(self, page: Page) -> list[str]:
+        parts: list[str] = []
+        current = page
+        seen_ids: set[int] = set()
+        while current is not None:
+            if current.id is not None and current.id in seen_ids:
+                break
+            if current.id is not None:
+                seen_ids.add(current.id)
+            parts.append(current.slug)
+            current = current.parent_page
+        return list(reversed(parts))
+
+    def _page_path(self, page: Page) -> str:
+        return "/".join(self._page_path_parts(page))
+
+    def _page_breadcrumbs(
+        self,
+        page: Page | None,
+        *,
+        public_context: bool = False,
+    ) -> list[dict[str, Any]]:
+        if page is None:
+            return []
+        chain: list[Page] = []
+        current = page
+        seen_ids: set[int] = set()
+        while current is not None:
+            if current.id is not None and current.id in seen_ids:
+                break
+            if current.id is not None:
+                seen_ids.add(current.id)
+            chain.append(current)
+            current = current.parent_page
+        chain.reverse()
+        breadcrumbs: list[dict[str, Any]] = []
+        for entry in chain:
+            if public_context and not self._page_is_publicly_viewable(entry):
+                continue
+            breadcrumbs.append(
+                {
+                    "id": entry.id,
+                    "title": entry.navigation_label or entry.title,
+                    "slug": entry.slug,
+                    "path": f"/superset/public/{self._page_path(entry)}/",
+                }
+            )
+        return breadcrumbs
+
     def _page_is_publicly_viewable(
         self,
         page: Page,
@@ -948,8 +1215,13 @@ class PublicPageRestApi(BaseApi):
                 return None
             return page
         if page_slug:
-            page = query.filter(Page.slug == page_slug).one_or_none()
+            normalized = page_slug.strip("/")
+            page = query.filter(Page.slug == normalized).one_or_none()
             if page is None or (not admin and not self._page_is_publicly_viewable(page)):
+                pages = self._list_pages(admin=admin)
+                for candidate in pages:
+                    if self._page_path(candidate) == normalized:
+                        return candidate
                 return None
             return page
 
@@ -1036,6 +1308,35 @@ class PublicPageRestApi(BaseApi):
         )
         return int(dashboard_id) if dashboard_id is not None else None
 
+    def _block_asset_reference(
+        self,
+        block_type: str,
+        block_content: dict[str, Any],
+        block_settings: dict[str, Any],
+    ) -> int | None:
+        for candidate in (
+            block_settings.get("asset_ref"),
+            block_settings.get("assetRef"),
+            block_content.get("asset_ref"),
+            block_content.get("assetRef"),
+            block_content.get("asset"),
+        ):
+            if isinstance(candidate, dict) and candidate.get("id") is not None:
+                return int(candidate["id"])
+        direct_value = (
+            block_settings.get("asset_id")
+            or block_settings.get("assetId")
+            or block_content.get("asset_id")
+            or block_content.get("assetId")
+        )
+        if direct_value is not None:
+            return int(direct_value)
+        if block_type == "image":
+            image_ref = block_content.get("image")
+            if isinstance(image_ref, dict) and image_ref.get("id") is not None:
+                return int(image_ref["id"])
+        return None
+
     def _serialize_block(
         self,
         block: PageBlock | dict[str, Any],
@@ -1094,13 +1395,20 @@ class PublicPageRestApi(BaseApi):
         dashboard_id = self._block_dashboard_reference(settings)
         serialized_chart = None
         serialized_dashboard = None
+        serialized_asset = None
         chart = None
         dashboard = None
+        asset = None
         if chart_id is not None:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
         if dashboard_id is not None:
             dashboard = (
                 db.session.query(Dashboard).filter(Dashboard.id == dashboard_id).one_or_none()
+            )
+        asset_id = self._block_asset_reference(block_type, content, settings)
+        if asset_id is not None:
+            asset = (
+                db.session.query(MediaAsset).filter(MediaAsset.id == asset_id).one_or_none()
             )
 
         if chart is not None and self._chart_uses_serving_tables(chart):
@@ -1119,6 +1427,38 @@ class PublicPageRestApi(BaseApi):
                 settings = {
                     **settings,
                     "render_error": "Dashboard is unavailable for public rendering",
+                }
+
+        if asset is not None and asset.status == "active":
+            if not public_context or self._asset_is_publicly_viewable(asset):
+                serialized_asset = self._serialize_media_asset(
+                    asset,
+                    include_admin=not public_context,
+                )
+                if block_type == "image":
+                    content = {
+                        **content,
+                        "url": content.get("url") or serialized_asset["download_url"],
+                        "alt": content.get("alt") or asset.alt_text,
+                        "caption": content.get("caption") or asset.caption,
+                        "title": content.get("title") or asset.title,
+                    }
+                elif block_type in {"file", "download"}:
+                    content = {
+                        **content,
+                        "title": content.get("title") or asset.title,
+                        "body": content.get("body") or asset.description or "",
+                        "asset": serialized_asset,
+                    }
+                    settings = {
+                        **settings,
+                        "download_url": settings.get("download_url")
+                        or serialized_asset["download_url"],
+                    }
+            elif block_type in {"image", "file", "download"}:
+                settings = {
+                    **settings,
+                    "render_error": "Asset is unavailable for public rendering",
                 }
 
         page_scope = page_rendering["scope_class"] if page_rendering else "cms-page-scope-preview"
@@ -1155,6 +1495,7 @@ class PublicPageRestApi(BaseApi):
             "metadata": metadata,
             "chart": serialized_chart,
             "dashboard": serialized_dashboard,
+            "asset": serialized_asset,
             "children": children,
             "style_bundle": style_rendering["style_bundle"],
             "rendering": {
@@ -1285,9 +1626,11 @@ class PublicPageRestApi(BaseApi):
         page: Page,
         include_admin: bool = False,
     ) -> dict[str, Any]:
+        page_path = self._page_path(page)
         payload = {
             "id": page.id,
             "slug": page.slug,
+            "path": page_path,
             "title": page.title,
             "subtitle": page.subtitle,
             "description": page.description,
@@ -1295,10 +1638,33 @@ class PublicPageRestApi(BaseApi):
             "is_published": page.is_published,
             "is_homepage": page.is_homepage,
             "display_order": page.display_order,
+            "parent_page_id": page.parent_page_id,
+            "navigation_label": page.navigation_label,
             "theme_id": page.theme_id,
             "template_id": page.template_id,
             "style_bundle_id": page.style_bundle_id,
+            "featured_image_asset_id": page.featured_image_asset_id,
+            "og_image_asset_id": page.og_image_asset_id,
             "settings": page.get_settings(),
+            "parent_page": (
+                {
+                    "id": page.parent_page.id,
+                    "slug": page.parent_page.slug,
+                    "path": self._page_path(page.parent_page),
+                    "title": page.parent_page.title,
+                    "navigation_label": page.parent_page.navigation_label,
+                }
+                if page.parent_page is not None
+                else None
+            ),
+            "featured_image_asset": self._serialize_media_asset(
+                page.featured_image_asset,
+                include_admin=include_admin,
+            ),
+            "og_image_asset": self._serialize_media_asset(
+                page.og_image_asset,
+                include_admin=include_admin,
+            ),
             "theme": self._serialize_theme(page.theme, include_admin=include_admin),
             "template": self._serialize_template(
                 page.template,
@@ -1391,6 +1757,7 @@ class PublicPageRestApi(BaseApi):
             "status": page.status,
             "blocks": blocks,
             "sections": sections,
+            "breadcrumbs": self._page_breadcrumbs(page, public_context=public_context),
             "rendering": {
                 **page_rendering,
                 "css_text": "\n".join(part for part in combined_css if part),
@@ -1436,7 +1803,7 @@ class PublicPageRestApi(BaseApi):
         if item.page is not None:
             if public_context and item.page not in pages:
                 return None
-            path = f"/superset/public/{item.page.slug}/"
+            path = f"/superset/public/{self._page_path(item.page)}/"
         elif item.dashboard is not None:
             if public_context and item.dashboard not in dashboards:
                 return None
@@ -1449,8 +1816,8 @@ class PublicPageRestApi(BaseApi):
             children = [
                 {
                     "id": f"page-{page.id}",
-                    "label": page.title,
-                    "path": f"/superset/public/{page.slug}/",
+                    "label": page.navigation_label or page.title,
+                    "path": f"/superset/public/{self._page_path(page)}/",
                     "item_type": "page",
                     "page_id": page.id,
                     "description": page.subtitle or page.description,
@@ -1600,7 +1967,9 @@ class PublicPageRestApi(BaseApi):
         block_data: dict[str, Any],
         page_visibility: str = "public",
     ) -> None:
+        content = block_data.get("content") or {}
         settings = block_data.get("settings") or {}
+        block_type = (block_data.get("block_type") or "").strip().lower()
         chart_id = self._block_chart_reference(settings)
         if chart_id:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
@@ -1626,6 +1995,14 @@ class PublicPageRestApi(BaseApi):
                 raise ValidationError(
                     {"dashboard_ref": ["Dashboard must be published for public use"]}
                 )
+
+        asset_id = self._block_asset_reference(block_type, content, settings)
+        if asset_id:
+            self._validate_asset_reference(
+                asset_id,
+                field_name="asset_ref",
+                require_public=page_visibility == "public",
+            )
 
         for child in block_data.get("children") or []:
             self._validate_block_references(child, page_visibility=page_visibility)
@@ -1716,6 +2093,33 @@ class PublicPageRestApi(BaseApi):
         if template is None:
             raise ValidationError({"template_id": ["Template not found"]})
         return template
+
+    def _validate_parent_page_reference(
+        self,
+        parent_page_id: int | None,
+        *,
+        page: Page | None = None,
+    ) -> Page | None:
+        if not parent_page_id:
+            return None
+        parent_page = (
+            db.session.query(Page).filter(Page.id == parent_page_id).one_or_none()
+        )
+        if parent_page is None:
+            raise ValidationError({"parent_page_id": ["Parent page not found"]})
+        if page is not None and parent_page.id == page.id:
+            raise ValidationError({"parent_page_id": ["A page cannot be its own parent"]})
+        current = parent_page
+        seen_ids: set[int] = set()
+        while current is not None:
+            if current.id is not None and current.id in seen_ids:
+                raise ValidationError({"parent_page_id": ["Page hierarchy cannot be cyclic"]})
+            if current.id is not None:
+                seen_ids.add(current.id)
+            if page is not None and current.id == page.id:
+                raise ValidationError({"parent_page_id": ["Page hierarchy cannot be cyclic"]})
+            current = current.parent_page
+        return parent_page
 
     def _validate_style_bundle_reference(
         self,
@@ -2101,10 +2505,34 @@ class PublicPageRestApi(BaseApi):
 
         now = _now()
         previous_was_public = self._page_is_publicly_viewable(page)
+        page_visibility = payload.get("visibility") or "public"
         theme = self._validate_theme_reference(payload.get("theme_id"))
         template = self._validate_template_reference(payload.get("template_id"))
         page_style_bundle = self._validate_style_bundle_reference(
             payload.get("style_bundle_id")
+        )
+        parent_page = self._validate_parent_page_reference(
+            payload.get("parent_page_id"),
+            page=page,
+        )
+        if parent_page is not None and page_visibility == "public":
+            if not self._page_is_publicly_viewable(parent_page):
+                raise ValidationError(
+                    {
+                        "parent_page_id": [
+                            "Public pages must use a published public parent page"
+                        ]
+                    }
+                )
+        featured_image_asset = self._validate_asset_reference(
+            payload.get("featured_image_asset_id"),
+            field_name="featured_image_asset_id",
+            require_public=page_visibility == "public",
+        )
+        og_image_asset = self._validate_asset_reference(
+            payload.get("og_image_asset_id"),
+            field_name="og_image_asset_id",
+            require_public=page_visibility == "public",
         )
         page.slug = requested_slug
         page.title = payload["title"]
@@ -2113,10 +2541,25 @@ class PublicPageRestApi(BaseApi):
         page.excerpt = payload.get("excerpt")
         page.seo_title = payload.get("seo_title")
         page.seo_description = payload.get("seo_description")
-        page.og_image_url = payload.get("og_image_url")
-        page.featured_image_url = payload.get("featured_image_url")
-        page.visibility = payload.get("visibility") or "public"
+        page.og_image_asset = og_image_asset
+        page.featured_image_asset = featured_image_asset
+        page.og_image_url = (
+            self._serialize_media_asset(og_image_asset, include_admin=True)["download_url"]
+            if og_image_asset is not None
+            else payload.get("og_image_url")
+        )
+        page.featured_image_url = (
+            self._serialize_media_asset(
+                featured_image_asset,
+                include_admin=True,
+            )["download_url"]
+            if featured_image_asset is not None
+            else payload.get("featured_image_url")
+        )
+        page.visibility = page_visibility
         page.page_type = payload.get("page_type") or "content"
+        page.parent_page = parent_page
+        page.navigation_label = payload.get("navigation_label") or None
         page.theme = theme
         page.template = template
         page.style_bundle = page_style_bundle
@@ -2210,12 +2653,16 @@ class PublicPageRestApi(BaseApi):
             seo_description=page.seo_description,
             og_image_url=page.og_image_url,
             featured_image_url=page.featured_image_url,
+            parent_page=page.parent_page,
+            navigation_label=page.navigation_label,
             visibility="draft",
             page_type=page.page_type,
             template_key=page.template_key,
             theme=page.theme,
             template=page.template,
             style_bundle=page.style_bundle,
+            featured_image_asset=page.featured_image_asset,
+            og_image_asset=page.og_image_asset,
             status="draft",
             is_published=False,
             is_homepage=False,
@@ -2411,6 +2858,7 @@ class PublicPageRestApi(BaseApi):
             "can_edit_pages": _can_edit_pages(),
             "can_delete_pages": _can_delete_pages(),
             "can_publish_pages": _can_publish_pages(),
+            "can_manage_media": _can_manage_media(),
             "can_manage_menus": _can_manage_menus(),
             "can_embed_charts": _can_embed_charts(),
             "can_manage_layout": _can_manage_layout(),
@@ -2426,6 +2874,7 @@ class PublicPageRestApi(BaseApi):
         themes: list[Theme],
         templates: list[Template],
         style_bundles: list[StyleBundle],
+        media_assets: list[MediaAsset],
     ) -> dict[str, int]:
         return {
             "total_pages": len(pages),
@@ -2456,6 +2905,7 @@ class PublicPageRestApi(BaseApi):
             "themes": len(themes),
             "templates": len(templates),
             "style_bundles": len(style_bundles),
+            "media_assets": len(media_assets),
         }
 
     def _get_admin_payload(
@@ -2475,6 +2925,7 @@ class PublicPageRestApi(BaseApi):
         themes = self._list_themes(admin=True)
         templates = self._list_templates(admin=True)
         style_bundles = self._list_style_bundles(admin=True)
+        media_assets = self._list_media_assets(admin=True)
         dashboards = self._list_public_dashboards()
         charts = self._list_serving_charts(public_only=False)
         recent_revisions = (
@@ -2508,7 +2959,14 @@ class PublicPageRestApi(BaseApi):
                     layout_config.get_config(),
                 ),
             },
-            "stats": self._build_admin_stats(pages, menus, themes, templates, style_bundles),
+            "stats": self._build_admin_stats(
+                pages,
+                menus,
+                themes,
+                templates,
+                style_bundles,
+                media_assets,
+            ),
             "pages": [
                 self._serialize_page_summary(page, include_admin=True) for page in pages
             ],
@@ -2525,6 +2983,10 @@ class PublicPageRestApi(BaseApi):
             ),
             "dashboards": [self._serialize_dashboard(dash) for dash in dashboards],
             "available_charts": [self._serialize_chart(chart) for chart in charts],
+            "media_assets": [
+                self._serialize_media_asset(asset, include_admin=True)
+                for asset in media_assets
+            ],
             "block_types": list_block_definitions(),
             "themes": [
                 self._serialize_theme(theme, include_admin=True) for theme in themes
@@ -3166,6 +3628,120 @@ class PublicPageRestApi(BaseApi):
             return self.response(200, result=payload)
         except Exception as ex:  # pylint: disable=broad-except
             logger.exception("Error fetching CMS bootstrap payload")
+            return self.response_500(message=str(ex))
+
+    @expose("/admin/assets", methods=("GET",))
+    @protect()
+    @safe
+    def get_admin_assets(self) -> Response:
+        """List authenticated CMS media/file assets."""
+        if not _can_manage_media():
+            return self.response(403, message="You do not have access to CMS media")
+        try:
+            assets = self._list_media_assets(admin=True)
+            return self.response(
+                200,
+                result=[
+                    self._serialize_media_asset(asset, include_admin=True)
+                    for asset in assets
+                ],
+                count=len(assets),
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Error fetching CMS assets")
+            return self.response_500(message=str(ex))
+
+    @expose("/admin/assets", methods=("POST",))
+    @protect()
+    @safe
+    def create_admin_asset(self) -> Response:
+        """Upload a CMS media/file asset."""
+        if not _can_manage_media():
+            return self.response(403, message="You do not have access to CMS media")
+        try:
+            upload = request.files.get("file")
+            if not isinstance(upload, FileStorage):
+                return self.response_400(message="A file upload is required")
+            visibility = request.form.get("visibility") or "private"
+            if visibility not in {"private", "authenticated", "public"}:
+                return self.response_400(message="Invalid asset visibility")
+            asset = self._store_uploaded_asset(
+                upload,
+                title=request.form.get("title"),
+                description=request.form.get("description"),
+                visibility=visibility,
+                is_public=(request.form.get("is_public") or "").lower()
+                in {"1", "true", "yes", "on"},
+                alt_text=request.form.get("alt_text"),
+                caption=request.form.get("caption"),
+            )
+            db.session.commit()
+            return self.response(
+                201,
+                result=self._serialize_media_asset(asset, include_admin=True),
+            )
+        except ValidationError as ex:
+            db.session.rollback()
+            messages = ex.messages if isinstance(ex.messages, dict) else {"asset": ex.messages}
+            return self.response_400(message=messages)
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Error uploading CMS asset")
+            return self.response_500(message=str(ex))
+
+    @expose("/admin/assets/<int:asset_id>", methods=("DELETE",))
+    @protect()
+    @safe
+    def archive_admin_asset(self, asset_id: int) -> Response:
+        """Archive a CMS asset without deleting the file from disk."""
+        if not _can_manage_media():
+            return self.response(403, message="You do not have access to CMS media")
+        try:
+            asset = db.session.query(MediaAsset).filter(MediaAsset.id == asset_id).one_or_none()
+            if asset is None:
+                return self.response_404(message="Asset not found")
+            asset.status = "archived"
+            asset.is_public = False
+            asset.archived_on = _now()
+            asset.archived_by_fk = get_user_id()
+            asset.changed_by_fk = get_user_id()
+            db.session.commit()
+            return self.response(
+                200,
+                result=self._serialize_media_asset(asset, include_admin=True),
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Error archiving CMS asset")
+            return self.response_500(message=str(ex))
+
+    @expose("/assets/<int:asset_id>/download", methods=("GET",))
+    @safe
+    def download_asset(self, asset_id: int) -> Response:
+        """Download a public or permitted authenticated CMS asset."""
+        try:
+            asset = db.session.query(MediaAsset).filter(MediaAsset.id == asset_id).one_or_none()
+            if asset is None or asset.status != "active":
+                return self.response_404(message="Asset not found")
+            if not self._asset_is_publicly_viewable(asset):
+                if asset.visibility == "authenticated" and _is_authenticated_user():
+                    pass
+                elif asset.visibility == "private" and _can_manage_media():
+                    pass
+                else:
+                    return self.response(403, message="Asset is not available")
+            absolute_path = self._resolve_asset_storage_path(asset)
+            if not os.path.exists(absolute_path):
+                return self.response_404(message="Asset file not found")
+            return send_file(
+                absolute_path,
+                mimetype=asset.mime_type or "application/octet-stream",
+                as_attachment=asset.asset_type != "image",
+                download_name=asset.original_filename or asset.title,
+                conditional=True,
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Error downloading CMS asset")
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages", methods=("GET",))

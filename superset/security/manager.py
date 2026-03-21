@@ -1129,6 +1129,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             "cms.pages.edit",
             "cms.pages.delete",
             "cms.pages.publish",
+            "cms.media.manage",
             "cms.menus.manage",
             "cms.charts.embed",
             "cms.layout.manage",

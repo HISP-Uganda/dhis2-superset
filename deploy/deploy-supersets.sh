@@ -80,6 +80,8 @@ FRONTEND_CLEAN="${FRONTEND_CLEAN:-1}"
 NPM_LEGACY_PEER_DEPS="${NPM_LEGACY_PEER_DEPS:-1}"
 NODE_OPTIONS_VALUE="${NODE_OPTIONS_VALUE:---max_old_space_size=8192}"
 FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-90}"
+FRONTEND_TYPECHECK="${FRONTEND_TYPECHECK:-1}"
+FRONTEND_LOG_TAIL_LINES="${FRONTEND_LOG_TAIL_LINES:-200}"
 
 DB_SYNC="${DB_SYNC:-1}"
 PATCH_MIGRATIONS="${PATCH_MIGRATIONS:-1}"
@@ -1343,6 +1345,30 @@ PY
         done
       }
 
+      hb_pid=''
+
+      cleanup_heartbeat() {
+        if [ -n \"\${hb_pid:-}\" ]; then
+          kill \"\$hb_pid\" >/dev/null 2>&1 || true
+          wait \"\$hb_pid\" >/dev/null 2>&1 || true
+          hb_pid=''
+        fi
+      }
+
+      print_frontend_failure() {
+        desc=\"\$1\"
+        rc=\"\$2\"
+        if [ \"\$rc\" -eq 124 ]; then
+          echo \"ERROR: \$desc timed out after ${FRONTEND_TIMEOUT_MINUTES} minute(s)\"
+        else
+          echo \"ERROR: \$desc failed with rc=\$rc\"
+        fi
+        echo '----- frontend log tail -----'
+        tail -n '${FRONTEND_LOG_TAIL_LINES}' '$FRONTEND_LOG_IN_CT' || true
+      }
+
+      trap cleanup_heartbeat EXIT
+
       run_with_log() {
         desc=\"\$1\"
         shift
@@ -1352,14 +1378,11 @@ PY
         set +e
         timeout --foreground '${FRONTEND_TIMEOUT_MINUTES}m' \"\$@\" >> '$FRONTEND_LOG_IN_CT' 2>&1
         rc=\$?
-        kill \$hb_pid >/dev/null 2>&1 || true
-        wait \$hb_pid >/dev/null 2>&1 || true
+        cleanup_heartbeat
         set -e
 
         if [ \$rc -ne 0 ]; then
-          echo \"ERROR: \$desc failed with rc=\$rc\"
-          echo '----- frontend log tail -----'
-          tail -n 200 '$FRONTEND_LOG_IN_CT' || true
+          print_frontend_failure \"\$desc\" \"\$rc\"
           return \$rc
         fi
 
@@ -1380,12 +1403,16 @@ PY
         fi
       fi
 
+      if [ '$FRONTEND_TYPECHECK' = '1' ]; then
+        run_with_log 'npm run type' npm run type -- --pretty false
+      fi
+
       run_with_log 'npm run build' npm run build
 
       test -d '$repo_root/superset/static/assets' || {
         echo 'ERROR: frontend build did not produce superset/static/assets'
         echo '----- frontend log tail -----'
-        tail -n 200 '$FRONTEND_LOG_IN_CT' || true
+        tail -n '${FRONTEND_LOG_TAIL_LINES}' '$FRONTEND_LOG_IN_CT' || true
         exit 7
       }
 

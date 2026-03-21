@@ -29,7 +29,7 @@ import { type FormInstance, Select } from '@superset-ui/core/components';
 import {
   detectDHIS2Kind,
   DHIS2ColumnTag,
-} from '@superset-ui/chart-controls';
+} from '@superset-ui/chart-controls/components/ColumnTypeLabel/DHIS2ColumnTag';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
 import { NativeFiltersForm, NativeFiltersFormItem } from '../types';
