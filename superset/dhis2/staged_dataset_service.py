@@ -145,7 +145,7 @@ def _get_engine(database_id: int) -> DHIS2StagingEngine:
     return get_active_staging_engine(database_id)  # type: ignore[return-value]
 
 
-def _coerce_json_field(value: Any) -> str | None:
+def _coerce_json_field(value: Any, field_name: str = "value") -> str | None:
     """Serialise *value* to a JSON string if it is not already a string.
 
     Returns ``None`` when *value* is ``None``.
@@ -154,7 +154,10 @@ def _coerce_json_field(value: Any) -> str | None:
         return None
     if isinstance(value, str):
         return value
-    return json.dumps(value)
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"'{field_name}' must be JSON serializable") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +318,7 @@ def create_staged_dataset(database_id: int, data: dict[str, Any]) -> DHIS2Staged
             continue
         value = normalized_data[field]
         if field == "dataset_config":
-            value = _coerce_json_field(value)
+            value = _coerce_json_field(value, field_name=field)
         setattr(dataset, field, value)
 
     # Apply safe defaults.
@@ -386,7 +389,7 @@ def update_staged_dataset(dataset_id: int, data: dict[str, Any]) -> DHIS2StagedD
             continue
         value = data[field]
         if field == "dataset_config":
-            value = _coerce_json_field(value)
+            value = _coerce_json_field(value, field_name=field)
         setattr(dataset, field, value)
 
     # Background processing is mandatory for staged datasets.
@@ -554,7 +557,7 @@ def add_variable(
         if field == "instance_id":
             value = instance_id
         if field == "extra_params":
-            value = _coerce_json_field(value)
+            value = _coerce_json_field(value, field_name=field)
         setattr(variable, field, value)
 
     try:

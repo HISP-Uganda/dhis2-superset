@@ -17,7 +17,7 @@
  * under the License.
  */
 import rison from 'rison';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   makeApi,
   SupersetClient,
@@ -82,6 +82,9 @@ export function useListViewResource<D extends object = any>(
   initialLoadingState = true,
   selectColumns?: string[],
 ) {
+  const isMountedRef = useRef(true);
+  const fetchAbortControllerRef = useRef<AbortController | null>(null);
+  const infoAbortControllerRef = useRef<AbortController | null>(null);
   const [state, setState] = useState<ListViewResourceState<D>>({
     count: 0,
     collection: defaultCollectionValue,
@@ -92,6 +95,9 @@ export function useListViewResource<D extends object = any>(
   });
 
   function updateState(update: Partial<ListViewResourceState<D>>) {
+    if (!isMountedRef.current) {
+      return;
+    }
     setState(currentState => ({ ...currentState, ...update }));
   }
 
@@ -99,29 +105,55 @@ export function useListViewResource<D extends object = any>(
     updateState({ bulkSelectEnabled: !state.bulkSelectEnabled });
   }
 
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+      fetchAbortControllerRef.current?.abort();
+      infoAbortControllerRef.current?.abort();
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (!infoEnable) return;
+    if (!infoEnable) return undefined;
+    const controller = new AbortController();
+    infoAbortControllerRef.current = controller;
     SupersetClient.get({
       endpoint: `/api/v1/${resource}/_info?q=${rison.encode({
         keys: ['permissions'],
       })}`,
+      signal: controller.signal,
     }).then(
       ({ json: infoJson = {} }) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         updateState({
           permissions: infoJson.permissions,
         });
       },
-      createErrorHandler(errMsg =>
-        handleErrorMsg(
-          t(
-            'An error occurred while fetching %s info: %s',
-            resourceLabel,
-            errMsg,
+      error => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        createErrorHandler(errMsg =>
+          handleErrorMsg(
+            t(
+              'An error occurred while fetching %s info: %s',
+              resourceLabel,
+              errMsg,
+            ),
           ),
-        ),
-      ),
+        )(error);
+      },
     );
-  }, []);
+    return () => {
+      if (infoAbortControllerRef.current === controller) {
+        infoAbortControllerRef.current = null;
+      }
+      controller.abort();
+    };
+  }, [handleErrorMsg, infoEnable, resource, resourceLabel]);
 
   function hasPerm(perm: string) {
     if (!state.permissions.length) {
@@ -148,6 +180,9 @@ export function useListViewResource<D extends object = any>(
         },
         loading: true,
       });
+      fetchAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      fetchAbortControllerRef.current = controller;
       const filterExps = (baseFilters || [])
         .concat(filterValues)
         .filter(
@@ -173,30 +208,52 @@ export function useListViewResource<D extends object = any>(
 
       return SupersetClient.get({
         endpoint: `/api/v1/${resource}/?q=${queryParams}`,
+        signal: controller.signal,
       })
         .then(
           ({ json = {} }) => {
+            if (
+              controller.signal.aborted ||
+              fetchAbortControllerRef.current !== controller
+            ) {
+              return;
+            }
             updateState({
               collection: json.result,
               count: json.count,
               lastFetched: new Date().toISOString(),
             });
           },
-          createErrorHandler(errMsg =>
-            handleErrorMsg(
-              t(
-                'An error occurred while fetching %ss: %s',
-                resourceLabel,
-                errMsg,
+          error => {
+            if (
+              controller.signal.aborted ||
+              fetchAbortControllerRef.current !== controller
+            ) {
+              return;
+            }
+            createErrorHandler(errMsg =>
+              handleErrorMsg(
+                t(
+                  'An error occurred while fetching %ss: %s',
+                  resourceLabel,
+                  errMsg,
+                ),
               ),
-            ),
-          ),
+            )(error);
+          },
         )
         .finally(() => {
+          if (
+            controller.signal.aborted ||
+            fetchAbortControllerRef.current !== controller
+          ) {
+            return;
+          }
+          fetchAbortControllerRef.current = null;
           updateState({ loading: false });
         });
     },
-    [baseFilters],
+    [baseFilters, handleErrorMsg, resource, resourceLabel, selectColumns],
   );
 
   return {
@@ -590,16 +647,29 @@ export function useFavoriteStatus(
   handleErrorMsg: (message: string) => void,
 ) {
   const [favoriteStatus, setFavoriteStatus] = useState<FavoriteStatus>({});
+  const isMountedRef = useRef(true);
 
   const updateFavoriteStatus = (update: FavoriteStatus) =>
     setFavoriteStatus(currentState => ({ ...currentState, ...update }));
 
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!ids.length) {
-      return;
+      return undefined;
     }
+    let isActive = true;
+
     favoriteApis[type](ids).then(
       ({ result }) => {
+        if (!isMountedRef.current || !isActive) {
+          return;
+        }
         const update = result.reduce<Record<string, boolean>>(
           (acc, element) => {
             acc[element.id] = element.value;
@@ -609,12 +679,20 @@ export function useFavoriteStatus(
         );
         updateFavoriteStatus(update);
       },
-      createErrorHandler(errMsg =>
-        handleErrorMsg(
-          t('There was an error fetching the favorite status: %s', errMsg),
-        ),
-      ),
+      error => {
+        if (!isMountedRef.current || !isActive) {
+          return;
+        }
+        createErrorHandler(errMsg =>
+          handleErrorMsg(
+            t('There was an error fetching the favorite status: %s', errMsg),
+          ),
+        )(error);
+      },
     );
+    return () => {
+      isActive = false;
+    };
   }, [ids, type, handleErrorMsg]);
 
   const saveFaveStar = useCallback(
@@ -628,18 +706,26 @@ export function useFavoriteStatus(
 
       apiCall.then(
         () => {
+          if (!isMountedRef.current) {
+            return;
+          }
           updateFavoriteStatus({
             [id]: !isStarred,
           });
         },
-        createErrorHandler(errMsg =>
-          handleErrorMsg(
-            t('There was an error saving the favorite status: %s', errMsg),
-          ),
-        ),
+        error => {
+          if (!isMountedRef.current) {
+            return;
+          }
+          createErrorHandler(errMsg =>
+            handleErrorMsg(
+              t('There was an error saving the favorite status: %s', errMsg),
+            ),
+          )(error);
+        },
       );
     },
-    [type],
+    [handleErrorMsg, type],
   );
 
   return [saveFaveStar, favoriteStatus] as const;

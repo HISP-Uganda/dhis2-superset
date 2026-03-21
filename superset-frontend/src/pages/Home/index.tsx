@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   isFeatureEnabled,
   FeatureFlag,
@@ -48,9 +48,10 @@ import {
 import { Switch } from '@superset-ui/core/components/Switch';
 import getBootstrapData from 'src/utils/getBootstrapData';
 import { TableTab } from 'src/views/CRUD/types';
+import EmptyState from 'src/features/home/EmptyState';
 import SubMenu, { SubMenuProps } from 'src/features/home/SubMenu';
 import { userHasPermission } from 'src/dashboard/util/permissionUtils';
-import { WelcomePageLastTab } from 'src/features/home/types';
+import { WelcomePageLastTab, WelcomeTable } from 'src/features/home/types';
 import ActivityTable from 'src/features/home/ActivityTable';
 import ChartTable from 'src/features/home/ChartTable';
 import SavedQueries from 'src/features/home/SavedQueries';
@@ -59,7 +60,7 @@ import DashboardTable from 'src/features/home/DashboardTable';
 const extensionsRegistry = getExtensionsRegistry();
 
 interface WelcomeProps {
-  user: User;
+  user?: User;
   addDangerToast: (arg0: string) => void;
 }
 
@@ -151,13 +152,18 @@ export const LoadingCards = ({ cover }: LoadingProps) => (
 );
 
 function Welcome({ user, addDangerToast }: WelcomeProps) {
-  const canReadSavedQueries = userHasPermission(user, 'SavedQuery', 'can_read');
-  const userid = user.userId;
-  const id = userid!.toString(); // confident that user is not a guest user
+  const userId = user?.userId;
+  const hasPersonalizedHome = userId !== undefined && userId !== null;
+  const userIdString = hasPersonalizedHome ? userId.toString() : null;
+  const canReadSavedQueries =
+    hasPersonalizedHome &&
+    userHasPermission(user ?? ({} as User), 'SavedQuery', 'can_read');
   const params = rison.encode({ page_size: 24, distinct: false });
   const recent = `/api/v1/log/recent_activity/?q=${params}`;
   const [activeChild, setActiveChild] = useState('Loading');
-  const userKey = dangerouslyGetItemDoNotUse(id, null);
+  const userKey = userIdString
+    ? dangerouslyGetItemDoNotUse(userIdString, null)
+    : null;
   let defaultChecked = false;
   const isThumbnailsEnabled = isFeatureEnabled(FeatureFlag.Thumbnails);
   if (isThumbnailsEnabled) {
@@ -173,8 +179,20 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
   );
   const [isFetchingActivityData, setIsFetchingActivityData] = useState(true);
 
-  const collapseState = getItem(LocalStorageKeys.HomepageCollapseState, []);
-  const [activeState, setActiveState] = useState<Array<string>>(collapseState);
+  const initialCollapseState = useMemo(
+    () => getItem(LocalStorageKeys.HomepageCollapseState, []),
+    [],
+  );
+  const [activeState, setActiveState] =
+    useState<Array<string>>(initialCollapseState);
+  const isMountedRef = useRef(true);
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
 
   const handleCollapse = (state: Array<string>) => {
     setActiveState(state);
@@ -213,13 +231,48 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
   }, []);
 
   useEffect(() => {
-    if (!otherTabFilters || WelcomeMainExtension) {
-      return;
+    if (!hasPersonalizedHome || WelcomeMainExtension) {
+      setIsFetchingActivityData(false);
+      setActiveState(
+        initialCollapseState.length > 0
+          ? initialCollapseState
+          : DEFAULT_TAB_ARR,
+      );
+      setActiveChild(TableTab.Created);
+      setActivityData({
+        [TableTab.Created]: [],
+        [TableTab.Other]: [],
+        [TableTab.Viewed]: [],
+      });
+      setChartData([]);
+      setDashboardData([]);
+      setQueryData([]);
+      return undefined;
     }
+
+    if (!otherTabFilters || WelcomeMainExtension) {
+      return undefined;
+    }
+
+    const personalizedUserId = userId as number | string;
+    const personalizedUserIdString = userIdString as string;
+    const controller = new AbortController();
     const activeTab = getItem(LocalStorageKeys.HomepageActivityFilter, null);
-    setActiveState(collapseState.length > 0 ? collapseState : DEFAULT_TAB_ARR);
-    getRecentActivityObjs(user.userId!, recent, addDangerToast, otherTabFilters)
+    setIsFetchingActivityData(true);
+    setActiveState(
+      initialCollapseState.length > 0 ? initialCollapseState : DEFAULT_TAB_ARR,
+    );
+    getRecentActivityObjs(
+      personalizedUserId,
+      recent,
+      addDangerToast,
+      otherTabFilters,
+      controller.signal,
+    )
       .then(res => {
+        if (controller.signal.aborted || !isMountedRef.current) {
+          return;
+        }
         const data: ActivityData | null = {};
         data[TableTab.Other] = res.other;
         if (res.viewed) {
@@ -236,6 +289,9 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
       })
       .catch(
         createErrorHandler((errMsg: unknown) => {
+          if (controller.signal.aborted || !isMountedRef.current) {
+            return;
+          }
           setActivityData(activityData => ({
             ...activityData,
             [TableTab.Viewed]: [],
@@ -251,39 +307,75 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
       {
         col: 'created_by',
         opr: 'rel_o_m',
-        value: `${id}`,
+        value: personalizedUserIdString,
       },
     ];
     Promise.all([
-      getUserOwnedObjects(id, 'dashboard')
+      getUserOwnedObjects(
+        personalizedUserId,
+        'dashboard',
+        undefined,
+        undefined,
+        controller.signal,
+      )
         .then(r => {
+          if (controller.signal.aborted || !isMountedRef.current) {
+            return Promise.resolve();
+          }
           setDashboardData(r);
           return Promise.resolve();
         })
         .catch((err: unknown) => {
+          if (controller.signal.aborted || !isMountedRef.current) {
+            return Promise.resolve();
+          }
           setDashboardData([]);
           addDangerToast(
             t('There was an issue fetching your dashboards: %s', err),
           );
           return Promise.resolve();
         }),
-      getUserOwnedObjects(id, 'chart')
+      getUserOwnedObjects(
+        personalizedUserId,
+        'chart',
+        undefined,
+        undefined,
+        controller.signal,
+      )
         .then(r => {
+          if (controller.signal.aborted || !isMountedRef.current) {
+            return Promise.resolve();
+          }
           setChartData(r);
           return Promise.resolve();
         })
         .catch((err: unknown) => {
+          if (controller.signal.aborted || !isMountedRef.current) {
+            return Promise.resolve();
+          }
           setChartData([]);
           addDangerToast(t('There was an issue fetching your chart: %s', err));
           return Promise.resolve();
         }),
       canReadSavedQueries
-        ? getUserOwnedObjects(id, 'saved_query', ownSavedQueryFilters)
+        ? getUserOwnedObjects(
+            personalizedUserId,
+            'saved_query',
+            ownSavedQueryFilters,
+            undefined,
+            controller.signal,
+          )
             .then(r => {
+              if (controller.signal.aborted || !isMountedRef.current) {
+                return Promise.resolve();
+              }
               setQueryData(r);
               return Promise.resolve();
             })
             .catch((err: unknown) => {
+              if (controller.signal.aborted || !isMountedRef.current) {
+                return Promise.resolve();
+              }
               setQueryData([]);
               addDangerToast(
                 t('There was an issue fetching your saved queries: %s', err),
@@ -292,17 +384,35 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
             })
         : Promise.resolve(),
     ]).then(() => {
+      if (controller.signal.aborted || !isMountedRef.current) {
+        return;
+      }
       setIsFetchingActivityData(false);
     });
-  }, [otherTabFilters]);
+    return () => {
+      controller.abort();
+    };
+  }, [
+    WelcomeMainExtension,
+    addDangerToast,
+    canReadSavedQueries,
+    hasPersonalizedHome,
+    initialCollapseState,
+    otherTabFilters,
+    recent,
+    userId,
+    userIdString,
+  ]);
 
   const handleToggle = () => {
     setChecked(!checked);
-    dangerouslySetItemDoNotUse(id, { thumbnails: !checked });
+    if (userIdString) {
+      dangerouslySetItemDoNotUse(userIdString, { thumbnails: !checked });
+    }
   };
 
   useEffect(() => {
-    if (!collapseState && queryData?.length) {
+    if (initialCollapseState.length === 0 && queryData?.length) {
       setActiveState(activeState => [...activeState, '4']);
     }
     setActivityData(activityData => ({
@@ -313,13 +423,16 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
         ...(queryData?.slice(0, 3) || []),
       ],
     }));
-  }, [chartData, queryData, dashboardData]);
+  }, [chartData, dashboardData, initialCollapseState.length, queryData]);
 
   useEffect(() => {
-    if (!collapseState && activityData?.[TableTab.Viewed]?.length) {
+    if (
+      initialCollapseState.length === 0 &&
+      activityData?.[TableTab.Viewed]?.length
+    ) {
       setActiveState(activeState => ['1', ...activeState]);
     }
-  }, [activityData]);
+  }, [activityData, initialCollapseState.length]);
 
   const isRecentActivityLoading =
     !activityData?.[TableTab.Other] && !activityData?.[TableTab.Viewed];
@@ -367,56 +480,65 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
                 {
                   key: 'recents',
                   label: t('Recents'),
-                  children:
-                    activityData &&
+                  children: !hasPersonalizedHome ? (
+                    <EmptyState tableName={WelcomeTable.Recents} />
+                  ) : activityData &&
                     (activityData[TableTab.Viewed] ||
                       activityData[TableTab.Other] ||
                       activityData[TableTab.Created]) &&
                     activeChild !== 'Loading' ? (
-                      <ActivityTable
-                        user={{ userId: user.userId! }} // user is definitely not a guest user on this page
-                        activeChild={activeChild}
-                        setActiveChild={setActiveChild}
-                        activityData={activityData}
-                        isFetchingActivityData={isFetchingActivityData}
-                      />
-                    ) : (
-                      <LoadingCards />
-                    ),
+                    <ActivityTable
+                      user={{ userId }}
+                      activeChild={activeChild}
+                      setActiveChild={setActiveChild}
+                      activityData={activityData}
+                      isFetchingActivityData={isFetchingActivityData}
+                    />
+                  ) : (
+                    <LoadingCards />
+                  ),
                 },
                 {
                   key: 'dashboards',
                   label: t('Dashboards'),
-                  children:
-                    !dashboardData || isRecentActivityLoading ? (
-                      <LoadingCards cover={checked} />
-                    ) : (
-                      <DashboardTable
-                        user={user}
-                        mine={dashboardData}
-                        showThumbnails={checked}
-                        otherTabData={activityData?.[TableTab.Other]}
-                        otherTabFilters={otherTabFilters}
-                        otherTabTitle={otherTabTitle}
-                      />
-                    ),
+                  children: !hasPersonalizedHome ? (
+                    <EmptyState
+                      tableName={WelcomeTable.Dashboards}
+                      tab={TableTab.Mine}
+                    />
+                  ) : !dashboardData || isRecentActivityLoading ? (
+                    <LoadingCards cover={checked} />
+                  ) : (
+                    <DashboardTable
+                      user={user}
+                      mine={dashboardData}
+                      showThumbnails={checked}
+                      otherTabData={activityData?.[TableTab.Other]}
+                      otherTabFilters={otherTabFilters}
+                      otherTabTitle={otherTabTitle}
+                    />
+                  ),
                 },
                 {
                   key: 'charts',
                   label: t('Charts'),
-                  children:
-                    !chartData || isRecentActivityLoading ? (
-                      <LoadingCards cover={checked} />
-                    ) : (
-                      <ChartTable
-                        showThumbnails={checked}
-                        user={user}
-                        mine={chartData}
-                        otherTabData={activityData?.[TableTab.Other]}
-                        otherTabFilters={otherTabFilters}
-                        otherTabTitle={otherTabTitle}
-                      />
-                    ),
+                  children: !hasPersonalizedHome ? (
+                    <EmptyState
+                      tableName={WelcomeTable.Charts}
+                      tab={TableTab.Mine}
+                    />
+                  ) : !chartData || isRecentActivityLoading ? (
+                    <LoadingCards cover={checked} />
+                  ) : (
+                    <ChartTable
+                      showThumbnails={checked}
+                      user={user}
+                      mine={chartData}
+                      otherTabData={activityData?.[TableTab.Other]}
+                      otherTabFilters={otherTabFilters}
+                      otherTabTitle={otherTabTitle}
+                    />
+                  ),
                 },
                 ...(canReadSavedQueries
                   ? [

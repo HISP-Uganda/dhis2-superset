@@ -31,6 +31,10 @@ import Welcome from 'src/pages/Home';
 // Public landing page for unauthenticated users
 import PublicLandingPage from 'src/pages/PublicLandingPage';
 
+const CMSAdminPage = lazy(
+  () => import(/* webpackChunkName: "CMSAdminPage" */ 'src/pages/CMSAdminPage'),
+);
+
 const ChartCreation = lazy(
   () =>
     import(/* webpackChunkName: "ChartCreation" */ 'src/pages/ChartCreation'),
@@ -102,7 +106,8 @@ const ExecutionLogList = lazy(
 );
 
 const DHIS2Instances = lazy(
-  () => import(/* webpackChunkName: "DHIS2Instances" */ 'src/pages/DHIS2Instances'),
+  () =>
+    import(/* webpackChunkName: "DHIS2Instances" */ 'src/pages/DHIS2Instances'),
 );
 
 const DHIS2Health = lazy(
@@ -125,16 +130,12 @@ const DHIS2LocalMetadata = lazy(
 
 const DHIS2LocalData = lazy(
   () =>
-    import(
-      /* webpackChunkName: "DHIS2LocalData" */ 'src/pages/DHIS2LocalData'
-    ),
+    import(/* webpackChunkName: "DHIS2LocalData" */ 'src/pages/DHIS2LocalData'),
 );
 
 const DHIS2Downloads = lazy(
   () =>
-    import(
-      /* webpackChunkName: "DHIS2Downloads" */ 'src/pages/DHIS2Downloads'
-    ),
+    import(/* webpackChunkName: "DHIS2Downloads" */ 'src/pages/DHIS2Downloads'),
 );
 
 const LocalStagingSettings = lazy(
@@ -247,6 +248,18 @@ export const routes: Routes = [
   {
     path: '/superset/public/',
     Component: PublicLandingPage,
+  },
+  {
+    path: '/superset/public/:pageSlug/',
+    Component: PublicLandingPage,
+  },
+  {
+    path: '/superset/cms/',
+    Component: CMSAdminPage,
+  },
+  {
+    path: '/superset/cms/:subpath/',
+    Component: CMSAdminPage,
   },
   {
     path: '/dashboard/list/',

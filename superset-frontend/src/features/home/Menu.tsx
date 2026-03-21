@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* eslint-disable theme-colors/no-literal-colors */
 import { useState, useEffect } from 'react';
 import { styled } from '@superset-ui/core';
 import { debounce } from 'lodash';
@@ -31,6 +32,8 @@ import { Icons } from '@superset-ui/core/components/Icons';
 import { Typography } from '@superset-ui/core/components/Typography';
 import { useUiConfig } from 'src/components/UiConfigContext';
 import { URL_PARAMS } from 'src/constants';
+import getBootstrapData from 'src/utils/getBootstrapData';
+import { userHasPermission } from 'src/dashboard/util/permissionUtils';
 import {
   MenuObjectChildProps,
   MenuObjectProps,
@@ -254,14 +257,18 @@ export function Menu({
 
   useEffect(() => {
     function handleResize() {
-      if (window.innerWidth <= 767) {
-        setMenu('inline');
-      } else setMenu('horizontal');
+      const nextMenuMode = window.innerWidth <= 767 ? 'inline' : 'horizontal';
+      setMenu(currentMenu =>
+        currentMenu === nextMenuMode ? currentMenu : nextMenuMode,
+      );
     }
     handleResize();
     const windowResize = debounce(() => handleResize(), 10);
     window.addEventListener('resize', windowResize);
-    return () => window.removeEventListener('resize', windowResize);
+    return () => {
+      window.removeEventListener('resize', windowResize);
+      windowResize.cancel();
+    };
   }, []);
 
   enum Paths {
@@ -300,7 +307,7 @@ export function Menu({
       default:
         setActiveTabs(defaultTabSelection);
     }
-  }, [location.pathname]);
+  }, [location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const standalone = getUrlParam(URL_PARAMS.standalone);
   if (standalone || uiConfig.hideNav) return <></>;
@@ -348,15 +355,15 @@ export function Menu({
                   {child.label}
                 </NavLink>
               ) : (
-                <Typography.Link href={child.url}>{child.label}</Typography.Link>
+                <Typography.Link href={child.url}>
+                  {child.label}
+                </Typography.Link>
               ),
             };
           }
           return null;
         })
-        .filter(
-          (item): item is NonNullable<typeof item> => item !== null,
-        ),
+        .filter((item): item is NonNullable<typeof item> => item !== null),
     };
   };
   const renderBrand = () =>
@@ -424,8 +431,15 @@ export function Menu({
 // transform the menu data to reorganize components
 export default function MenuWrapper({ data, ...rest }: MenuProps) {
   const sqlLabSeparator = '-' as const;
+  const CMS_PAGES_MENU_LABEL = 'CMS Pages';
+  const bootstrapData = getBootstrapData();
+  const canViewCms = userHasPermission(
+    bootstrapData.user || {},
+    'CMS',
+    'cms.pages.view',
+  );
 
-const dataWorkspaceChildren: MenuObjectChildProps[] = [
+  const dataWorkspaceChildren: MenuObjectChildProps[] = [
     {
       name: 'DHIS2 Health',
       label: 'DHIS2 Health',
@@ -476,6 +490,8 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
 
   const isDataMenu = (item: MenuObjectProps) =>
     item.name === 'Data' || item.label === 'Data';
+  const isCmsPagesMenu = (item: MenuObjectProps) =>
+    item.name === CMS_PAGES_MENU_LABEL || item.label === CMS_PAGES_MENU_LABEL;
 
   const isSqlMenu = (item: MenuObjectProps) =>
     item.url?.startsWith('/sqllab') ||
@@ -522,7 +538,43 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
       );
     });
 
-  const toDataChild = (item: MenuObjectChildProps): MenuObjectChildProps => item;
+  const cmsPagesMenu: MenuObjectProps | null =
+    data.navbar_right.user_is_anonymous || !canViewCms
+      ? null
+      : {
+          name: CMS_PAGES_MENU_LABEL,
+          label: CMS_PAGES_MENU_LABEL,
+          childs: [
+            {
+              name: 'CMS Dashboard',
+              label: 'CMS Dashboard',
+              url: '/superset/cms/',
+            },
+            {
+              name: 'Page Studio',
+              label: 'Page Studio',
+              url: '/superset/cms/?tab=studio',
+            },
+            {
+              name: 'Menu Manager',
+              label: 'Menu Manager',
+              url: '/superset/cms/?tab=menus',
+            },
+            {
+              name: 'Portal Settings',
+              label: 'Portal Settings',
+              url: '/superset/cms/?tab=portal',
+            },
+            {
+              name: 'Public Portal',
+              label: 'Public Portal',
+              url: '/superset/public/',
+            },
+          ],
+        };
+
+  const toDataChild = (item: MenuObjectChildProps): MenuObjectChildProps =>
+    item;
 
   // Cycle through menu.menu to build out cleanedMenu and settings
   const cleanedMenu: MenuObjectProps[] = [];
@@ -583,17 +635,16 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
       return;
     }
 
-    const normalizedItem =
-      isDataMenu(item)
-        ? {
-            ...newItem,
-            childs: dedupeChildren([
-              ...dataWorkspaceChildren,
-              '-',
-              ...(newItem.childs || []),
-            ]),
-          }
-        : newItem;
+    const normalizedItem = isDataMenu(item)
+      ? {
+          ...newItem,
+          childs: dedupeChildren([
+            ...dataWorkspaceChildren,
+            '-',
+            ...(newItem.childs || []),
+          ]),
+        }
+      : newItem;
 
     if (!settingsMenus.hasOwnProperty(item.name)) {
       cleanedMenu.push(normalizedItem);
@@ -616,10 +667,17 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
     // Move DHIS2 children to Data
     if (isDHIS2Menu(item)) {
       if (item.url) {
-        movedDataChildren.push({ name: 'DHIS2', label: 'DHIS2', url: item.url });
+        movedDataChildren.push({
+          name: 'DHIS2',
+          label: 'DHIS2',
+          url: item.url,
+        });
       }
       item.childs?.forEach(child => {
-        if (typeof child !== 'string' && child.url?.startsWith('/superset/dhis2/')) {
+        if (
+          typeof child !== 'string' &&
+          child.url?.startsWith('/superset/dhis2/')
+        ) {
           movedDataChildren.push(child);
         }
       });
@@ -639,11 +697,15 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
       ...item,
       // Strip data-related children from settings dropdown (they moved to Data)
       childs: item.childs?.filter(
-        child => typeof child === 'string' || !isDataRelatedChild(child as MenuObjectChildProps),
+        child =>
+          typeof child === 'string' ||
+          !isDataRelatedChild(child as MenuObjectChildProps),
       ),
     }));
   const existingDataMenu = cleanedMenu.find(isDataMenu);
-  const cleanedMenuWithoutData = cleanedMenu.filter(item => !isDataMenu(item));
+  const cleanedMenuWithoutData = cleanedMenu.filter(
+    item => !isDataMenu(item) && !isCmsPagesMenu(item),
+  );
 
   const normalizedDataMenu = existingDataMenu || {
     name: 'Data',
@@ -687,6 +749,9 @@ const dataWorkspaceChildren: MenuObjectChildProps[] = [
           : cleanedMenuWithoutData.length;
 
   cleanedMenuWithoutData.splice(insertIndex, 0, normalizedDataMenu);
+  if (cmsPagesMenu) {
+    cleanedMenuWithoutData.splice(insertIndex + 1, 0, cmsPagesMenu);
+  }
 
   newMenuData.menu = cleanedMenuWithoutData;
   newMenuData.settings = filteredSettings;

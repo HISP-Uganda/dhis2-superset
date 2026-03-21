@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 import tests.dhis2._bootstrap  # noqa: F401 - must be first
 
@@ -76,6 +77,69 @@ def test_create_staged_dataset_forces_auto_refresh_enabled():
         )
 
     assert dataset.auto_refresh_enabled is True
+
+
+def test_create_staged_dataset_serializes_dataset_config_dict():
+    import superset
+    from superset.dhis2 import staged_dataset_service as svc
+
+    superset.db.session.add = MagicMock()
+    superset.db.session.flush = MagicMock()
+    superset.db.session.commit = MagicMock()
+
+    config = {
+        "configured_connection_ids": [1, 2],
+        "org_units": ["akV6429SUqu"],
+        "level_mapping": {
+            "enabled": True,
+            "rows": [
+                {
+                    "merged_level": 1,
+                    "label": "National",
+                    "instance_levels": {"1": 1, "2": 1},
+                }
+            ],
+        },
+    }
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset_by_name",
+        return_value=None,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=_FakeEngine(),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._sync_compat_dataset",
+    ):
+        dataset = svc.create_staged_dataset(
+            10,
+            {
+                "name": "ANC Coverage",
+                "dataset_config": config,
+            },
+        )
+
+    assert isinstance(dataset.dataset_config, str)
+    assert json.loads(dataset.dataset_config) == config
+
+
+def test_create_staged_dataset_rejects_non_json_serializable_dataset_config():
+    from superset.dhis2 import staged_dataset_service as svc
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset_by_name",
+        return_value=None,
+    ), pytest.raises(
+        ValueError,
+        match="'dataset_config' must be JSON serializable",
+    ):
+        svc.create_staged_dataset(
+            10,
+            {
+                "name": "ANC Coverage",
+                "dataset_config": {"bad": object()},
+            },
+        )
 
 
 def test_create_staged_dataset_reuses_existing_name_and_keeps_table():

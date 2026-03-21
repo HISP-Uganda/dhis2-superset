@@ -222,6 +222,25 @@ test('Without sql role - calls api methods in parallel on page load', async () =
   expect(fetchMock.calls(dashboardsEndpoint)).toHaveLength(2);
 });
 
+test('Without a user id - renders without personalized fetches', async () => {
+  await waitFor(() => {
+    render(
+      // @ts-ignore-next-line
+      <Welcome user={{ ...mockedProps.user, userId: undefined }} />,
+      {
+        useRedux: true,
+        useRouter: true,
+      },
+    );
+  });
+
+  expect(await screen.findByText('Dashboards')).toBeInTheDocument();
+  expect(fetchMock.calls(chartsEndpoint)).toHaveLength(0);
+  expect(fetchMock.calls(recentActivityEndpoint)).toHaveLength(0);
+  expect(fetchMock.calls(savedQueryEndpoint)).toHaveLength(0);
+  expect(fetchMock.calls(dashboardsEndpoint)).toHaveLength(0);
+});
+
 // Mock specific to the tests related to the toggle switch
 fetchMock.get('glob:*/api/v1/dashboard/*', {
   result: {

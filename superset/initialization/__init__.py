@@ -203,6 +203,10 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             UserRegistrationsRestAPI,
         )
         from superset.public_page.api import PublicPageRestApi
+        from superset.public_page.admin_views import (
+            cms_frontend_blueprint,
+            public_page_frontend_blueprint,
+        )
         from superset.staging.api import StagedSourceApi
         from superset.sqllab.api import SqlLabRestApi
         from superset.sqllab.permalink.api import SqlLabPermalinkRestApi
@@ -258,6 +262,8 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         self.superset_app.register_blueprint(health_blueprint)
         self.superset_app.register_blueprint(dhis2_frontend_blueprint)
         self.superset_app.register_blueprint(local_staging_blueprint)
+        self.superset_app.register_blueprint(cms_frontend_blueprint)
+        self.superset_app.register_blueprint(public_page_frontend_blueprint)
 
         #
         # Setup API views

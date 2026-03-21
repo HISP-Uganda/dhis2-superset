@@ -8,8 +8,7 @@ import {
   TestInfo,
 } from '@playwright/test';
 
-export const ADMIN_USERNAME =
-  process.env.PLAYWRIGHT_ADMIN_USERNAME || 'admin';
+export const ADMIN_USERNAME = process.env.PLAYWRIGHT_ADMIN_USERNAME || 'admin';
 export const ADMIN_PASSWORD =
   process.env.PLAYWRIGHT_ADMIN_PASSWORD || 'Admin@2026';
 export const AUTH_STATE_PATH = 'playwright/.auth/admin.json';
@@ -28,6 +27,7 @@ export const ROUTES = {
   localStaging: '/superset/local-staging/',
   localData: `/superset/dhis2/local-data/?database=${DHIS2_DATABASE_ID}`,
   login: '/login/',
+  publicPortal: '/superset/public/',
   syncHistory: `/superset/dhis2/sync-history/?database=${DHIS2_DATABASE_ID}`,
   welcome: '/superset/welcome/',
 } as const;
@@ -96,12 +96,16 @@ export async function fetchClickHouseCount(
 
 export async function openLocalDataPage(page: Page): Promise<void> {
   await page.goto(ROUTES.localData);
-  await expect(page.getByRole('heading', { name: 'Data Workspace' })).toBeVisible({
+  await expect(
+    page.getByRole('heading', { name: 'Data Workspace' }),
+  ).toBeVisible({
     timeout: 30000,
   });
-  await expect(page.getByTestId('dhis2-local-data-dataset-select')).toBeVisible({
-    timeout: 30000,
-  });
+  await expect(page.getByTestId('dhis2-local-data-dataset-select')).toBeVisible(
+    {
+      timeout: 30000,
+    },
+  );
 }
 
 export async function selectDataset(
@@ -130,10 +134,9 @@ export async function waitForStagingPreview(page: Page): Promise<void> {
   await expect(page.getByTestId('dhis2-staging-preview-card')).toBeVisible({
     timeout: 30000,
   });
-  await expect(page.getByTestId('dhis2-staging-preview-row-count')).toContainText(
-    'Staging rows:',
-    { timeout: 60000 },
-  );
+  await expect(
+    page.getByTestId('dhis2-staging-preview-row-count'),
+  ).toContainText('Staging rows:', { timeout: 60000 });
 }
 
 export async function selectFirstDropdownOption(
@@ -141,7 +144,9 @@ export async function selectFirstDropdownOption(
   locator: Locator,
 ): Promise<string> {
   await locator.click();
-  const option = page.locator('.ant-select-dropdown .ant-select-item-option').first();
+  const option = page
+    .locator('.ant-select-dropdown .ant-select-item-option')
+    .first();
   await expect(option).toBeVisible({ timeout: 30000 });
   const text = (await option.innerText()).trim();
   await option.click();

@@ -57,6 +57,11 @@ describe('dhis2PeriodControls', () => {
         sql: 'SELECT * FROM dhis2_staging.sv_42_hmis_test',
       }),
     ).toBe(42);
+    expect(
+      resolveDhis2StagedDatasetId({
+        sql: 'SELECT * FROM "dhis2_serving"."sv_7_ep_malaria"',
+      }),
+    ).toBe(7);
   });
 
   it('builds the staged local period endpoint from datasource context', () => {

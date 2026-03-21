@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { renderHook } from '@testing-library/react-hooks';
+import { act, renderHook } from '@testing-library/react-hooks';
 import { JsonResponse, SupersetClient } from '@superset-ui/core';
 
 import { useListViewResource } from './hooks';
@@ -57,6 +57,7 @@ describe('useListViewResource', () => {
     expect(fetchSpy).toHaveBeenNthCalledWith(2, {
       endpoint:
         '/api/v1/example/?q=(filters:!((col:status,opr:equals,value:active)),order_column:foo,order_direction:asc,page:0,page_size:10)',
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -101,7 +102,43 @@ describe('useListViewResource', () => {
     expect(fetchSpy).toHaveBeenNthCalledWith(2, {
       endpoint:
         '/api/v1/example/?q=(filters:!((col:status,opr:equals,value:active)),order_column:foo,order_direction:asc,page:0,page_size:10,select_columns:!(id,name))',
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  test('should abort in-flight requests on unmount', () => {
+    let infoSignal: AbortSignal | undefined;
+    let dataSignal: AbortSignal | undefined;
+
+    jest
+      .spyOn(SupersetClient, 'get')
+      .mockImplementation(({ endpoint, signal }) => {
+        if (endpoint.includes('/_info')) {
+          infoSignal = signal;
+        } else {
+          dataSignal = signal;
+        }
+
+        return new Promise(() => {}) as Promise<JsonResponse>;
+      });
+
+    const { result, unmount } = renderHook(() =>
+      useListViewResource('example', 'Example', jest.fn()),
+    );
+
+    act(() => {
+      result.current.fetchData({
+        pageIndex: 0,
+        pageSize: 10,
+        sortBy: [{ id: 'foo' }],
+        filters: [],
+      });
+    });
+
+    unmount();
+
+    expect(infoSignal?.aborted).toBe(true);
+    expect(dataSignal?.aborted).toBe(true);
   });
 
   // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
@@ -130,6 +167,7 @@ describe('useListViewResource', () => {
 
       expect(fetchSpy).toHaveBeenNthCalledWith(2, {
         endpoint: expect.stringContaining('/api/v1/chart/?q='),
+        signal: expect.any(AbortSignal),
       });
 
       const call = fetchSpy.mock.calls[1];

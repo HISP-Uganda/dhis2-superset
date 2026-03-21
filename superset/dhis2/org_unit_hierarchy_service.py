@@ -247,6 +247,22 @@ class OrgUnitHierarchyService:
             return hierarchy_max_level
         return min(selected_level, hierarchy_max_level)
 
+    @classmethod
+    def _scope_levels(
+        cls,
+        scope: str,
+        selected_level: int,
+        hierarchy_max_level: int,
+    ) -> list[int]:
+        start_level = max(1, int(selected_level or 0))
+        if start_level <= 0 or hierarchy_max_level <= 0:
+            return []
+
+        max_level = cls._scope_max_level(scope, start_level, hierarchy_max_level)
+        if max_level < start_level:
+            return []
+        return list(range(start_level, max_level + 1))
+
     @staticmethod
     def get_level_mapping(dataset_config: dict[str, Any]) -> list[dict[str, Any]] | None:
         level_mapping = dataset_config.get("level_mapping")
@@ -318,8 +334,10 @@ class OrgUnitHierarchyService:
         if mapping_rows is not None:
             return sorted({row["merged_level"] for row in mapping_rows})
 
-        normalized_scope = str(dataset_config.get("org_unit_scope") or "selected").strip().lower()
-        max_level = 0
+        normalized_scope = str(
+            dataset_config.get("org_unit_scope") or "selected"
+        ).strip().lower()
+        resolved_levels: set[int] = set()
 
         for instance_id in selected_instance_ids:
             snapshot = self._load_snapshot(_ORG_UNIT_HIERARCHY_NAMESPACE, instance_id)
@@ -345,17 +363,16 @@ class OrgUnitHierarchyService:
                 if level is not None
             ]
 
-            if selected_levels:
-                instance_max = max(
-                    self._scope_max_level(normalized_scope, level, hierarchy_max_level)
-                    for level in selected_levels
+            for selected_level in selected_levels:
+                resolved_levels.update(
+                    self._scope_levels(
+                        normalized_scope,
+                        selected_level,
+                        hierarchy_max_level,
+                    )
                 )
-            else:
-                instance_max = hierarchy_max_level
 
-            max_level = max(max_level, instance_max)
-
-        return list(range(1, max_level + 1)) if max_level > 0 else []
+        return sorted(level for level in resolved_levels if level > 0)
 
     def _build_instance_level_map(
         self,
@@ -546,6 +563,7 @@ class OrgUnitHierarchyService:
         diagnostics = {
             "selected_instance_ids": selected_instance_ids,
             "level_range": level_range,
+            "selected_levels": level_range,
             "selected_root_details_count": len(selected_root_details),
             "mapping_enabled": mapping_rows is not None,
             "hierarchy_nodes_resolved": len(hierarchy_lookup),

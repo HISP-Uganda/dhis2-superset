@@ -51,7 +51,8 @@ import {
 } from 'src/features/dhis2/utils';
 
 const { Text } = Typography;
-const POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 15 * 60 * 1000;
+const POLL_INTERVAL_LABEL = '15 min';
 const ACTIVE_STATUSES = new Set(['running', 'queued', 'pending']);
 const TERMINAL_STATUSES = new Set(['success', 'partial', 'failed', 'cancelled']);
 
@@ -317,7 +318,10 @@ export default function DHIS2SyncHistory() {
               <Space>
                 <Text strong>{t('%s job(s) currently running', activeCount)}</Text>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('Auto-refreshing every 4 s. Only one job per dataset may run at a time.')}
+                  {t(
+                    'Auto-refreshing every %s. Only one job per dataset may run at a time.',
+                    POLL_INTERVAL_LABEL,
+                  )}
                 </Text>
               </Space>
             }
@@ -996,8 +1000,11 @@ export default function DHIS2SyncHistory() {
             <div style={{ paddingTop: 8 }}>
               <Progress percent={100} status="active" showInfo={false} strokeWidth={4} />
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('%s job(s) in progress — auto-refreshing every %ss',
-                  activeCount, POLL_INTERVAL_MS / 1000)}
+                {t(
+                  '%s job(s) in progress — auto-refreshing every %s',
+                  activeCount,
+                  POLL_INTERVAL_LABEL,
+                )}
               </Text>
             </div>
           )}

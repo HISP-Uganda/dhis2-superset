@@ -126,17 +126,32 @@ export default function ActivityTable({
   const [isFetchingEditedCards, setIsFetchingEditedCards] = useState(false);
 
   const getEditedCards = () => {
+    const controller = new AbortController();
     setIsFetchingEditedCards(true);
-    getEditedObjects(user.userId).then(r => {
-      setEditedCards([...r.editedChart, ...r.editedDash]);
-      setIsFetchingEditedCards(false);
-    });
+    getEditedObjects(user.userId, controller.signal)
+      .then(r => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setEditedCards([...(r.editedChart || []), ...(r.editedDash || [])]);
+        setIsFetchingEditedCards(false);
+      })
+      .catch(() => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setEditedCards([]);
+        setIsFetchingEditedCards(false);
+      });
+    return controller;
   };
 
   useEffect(() => {
     if (activeChild === TableTab.Edited) {
-      getEditedCards();
+      const controller = getEditedCards();
+      return () => controller.abort();
     }
+    return undefined;
   }, [activeChild]);
 
   const tabs = [

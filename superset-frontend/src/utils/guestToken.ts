@@ -24,17 +24,11 @@ interface GuestTokenResponse {
 const tokenCache = new Map<string, string>();
 
 export async function fetchGuestToken(dashboardId: string): Promise<string> {
-  console.log('fetchGuestToken: Requesting token for dashboard:', dashboardId);
-
   if (tokenCache.has(dashboardId)) {
-    console.log('fetchGuestToken: Using cached token');
     return tokenCache.get(dashboardId)!;
   }
 
   try {
-    console.log(
-      'fetchGuestToken: Making POST request to /api/v1/security/guest_token_proxy/',
-    );
     // Always send what we have; backend will resolve to UUID when needed
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(dashboardId);
     const payload = isUuid
@@ -46,7 +40,6 @@ export async function fetchGuestToken(dashboardId: string): Promise<string> {
       jsonPayload: payload,
     });
 
-    console.log('fetchGuestToken: Response received:', response);
     const data = response.json as GuestTokenResponse;
     const { token } = data;
 
@@ -54,12 +47,10 @@ export async function fetchGuestToken(dashboardId: string): Promise<string> {
       throw new Error('No token in response');
     }
 
-    console.log('fetchGuestToken: Token fetched successfully');
     tokenCache.set(dashboardId, token);
 
     return token;
   } catch (error: any) {
-    console.error('fetchGuestToken: ERROR on proxy:', error);
     // Fallback: if proxy route is unavailable (404), try the legacy public endpoint
     const isUuid = /^[0-9a-fA-F-]{36}$/.test(dashboardId);
     const status = (error && (error.status || error.response?.status)) as
@@ -67,9 +58,6 @@ export async function fetchGuestToken(dashboardId: string): Promise<string> {
       | undefined;
     if (status === 404 && !isUuid) {
       try {
-        console.log(
-          'fetchGuestToken: Falling back to /api/v1/security/public_guest_token/',
-        );
         const fallback = await SupersetClient.post({
           endpoint: '/api/v1/security/public_guest_token/',
           jsonPayload: { dashboard_id: dashboardId },
@@ -80,15 +68,9 @@ export async function fetchGuestToken(dashboardId: string): Promise<string> {
         tokenCache.set(dashboardId, token);
         return token;
       } catch (fallbackErr) {
-        console.error('fetchGuestToken: fallback also failed:', fallbackErr);
         throw fallbackErr;
       }
     }
-    console.error('fetchGuestToken: Error details:', {
-      dashboardId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
     throw error;
   }
 }

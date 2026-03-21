@@ -139,6 +139,42 @@ def test_staged_local_dataset_falls_back_to_staging_database_for_legacy_sql(
     get_staging_database.assert_called_once_with(always_create=True)
 
 
+def test_staged_local_dataset_detects_quoted_serving_sql(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="main",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="EP-Malaria",
+        sql='SELECT * FROM `dhis2_serving`.`sv_7_ep_malaria`',
+        extra=None,
+        database=source_database,
+        database_id=2,
+    )
+
+    get_staging_database = mocker.patch(
+        "superset.dhis2.staging_database_service.get_staging_database",
+        return_value=serving_database,
+    )
+
+    assert sqla_table.is_dhis2_staged_local is True
+    assert (
+        sqla_table.get_staged_local_serving_table_ref()
+        == "dhis2_serving.sv_7_ep_malaria"
+    )
+    assert sqla_table.get_serving_database() is serving_database
+    get_staging_database.assert_called_once_with(always_create=True)
+
+
 def test_query_uses_serving_database_for_staged_local_dataset(
     mocker: MockerFixture,
 ) -> None:

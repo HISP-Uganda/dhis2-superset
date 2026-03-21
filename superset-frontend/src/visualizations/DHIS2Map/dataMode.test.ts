@@ -39,6 +39,16 @@ describe('DHIS2Map dataMode', () => {
     const sql = 'SELECT * FROM sv_4_test_test_ds';
     expect(hasStagedLocalServingSql(sql)).toBe(true);
     expect(getStagedDatasetIdFromSql(sql)).toBe(4);
+    expect(
+      hasStagedLocalServingSql(
+        'SELECT * FROM `dhis2_serving`.`sv_7_ep_malaria`',
+      ),
+    ).toBe(true);
+    expect(
+      getStagedDatasetIdFromSql(
+        'SELECT * FROM `dhis2_serving`.`sv_7_ep_malaria`',
+      ),
+    ).toBe(7);
     expect(hasStagedLocalServingSql('SELECT * FROM table')).toBe(false);
     expect(getStagedDatasetIdFromSql('SELECT * FROM table')).toBeUndefined();
   });

@@ -16,7 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { ChartProps, getMetricLabel, getNumberFormatter } from '@superset-ui/core';
+import {
+  ChartProps,
+  getMetricLabel as getMetricLabelFromCore,
+  getNumberFormatter,
+  t,
+} from '@superset-ui/core';
 import { SlideshowChartProps, SlideshowFormData, SlideshowSlide } from './types';
 
 function cssRgba(
@@ -24,6 +29,52 @@ function cssRgba(
 ): string | null {
   if (!color) return null;
   return `rgba(${color.r},${color.g},${color.b},${color.a})`;
+}
+
+function resolveMetricLabel(metric: any, index: number): string {
+  if (typeof metric === 'string') {
+    return metric;
+  }
+  if (metric && typeof metric === 'object') {
+    return (
+      getMetricLabelFromCore(metric) ||
+      metric.column?.verbose_name ||
+      metric.column?.column_name ||
+      metric.metric_name ||
+      `${t('Metric')} ${index + 1}`
+    );
+  }
+  return `${t('Metric')} ${index + 1}`;
+}
+
+function resolveMetricValue(row: Record<string, any>, metric: any, index: number) {
+  const candidateKeys = new Set<string>();
+
+  if (typeof metric === 'string') {
+    candidateKeys.add(metric);
+  } else if (metric && typeof metric === 'object') {
+    [
+      getMetricLabelFromCore(metric),
+      metric.label,
+      metric.metric_name,
+      metric.column?.verbose_name,
+      metric.column?.column_name,
+      metric.column?.columnName,
+      metric.sqlExpression,
+    ]
+      .filter((value: unknown): value is string => Boolean(value))
+      .forEach(value => candidateKeys.add(value));
+  }
+
+  candidateKeys.add(String(index));
+
+  for (const key of candidateKeys) {
+    if (Object.prototype.hasOwnProperty.call(row, key)) {
+      return row[key];
+    }
+  }
+
+  return undefined;
 }
 
 export default function transformProps(
@@ -43,8 +94,8 @@ export default function transformProps(
   const nullText = fd.nullText ?? '—';
 
   const slides: SlideshowSlide[] = metrics.map((metric, idx) => {
-    const metricName = getMetricLabel(metric);
-    const raw = row[metricName] ?? null;
+    const metricName = resolveMetricLabel(metric, idx);
+    const raw = resolveMetricValue(row, metric, idx) ?? null;
     const rawNum = raw === null ? null : Number(raw);
     const isNull = rawNum === null || Number.isNaN(rawNum);
     const formatted = isNull ? nullText : `${prefix}${formatter(rawNum!)}${suffix}`;

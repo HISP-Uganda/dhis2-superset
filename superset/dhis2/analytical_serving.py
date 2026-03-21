@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 import json
 import logging
 import re
@@ -853,7 +854,7 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
 
 def materialize_serving_rows(
     dataset: DHIS2StagedDataset,
-    raw_rows: list[dict[str, Any]],
+    raw_rows: Iterable[dict[str, Any]],
     manifest: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     manifest = manifest or build_serving_manifest(dataset)
@@ -1137,7 +1138,12 @@ def is_terminal_at_selected_level(
 
 
 def _has_populated_sql_value(column_name: str) -> ColumnElement:
-    normalized_value = sa.func.trim(sa.func.coalesce(sa.cast(sa.column(column_name), sa.String()), ""))
+    # OU hierarchy serving columns are string dimensions already. Casting a
+    # nullable ClickHouse column to a non-nullable String before coalescing
+    # raises Code 349 (`Cannot convert NULL value to non-Nullable type`).
+    # Coalesce first and avoid the cast entirely so terminal-level predicates
+    # work for sparse/deeper hierarchy columns like `ward_department`.
+    normalized_value = sa.func.trim(sa.func.coalesce(sa.column(column_name), ""))
     return sa.func.length(normalized_value) > 0
 
 

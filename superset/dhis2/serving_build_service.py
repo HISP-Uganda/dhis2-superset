@@ -74,25 +74,25 @@ def build_serving_table(
     from superset.dhis2.sync_service import _build_ou_filter_for_dataset
 
     ou_filter = _build_ou_filter_for_dataset(dataset)
-    raw_rows = list(
-        resolved_engine.fetch_staging_rows(
+    source_row_count = 0
+    source_periods: set[str] = set()
+
+    def _tracked_raw_rows() -> Any:
+        nonlocal source_row_count
+        for raw_row in resolved_engine.fetch_staging_rows(
             dataset,
             limit=0,
             ou_filter=ou_filter,
-        )
-    )
-    source_row_count = len(raw_rows)
-    source_periods = sorted(
-        {
-            str(row.get("pe") or "").strip()
-            for row in raw_rows
-            if str(row.get("pe") or "").strip()
-        }
-    )
+        ):
+            source_row_count += 1
+            period_value = str(raw_row.get("pe") or "").strip()
+            if period_value:
+                source_periods.add(period_value)
+            yield raw_row
 
     serving_columns, serving_rows = materialize_serving_rows(
         dataset,
-        raw_rows,
+        _tracked_raw_rows(),
         manifest,
     )
     serving_columns, serving_rows = prune_empty_hierarchy_columns(
@@ -134,7 +134,7 @@ def build_serving_table(
         "live_serving_row_count": actual_row_count,
         "selected_serving_columns": required_columns,
         "source_period_count": len(source_periods),
-        "source_period_sample": source_periods[:10],
+        "source_period_sample": sorted(source_periods)[:10],
         "preview_row_count": min(serving_row_count, 1),
         "preview_sample": serving_rows[:1],
         "org_unit_hierarchy": manifest.get("org_unit_hierarchy_diagnostics") or {},

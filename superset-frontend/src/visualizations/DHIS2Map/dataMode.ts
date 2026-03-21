@@ -23,6 +23,9 @@ import {
 } from './loaderColumns';
 import { DHIS2DatasourceColumn } from './types';
 
+const STAGED_LOCAL_SERVING_SQL_PATTERN =
+  /select\s+\*\s+from\s+(?:[`"]?[a-z_][\w]*[`"]?\.)?[`"]?sv_(\d+)_[a-z0-9_]+[`"]?/i;
+
 export function hasDHIS2SqlComment(sql?: string | null): boolean {
   if (!sql) {
     return false;
@@ -37,7 +40,7 @@ export function hasStagedLocalServingSql(sql?: string | null): boolean {
   if (!sql) {
     return false;
   }
-  return /select\s+\*\s+from\s+(?:[a-z_][\w]*\.)?sv_\d+_/i.test(sql);
+  return STAGED_LOCAL_SERVING_SQL_PATTERN.test(sql);
 }
 
 export function getStagedDatasetIdFromSql(
@@ -46,9 +49,7 @@ export function getStagedDatasetIdFromSql(
   if (!sql) {
     return undefined;
   }
-  const match = sql.match(
-    /select\s+\*\s+from\s+(?:[a-z_][\w]*\.)?sv_(\d+)_/i,
-  );
+  const match = sql.match(STAGED_LOCAL_SERVING_SQL_PATTERN);
   if (!match?.[1]) {
     return undefined;
   }

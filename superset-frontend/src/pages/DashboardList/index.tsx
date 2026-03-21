@@ -123,6 +123,7 @@ const DASHBOARD_COLUMNS_TO_FETCH = [
   'dashboard_title',
   'published',
   'url',
+  'thumbnail_url',
   'slug',
   'changed_by',
   'changed_by.id',

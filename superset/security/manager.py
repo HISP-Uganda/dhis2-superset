@@ -1123,6 +1123,20 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         self.add_permission_view_menu("can_drill", "Dashboard")
         self.add_permission_view_menu("can_tag", "Chart")
         self.add_permission_view_menu("can_tag", "Dashboard")
+        for permission_name in (
+            "cms.pages.view",
+            "cms.pages.create",
+            "cms.pages.edit",
+            "cms.pages.delete",
+            "cms.pages.publish",
+            "cms.menus.manage",
+            "cms.charts.embed",
+            "cms.layout.manage",
+            "cms.themes.manage",
+            "cms.templates.manage",
+            "cms.styles.manage",
+        ):
+            self.add_permission_view_menu(permission_name, "CMS")
 
     def create_missing_perms(self) -> None:
         """

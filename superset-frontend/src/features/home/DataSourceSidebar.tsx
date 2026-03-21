@@ -127,6 +127,9 @@ export default function DataSourceSidebar({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let isActive = true;
+    const controller = new AbortController();
+
     const fetchDashboards = async () => {
       setLoading(true);
       try {
@@ -139,7 +142,13 @@ export default function DataSourceSidebar({
               order_direction: 'asc',
             })}`;
 
-        const response = await SupersetClient.get({ endpoint });
+        const response = await SupersetClient.get({
+          endpoint,
+          signal: controller.signal,
+        });
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
         const fetchedDashboards = response.json.result || [];
         setDashboards(fetchedDashboards);
 
@@ -148,14 +157,23 @@ export default function DataSourceSidebar({
           onSelect(fetchedDashboards[0]);
         }
       } catch (error) {
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
         console.error('Error fetching dashboards:', error);
         setDashboards([]);
       } finally {
-        setLoading(false);
+        if (isActive && !controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
 
     fetchDashboards();
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
   }, [isPublic]);
 
   const handleMenuClick = ({ key }: { key: string }) => {

@@ -75,14 +75,14 @@ _SERVING_PREFIX = "sv"
 # ClickHouse column definitions for the staging table
 _CH_STAGING_COLUMNS = [
     ("source_instance_id", "Int32"),
-    ("source_instance_name", "String"),
+    ("source_instance_name", "LowCardinality(String)"),
     ("dx_uid", "String"),
     ("dx_name", "Nullable(String)"),
-    ("dx_type", "String"),
-    ("pe", "String"),
+    ("dx_type", "LowCardinality(String)"),
+    ("pe", "LowCardinality(String)"),
     ("ou", "String"),
     ("ou_name", "Nullable(String)"),
-    ("ou_level", "Nullable(Int32)"),
+    ("ou_level", "Nullable(UInt16)"),
     ("value", "Nullable(String)"),
     ("value_numeric", "Nullable(Float64)"),
     ("co_uid", "Nullable(String)"),
@@ -139,6 +139,17 @@ def _wrap_nullable_type(col_type: str) -> str:
     return f"Nullable({normalized})"
 
 
+def _wrap_low_cardinality_type(col_type: str, *, nullable: bool) -> str:
+    normalized = str(col_type or "").strip()
+    if normalized == "String":
+        return (
+            "LowCardinality(Nullable(String))"
+            if nullable
+            else "LowCardinality(String)"
+        )
+    return _wrap_nullable_type(normalized) if nullable else normalized
+
+
 class ClickHouseStagingEngine(LocalStagingEngineBase):
     """ClickHouse-backed staging engine.
 
@@ -193,6 +204,60 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         result = self._qry(f"SELECT count() FROM {table_ref}")
         return int(result.result_rows[0][0] if result.result_rows else 0)
 
+    @staticmethod
+    def _period_year_expression(column_name: str) -> str:
+        return (
+            "toUInt16OrZero("
+            f"substring(replaceRegexpAll(ifNull(`{column_name}`, ''), '[^0-9]', ''), 1, 4)"
+            ")"
+        )
+
+    def _staging_partition_by_sql(self) -> str:
+        return self._period_year_expression("pe")
+
+    def _serving_partition_by_sql(
+        self,
+        columns: list[dict[str, Any]] | None,
+    ) -> str:
+        if not columns:
+            return "tuple()"
+
+        named_columns = {
+            str(column.get("column_name") or "").strip()
+            for column in columns
+            if str(column.get("column_name") or "").strip()
+        }
+        for column_name in (
+            "period_month",
+            "period_quarter",
+            "period_half",
+            "period_week",
+            "period_biweek",
+            "period_bimonth",
+            "period_year",
+            "period",
+        ):
+            if column_name in named_columns:
+                return self._period_year_expression(column_name)
+        return "tuple()"
+
+    def _serving_column_type(
+        self,
+        column: dict[str, Any],
+        *,
+        nullable: bool,
+    ) -> str:
+        col_type = _map_type(str(column.get("type") or "TEXT"))
+        extra = self._load_column_extra(column)
+
+        if extra.get("dhis2_is_ou_level") is True:
+            col_type = "UInt16"
+
+        is_dimension = bool(column.get("is_dimension"))
+        if col_type == "String" and is_dimension:
+            return _wrap_low_cardinality_type(col_type, nullable=nullable)
+        return _wrap_nullable_type(col_type) if nullable else col_type
+
     def _serving_order_by_sql(
         self,
         columns: list[dict[str, Any]] | None,
@@ -202,12 +267,13 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
 
         priority_keys = [
             "dhis2_instance",
-            "period",
             "period_year",
             "period_quarter",
             "period_month",
             "period_week",
-            "period_parent",
+            "period_biweek",
+            "period_bimonth",
+            "period",
             "ou_level",
             "co_uid",
             "disaggregation",
@@ -381,7 +447,8 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             CREATE TABLE IF NOT EXISTS `{self._database}`.`{table}` (
                 {cols_ddl}
             ) ENGINE = MergeTree()
-            ORDER BY (source_instance_id, dx_uid, pe, ou)
+            PARTITION BY {self._staging_partition_by_sql()}
+            ORDER BY (source_instance_id, pe, dx_uid, ou)
             SETTINGS index_granularity = 8192
         """)
         logger.info("ClickHouse: created staging table %s.%s", self._database, table)
@@ -622,18 +689,22 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                     col_name = str(col.get("column_name") or "").strip()
                     if not col_name:
                         continue
-                    col_type = _map_type(str(col.get("type") or "TEXT"))
-                    if col_name in nullable_column_names:
-                        col_type = _wrap_nullable_type(col_type)
+                    col_type = self._serving_column_type(
+                        col,
+                        nullable=col_name in nullable_column_names,
+                    )
                     col_ddl_parts.append(f"`{col_name}` {col_type}")
                     col_names.append(col_name)
 
                 if col_ddl_parts:
                     order_by_sql = self._serving_order_by_sql(effective_cols)
+                    partition_by_sql = self._serving_partition_by_sql(effective_cols)
                     self._cmd(
                         f"CREATE TABLE {loading_ref} "
                         f"({', '.join(col_ddl_parts)}) "
-                        f"ENGINE = MergeTree() ORDER BY {order_by_sql} "
+                        f"ENGINE = MergeTree() "
+                        f"PARTITION BY {partition_by_sql} "
+                        f"ORDER BY {order_by_sql} "
                         f"SETTINGS allow_nullable_key = 1, index_granularity = 8192"
                     )
                     if rows:
@@ -642,8 +713,9 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                             [row.get(c) for c in col_names]
                             for row in rows
                         ]
-                        # Insert in batches of 10 000 to avoid oversized requests
-                        batch_size = 10_000
+                        # Insert in moderately sized batches to reduce part
+                        # pressure without creating oversized HTTP payloads.
+                        batch_size = 25_000
                         client = self._connect()
                         for i in range(0, len(data), batch_size):
                             client.insert(
@@ -677,7 +749,9 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             )
             self._cmd(
                 f"CREATE TABLE {loading_ref} "
-                f"ENGINE = MergeTree() ORDER BY (source_instance_id, dx_uid, pe, ou) "
+                f"ENGINE = MergeTree() "
+                f"PARTITION BY {self._staging_partition_by_sql()} "
+                f"ORDER BY (source_instance_id, pe, dx_uid, ou) "
                 f"AS SELECT * FROM `{staging_db}`.`{staging_name}` {where}"
             )
             logger.info(
@@ -984,9 +1058,17 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         total_rows_int = len(rows)
         if count_rows:
             try:
-                cnt = self._qry(
-                    f"SELECT count() FROM ({select_sql}) AS _cnt"
-                )
+                if eff_agg and eff_group and eff_metric:
+                    quoted_group = ", ".join(f"`{c}`" for c in eff_group)
+                    count_sql = (
+                        f"SELECT count() FROM ("
+                        f"SELECT {quoted_group} FROM {table}{where_sql} "
+                        f"GROUP BY {quoted_group}"
+                        f") AS _cnt"
+                    )
+                else:
+                    count_sql = f"SELECT count() FROM {table}{where_sql}"
+                cnt = self._qry(count_sql)
                 total_rows_int = int(
                     cnt.result_rows[0][0] if cnt.result_rows else 0
                 )

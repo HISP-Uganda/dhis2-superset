@@ -1,10 +1,10 @@
-ATTACH TABLE _ UUID 'b2030498-22b1-4230-b13e-bc5af03c2d72'
+ATTACH TABLE _ UUID 'f186c984-af20-4381-b719-80bb60aa3a13'
 (
     `dhis2_instance` String,
     `national` String,
-    `region` String,
-    `district_city` String,
-    `dlg_municipality_city_council` String,
+    `region` Nullable(String),
+    `district_city` Nullable(String),
+    `dlg_municipality_city_council` Nullable(String),
     `sub_county_town_council_division` Nullable(String),
     `health_facility` Nullable(String),
     `ward_department` Nullable(String),

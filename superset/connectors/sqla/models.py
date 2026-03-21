@@ -118,6 +118,36 @@ from superset.utils.backports import StrEnum
 config = current_app.config  # Backward compatibility for tests
 metadata = Model.metadata  # pylint: disable=no-member
 logger = logging.getLogger(__name__)
+
+_DHIS2_STAGED_LOCAL_SQL_PATTERN = re.compile(
+    r"""
+    select\s+\*\s+from\s+
+    (?:
+        [`"]?(?P<schema>[a-zA-Z_][\w]*)[`"]?\.
+    )?
+    [`"]?(?P<table>(?:ds|sv)_\d+_[a-zA-Z0-9_]+)[`"]?
+    """,
+    re.I | re.X,
+)
+
+
+def _extract_dhis2_staged_local_sql_ref(
+    sql: str | None,
+) -> tuple[str | None, str] | None:
+    match = _DHIS2_STAGED_LOCAL_SQL_PATTERN.search(str(sql or ""))
+    if not match:
+        return None
+
+    table_name = str(match.group("table") or "").strip()
+    if not table_name:
+        return None
+
+    schema_name = str(match.group("schema") or "").strip() or None
+    return schema_name, table_name
+
+
+def _format_sql_table_ref(schema_name: str | None, table_name: str) -> str:
+    return f"{schema_name}.{table_name}" if schema_name else table_name
 VIRTUAL_TABLE_ALIAS = "virtual_table"
 
 # a non-exhaustive set of additive metrics
@@ -1204,14 +1234,9 @@ class SqlaTable(
         if extra.get("dhis2_staged_local"):
             return True
 
-        sql = str(self.sql or "")
         return bool(
             getattr(self.database, "backend", None) == "dhis2"
-            and re.search(
-                r"select\s+\*\s+from\s+(?:dhis2_staging\.)?(?:ds|sv)_\d+_",
-                sql,
-                re.I,
-            )
+            and _extract_dhis2_staged_local_sql_ref(self.sql)
         )
 
     def get_serving_database(self) -> Database:
@@ -1280,15 +1305,17 @@ class SqlaTable(
                     exc_info=True,
                 )
 
-        sql = str(self.sql or "")
-        match = re.search(
-            r"select\s+\*\s+from\s+((?P<schema>(?:[a-zA-Z_][\w]*\.)?)?)ds_(?P<suffix>\d+_[a-zA-Z0-9_]+)",
-            sql,
-            re.I,
-        )
-        if match:
-            schema_prefix = match.group("schema") or ""
-            return f"{schema_prefix}sv_{match.group('suffix')}"
+        sql_ref = _extract_dhis2_staged_local_sql_ref(self.sql)
+        if sql_ref:
+            schema_name, table_name = sql_ref
+            normalized_table_name = table_name.lower()
+            if normalized_table_name.startswith("sv_"):
+                return _format_sql_table_ref(schema_name, table_name)
+            if normalized_table_name.startswith("ds_"):
+                return _format_sql_table_ref(
+                    schema_name,
+                    f"sv_{table_name[3:]}",
+                )
 
         return None
 

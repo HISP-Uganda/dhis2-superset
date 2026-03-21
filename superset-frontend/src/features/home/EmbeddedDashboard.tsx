@@ -67,25 +67,15 @@ export default function EmbeddedDashboard({
 
   useEffect(() => {
     if (!containerRef.current) {
-      console.log('EmbeddedDashboard: containerRef not ready');
       return undefined;
     }
-
-    console.log('EmbeddedDashboard: Starting to embed dashboard', dashboardId);
+    let isActive = true;
 
     const embedDashboardAsync = async () => {
       try {
         setIsLoading(true);
         setError(null);
 
-        console.log('EmbeddedDashboard: Fetching guest token...');
-        const token = await fetchGuestToken(dashboardId);
-        console.log(
-          'EmbeddedDashboard: Guest token received:',
-          `${token.substring(0, 20)}...`,
-        );
-
-        console.log('EmbeddedDashboard: Calling embedDashboard SDK...');
         const dashboard = await embedDashboard({
           id: dashboardId,
           supersetDomain: window.location.origin,
@@ -102,30 +92,29 @@ export default function EmbeddedDashboard({
           },
         });
 
-        console.log('EmbeddedDashboard: Dashboard embedded successfully!');
+        if (!isActive) {
+          return;
+        }
+
         dashboardRef.current = dashboard;
 
         // Set light theme
-        console.log('EmbeddedDashboard: Setting light theme...');
         try {
           dashboard.setThemeConfig({
             theme_default: {
               algorithm: 'light',
             },
           });
-          console.log('EmbeddedDashboard: Light theme applied');
         } catch (themeError) {
-          console.error('EmbeddedDashboard: Failed to set theme:', themeError);
+          console.error('Failed to set embedded dashboard theme:', themeError);
         }
 
         setIsLoading(false);
       } catch (err) {
-        console.error('EmbeddedDashboard: Failed to embed dashboard:', err);
-        console.error('EmbeddedDashboard: Error details:', {
-          message: err instanceof Error ? err.message : 'Unknown error',
-          stack: err instanceof Error ? err.stack : undefined,
-          dashboardId,
-        });
+        if (!isActive) {
+          return;
+        }
+        console.error('Failed to embed dashboard:', err);
         setError(err instanceof Error ? err.message : 'Unknown error');
         setIsLoading(false);
       }
@@ -134,12 +123,12 @@ export default function EmbeddedDashboard({
     embedDashboardAsync();
 
     return () => {
+      isActive = false;
       if (dashboardRef.current) {
-        try {
-          dashboardRef.current = null;
-        } catch (e) {
-          console.error('Error cleaning up dashboard:', e);
-        }
+        dashboardRef.current = null;
+      }
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
       }
     };
   }, [dashboardId]);

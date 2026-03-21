@@ -37,10 +37,7 @@ export default function EnhancedHome() {
     Dashboard | undefined
   >(undefined);
 
-  console.log('EnhancedHome - selectedDashboard:', selectedDashboard);
-
   const handleDashboardSelect = (dashboard: Dashboard) => {
-    console.log('Dashboard selected:', dashboard);
     setSelectedDashboard(dashboard);
   };
 

@@ -16,3 +16,4 @@
 # under the License.
 """Public Page module."""
 
+from . import models  # noqa: F401

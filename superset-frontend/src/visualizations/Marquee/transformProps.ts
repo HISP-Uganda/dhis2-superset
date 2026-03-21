@@ -17,17 +17,56 @@
  * under the License.
  */
 
-import { ChartProps, getNumberFormatter, t } from '@superset-ui/core';
+import {
+  ChartProps,
+  getMetricLabel as getMetricLabelFromCore,
+  getNumberFormatter,
+  t,
+} from '@superset-ui/core';
 import { MarqueeChartProps, MarqueeFormData, MarqueeKpiItem } from './types';
 
-function getMetricLabel(metric: any): string {
+function resolveMetricLabel(metric: any, index: number): string {
   if (typeof metric === 'string') return metric;
   if (metric && typeof metric === 'object') {
-    return metric.label || metric.expressionType === 'SIMPLE'
-      ? metric.column?.verbose_name || metric.column?.column_name || metric.label || ''
-      : metric.label || '';
+    return (
+      getMetricLabelFromCore(metric) ||
+      metric.column?.verbose_name ||
+      metric.column?.column_name ||
+      metric.metric_name ||
+      `${t('Metric')} ${index + 1}`
+    );
   }
-  return '';
+  return `${t('Metric')} ${index + 1}`;
+}
+
+function resolveMetricValue(row: Record<string, any>, metric: any, index: number) {
+  const candidateKeys = new Set<string>();
+
+  if (typeof metric === 'string') {
+    candidateKeys.add(metric);
+  } else if (metric && typeof metric === 'object') {
+    [
+      getMetricLabelFromCore(metric),
+      metric.label,
+      metric.metric_name,
+      metric.column?.verbose_name,
+      metric.column?.column_name,
+      metric.column?.columnName,
+      metric.sqlExpression,
+    ]
+      .filter((value: unknown): value is string => Boolean(value))
+      .forEach(value => candidateKeys.add(value));
+  }
+
+  candidateKeys.add(String(index));
+
+  for (const key of candidateKeys) {
+    if (Object.prototype.hasOwnProperty.call(row, key)) {
+      return row[key];
+    }
+  }
+
+  return undefined;
 }
 
 function formatDelta(value: number | null | undefined): { str: string; positive: boolean } {
@@ -55,8 +94,8 @@ export default function transformProps(chartProps: ChartProps): MarqueeChartProp
   const row = queriesData?.[0]?.data?.[0] || {};
 
   const items: MarqueeKpiItem[] = metrics.map((metric, index) => {
-    const label = getMetricLabel(metric);
-    const rawValue = row[label] ?? row[String(index)];
+    const label = resolveMetricLabel(metric, index);
+    const rawValue = resolveMetricValue(row, metric, index);
 
     let formattedValue = nullText;
     let numericValue: number | null = null;
@@ -75,7 +114,7 @@ export default function transformProps(chartProps: ChartProps): MarqueeChartProp
 
     return {
       id: `item-${index}`,
-      label: label || `${t('Metric')} ${index + 1}`,
+      label,
       value: numericValue,
       formattedValue,
       deltaValue: deltaValue,

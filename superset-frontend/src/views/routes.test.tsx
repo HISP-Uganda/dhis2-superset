@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* eslint-disable import/first */
 jest.mock('@superset-ui/core', () => ({
   FeatureFlag: {
     EnableExtensions: 'EnableExtensions',
@@ -43,6 +44,9 @@ jest.mock('src/dashboard/util/permissionUtils', () => ({
 jest.mock('src/pages/Home', () => () => <div data-test="mock-home" />);
 jest.mock('src/pages/PublicLandingPage', () => () => (
   <div data-test="mock-public-landing" />
+));
+jest.mock('src/pages/CMSAdminPage', () => () => (
+  <div data-test="mock-cms-admin" />
 ));
 
 import { isFrontendRoute, routes } from './routes';

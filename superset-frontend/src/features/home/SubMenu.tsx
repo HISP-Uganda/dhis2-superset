@@ -16,7 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { ReactNode, useState, useEffect, FunctionComponent } from 'react';
+import {
+  ReactNode,
+  useState,
+  useEffect,
+  useMemo,
+  FunctionComponent,
+} from 'react';
 
 import { Link, useHistory } from 'react-router-dom';
 import { styled, css, t, useTheme } from '@superset-ui/core';
@@ -153,6 +159,7 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
   const [showMenu, setMenu] = useState<MenuMode>('horizontal');
   const [navRightStyle, setNavRightStyle] = useState('nav-right');
   const theme = useTheme();
+  const buttonCount = props.buttons?.length ?? 0;
 
   let hasHistory = true;
   // If no parent <Router> component exists, useHistory throws an error
@@ -165,23 +172,17 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
 
   useEffect(() => {
     function handleResize() {
-      if (window.innerWidth <= 767) setMenu('inline');
-      else setMenu('horizontal');
-
-      if (
-        props.buttons &&
-        props.buttons.length >= 3 &&
-        window.innerWidth >= 795
-      ) {
-        // eslint-disable-next-line no-unused-expressions
-        setNavRightStyle('nav-right');
-      } else if (
-        props.buttons &&
-        props.buttons.length >= 3 &&
-        window.innerWidth <= 795
-      ) {
-        setNavRightStyle('nav-right-collapse');
-      }
+      const nextMenuMode = window.innerWidth <= 767 ? 'inline' : 'horizontal';
+      const nextNavRightStyle =
+        buttonCount >= 3 && window.innerWidth <= 795
+          ? 'nav-right-collapse'
+          : 'nav-right';
+      setMenu(currentMenu =>
+        currentMenu === nextMenuMode ? currentMenu : nextMenuMode,
+      );
+      setNavRightStyle(currentStyle =>
+        currentStyle === nextNavRightStyle ? currentStyle : nextNavRightStyle,
+      );
     }
     handleResize();
     const resize = debounce(handleResize, 10);
@@ -190,7 +191,48 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
       window.removeEventListener('resize', resize);
       resize.cancel();
     };
-  }, [props.buttons]);
+  }, [buttonCount]);
+
+  const menuItems = useMemo(
+    () =>
+      props.tabs?.map(tab => {
+        if ((props.usesRouter || hasHistory) && !!tab.usesRouter) {
+          return {
+            key: tab.label,
+            label: (
+              <Link
+                to={tab.url || ''}
+                role="tab"
+                id={tab.id || tab.name}
+                data-test={tab['data-test']}
+                aria-selected={tab.name === props.activeChild}
+                aria-controls={tab['aria-controls'] || ''}
+                className={tab.name === props.activeChild ? 'active' : ''}
+              >
+                {tab.label}
+              </Link>
+            ),
+          };
+        }
+        return {
+          key: tab.label,
+          label: (
+            <div
+              className={cx('no-router', {
+                active: tab.name === props.activeChild,
+              })}
+              role="tab"
+              aria-selected={tab.name === props.activeChild}
+            >
+              <Typography.Link href={tab.url} onClick={tab.onClick}>
+                {tab.label}
+              </Typography.Link>
+            </div>
+          ),
+        };
+      }),
+    [hasHistory, props.activeChild, props.tabs, props.usesRouter],
+  );
 
   return (
     <StyledHeader backgroundColor={props.backgroundColor}>
@@ -200,42 +242,7 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
           mode={showMenu}
           disabledOverflow
           role="tablist"
-          items={props.tabs?.map(tab => {
-            if ((props.usesRouter || hasHistory) && !!tab.usesRouter) {
-              return {
-                key: tab.label,
-                label: (
-                  <Link
-                    to={tab.url || ''}
-                    role="tab"
-                    id={tab.id || tab.name}
-                    data-test={tab['data-test']}
-                    aria-selected={tab.name === props.activeChild}
-                    aria-controls={tab['aria-controls'] || ''}
-                    className={tab.name === props.activeChild ? 'active' : ''}
-                  >
-                    {tab.label}
-                  </Link>
-                ),
-              };
-            }
-            return {
-              key: tab.label,
-              label: (
-                <div
-                  className={cx('no-router', {
-                    active: tab.name === props.activeChild,
-                  })}
-                  role="tab"
-                  aria-selected={tab.name === props.activeChild}
-                >
-                  <Typography.Link href={tab.url} onClick={tab.onClick}>
-                    {tab.label}
-                  </Typography.Link>
-                </div>
-              ),
-            };
-          })}
+          items={menuItems}
         />
         <div className={navRightStyle}>
           <Menu

@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* eslint-disable theme-colors/no-literal-colors */
 
 /**
  * Public Page Layout Configuration
@@ -153,7 +154,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     enabled: true,
     height: 60,
     backgroundColor: '#ffffff',
-    boxShadow: '0 1px 0 rgba(0,0,0,0.08)',
+    boxShadow: 'none',
     logo: {
       enabled: true,
       alt: 'Organization Logo',
@@ -188,7 +189,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     mobileBreakpoint: 768,
   },
   content: {
-    backgroundColor: '#FAF9F8',
+    backgroundColor: '#ffffff',
     padding: '0',
     showWelcomeMessage: true,
     welcomeTitle: 'Uganda Malaria Data Repository',

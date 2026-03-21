@@ -50,6 +50,7 @@ def _make_dataset():
         ],
         get_dataset_config=lambda: {
             "configured_connection_ids": [1, 2],
+            "periods": ["2024Q1"],
             "org_unit_scope": "children",
             "org_unit_details": [
                 {
@@ -168,16 +169,9 @@ def test_build_serving_manifest_uses_user_facing_dimensions_and_variables():
         "District",
         "Period",
         "OU Level",
-        "Period Level",
-        "Parent Period",
         "Period Year",
         "Period Half",
         "Period Quarter",
-        "Period Month",
-        "Period Week",
-        "Period Biweek",
-        "Period Bimonth",
-        "Period Variant",
         "ANC 1st Visit",
         "Reporting Rate",
     ]
@@ -284,16 +278,9 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "district",
         "period",
         "ou_level",
-        "period_level",
-        "period_parent",
         "period_year",
         "period_half",
         "period_quarter",
-        "period_month",
-        "period_week",
-        "period_biweek",
-        "period_bimonth",
-        "period_variant",
         "anc_1st_visit",
         "reporting_rate",
     ]
@@ -304,16 +291,9 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "district": "Kampala",
             "period": "2024Q1",
             "ou_level": None,
-            "period_level": "quarter",
-            "period_parent": "2024",
             "period_year": "2024",
             "period_half": "2024S1",
             "period_quarter": "2024Q1",
-            "period_month": None,
-            "period_week": None,
-            "period_biweek": None,
-            "period_bimonth": None,
-            "period_variant": None,
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
         },
@@ -323,23 +303,16 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "district": "Mbale",
             "period": "2024Q1",
             "ou_level": None,
-            "period_level": "quarter",
-            "period_parent": "2024",
             "period_year": "2024",
             "period_half": "2024S1",
             "period_quarter": "2024Q1",
-            "period_month": None,
-            "period_week": None,
-            "period_biweek": None,
-            "period_bimonth": None,
-            "period_variant": None,
             "reporting_rate": 95.3,
             "anc_1st_visit": None,
         },
     ]
 
 
-def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_stop_level():
+def test_build_serving_manifest_materializes_only_selected_org_unit_levels():
     from superset.dhis2.analytical_serving import build_serving_manifest
 
     dataset = SimpleNamespace(
@@ -358,6 +331,7 @@ def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_
         ],
         get_dataset_config=lambda: {
             "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
             "org_unit_scope": "selected",
             "org_unit_details": [
                 {
@@ -429,21 +403,12 @@ def test_build_serving_manifest_keeps_all_ancestor_org_unit_levels_for_selected_
         manifest = build_serving_manifest(dataset)
 
     assert [column["verbose_name"] for column in manifest["columns"]] == [
-        "National",
-        "Region",
         "District",
         "Period",
         "OU Level",
-        "Period Level",
-        "Parent Period",
         "Period Year",
         "Period Half",
         "Period Quarter",
-        "Period Month",
-        "Period Week",
-        "Period Biweek",
-        "Period Bimonth",
-        "Period Variant",
         "Malaria Cases",
     ]
 
@@ -467,6 +432,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         ],
         get_dataset_config=lambda: {
             "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
             "org_unit_scope": "grandchildren",
             "org_units": [
                 "ou-region",
@@ -552,23 +518,97 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         manifest = build_serving_manifest(dataset)
 
     assert [column["verbose_name"] for column in manifest["columns"]] == [
-        "National",
         "Region",
         "District",
         "Subcounty",
         "Period",
         "OU Level",
-        "Period Level",
-        "Parent Period",
         "Period Year",
         "Period Half",
         "Period Quarter",
-        "Period Month",
-        "Period Week",
-        "Period Biweek",
-        "Period Bimonth",
-        "Period Variant",
         "Malaria Cases",
+    ]
+
+
+def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
+    from superset.dhis2.analytical_serving import build_serving_manifest
+
+    dataset = SimpleNamespace(
+        id=11,
+        database_id=10,
+        variables=[
+            SimpleNamespace(
+                instance_id=1,
+                variable_id="de_cases",
+                variable_type="dataElement",
+                variable_name="Malaria Cases",
+                alias=None,
+                instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                get_extra_params=lambda: {},
+            ),
+        ],
+        get_dataset_config=lambda: {
+            "configured_connection_ids": [1],
+            "periods": ["202401"],
+            "period_hierarchy_keys": ["year", "month"],
+            "org_unit_scope": "selected",
+            "org_unit_details": [
+                {
+                    "id": "ou-district",
+                    "source_org_unit_id": "ou-district",
+                    "level": 3,
+                    "source_instance_ids": [1],
+                }
+            ],
+        },
+    )
+    payloads = {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [
+                {"level": 1, "displayName": "National"},
+                {"level": 2, "displayName": "Region"},
+                {"level": 3, "displayName": "District"},
+            ],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "ou-district",
+                    "displayName": "Kampala",
+                    "level": 3,
+                    "path": "/ou-national/ou-region/ou-district",
+                },
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_cases",
+                    "displayName": "Malaria Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    assert [column["column_name"] for column in manifest["columns"]] == [
+        "district",
+        "period",
+        "ou_level",
+        "period_year",
+        "period_month",
+        "malaria_cases",
     ]
 
 
@@ -659,6 +699,7 @@ def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_p
     predicate_sql = str(predicate)
     assert "level2" in predicate_sql
     assert "level3" in predicate_sql
+    assert "CAST(" not in predicate_sql
 
 
 # ── COC / disaggregation-dimension tests ──────────────────────────────────────

@@ -103,7 +103,7 @@ CLICKHOUSE_SERVING_DATABASE="${CLICKHOUSE_SERVING_DATABASE:-dhis2_serving}"
 CLICKHOUSE_CONTROL_DATABASE="${CLICKHOUSE_CONTROL_DATABASE:-dhis2_control}"
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-superset_clickhouse}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-__AUTO_GENERATE__}"
-CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2 Serving (ClickHouse)}"
+CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2_Serving_Clickhouse}"
 CLICKHOUSE_ENV_FILE="${CLICKHOUSE_ENV_FILE:-/etc/clickhouse-server/clickhouse.env}"
 
 WIPE_METADATA="${WIPE_METADATA:-0}"
@@ -182,11 +182,6 @@ OPTIONS:
 
   --duckdb
   --no-duckdb
-
-NOTES:
-  - ClickHouse credentials are auto-generated securely on first deploy
-    and stored in /etc/clickhouse-server/clickhouse.env
-  - The final ClickHouse password is displayed after deploy/update
 EOF
 }
 
@@ -270,25 +265,67 @@ remote_worker() {
     fi
   }
 
-  # ---------------------------------------------------------------------------
-  # Safer apt helpers
-  # Avoid depending on fuser/pgrep before base packages are installed.
-  # ---------------------------------------------------------------------------
+  safe_kill_matching_procs() {
+    local pattern="$1"
+    local me="$$"
+    local ppid="$PPID"
+    local pid cmdline
+
+    for pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+      [[ -n "$pid" ]] || continue
+      [[ "$pid" = "$me" ]] && continue
+      [[ "$pid" = "$ppid" ]] && continue
+      [[ -r "/proc/$pid/cmdline" ]] || continue
+
+      cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+      case "$cmdline" in
+        *"bash -lc"*|*"pkill -f"*|*"pgrep -f"*)
+          continue
+          ;;
+      esac
+
+      kill "$pid" >/dev/null 2>&1 || true
+    done
+  }
 
   apt_quiesce_background_services() {
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
-      systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-      systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+    echo "[apt] quiescing background package services"
+
+    local have_timeout=0
+    command -v timeout >/dev/null 2>&1 && have_timeout=1
+
+    local pid1=""
+    pid1="$(ps -p 1 -o comm= 2>/dev/null || true)"
+    echo "[apt] pid1=${pid1:-unknown}"
+
+    if command -v systemctl >/dev/null 2>&1 && [[ "${pid1:-}" == "systemd" ]]; then
+      echo "[apt] systemd detected; stopping apt timers/services"
+      if [[ "$have_timeout" -eq 1 ]]; then
+        timeout 15s systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+        timeout 15s systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+        timeout 15s systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+      else
+        systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+        systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+        systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+      fi
+    else
+      echo "[apt] skipping systemctl operations (systemd not active as PID 1)"
     fi
 
-    if command -v pkill >/dev/null 2>&1; then
-      pkill -f unattended-upgrade >/dev/null 2>&1 || true
-    fi
+    echo "[apt] killing unattended-upgrade if present"
+    safe_kill_matching_procs 'unattended-upgrade'
+    safe_kill_matching_procs 'apt.systemd.daily'
+    safe_kill_matching_procs 'apt-daily'
+
+    echo "[apt] background package quiesce complete"
   }
 
   apt_repair_if_needed() {
+    echo "[apt] repairing dpkg state if needed"
     dpkg --configure -a >/dev/null 2>&1 || true
+    apt-get -f install -y >/dev/null 2>&1 || true
+    echo "[apt] dpkg repair step complete"
   }
 
   safe_apt_run() {
@@ -297,15 +334,22 @@ remote_worker() {
     local attempt
 
     for attempt in 1 2 3; do
+      echo "[apt] attempt ${attempt}: apt-get $*"
       apt_quiesce_background_services
       apt_repair_if_needed
 
-      if apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=5 "$@"; then
+      echo "[apt] executing: /usr/bin/apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=5 $*"
+      set +e
+      /usr/bin/apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=5 "$@"
+      rc=$?
+      set -e
+
+      if [[ "$rc" -eq 0 ]]; then
+        echo "[apt] success: apt-get $*"
         return 0
       fi
 
-      rc=$?
-      echo "[apt] command failed on attempt ${attempt}, retrying in 10s..." >&2
+      echo "[apt] failed rc=${rc}: apt-get $*" >&2
       sleep 10
     done
 
@@ -320,40 +364,33 @@ remote_worker() {
     safe_apt_run install -y "$@"
   }
 
-  generate_secure_password() {
-    if command -v openssl >/dev/null 2>&1; then
-      openssl rand -base64 48 | tr -d '\n' | sed 's#[/=+]#A#g' | cut -c1-32
-      return 0
-    fi
-
-    if command -v python3 >/dev/null 2>&1; then
-      python3 - <<'PY'
-import secrets
-alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%._-"
-print("".join(secrets.choice(alphabet) for _ in range(32)))
-PY
-      return 0
-    fi
-
-    date +%s | sha256sum | awk '{print substr($1,1,32)}'
-  }
-
   exec_in_ct() {
     local ct="$1"
     shift || true
     local payload
-    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$(declare -f apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'\n'"$*"
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
+    payload=$'
+set -Eeuo pipefail
+trap '\''rc=$?; echo "[exec_in_ct:'"$ct"'] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}'\'' ERR
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+'"$(declare -f safe_kill_matching_procs apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'
+'"$*"
+    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "$payload"
   }
 
   exec_in_ct_as_postgres() {
-    local ct="$1"
-    shift || true
-    local inner="$*"
-    local payload
-    payload=$'set -e\nset +u\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"su - postgres -s /bin/bash -c $(printf '%q' "$inner")"
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -c "$payload"
-  }
+  local ct="$1"
+  shift || true
+  local inner="$*"
+  local quoted_inner
+  quoted_inner="$(printf '%q' "$inner")"
+
+  lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "
+set -Eeuo pipefail
+trap 'rc=\$?; echo \"[exec_in_ct_as_postgres:$ct] ERROR rc=\${rc} line=\${LINENO} cmd=\${BASH_COMMAND}\" >&2; exit \${rc}' ERR
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+su - postgres -s /bin/bash -c $quoted_inner
+"
+}
 
   ct_ip() {
     local ct="$1"
@@ -370,6 +407,10 @@ EOS
 
   ensure_env_exists() {
     exec_in_ct "$CT_SUP" "test -f '$ENV_FILE' || { echo 'ERROR: missing $ENV_FILE'; exit 2; }"
+  }
+
+  ensure_superset_config_exists() {
+    exec_in_ct "$CT_SUP" "test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }"
   }
 
   ensure_clickhouse_credentials_file() {
@@ -390,11 +431,17 @@ EOS
         grep -E \"^[[:space:]]*\${key}=\" \"\$ENV_FILE\" | tail -n1 | cut -d= -f2- || true
       }
 
+      _shell_quote() {
+        printf '%q' \"\$1\"
+      }
+
       _upsert_env_var() {
         local key=\"\$1\"
-        local val=\"\$2\"
-        local tmp
+        local raw_val=\"\$2\"
+        local val tmp
+        val=\$(_shell_quote \"\$raw_val\")
         tmp=\$(mktemp)
+
         if grep -qE \"^[[:space:]]*\${key}=\" \"\$ENV_FILE\"; then
           sed \"s|^[[:space:]]*\${key}=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
           cat \"\$tmp\" > \"\$ENV_FILE\"
@@ -506,7 +553,7 @@ PY
         fi
       }
 
-      _add_env_var DHIS2_DUCKDB_PATH \$DUCKDB_DB_PATH
+      _add_env_var DHIS2_DUCKDB_PATH \"\$DUCKDB_DB_PATH\"
       _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_COUNT 3
       _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_DELAY_MS 300
       _add_env_var DHIS2_DUCKDB_SINGLE_WRITER_ENABLED true
@@ -526,18 +573,24 @@ PY
 
       ENV_FILE='$ENV_FILE'
 
+      _shell_quote() {
+        printf '%q' \"\$1\"
+      }
+
       _add_or_update_env_var() {
         local key=\"\$1\"
-        local val=\"\$2\"
-        local tmp
+        local raw_val=\"\$2\"
+        local val tmp
+        val=\$(_shell_quote \"\$raw_val\")
         tmp=\$(mktemp)
+
         if grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
           sed \"s|^[[:space:]]*\${key}[[:space:]]*=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
           cat \"\$tmp\" > \"\$ENV_FILE\"
           rm -f \"\$tmp\"
           echo \"[clickhouse] updated \${key} in \$ENV_FILE\"
         else
-          echo \"\${key}=\${val}\" >> \"\$ENV_FILE\"
+          printf '%s=%s\n' \"\$key\" \"\$val\" >> \"\$ENV_FILE\"
           echo \"[clickhouse] added \${key} to \$ENV_FILE\"
         fi
       }
@@ -567,26 +620,32 @@ PY
     log "[supersets] install ClickHouse if missing"
 
     exec_in_ct "$CT_SUP" "
-      set -euo pipefail
-
       if command -v clickhouse-server >/dev/null 2>&1; then
         echo '[clickhouse] already installed, skipping'
         clickhouse-server --version 2>/dev/null | head -1 || true
         exit 0
       fi
 
-      echo '[clickhouse] installing ClickHouse server + client'
+      echo '[clickhouse] apt update'
       safe_apt_update
+
+      echo '[clickhouse] install prereqs'
       safe_apt_install apt-transport-https ca-certificates curl gnupg
 
-      curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' >/dev/null 2>&1 || true
-      curl -fsSL 'https://packages.clickhouse.com/deb/archive-keyring.gpg' \
+      echo '[clickhouse] add repo key'
+      rm -f /usr/share/keyrings/clickhouse-keyring.gpg
+      curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
         | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
 
-      echo 'deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main' \
+      echo '[clickhouse] add repo'
+      ARCH=\$(dpkg --print-architecture)
+      echo \"deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=\${ARCH}] https://packages.clickhouse.com/deb stable main\" \
         > /etc/apt/sources.list.d/clickhouse.list
 
+      echo '[clickhouse] apt update after repo'
       safe_apt_update
+
+      echo '[clickhouse] install server and client'
       safe_apt_install clickhouse-server clickhouse-client
 
       echo '[clickhouse] installation complete'
@@ -606,9 +665,9 @@ PY
         exit 60
       fi
 
-      if systemctl is-enabled clickhouse-server >/dev/null 2>&1; then
-        systemctl enable clickhouse-server || true
-        systemctl restart clickhouse-server
+      if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files clickhouse-server.service >/dev/null 2>&1; then
+        systemctl enable clickhouse-server >/dev/null 2>&1 || true
+        systemctl restart clickhouse-server >/dev/null 2>&1 || true
       elif command -v service >/dev/null 2>&1; then
         service clickhouse-server restart || true
       else
@@ -649,7 +708,7 @@ PY
       _ch \"CREATE DATABASE IF NOT EXISTS \\\`\${CH_SERVING}\\\`\"
       _ch \"CREATE DATABASE IF NOT EXISTS \\\`\${CH_CONTROL}\\\`\"
 
-      echo '[clickhouse] creating user \${CH_USER}'
+      echo \"[clickhouse] creating user \${CH_USER}\"
       _ch \"CREATE USER IF NOT EXISTS \${CH_USER} IDENTIFIED BY '\${CH_PASS}'\"
 
       echo '[clickhouse] granting privileges'
@@ -733,10 +792,6 @@ except Exception as e:
     sys.exit(0)
 PY
     "
-  }
-
-  ensure_superset_config_exists() {
-    exec_in_ct "$CT_SUP" "test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }"
   }
 
   disable_systemd_superset_services() {
@@ -838,7 +893,7 @@ PY
 
   ensure_host_tools() {
     if ! has_cmd git; then
-      sudo bash -lc "$(declare -f apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install); safe_apt_update; safe_apt_install git ca-certificates"
+      sudo bash -lc "$(declare -f safe_kill_matching_procs apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install); safe_apt_update; safe_apt_install git ca-certificates"
     fi
   }
 
@@ -936,25 +991,41 @@ PY
   install_supersets_base_tools() {
     log "[supersets] ensure OS packages"
     exec_in_ct "$CT_SUP" "
+      echo '[supersets] container preflight'
+      command -v apt-get
+      uname -a || true
+      cat /etc/os-release || true
+
+      echo '[supersets] running apt update'
       safe_apt_update
+
+      echo '[supersets] running apt install for base packages'
       safe_apt_install \
         python3 python3-venv python3-dev build-essential \
         libffi-dev libssl-dev libsasl2-dev libldap2-dev libpq-dev \
         libjpeg-dev zlib1g-dev pkg-config ca-certificates curl \
         netcat-openbsd procps rsync git tar util-linux coreutils psmisc
+
+      echo '[supersets] base packages installed successfully'
     "
   }
 
   ensure_redis_present() {
     log "[supersets] ensure redis-server present"
     exec_in_ct "$CT_SUP" "
+      echo '[redis] apt update'
       safe_apt_update
+
+      echo '[redis] apt install redis-server'
       safe_apt_install redis-server
+
       if command -v systemctl >/dev/null 2>&1; then
         systemctl enable --now redis-server >/dev/null 2>&1 || true
       else
         pgrep -x redis-server >/dev/null 2>&1 || redis-server --daemonize yes || true
       fi
+
+      echo '[redis] redis step complete'
     " || true
   }
 

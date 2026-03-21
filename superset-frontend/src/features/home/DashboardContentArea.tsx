@@ -25,6 +25,12 @@ import PublicChartRenderer from './PublicChartRenderer';
 import EmbeddedDashboard from './EmbeddedDashboard';
 import EmbeddingManager from './EmbeddingManager';
 
+const embeddedDashboardUuidCache = new Map<number, string | null>();
+
+export function clearEmbeddedDashboardUuidCache() {
+  embeddedDashboardUuidCache.clear();
+}
+
 const ContentContainer = styled.div`
   ${({ theme }) => `
     margin-left: 0;
@@ -212,29 +218,33 @@ const DEFAULT_CATEGORIES: Category[] = [
   { key: 'all', label: 'All Charts', chartIds: [] },
 ];
 
+function parseDashboardLayout(positionData: unknown): DashboardLayout {
+  if (!positionData) {
+    return {};
+  }
+
+  if (typeof positionData === 'string') {
+    try {
+      return JSON.parse(positionData) as DashboardLayout;
+    } catch {
+      return {};
+    }
+  }
+
+  return positionData as DashboardLayout;
+}
+
 // Extract tabs and their chart IDs from dashboard layout
 function extractTabsFromLayout(positionData: DashboardLayout): Category[] {
   const categories: Category[] = [];
 
-  console.log('Analyzing position data structure...');
-  console.log(
-    'All component types:',
-    Object.entries(positionData).map(([k, v]) => `${k}: ${v.type}`),
-  );
-
   // Find TABS components in the layout
-  Object.entries(positionData).forEach(([key, component]) => {
-    console.log(`Checking component ${key} with type ${component.type}`);
-
+  Object.entries(positionData).forEach(([, component]) => {
     if (component.type === 'TABS') {
-      console.log('Found TABS component:', key, component);
-      // Get tab children
       const tabChildren = component.children || [];
-      console.log('Tab children:', tabChildren);
 
       tabChildren.forEach(tabId => {
         const tabComponent = positionData[tabId];
-        console.log(`Checking tab ${tabId}:`, tabComponent);
 
         if (tabComponent && tabComponent.type === 'TAB') {
           const tabName = tabComponent.meta?.text || 'Untitled Tab';
@@ -242,8 +252,6 @@ function extractTabsFromLayout(positionData: DashboardLayout): Category[] {
             tabComponent,
             positionData,
           );
-
-          console.log(`Tab "${tabName}" has chart IDs:`, chartIds);
 
           categories.push({
             key: tabId,
@@ -254,8 +262,6 @@ function extractTabsFromLayout(positionData: DashboardLayout): Category[] {
       });
     }
   });
-
-  console.log('Final extracted categories:', categories);
   return categories;
 }
 
@@ -298,13 +304,6 @@ function extractChartIdsFromComponent(
     const meta = component.meta as any;
     const sliceId = meta?.chartId || meta?.sliceId || meta?.slice_id;
 
-    console.log(
-      'Found CHART component with meta:',
-      meta,
-      'extracted sliceId:',
-      sliceId,
-    );
-
     if (sliceId) {
       chartIds.push(sliceId);
     }
@@ -329,11 +328,6 @@ export default function DashboardContentArea({
   useEmbeddedSDK = true,
   showEmbeddingManager = false,
 }: DashboardContentAreaProps) {
-  console.log(
-    'DashboardContentArea rendered with dashboard:',
-    selectedDashboard,
-  );
-
   const [activeCategory, setActiveCategory] = useState('all');
   const [allCharts, setAllCharts] = useState<ChartItem[]>([]);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
@@ -345,124 +339,133 @@ export default function DashboardContentArea({
   // Fetched embedded dashboard UUID to use with Embedded SDK
   const [embeddedUuid, setEmbeddedUuid] = useState<string | null>(null);
 
-  console.log(
-    'Current state - categories:',
-    categories,
-    'activeCategory:',
-    activeCategory,
-  );
-
   useEffect(() => {
     if (!selectedDashboard) {
-      setLoading(false);
-      return;
-    }
-
-    const fetchDashboardData = async () => {
-      console.log('=== FETCHING DASHBOARD DATA ===');
-      console.log('Selected dashboard:', selectedDashboard);
-
-      // Reset state when switching dashboards
-      setLoading(true);
       setAllCharts([]);
       setCategories(DEFAULT_CATEGORIES);
       setActiveCategory('all');
+      setChartDimensions(new Map());
       setEmbeddedUuid(null);
+      setLoading(false);
+      return undefined;
+    }
+
+    let isActive = true;
+    const controller = new AbortController();
+
+    const resetDashboardState = () => {
+      setLoading(true);
+      setChartsToDisplay(10);
+      setAllCharts([]);
+      setCategories(DEFAULT_CATEGORIES);
+      setActiveCategory('all');
+      setChartDimensions(new Map());
+      setEmbeddedUuid(null);
+    };
+
+    const fetchEmbeddedDashboard = async () => {
+      resetDashboardState();
+      const cachedEmbeddedUuid = embeddedDashboardUuidCache.get(
+        selectedDashboard.id,
+      );
+      if (cachedEmbeddedUuid !== undefined) {
+        setEmbeddedUuid(cachedEmbeddedUuid);
+        setLoading(false);
+        return;
+      }
       try {
-        // Fetch dashboard details including position_json
-        const endpoint = isPublic
+        const embeddedResponse = await SupersetClient.get({
+          endpoint: `/api/v1/dashboard/${selectedDashboard.id}/embedded`,
+          signal: controller.signal,
+        });
+
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
+
+        const embeddedConfig = embeddedResponse.json.result;
+        const nextEmbeddedUuid = embeddedConfig?.uuid || null;
+        embeddedDashboardUuidCache.set(selectedDashboard.id, nextEmbeddedUuid);
+        setEmbeddedUuid(nextEmbeddedUuid);
+      } catch {
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
+        embeddedDashboardUuidCache.set(selectedDashboard.id, null);
+        setEmbeddedUuid(null);
+      } finally {
+        if (isActive && !controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    const fetchChartPreviewData = async () => {
+      resetDashboardState();
+      try {
+        const dashboardEndpoint = isPublic
           ? `/api/v1/dashboard/public/${selectedDashboard.id}`
           : `/api/v1/dashboard/${selectedDashboard.id}`;
-
-        const dashboardResponse = await SupersetClient.get({ endpoint });
-
-        const dashboardData = dashboardResponse.json.result;
-        console.log('Full dashboard data:', dashboardData);
-
-        // Fetch embedded configuration to get the embedded UUID
-        try {
-          const embeddedEndpoint = `/api/v1/dashboard/${selectedDashboard.id}/embedded`;
-          const embeddedResponse = await SupersetClient.get({
-            endpoint: embeddedEndpoint,
-          });
-          const embeddedConfig = embeddedResponse.json.result;
-          console.log('Embedded config:', embeddedConfig);
-          setEmbeddedUuid(embeddedConfig.uuid || null);
-        } catch (embeddedError) {
-          console.warn(
-            'Dashboard has no embedded configuration:',
-            embeddedError,
-          );
-          setEmbeddedUuid(null);
-        }
-
-        const positionData = dashboardData.position_json || {};
-        console.log('Position data type:', typeof positionData);
-        console.log(
-          'Position data is string?',
-          typeof positionData === 'string',
-        );
-
-        // If position_json is a string, parse it
-        let parsedPositionData = positionData;
-        if (typeof positionData === 'string') {
-          console.log('Parsing position_json string...');
-          parsedPositionData = JSON.parse(positionData);
-        }
-
-        console.log('Dashboard position data (parsed):', parsedPositionData);
-
-        // Extract tabs and their charts from position_json
-        const extractedCategories = extractTabsFromLayout(parsedPositionData);
-
-        // Extract chart dimensions from position_json
-        const dimensions = extractChartDimensions(parsedPositionData);
-        setChartDimensions(dimensions);
-
-        console.log(
-          'Extracted categories from dashboard:',
-          extractedCategories,
-        );
-        console.log(
-          'Extracted chart dimensions:',
-          Array.from(dimensions.entries()),
-        );
-
-        if (extractedCategories.length > 0) {
-          setCategories(extractedCategories);
-          setActiveCategory(extractedCategories[0].key);
-        } else {
-          // No tabs found, use default single category with all charts
-          console.log(
-            'No tabs found in dashboard, using default "All Charts" category',
-          );
-          setCategories(DEFAULT_CATEGORIES);
-          setActiveCategory('all');
-        }
-
-        // Fetch all charts for this dashboard
-        // Use the same query logic for both public and authenticated to ensure consistency
         const chartsEndpoint = isPublic
           ? `/api/v1/chart/public/?dashboard_id=${selectedDashboard.id}`
           : `/api/v1/chart/dashboard/${selectedDashboard.id}/charts`;
 
-        const chartsResponse = await SupersetClient.get({
-          endpoint: chartsEndpoint,
-        });
+        const [dashboardResponse, chartsResponse] = await Promise.all([
+          SupersetClient.get({
+            endpoint: dashboardEndpoint,
+            signal: controller.signal,
+          }),
+          SupersetClient.get({
+            endpoint: chartsEndpoint,
+            signal: controller.signal,
+          }),
+        ]);
 
-        const charts = chartsResponse.json.result || [];
-        setAllCharts(charts);
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
+
+        const layout = parseDashboardLayout(
+          dashboardResponse.json.result?.position_json,
+        );
+        const extractedCategories = extractTabsFromLayout(layout);
+        const dimensions = extractChartDimensions(layout);
+        const nextCategories =
+          extractedCategories.length > 0
+            ? extractedCategories
+            : DEFAULT_CATEGORIES;
+
+        setChartDimensions(dimensions);
+        setCategories(nextCategories);
+        setActiveCategory(nextCategories[0]?.key || 'all');
+        setAllCharts(chartsResponse.json.result || []);
       } catch (error) {
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
         console.error('Error fetching dashboard data:', error);
         setAllCharts([]);
         setCategories(DEFAULT_CATEGORIES);
+        setActiveCategory('all');
+        setChartDimensions(new Map());
       } finally {
-        setLoading(false);
+        if (isActive && !controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchDashboardData();
-  }, [selectedDashboard?.id]);
+    if (useEmbeddedSDK) {
+      fetchEmbeddedDashboard();
+    } else {
+      fetchChartPreviewData();
+    }
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
+  }, [isPublic, selectedDashboard?.id, useEmbeddedSDK]);
 
   // Filter charts by active category
   const getChartsForCategory = (categoryKey: string): ChartItem[] => {
@@ -507,22 +510,18 @@ export default function DashboardContentArea({
   const charts = allChartsForCategory.slice(0, chartsToDisplay);
   const hasMoreCharts = allChartsForCategory.length > chartsToDisplay;
 
-  console.log('Rendering charts for category:', activeCategory);
-  console.log('All charts for this category:', allChartsForCategory);
-  console.log(`Charts to display:`, charts);
-
   const handleLoadMore = () => {
     // Load 5 more charts at a time for all users
     setChartsToDisplay(prev => prev + 5);
   };
 
   const handleEmbeddingEnabled = (uuid: string) => {
-    console.log('Embedding enabled with UUID:', uuid);
+    embeddedDashboardUuidCache.set(selectedDashboard.id, uuid);
     setEmbeddedUuid(uuid);
   };
 
   const handleEmbeddingDisabled = () => {
-    console.log('Embedding disabled');
+    embeddedDashboardUuidCache.set(selectedDashboard.id, null);
     setEmbeddedUuid(null);
   };
 
@@ -618,7 +617,11 @@ export default function DashboardContentArea({
           </EmbeddingSection>
         )}
 
-        {!embeddedUuid ? (
+        {loading ? (
+          <EmptyStateContainer>
+            <Spin size="large" tip={t('Loading dashboard...')} />
+          </EmptyStateContainer>
+        ) : !embeddedUuid ? (
           <EmptyStateContainer>
             <Empty
               description={

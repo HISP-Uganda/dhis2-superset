@@ -54,6 +54,12 @@ const bootstrapData = getBootstrapData();
 let lastLocationPathname: string;
 
 const boundActions = bindActionCreators({ logEvent }, store.dispatch);
+const PUBLIC_PORTAL_PATH_PREFIXES = ['/superset/public', '/public'];
+
+const isPublicPortalPath = (pathname: string) =>
+  PUBLIC_PORTAL_PATH_PREFIXES.some(
+    prefix => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
 
 const LocationPathnameLogger = () => {
   const location = useLocation();
@@ -72,45 +78,58 @@ const LocationPathnameLogger = () => {
   return <></>;
 };
 
-const App = () => (
-  <Router basename={applicationRoot()}>
-    <ScrollToTop />
-    <LocationPathnameLogger />
-    <RootContextProviders>
-      <AppGlobalStyles />
-      <ExtensionsStartup />
-      <Menu
-        data={bootstrapData.common.menu_data}
-        isFrontendRoute={isFrontendRoute}
-      />
-      <Switch>
-        {routes.map(({ path, Component, props = {}, Fallback = Loading }) => (
-          <Route path={path} key={path}>
-            <Suspense fallback={<Fallback />}>
-              <Layout>
-                <Layout.Content
-                  css={css`
-                    display: flex;
-                    flex-direction: column;
-                    padding-top: 46px;
-                    min-height: 100vh;
-                  `}
-                >
-                  <ErrorBoundary
+const AppShell = () => {
+  const location = useLocation();
+  const isPublicPortalRoute = isPublicPortalPath(location.pathname);
+
+  return (
+    <>
+      <ScrollToTop />
+      <LocationPathnameLogger />
+      <RootContextProviders>
+        <AppGlobalStyles />
+        <ExtensionsStartup />
+        {!isPublicPortalRoute && (
+          <Menu
+            data={bootstrapData.common.menu_data}
+            isFrontendRoute={isFrontendRoute}
+          />
+        )}
+        <Switch>
+          {routes.map(({ path, Component, props = {}, Fallback = Loading }) => (
+            <Route path={path} key={path}>
+              <Suspense fallback={<Fallback />}>
+                <Layout>
+                  <Layout.Content
                     css={css`
-                      margin: 16px;
+                      display: flex;
+                      flex-direction: column;
+                      padding-top: ${isPublicPortalRoute ? 0 : 46}px;
+                      min-height: 100vh;
                     `}
                   >
-                    <Component user={bootstrapData.user} {...props} />
-                  </ErrorBoundary>
-                </Layout.Content>
-              </Layout>
-            </Suspense>
-          </Route>
-        ))}
-      </Switch>
-      <ToastContainer />
-    </RootContextProviders>
+                    <ErrorBoundary
+                      css={css`
+                        margin: ${isPublicPortalRoute ? 0 : 16}px;
+                      `}
+                    >
+                      <Component user={bootstrapData.user} {...props} />
+                    </ErrorBoundary>
+                  </Layout.Content>
+                </Layout>
+              </Suspense>
+            </Route>
+          ))}
+        </Switch>
+        <ToastContainer />
+      </RootContextProviders>
+    </>
+  );
+};
+
+const App = () => (
+  <Router basename={applicationRoot()}>
+    <AppShell />
   </Router>
 );
 

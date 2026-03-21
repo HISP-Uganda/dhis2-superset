@@ -73,29 +73,59 @@ function DashboardCard({
   const [fetchingThumbnail, setFetchingThumbnail] = useState<boolean>(false);
 
   useEffect(() => {
-    // fetch thumbnail only if it's not already fetched
+    if (!showThumbnails || !isFeatureEnabled(FeatureFlag.Thumbnails)) {
+      return undefined;
+    }
+
+    if (dashboard.thumbnail_url) {
+      setThumbnailUrl(currentUrl =>
+        currentUrl === dashboard.thumbnail_url
+          ? currentUrl
+          : dashboard.thumbnail_url,
+      );
+      return undefined;
+    }
+
     if (
-      !fetchingThumbnail &&
-      dashboard.id &&
-      (thumbnailUrl === undefined || thumbnailUrl === null) &&
-      isFeatureEnabled(FeatureFlag.Thumbnails)
+      fetchingThumbnail ||
+      !dashboard.id ||
+      (thumbnailUrl !== undefined && thumbnailUrl !== null)
     ) {
-      // fetch thumbnail
-      if (dashboard.thumbnail_url) {
-        // set to empty string if null so that we don't
-        // keep fetching the thumbnail
-        setThumbnailUrl(dashboard.thumbnail_url || '');
-        return;
-      }
-      setFetchingThumbnail(true);
-      SupersetClient.get({
-        endpoint: `/api/v1/dashboard/${dashboard.id}`,
-      }).then(({ json = {} }) => {
+      return undefined;
+    }
+
+    let isActive = true;
+    const controller = new AbortController();
+    setFetchingThumbnail(true);
+
+    SupersetClient.get({
+      endpoint: `/api/v1/dashboard/${dashboard.id}`,
+      signal: controller.signal,
+    })
+      .then(({ json = {} }) => {
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
         setThumbnailUrl(json.result?.thumbnail_url || '');
+      })
+      .finally(() => {
+        if (!isActive || controller.signal.aborted) {
+          return;
+        }
         setFetchingThumbnail(false);
       });
-    }
-  }, [dashboard, thumbnailUrl]);
+
+    return () => {
+      isActive = false;
+      controller.abort();
+    };
+  }, [
+    dashboard.id,
+    dashboard.thumbnail_url,
+    fetchingThumbnail,
+    showThumbnails,
+    thumbnailUrl,
+  ]);
 
   const menuItems: MenuItem[] = [];
 

@@ -15,3 +15,4 @@
 # specific language governing permissions and limitations
 # under the License.
 from . import core, dynamic_plugins, sql_lab, user_attributes  # noqa: F401
+from superset.public_page import models as public_page_models  # noqa: F401

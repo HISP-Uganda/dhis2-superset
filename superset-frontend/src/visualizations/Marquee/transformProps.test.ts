@@ -6,6 +6,7 @@
 import transformProps from './transformProps';
 
 const makeChartProps = (overrides: any = {}) => ({
+  ...overrides,
   formData: {
     metrics: [
       { expressionType: 'SIMPLE', column: { column_name: 'count' }, label: 'Total Count' },
@@ -34,7 +35,6 @@ const makeChartProps = (overrides: any = {}) => ({
   ],
   height: 80,
   width: 800,
-  ...overrides,
 });
 
 describe('MarqueeViz transformProps', () => {
@@ -43,6 +43,7 @@ describe('MarqueeViz transformProps', () => {
     expect(result.items).toHaveLength(2);
     expect(result.items[0].label).toBe('Total Count');
     expect(result.items[1].label).toBe('Sum Value');
+    expect(result.items[0].formattedValue).not.toBe('N/A');
   });
 
   it('formats values using number format', () => {
@@ -83,5 +84,33 @@ describe('MarqueeViz transformProps', () => {
     expect(result.speed).toBe(30);
     expect(result.pauseOnHover).toBe(true);
     expect(result.showLabel).toBe(true);
+  });
+
+  it('uses the metric label instead of the raw column name for adhoc metrics', () => {
+    const result = transformProps(
+      makeChartProps({
+        formData: {
+          metrics: [
+            {
+              expressionType: 'SIMPLE',
+              aggregate: 'SUM',
+              column: {
+                column_name: 'c_105_ep01a_suspected_malaria_fever',
+              },
+              label: 'Suspected Malaria Fever',
+            },
+          ],
+        },
+        queriesData: [
+          {
+            data: [{ 'Suspected Malaria Fever': 514 }],
+          },
+        ],
+      }) as any,
+    );
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].label).toBe('Suspected Malaria Fever');
+    expect(result.items[0].formattedValue).not.toBe('N/A');
   });
 });

@@ -23,6 +23,31 @@ import setupCodeOverrides from 'src/setup/setupCodeOverrides';
 import { getExtensionsRegistry } from '@superset-ui/core';
 import MenuWrapper, { Menu } from './Menu';
 
+jest.mock('src/utils/getBootstrapData', () => ({
+  __esModule: true,
+  default: () => ({
+    common: {
+      feature_flags: {},
+      conf: {
+        AUTH_USER_REGISTRATION: false,
+      },
+    },
+    user: {
+      firstName: 'Admin',
+      lastName: 'User',
+      isActive: true,
+      isAnonymous: false,
+      username: 'admin',
+      permissions: {},
+      userId: 1,
+      roles: {
+        Admin: [['cms.pages.view', 'CMS']],
+      },
+    },
+  }),
+  applicationRoot: () => '',
+}));
+
 const dropdownItems = [
   {
     label: 'Data',
@@ -270,6 +295,28 @@ const wrapperMenuProps = {
         url: '/chart/list/',
         index: 4,
       },
+      {
+        name: 'DHIS2 Federation',
+        icon: 'fa-cogs',
+        label: 'DHIS2 Federation',
+        index: 5,
+        childs: [
+          {
+            name: 'Instances',
+            icon: 'fa-link',
+            label: 'Instances',
+            url: '/superset/dhis2/instances/',
+            index: 1,
+          },
+          {
+            name: 'Health',
+            icon: 'fa-heartbeat',
+            label: 'Health',
+            url: '/superset/dhis2/health/',
+            index: 2,
+          },
+        ],
+      },
     ],
     settings: [
       ...mockedProps.data.settings,
@@ -296,6 +343,17 @@ const wrapperMenuProps = {
         ],
       },
     ],
+  },
+};
+
+const authenticatedWrapperMenuProps = {
+  ...wrapperMenuProps,
+  data: {
+    ...wrapperMenuProps.data,
+    navbar_right: {
+      ...wrapperMenuProps.data.navbar_right,
+      user_is_anonymous: false,
+    },
   },
 };
 
@@ -414,7 +472,7 @@ test('should keep Data visible in the top navbar and include the local workspace
   const dataMenu = await screen.findByText('Data');
   userEvent.hover(dataMenu);
 
-  expect(await screen.findByText('Data Workspace')).toHaveAttribute(
+  expect(await screen.findByText('Staged Datasets')).toHaveAttribute(
     'href',
     '/superset/dhis2/local-data/',
   );
@@ -439,15 +497,71 @@ test('should move DHIS2 and SQL into Data and place Data after Datasets', async 
     datasetsTab.compareDocumentPosition(dataTab) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(screen.queryByText('SQL Lab')).not.toBeInTheDocument();
 
   userEvent.hover(dataTab);
 
-  expect(await screen.findByText('DHIS2')).toHaveAttribute(
+  expect(await screen.findByText('Instances')).toHaveAttribute(
     'href',
     '/superset/dhis2/instances/',
   );
-  expect(await screen.findByText('SQL')).toHaveAttribute('href', '/sqllab/');
+  expect(await screen.findByText('SQL Lab')).toHaveAttribute(
+    'href',
+    '/sqllab/',
+  );
+});
+
+test('should add CMS Pages after Data for authenticated users', async () => {
+  useSelectorMock.mockReturnValue({ roles: user.roles });
+  render(<MenuWrapper {...authenticatedWrapperMenuProps} />, {
+    useRedux: true,
+    useQueryParams: true,
+    useRouter: true,
+    useTheme: true,
+  });
+
+  const dataTab = await screen.findByText('Data');
+  const cmsPagesTab = await screen.findByText('CMS Pages');
+
+  expect(
+    dataTab.compareDocumentPosition(cmsPagesTab) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+
+  userEvent.hover(cmsPagesTab);
+
+  expect(await screen.findByText('Public Portal')).toHaveAttribute(
+    'href',
+    '/superset/public/',
+  );
+  expect(await screen.findByText('CMS Dashboard')).toHaveAttribute(
+    'href',
+    '/superset/cms/',
+  );
+  expect(await screen.findByText('Page Studio')).toHaveAttribute(
+    'href',
+    '/superset/cms/?tab=studio',
+  );
+  expect(await screen.findByText('Menu Manager')).toHaveAttribute(
+    'href',
+    '/superset/cms/?tab=menus',
+  );
+  expect(await screen.findByText('Portal Settings')).toHaveAttribute(
+    'href',
+    '/superset/cms/?tab=portal',
+  );
+});
+
+test('should not add CMS Pages for anonymous users', async () => {
+  useSelectorMock.mockReturnValue({ roles: user.roles });
+  render(<MenuWrapper {...wrapperMenuProps} />, {
+    useRedux: true,
+    useQueryParams: true,
+    useRouter: true,
+    useTheme: true,
+  });
+
+  await screen.findByText('Data');
+  expect(screen.queryByText('CMS Pages')).not.toBeInTheDocument();
 });
 
 test('should render the dropdown items', async () => {

@@ -106,10 +106,10 @@ test('Renders the modified date', () => {
 
 test('should fetch thumbnail when dashboard has no thumbnail URL and feature flag is enabled', async () => {
   const mockGet = jest.spyOn(SupersetClient, 'get').mockResolvedValue({
-    json: { result: { thumbnail_url: '/new-thumbnail.png' } },
+    json: { result: { thumbnail_url: '' } },
   } as unknown as JsonResponse);
 
-  const { rerender } = render(
+  render(
     <DashboardCard
       dashboard={{
         id: 1,
@@ -124,6 +124,7 @@ test('should fetch thumbnail when dashboard has no thumbnail URL and feature fla
       hasPerm={() => true}
       bulkSelectEnabled={false}
       loading={false}
+      showThumbnails
       saveFavoriteStatus={() => {}}
       favoriteStatus={false}
       handleBulkDashboardExport={() => {}}
@@ -133,13 +134,20 @@ test('should fetch thumbnail when dashboard has no thumbnail URL and feature fla
   await waitFor(() => {
     expect(mockGet).toHaveBeenCalledWith({
       endpoint: '/api/v1/dashboard/1',
+      signal: expect.any(AbortSignal),
     });
   });
-  rerender(
+  mockGet.mockRestore();
+});
+
+test('does not fetch thumbnail when thumbnails are hidden', async () => {
+  const mockGet = jest.spyOn(SupersetClient, 'get');
+
+  render(
     <DashboardCard
       dashboard={{
-        id: 1,
-        thumbnail_url: '/new-thumbnail.png',
+        id: 2,
+        thumbnail_url: '',
         changed_by_name: '',
         changed_by: '',
         dashboard_title: '',
@@ -150,11 +158,15 @@ test('should fetch thumbnail when dashboard has no thumbnail URL and feature fla
       hasPerm={() => true}
       bulkSelectEnabled={false}
       loading={false}
+      showThumbnails={false}
       saveFavoriteStatus={() => {}}
       favoriteStatus={false}
       handleBulkDashboardExport={() => {}}
       onDelete={() => {}}
     />,
   );
-  mockGet.mockRestore();
+
+  await waitFor(() => {
+    expect(mockGet).not.toHaveBeenCalled();
+  });
 });

@@ -87,3 +87,131 @@ def test_clickhouse_staging_preview_targets_ds_table(monkeypatch) -> None:
     assert preview["rows"] == [{"dx_uid": "de_1", "pe": "2024Q1", "ou": "ou_1"}]
     assert preview["diagnostics"]["row_count"] == 3
     assert "`dhis2_staging`.`ds_7_ep_malaria`" in preview["diagnostics"]["sql_preview"]
+
+
+def test_clickhouse_create_staging_table_uses_partitioned_mergetree(monkeypatch) -> None:
+    from superset.local_staging.clickhouse_engine import ClickHouseStagingEngine
+
+    engine = ClickHouseStagingEngine(
+        database_id=10,
+        config={"host": "localhost", "database": "dhis2_staging"},
+    )
+    commands: list[str] = []
+
+    monkeypatch.setattr(engine, "ensure_schema_exists", lambda _conn: None)
+    monkeypatch.setattr(engine, "_cmd", lambda sql, **_kwargs: commands.append(sql))
+
+    engine.create_staging_table(_dataset())
+
+    ddl = "\n".join(commands)
+    assert "ENGINE = MergeTree()" in ddl
+    assert "PARTITION BY toUInt16OrZero(substring(replaceRegexpAll(ifNull(`pe`, ''), '[^0-9]', ''), 1, 4))" in ddl
+    assert "ORDER BY (source_instance_id, pe, dx_uid, ou)" in ddl
+
+
+def test_clickhouse_serving_table_uses_partitioned_mergetree_and_low_cardinality_dims(
+    monkeypatch,
+) -> None:
+    from superset.local_staging.clickhouse_engine import ClickHouseStagingEngine
+
+    engine = ClickHouseStagingEngine(
+        database_id=10,
+        config={
+            "host": "localhost",
+            "database": "dhis2_staging",
+            "serving_database": "dhis2_serving",
+        },
+    )
+    commands: list[str] = []
+
+    monkeypatch.setattr(engine, "ensure_schema_exists", lambda _conn: None)
+    monkeypatch.setattr(engine, "_cmd", lambda sql, **_kwargs: commands.append(sql))
+    monkeypatch.setattr(engine, "_table_row_count", lambda _table_ref: 0)
+    monkeypatch.setattr(
+        engine,
+        "_promote_loading_to_live",
+        lambda _db, _live_name, _loading_name: None,
+    )
+
+    engine.create_or_replace_serving_table(
+        _dataset(),
+        columns=[
+            {
+                "column_name": "period_year",
+                "type": "STRING",
+                "is_dimension": True,
+                "extra": {"dhis2_is_period_hierarchy": True},
+            },
+            {
+                "column_name": "district",
+                "type": "STRING",
+                "is_dimension": True,
+                "extra": {"dhis2_is_ou_hierarchy": True, "dhis2_ou_level": 3},
+            },
+            {
+                "column_name": "cases",
+                "type": "FLOAT",
+                "is_dimension": False,
+            },
+        ],
+        rows=[],
+    )
+
+    ddl = "\n".join(commands)
+    assert "`period_year` LowCardinality(String)" in ddl
+    assert "`district` LowCardinality(String)" in ddl
+    assert "PARTITION BY toUInt16OrZero(substring(replaceRegexpAll(ifNull(`period_year`, ''), '[^0-9]', ''), 1, 4))" in ddl
+    assert "ORDER BY (`period_year`, `district`)" in ddl
+
+
+def test_clickhouse_query_serving_table_uses_direct_count_for_simple_queries(
+    monkeypatch,
+) -> None:
+    from superset.local_staging.clickhouse_engine import ClickHouseStagingEngine
+
+    engine = ClickHouseStagingEngine(
+        database_id=10,
+        config={
+            "host": "localhost",
+            "database": "dhis2_staging",
+            "serving_database": "dhis2_serving",
+        },
+    )
+    executed_sql: list[str] = []
+
+    monkeypatch.setattr(
+        engine,
+        "get_serving_table_columns",
+        lambda _dataset: ["period", "district", "cases"],
+    )
+
+    def _fake_qry(sql: str, **_kwargs):
+        executed_sql.append(sql)
+        if sql.startswith(
+            "SELECT `period`, `cases` FROM `dhis2_serving`.`sv_7_ep_malaria`"
+        ):
+            return SimpleNamespace(
+                column_names=["period", "cases"],
+                result_rows=[("2024Q1", 12.0)],
+            )
+        if sql.startswith(
+            "SELECT count() FROM `dhis2_serving`.`sv_7_ep_malaria` WHERE `period` = '2024Q1'"
+        ):
+            return SimpleNamespace(result_rows=[(5,)])
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(engine, "_qry", _fake_qry)
+
+    result = engine.query_serving_table(
+        _dataset(),
+        selected_columns=["period", "cases"],
+        filters=[{"column": "period", "value": "2024Q1"}],
+        limit=100,
+        page=1,
+    )
+
+    assert result["total_rows"] == 5
+    assert len(executed_sql) == 2
+    assert executed_sql[1] == (
+        "SELECT count() FROM `dhis2_serving`.`sv_7_ep_malaria` WHERE `period` = '2024Q1'"
+    )

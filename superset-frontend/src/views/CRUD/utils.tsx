@@ -142,7 +142,10 @@ const getParams = (filters?: Filter[], selectColumns?: string[]) => {
   return rison.encode(params);
 };
 
-export const getEditedObjects = (userId: string | number) => {
+export const getEditedObjects = (
+  userId: string | number,
+  signal?: AbortSignal,
+) => {
   const filters = {
     edited: [
       {
@@ -155,9 +158,11 @@ export const getEditedObjects = (userId: string | number) => {
   const batch = [
     SupersetClient.get({
       endpoint: `/api/v1/dashboard/?q=${getParams(filters.edited)}`,
+      signal,
     }),
     SupersetClient.get({
       endpoint: `/api/v1/chart/?q=${getParams(filters.edited)}`,
+      signal,
     }),
   ];
   return Promise.all(batch)
@@ -182,9 +187,11 @@ export const getUserOwnedObjects = (
     },
   ],
   selectColumns?: string[],
+  signal?: AbortSignal,
 ) =>
   SupersetClient.get({
     endpoint: `/api/v1/${resource}/?q=${getParams(filters, selectColumns)}`,
+    signal,
   }).then(res => res.json?.result);
 
 export const getFilteredChartsandDashboards = (
@@ -192,16 +199,19 @@ export const getFilteredChartsandDashboards = (
   filters: Filter[],
   dashboardSelectColumns?: string[],
   chartSelectColumns?: string[],
+  signal?: AbortSignal,
 ) => {
   const newBatch = [
     SupersetClient.get({
       endpoint: `/api/v1/chart/?q=${getParams(filters, chartSelectColumns)}`,
+      signal,
     }),
     SupersetClient.get({
       endpoint: `/api/v1/dashboard/?q=${getParams(
         filters,
         dashboardSelectColumns,
       )}`,
+      signal,
     }),
   ];
   return Promise.all(newBatch)
@@ -222,20 +232,25 @@ export const getRecentActivityObjs = (
   recent: string,
   addDangerToast: (arg1: string, arg2: any) => any,
   filters: Filter[],
+  signal?: AbortSignal,
 ) =>
-  SupersetClient.get({ endpoint: recent }).then(recentsRes => {
+  SupersetClient.get({ endpoint: recent, signal }).then(recentsRes => {
     const res: any = {};
     const distinctRes = lruCache<RecentActivity>(6);
     recentsRes.json.result.reverse().forEach((record: RecentActivity) => {
       distinctRes.set(record.item_url, record);
     });
-    return getFilteredChartsandDashboards(addDangerToast, filters).then(
-      ({ other }) => {
-        res.other = other;
-        res.viewed = distinctRes.values().reverse();
-        return res;
-      },
-    );
+    return getFilteredChartsandDashboards(
+      addDangerToast,
+      filters,
+      undefined,
+      undefined,
+      signal,
+    ).then(({ other }) => {
+      res.other = other;
+      res.viewed = distinctRes.values().reverse();
+      return res;
+    });
   });
 
 export const createFetchRelated = createFetchResourceMethod('related');

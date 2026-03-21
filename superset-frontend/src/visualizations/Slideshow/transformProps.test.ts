@@ -19,10 +19,18 @@
 import transformProps from './transformProps';
 
 function makeProps(overrides: Record<string, any> = {}) {
+  const {
+    width = 600,
+    height = 400,
+    queriesData,
+    formData: formDataOverrides = {},
+    ...formDataRootOverrides
+  } = overrides;
+
   return {
-    width: 600,
-    height: 400,
-    queriesData: [
+    width,
+    height,
+    queriesData: queriesData || [
       {
         data: [{ metric_a: 1000, metric_b: 250 }],
       },
@@ -31,7 +39,8 @@ function makeProps(overrides: Record<string, any> = {}) {
       metrics: ['metric_a', 'metric_b'],
       datasource: '1__table',
       viz_type: 'slideshow',
-      ...overrides,
+      ...formDataRootOverrides,
+      ...formDataOverrides,
     },
   } as any;
 }
@@ -61,6 +70,28 @@ describe('Slideshow transformProps', () => {
       queriesData: [{ data: [{ metric_a: null, metric_b: 250 }] }],
     });
     expect(props.slides[0].value).toBe('N/A');
+  });
+
+  test('uses the metric label instead of the raw column name for adhoc metrics', () => {
+    const props = transformProps(
+      makeProps({
+        metrics: [
+          {
+            expressionType: 'SIMPLE',
+            aggregate: 'SUM',
+            column: {
+              column_name: 'c_105_ep01a_suspected_malaria_fever',
+            },
+            label: 'Suspected Malaria Fever',
+          },
+        ],
+        queriesData: [{ data: [{ 'Suspected Malaria Fever': 514 }] }],
+      }),
+    );
+
+    expect(props.slides).toHaveLength(1);
+    expect(props.slides[0].label).toBe('Suspected Malaria Fever');
+    expect(props.slides[0].value).not.toBe('—');
   });
 
   test('applies defaults for playback config', () => {

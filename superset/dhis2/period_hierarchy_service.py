@@ -10,6 +10,47 @@ logger = logging.getLogger(__name__)
 
 _DHIS2_PERIOD_EXTRA_KEY = "dhis2_is_period"
 _DHIS2_PERIOD_HIERARCHY_EXTRA_KEY = "dhis2_is_period_hierarchy"
+_PERIOD_COLUMN_SPECS = [
+    ("period", "Period", {"extra": {_DHIS2_PERIOD_EXTRA_KEY: True}}),
+    ("period_level", "Period Level", {}),
+    ("period_parent", "Parent Period", {}),
+    ("period_year", "Period Year", {}),
+    ("period_half", "Period Half", {}),
+    ("period_quarter", "Period Quarter", {}),
+    ("period_month", "Period Month", {}),
+    ("period_week", "Period Week", {}),
+    ("period_biweek", "Period Biweek", {}),
+    ("period_bimonth", "Period Bimonth", {}),
+    ("period_variant", "Period Variant", {}),
+]
+_PERIOD_KEY_ALIASES = {
+    "period": "period",
+    "level": "period_level",
+    "period_level": "period_level",
+    "parent": "period_parent",
+    "period_parent": "period_parent",
+    "year": "period_year",
+    "period_year": "period_year",
+    "half": "period_half",
+    "period_half": "period_half",
+    "quarter": "period_quarter",
+    "period_quarter": "period_quarter",
+    "month": "period_month",
+    "period_month": "period_month",
+    "week": "period_week",
+    "period_week": "period_week",
+    "biweek": "period_biweek",
+    "period_biweek": "period_biweek",
+    "bimonth": "period_bimonth",
+    "period_bimonth": "period_bimonth",
+    "variant": "period_variant",
+    "period_variant": "period_variant",
+}
+_EXPLICIT_PERIOD_KEY_CONFIG_KEYS = (
+    "period_hierarchy_keys",
+    "period_hierarchy_levels",
+    "period_columns",
+)
 
 
 def sanitize_serving_identifier(value: str) -> str:
@@ -58,6 +99,96 @@ class PeriodHierarchyService:
     _CUSTOM_YEAR_PATTERN = re.compile(r"^(?P<year>\d{4})(?P<variant>April|July|Oct|Nov)$")
     _YEAR_PATTERN = re.compile(r"^(?P<year>\d{4})$")
 
+    @staticmethod
+    def _normalize_period_key(value: Any) -> str | None:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return None
+        return _PERIOD_KEY_ALIASES.get(normalized)
+
+    def _configured_period_keys(self, dataset_config: dict[str, Any]) -> list[str]:
+        selected: list[str] = []
+        for config_key in _EXPLICIT_PERIOD_KEY_CONFIG_KEYS:
+            raw_values = dataset_config.get(config_key)
+            if isinstance(raw_values, str):
+                raw_values = [raw_values]
+            if not isinstance(raw_values, list):
+                continue
+            for raw_value in raw_values:
+                normalized = self._normalize_period_key(raw_value)
+                if normalized and normalized not in selected:
+                    selected.append(normalized)
+            if selected:
+                break
+        return selected
+
+    def _infer_period_keys(
+        self,
+        dataset_config: dict[str, Any],
+        period_values: list[str] | None = None,
+    ) -> list[str]:
+        configured_periods = (
+            list(period_values or [])
+            if period_values is not None
+            else list(dataset_config.get("periods") or [])
+        )
+        normalized_periods = [
+            self.normalize_period(period_value)
+            for period_value in configured_periods
+            if str(period_value or "").strip()
+        ]
+        if not normalized_periods:
+            return ["period"]
+
+        observed_keys: set[str] = set()
+        for normalized_period in normalized_periods:
+            period_level = str(normalized_period.get("period_level") or "").strip()
+            if normalized_period.get("period_year"):
+                observed_keys.add("period_year")
+
+            if period_level in {"day", "month"}:
+                observed_keys.update(
+                    {
+                        "period_year",
+                        "period_half",
+                        "period_quarter",
+                        "period_month",
+                    }
+                )
+            elif period_level == "quarter":
+                observed_keys.update(
+                    {"period_year", "period_half", "period_quarter"}
+                )
+            elif period_level == "half":
+                observed_keys.update({"period_year", "period_half"})
+            elif period_level == "year":
+                observed_keys.add("period_year")
+            elif period_level == "week":
+                observed_keys.update({"period_year", "period_week"})
+            elif period_level in {"biweek", "fourweek"}:
+                observed_keys.update({"period_year", "period_biweek"})
+            elif period_level == "bimonth":
+                observed_keys.update(
+                    {
+                        "period_year",
+                        "period_half",
+                        "period_quarter",
+                        "period_bimonth",
+                    }
+                )
+            elif period_level == "custom_year":
+                observed_keys.add("period_year")
+
+            if normalized_period.get("period_variant"):
+                observed_keys.add("period_variant")
+
+        canonical_order = [spec[0] for spec in _PERIOD_COLUMN_SPECS]
+        return [
+            key
+            for key in canonical_order
+            if key == "period" or key in observed_keys
+        ]
+
     def resolve_period_hierarchy(
         self,
         dataset_config: dict[str, Any],
@@ -74,6 +205,10 @@ class PeriodHierarchyService:
             "auto_detect": bool(dataset_config.get("periods_auto_detect")),
             "levels": levels,
             "values_seen": len(normalized_values),
+            "selected_period_keys": (
+                self._configured_period_keys(dataset_config)
+                or self._infer_period_keys(dataset_config, period_values)
+            ),
         }
 
     def get_period_level_columns(
@@ -98,18 +233,16 @@ class PeriodHierarchyService:
         dataset_config: dict[str, Any],
         used_identifiers: set[str],
     ) -> PeriodHierarchyContext:
+        selected_period_keys = self._configured_period_keys(dataset_config)
+        if not selected_period_keys:
+            selected_period_keys = self._infer_period_keys(dataset_config)
+        if "period" not in selected_period_keys:
+            selected_period_keys.insert(0, "period")
+
         column_specs = [
-            ("period", "Period", {"extra": {_DHIS2_PERIOD_EXTRA_KEY: True}}),
-            ("period_level", "Period Level", {}),
-            ("period_parent", "Parent Period", {}),
-            ("period_year", "Period Year", {}),
-            ("period_half", "Period Half", {}),
-            ("period_quarter", "Period Quarter", {}),
-            ("period_month", "Period Month", {}),
-            ("period_week", "Period Week", {}),
-            ("period_biweek", "Period Biweek", {}),
-            ("period_bimonth", "Period Bimonth", {}),
-            ("period_variant", "Period Variant", {}),
+            column_spec
+            for column_spec in _PERIOD_COLUMN_SPECS
+            if column_spec[0] in selected_period_keys
         ]
 
         columns: list[dict[str, Any]] = []
@@ -140,10 +273,12 @@ class PeriodHierarchyService:
                 primary_period_column = column_name
 
         diagnostics = self.build_period_query_context(dataset_config)
+        diagnostics["selected_period_keys"] = selected_period_keys
         logger.info(
-            "Period hierarchy resolved: configured_periods=%s auto_detect=%s",
+            "Period hierarchy resolved: configured_periods=%s auto_detect=%s selected_keys=%s",
             diagnostics["configured_periods"],
             diagnostics["periods_auto_detect"],
+            selected_period_keys,
         )
         return PeriodHierarchyContext(
             columns=columns,

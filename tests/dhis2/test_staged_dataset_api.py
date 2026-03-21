@@ -23,12 +23,61 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+class _NullCache:
+    def get(self, _key):
+        return None
+
+    def set(self, _key, _value, timeout=None):
+        return True
+
+
+class _FakeEngine:
+    def __init__(
+        self,
+        *,
+        staging_table_ref: str = "dhis2_staging.ds_5_anc",
+        serving_table_ref: str = "dhis2_staging.sv_5_anc",
+        serving_database_id: int = 13,
+        serving_database_name: str = "main",
+        serving_column_names: list[str] | None = None,
+    ):
+        self._staging_table_ref = staging_table_ref
+        self._serving_table_ref = serving_table_ref
+        self._serving_database = SimpleNamespace(
+            id=serving_database_id,
+            name=serving_database_name,
+        )
+        self._serving_column_names = serving_column_names or []
+
+    def get_superset_sql_table_ref(self, _dataset):
+        return self._staging_table_ref
+
+    def get_serving_sql_table_ref(self, _dataset):
+        return self._serving_table_ref
+
+    def get_or_create_superset_database(self):
+        return self._serving_database
+
+    def get_serving_table_columns(self, _dataset):
+        return self._serving_column_names
+
+
+def _make_test_app() -> Flask:
+    app = Flask(__name__)
+    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
+        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
+    )
+    return app
+
+
 def test_dataset_to_dict_includes_local_serving_database():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
     dataset = SimpleNamespace(
         id=5,
         database_id=9,
+        staging_table_name="ds_5_anc",
+        serving_superset_dataset_id=None,
         to_json=lambda: {"id": 5, "database_id": 9, "name": "ANC"},
     )
 
@@ -36,8 +85,8 @@ def test_dataset_to_dict_includes_local_serving_database():
         "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
         return_value=dataset,
     ), patch(
-        "superset.dhis2.staged_dataset_api.get_staging_database",
-        return_value=SimpleNamespace(id=13, name="main"),
+        "superset.dhis2.staged_dataset_api._get_engine",
+        return_value=_FakeEngine(),
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.ensure_serving_table",
         return_value=(
@@ -55,14 +104,12 @@ def test_dataset_to_dict_includes_local_serving_database():
             ],
         ),
     ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_serving_columns",
+        return_value=[],
+    ), patch(
         "superset.dhis2.staged_dataset_api.svc.get_staging_stats",
         return_value={"total_rows": 11},
-    ), patch(
-        "superset.dhis2.staged_dataset_api.DHIS2StagingEngine"
-    ) as engine_cls:
-        engine_cls.return_value.get_superset_sql_table_ref.return_value = (
-            "dhis2_staging.ds_5_anc"
-        )
+    ):
         payload = DHIS2StagedDatasetApi()._dataset_to_dict(5, include_stats=True)
 
     assert payload == {
@@ -94,6 +141,8 @@ def test_dataset_to_dict_can_omit_heavy_dataset_config_for_list_views():
     dataset = SimpleNamespace(
         id=5,
         database_id=9,
+        staging_table_name="ds_5_anc",
+        serving_superset_dataset_id=None,
         to_json=lambda: {
             "id": 5,
             "database_id": 9,
@@ -108,17 +157,15 @@ def test_dataset_to_dict_can_omit_heavy_dataset_config_for_list_views():
         "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
         return_value=dataset,
     ), patch(
-        "superset.dhis2.staged_dataset_api.get_staging_database",
-        return_value=SimpleNamespace(id=13, name="main"),
+        "superset.dhis2.staged_dataset_api._get_engine",
+        return_value=_FakeEngine(serving_column_names=["period"]),
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.ensure_serving_table",
         return_value=("dhis2_staging.sv_5_anc", []),
     ), patch(
-        "superset.dhis2.staged_dataset_api.DHIS2StagingEngine"
-    ) as engine_cls:
-        engine_cls.return_value.get_superset_sql_table_ref.return_value = (
-            "dhis2_staging.ds_5_anc"
-        )
+        "superset.dhis2.staged_dataset_api.svc.get_serving_columns",
+        return_value=[],
+    ):
         payload = DHIS2StagedDatasetApi()._dataset_to_dict(
             5,
             include_dataset_config=False,
@@ -130,7 +177,7 @@ def test_dataset_to_dict_can_omit_heavy_dataset_config_for_list_views():
 def test_list_datasets_returns_lightweight_payload_without_dataset_config():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
+    app = _make_test_app()
     dataset = SimpleNamespace(id=5, to_json=lambda: {"id": 5, "name": "ANC"})
 
     with app.test_request_context(
@@ -150,18 +197,42 @@ def test_list_datasets_returns_lightweight_payload_without_dataset_config():
         5,
         include_stats=True,
         include_dataset_config=False,
+        include_serving_definition=False,
     )
-    assert response["status"] == 200
-    assert response["result"][0]["stats"]["total_rows"] == 11
+    assert response.status_code == 200
+    assert response.get_json()["result"][0]["stats"]["total_rows"] == 11
+
+
+def test_create_dataset_returns_400_for_non_serializable_dataset_config():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = _make_test_app()
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/",
+        method="POST",
+        json={
+            "database_id": 9,
+            "name": "ANC",
+            "dataset_config": {"configured_connection_ids": [1, 2]},
+        },
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset_by_name",
+        return_value=None,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.create_staged_dataset",
+        side_effect=ValueError("'dataset_config' must be JSON serializable"),
+    ):
+        response = DHIS2StagedDatasetApi().create_dataset()
+
+    assert response.status_code == 400
+    assert response.get_json()["message"] == "'dataset_config' must be JSON serializable"
 
 
 def test_query_preview_returns_filtered_local_rows():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
-    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
-        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
-    )
+    app = _make_test_app()
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -176,6 +247,9 @@ def test_query_preview_returns_filtered_local_rows():
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
         return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api._data_cache",
+        return_value=_NullCache(),
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.query_serving_data",
         return_value={
@@ -201,6 +275,7 @@ def test_query_preview_returns_filtered_local_rows():
         metric_column=None,
         metric_alias=None,
         aggregation_method=None,
+        count_rows=False,
     )
     assert response.status_code == 200
     assert response.json["result"]["rows"][0]["anc_1st_visit"] == 12
@@ -209,10 +284,7 @@ def test_query_preview_returns_filtered_local_rows():
 def test_query_preview_forwards_grouped_aggregation():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
-    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
-        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
-    )
+    app = _make_test_app()
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -230,6 +302,9 @@ def test_query_preview_forwards_grouped_aggregation():
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
         return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api._data_cache",
+        return_value=_NullCache(),
     ), patch(
         "superset.dhis2.staged_dataset_api.svc.query_serving_data",
         return_value={
@@ -263,6 +338,7 @@ def test_query_preview_forwards_grouped_aggregation():
         metric_column="c_105_ep01b_malaria_tested_b_s_rdt",
         metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
         aggregation_method="sum",
+        count_rows=False,
     )
     assert response.status_code == 200
     assert response.json["result"]["rows"][0]["district_city"] == "Kitgum District"
@@ -271,10 +347,7 @@ def test_query_preview_forwards_grouped_aggregation():
 def test_get_local_filter_options_returns_hierarchy_and_period_choices():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
-    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
-        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
-    )
+    app = _make_test_app()
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -323,10 +396,7 @@ def test_get_local_filter_options_returns_hierarchy_and_period_choices():
 def test_get_local_filter_options_accepts_get_requests():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
-    app.appbuilder = SimpleNamespace(  # type: ignore[attr-defined]
-        sm=SimpleNamespace(is_item_public=lambda *args, **kwargs: True)
-    )
+    app = _make_test_app()
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC")
 
     with app.test_request_context(
@@ -359,7 +429,7 @@ def test_get_local_filter_options_accepts_get_requests():
 def test_download_query_returns_csv_attachment():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
+    app = _make_test_app()
     dataset = SimpleNamespace(id=11, database_id=9, name="ANC Coverage")
 
     with app.test_request_context(
@@ -432,7 +502,7 @@ def test_merge_dataset_lineage_persists_variable_instance_mappings():
 def test_cleanup_dataset_returns_success_response():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 
-    app = Flask(__name__)
+    app = _make_test_app()
 
     with app.test_request_context(
         "/api/v1/dhis2/staged-datasets/11/cleanup",
@@ -449,5 +519,5 @@ def test_cleanup_dataset_returns_success_response():
         response = DHIS2StagedDatasetApi().cleanup_dataset(11)
 
     cleanup_mock.assert_called_once_with(11)
-    assert response["status"] == 200
-    assert response["result"]["dataset_id"] == 11
+    assert response.status_code == 200
+    assert response.get_json()["result"]["dataset_id"] == 11

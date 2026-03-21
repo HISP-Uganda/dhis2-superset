@@ -40,6 +40,9 @@ type PeriodFilterResponse = {
   } | null;
 };
 
+const STAGED_LOCAL_SERVING_SQL_PATTERN =
+  /select\s+\*\s+from\s+(?:[`"]?[a-z_][\w]*[`"]?\.)?[`"]?sv_(\d+)_[a-z0-9_]+[`"]?/i;
+
 function parseExtra(extra: unknown): Record<string, any> | undefined {
   if (!extra) {
     return undefined;
@@ -95,9 +98,7 @@ export function resolveDhis2StagedDatasetId(
   }
 
   const sql = String(datasource?.sql || '').trim();
-  const sqlMatch = sql.match(
-    /select\s+\*\s+from\s+(?:[a-z_][\w]*\.)?sv_(\d+)_/i,
-  );
+  const sqlMatch = sql.match(STAGED_LOCAL_SERVING_SQL_PATTERN);
   if (sqlMatch?.[1]) {
     const sqlId = Number(sqlMatch[1]);
     if (Number.isFinite(sqlId) && sqlId > 0) {
