@@ -1130,7 +1130,7 @@ export default function CMSAdminPage() {
     try {
       const response = await SupersetClient.post({
         endpoint: `/api/v1/public_page/admin/pages/${draftPage.id}/publish`,
-        jsonPayload: buildPublishPagePayload(draftPage, isPublished),
+        jsonPayload: buildPublishPagePayload(draftPage!, isPublished),
       });
       const savedPage = response.json?.result as PortalPage;
       await loadBootstrap(savedPage.slug);
@@ -2768,7 +2768,7 @@ export default function CMSAdminPage() {
                             jsonPayload:
                               draftPage?.id === page.id
                                 ? buildPublishPagePayload(
-                                    draftPage,
+                                    draftPage!,
                                     !page.is_published,
                                   )
                                 : buildPublishStatePayload(

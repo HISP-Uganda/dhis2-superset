@@ -1306,8 +1306,8 @@ export function RenderBlockTree({
         }
       | undefined,
   ) {
-    event.preventDefault?.();
-    event.stopPropagation?.();
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
   }
 
   function renderInsertControl(
