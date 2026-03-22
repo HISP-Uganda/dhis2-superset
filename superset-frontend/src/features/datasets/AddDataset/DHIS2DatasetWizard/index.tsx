@@ -392,7 +392,9 @@ export default function DHIS2DatasetWizard({
             dataset_config: {
               configured_connection_ids: wizardState.selectedInstanceIds,
               periods: wizardState.periods,
+              periods_auto_detect: wizardState.periodsAutoDetect ?? false,
               org_units: wizardState.orgUnits,
+              org_units_auto_detect: wizardState.orgUnitsAutoDetect ?? false,
               org_unit_details: wizardState.selectedOrgUnitDetails || [],
               org_unit_scope: dataLevelScope,
               org_unit_source_mode:

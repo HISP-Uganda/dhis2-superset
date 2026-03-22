@@ -47,7 +47,16 @@ const FrameOverlay = styled.div`
   z-index: 2;
 `;
 
-const ErrorOverlay = styled(FrameOverlay)`
+const ErrorOverlay = styled.div`
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  background: var(--portal-surface, rgba(255, 255, 255, 0.96));
+  z-index: 2;
   color: ${({ theme }) => theme.colorError};
 `;
 

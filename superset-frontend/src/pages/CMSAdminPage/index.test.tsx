@@ -196,6 +196,9 @@ function buildAdminPayload(isPublished = true) {
         download_url: '/api/v1/public_page/assets/7/download',
       },
     ],
+    block_types: [],
+    reusable_blocks: [],
+    starter_patterns: [],
     themes: [
       {
         id: 1,
@@ -278,11 +281,11 @@ test('renders the authenticated CMS studio shell', async () => {
   expect(await screen.findByText('CMS Pages')).toBeInTheDocument();
   expect(screen.getByText('Portal Administration')).toBeInTheDocument();
   expect(
-    screen.getByRole('heading', { name: 'Page Studio' }),
+    screen.getByRole('heading', { name: 'Page content' }),
   ).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Document' })).toBeInTheDocument();
   expect(
-    screen.getByRole('button', { name: 'Page Settings' }),
+    screen.getByRole('button', { name: 'Page Options' }),
   ).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Compose' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
@@ -316,7 +319,7 @@ test('disables in-canvas add content actions for published pages', async () => {
   });
 
   expect(
-    await screen.findByRole('heading', { name: 'Page Studio' }),
+    await screen.findByRole('heading', { name: 'Page content' }),
   ).toBeInTheDocument();
   expect(
     screen.getAllByText(
@@ -335,7 +338,7 @@ test('allows adding a block when editing an unpublished page', async () => {
   });
 
   expect(
-    await screen.findByRole('heading', { name: 'Page Studio' }),
+    await screen.findByRole('heading', { name: 'Page content' }),
   ).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: '+ Add Content' }));
@@ -359,7 +362,7 @@ test('surfaces backend validation details when page save fails', async () => {
   });
 
   expect(
-    await screen.findByRole('heading', { name: 'Page Studio' }),
+    await screen.findByRole('heading', { name: 'Page content' }),
   ).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: /Save Draft/i }));

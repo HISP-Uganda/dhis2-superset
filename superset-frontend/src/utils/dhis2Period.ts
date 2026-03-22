@@ -81,6 +81,62 @@ const MONTHS_SHORT = [
   'Dec',
 ] as const;
 
+type DHIS2ColumnExtra = string | Record<string, unknown> | null | undefined;
+
+export type DHIS2ColumnLike = {
+  column_name?: string | null;
+  verbose_name?: string | null;
+  extra?: DHIS2ColumnExtra;
+};
+
+function parseDHIS2ColumnExtra(
+  extra: DHIS2ColumnExtra,
+): Record<string, unknown> {
+  if (!extra) {
+    return {};
+  }
+  if (typeof extra === 'string') {
+    try {
+      return JSON.parse(extra) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return extra;
+}
+
+export function isDHIS2PeriodColumn(column?: DHIS2ColumnLike | null): boolean {
+  const extra = parseDHIS2ColumnExtra(column?.extra);
+  return (
+    extra.dhis2_is_period === true ||
+    extra.dhis2IsPeriod === true ||
+    extra.dhis2_is_period_hierarchy === true ||
+    extra.dhis2IsPeriodHierarchy === true ||
+    typeof extra.dhis2_period_key === 'string' ||
+    typeof extra.dhis2PeriodKey === 'string'
+  );
+}
+
+export function getDHIS2PeriodColumnNames(
+  columns?: DHIS2ColumnLike[] | null,
+): Set<string> {
+  const names = new Set<string>();
+
+  (columns || []).forEach(column => {
+    if (!isDHIS2PeriodColumn(column)) {
+      return;
+    }
+
+    [column.column_name, column.verbose_name].forEach(name => {
+      if (typeof name === 'string' && name.trim()) {
+        names.add(name);
+      }
+    });
+  });
+
+  return names;
+}
+
 /**
  * Build a human-readable month range like "January – March 2025" or
  * "November 2025 – April 2026" when the range wraps into the next year.

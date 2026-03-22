@@ -309,6 +309,108 @@ class TestFetchFromInstanceBatching:
 
         assert captured_org_units == [["USER_ORGUNIT", "OU_PRIMARY"]]
 
+    def test_primary_org_unit_mode_preserves_explicit_nested_units_for_selected_scope(self):
+        svc = self._svc()
+        instance = _make_instance(id=102, name="Non Routine DHIS2")
+        variables = [_make_variable()]
+        captured_org_units: list[list[str]] = []
+        mock_resp = {**SAMPLE_ANALYTICS_RESPONSE, "rows": []}
+
+        def fake_request(*args, org_units=None, **kwargs):
+            captured_org_units.append(list(org_units or []))
+            return mock_resp
+
+        svc._make_analytics_request = fake_request
+        svc._fetch_from_instance(
+            instance,
+            variables,
+            {
+                "periods": ["2024Q1"],
+                "org_units": ["OU_NATIONAL", "OU_REGION", "OU_DISTRICT"],
+                "org_unit_source_mode": "primary",
+                "org_unit_scope": "selected",
+                "org_unit_details": [
+                    {
+                        "id": "OU_NATIONAL",
+                        "selectionKey": "OU_NATIONAL",
+                        "sourceOrgUnitId": "OU_NATIONAL",
+                        "level": 1,
+                        "path": "/OU_NATIONAL",
+                        "sourceInstanceIds": [102],
+                    },
+                    {
+                        "id": "OU_REGION",
+                        "selectionKey": "OU_REGION",
+                        "sourceOrgUnitId": "OU_REGION",
+                        "level": 2,
+                        "path": "/OU_NATIONAL/OU_REGION",
+                        "sourceInstanceIds": [102],
+                    },
+                    {
+                        "id": "OU_DISTRICT",
+                        "selectionKey": "OU_DISTRICT",
+                        "sourceOrgUnitId": "OU_DISTRICT",
+                        "level": 3,
+                        "path": "/OU_NATIONAL/OU_REGION/OU_DISTRICT",
+                        "sourceInstanceIds": [102],
+                    },
+                ],
+            },
+        )
+
+        assert captured_org_units == [["OU_NATIONAL", "OU_REGION", "OU_DISTRICT"]]
+
+    def test_repository_org_unit_mode_preserves_explicit_nested_units_for_selected_scope(self):
+        svc = self._svc()
+        instance = _make_instance(id=102, name="Non Routine DHIS2")
+        variables = [_make_variable()]
+        captured_org_units: list[list[str]] = []
+        mock_resp = {**SAMPLE_ANALYTICS_RESPONSE, "rows": []}
+
+        def fake_request(*args, org_units=None, **kwargs):
+            captured_org_units.append(list(org_units or []))
+            return mock_resp
+
+        svc._make_analytics_request = fake_request
+        svc._fetch_from_instance(
+            instance,
+            variables,
+            {
+                "periods": ["2024Q1"],
+                "org_units": ["OU_NATIONAL", "OU_REGION", "OU_DISTRICT"],
+                "org_unit_source_mode": "repository",
+                "org_unit_scope": "selected",
+                "org_unit_details": [
+                    {
+                        "id": "OU_NATIONAL",
+                        "selectionKey": "OU_NATIONAL",
+                        "sourceOrgUnitId": "OU_NATIONAL",
+                        "level": 1,
+                        "path": "/OU_NATIONAL",
+                        "sourceInstanceIds": [102],
+                    },
+                    {
+                        "id": "OU_REGION",
+                        "selectionKey": "OU_REGION",
+                        "sourceOrgUnitId": "OU_REGION",
+                        "level": 2,
+                        "path": "/OU_NATIONAL/OU_REGION",
+                        "sourceInstanceIds": [102],
+                    },
+                    {
+                        "id": "OU_DISTRICT",
+                        "selectionKey": "OU_DISTRICT",
+                        "sourceOrgUnitId": "OU_DISTRICT",
+                        "level": 3,
+                        "path": "/OU_NATIONAL/OU_REGION/OU_DISTRICT",
+                        "sourceInstanceIds": [102],
+                    },
+                ],
+            },
+        )
+
+        assert captured_org_units == [["OU_NATIONAL", "OU_REGION", "OU_DISTRICT"]]
+
     def test_per_instance_org_unit_mode_uses_selection_keys_from_local_staging(self):
         svc = self._svc()
         instance = _make_instance(id=102, name="Non Routine DHIS2")

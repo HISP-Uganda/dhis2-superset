@@ -17,6 +17,7 @@
  * under the License.
  */
 import { ChartProps, supersetTheme, VizType } from '@superset-ui/core';
+import { GenericDataType } from '@apache-superset/core/api/core';
 import {
   LegendOrientation,
   LegendType,
@@ -197,6 +198,79 @@ test('should transform chart props for viz with showQueryIdentifiers=true', () =
     'sum__num (Query B), girl',
     'sum__num (Query B), boy',
   ]);
+});
+
+test('formats DHIS2 period axes and mixed-series labels', () => {
+  const chartProps = new ChartProps({
+    ...chartPropsConfig,
+    formData: {
+      ...formData,
+      x_axis: 'period',
+      groupby: ['reporting_period'],
+      groupbyB: ['reporting_period'],
+      showQueryIdentifiers: false,
+    },
+    queriesData: [
+      {
+        data: [
+          { period: '202501', '202503': 1, '202504': 2 },
+          { period: '202502', '202503': 3, '202504': 4 },
+        ],
+        label_map: {
+          '202503': ['202503'],
+          '202504': ['202504'],
+        },
+        colnames: ['period', '202503', '202504'],
+        coltypes: [
+          GenericDataType.String,
+          GenericDataType.Numeric,
+          GenericDataType.Numeric,
+        ],
+      },
+      {
+        data: [
+          { period: '202501', '202503': 5, '202504': 6 },
+          { period: '202502', '202503': 7, '202504': 8 },
+        ],
+        label_map: {
+          '202503 (1)': ['202503'],
+          '202504 (1)': ['202504'],
+        },
+        colnames: ['period', '202503', '202504'],
+        coltypes: [
+          GenericDataType.String,
+          GenericDataType.Numeric,
+          GenericDataType.Numeric,
+        ],
+      },
+    ],
+    datasource: {
+      verboseMap: {},
+      columnFormats: {},
+      currencyFormats: {},
+      columns: [
+        {
+          column_name: 'period',
+          extra: { dhis2_is_period: true },
+        },
+        {
+          column_name: 'reporting_period',
+          extra: { dhis2_is_period: true },
+        },
+      ],
+    },
+  });
+
+  const transformed = transformProps(chartProps as EchartsMixedTimeseriesProps);
+
+  expect(
+    (transformed.echartOptions.xAxis as any).axisLabel.formatter('202503'),
+  ).toBe('March 2025');
+  expect(transformed.xValueFormatter('202503')).toBe('March 2025');
+  expect((transformed.echartOptions.legend as any).data).toEqual(
+    expect.arrayContaining(['sum__num, March 2025', 'sum__num, April 2025']),
+  );
+  expect(transformed.labelMap['sum__num, March 2025']).toEqual(['202503']);
 });
 
 describe('legend sorting', () => {

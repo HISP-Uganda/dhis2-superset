@@ -31,7 +31,35 @@ set -euo pipefail
 #   - Enable with: --duckdb  or  DUCKDB_ENABLED=1
 # ==============================================================================
 
-TARGET="${TARGET:-socaya@209.145.54.74}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-$SCRIPT_DIR/.env}"
+DEFAULT_TARGET_HOST="${DEFAULT_TARGET_HOST:-209.145.54.74}"
+DEFAULT_TARGET_USER="${DEFAULT_TARGET_USER:-socaya}"
+ORIGINAL_LOCAL_USER="${USER:-}"
+DEPLOY_ENV_USER=""
+DEPLOY_ENV_PASSWORD=""
+
+if [[ -f "$DEPLOY_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$DEPLOY_ENV_FILE"
+  set +a
+  DEPLOY_ENV_USER="${USER:-}"
+  DEPLOY_ENV_PASSWORD="${PASSWORD:-}"
+  if [[ -n "$ORIGINAL_LOCAL_USER" ]]; then
+    USER="$ORIGINAL_LOCAL_USER"
+    export USER
+  fi
+fi
+
+TARGET_HOST="${TARGET_HOST:-${HOST:-$DEFAULT_TARGET_HOST}}"
+TARGET_USER="${TARGET_USER:-${SSH_USER:-${DEPLOY_ENV_USER:-$DEFAULT_TARGET_USER}}}"
+SSH_PASSWORD="${SSH_PASSWORD:-${DEPLOY_ENV_PASSWORD:-}}"
+REMOTE_SUDO_PASSWORD="${REMOTE_SUDO_PASSWORD:-${SUDO_PASSWORD:-${SSH_PASSWORD:-}}}"
+TARGET="${TARGET:-${TARGET_HOST}}"
+if [[ "$TARGET" != *@* ]]; then
+  TARGET="${TARGET_USER}@${TARGET}"
+fi
 SSH_PORT="${SSH_PORT:-22}"
 
 CT_SUP="${CT_SUP:-supersets}"
@@ -129,8 +157,10 @@ ADMIN_LAST="${ADMIN_LAST:-User}"
 HOST_LOG="${HOST_LOG:-/var/log/supersets-deploy-host.log}"
 REMOTE_SCRIPT_PATH="${REMOTE_SCRIPT_PATH:-/tmp/deploy-supersets.sh}"
 REMOTE_ENV_PATH="${REMOTE_ENV_PATH:-/tmp/deploy-supersets.env}"
+REMOTE_BOOTSTRAP_PATH="${REMOTE_BOOTSTRAP_PATH:-/tmp/deploy-supersets-bootstrap.sh}"
 REMOTE_DETACH="${REMOTE_DETACH:-1}"
 REMOTE_POLL_INTERVAL_SECONDS="${REMOTE_POLL_INTERVAL_SECONDS:-2}"
+REMOTE_POLL_MAX_FAILURES="${REMOTE_POLL_MAX_FAILURES:-90}"
 REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-/tmp/deploy-supersets-remote.log}"
 REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-/tmp/deploy-supersets-remote.pid}"
 REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-/tmp/deploy-supersets-remote.status}"
@@ -155,6 +185,8 @@ OPTIONS:
   --ref <branch|tag|sha>
   --depth <N>
   --submodules
+  --remote-detach
+  --no-remote-detach
 
   --alembic-fix auto|stamp-head|wipe
   --alembic-fallback stamp-head|wipe|none
@@ -198,8 +230,40 @@ warn() { printf 'WARN: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+run_ssh_tool() {
+  local tool="$1"
+  shift
+
+  if [[ -z "${SSH_PASSWORD:-}" ]]; then
+    "$tool" "$@"
+    return
+  fi
+
+  if has_cmd sshpass; then
+    SSHPASS="$SSH_PASSWORD" sshpass -e "$tool" "$@"
+    return
+  fi
+
+  local askpass
+  askpass="$(mktemp /tmp/deploy-supersets-askpass.XXXXXX)"
+  cat > "$askpass" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${DEPLOY_SSH_PASSWORD:-}"
+EOF
+  chmod 700 "$askpass"
+
+  DISPLAY="${DISPLAY:-deploy-askpass:0}" \
+  SSH_ASKPASS="$askpass" \
+  SSH_ASKPASS_REQUIRE=force \
+  DEPLOY_SSH_PASSWORD="$SSH_PASSWORD" \
+  "$tool" "$@" < /dev/null
+  local rc=$?
+  rm -f "$askpass"
+  return $rc
+}
+
 ssh_tty() {
-  ssh \
+  run_ssh_tool ssh \
     -o BatchMode=no \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=6 \
@@ -209,7 +273,7 @@ ssh_tty() {
 }
 
 ssh_cmd() {
-  ssh \
+  run_ssh_tool ssh \
     -o BatchMode=no \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=6 \
@@ -217,10 +281,137 @@ ssh_cmd() {
     "$TARGET" "$@"
 }
 
-scp_to_remote() { scp -P "$SSH_PORT" "$1" "${TARGET}:$2"; }
+scp_to_remote() { run_ssh_tool scp -P "$SSH_PORT" "$1" "${TARGET}:$2"; }
 quote_env_value() { printf '%q' "$1"; }
+
 remote_sudo_prompt() {
   printf '[remote sudo on %s] password for %%u: ' "$TARGET"
+}
+
+write_remote_bootstrap_file() {
+  local f="$1"
+  cat > "$f" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote_bootstrap_root() {
+  if [[ "${REMOTE_DETACH:-1}" != "1" ]]; then
+    set -a
+    . "$REMOTE_ENV_PATH"
+    set +a
+    exec bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
+  fi
+
+  local run_user="${RUN_USER:-${SUDO_USER:-$(id -un)}}"
+
+  rm -rf "$REMOTE_RUN_LOG" "$REMOTE_RUN_PID_FILE" "$REMOTE_RUN_STATUS_FILE"
+  install -m 0666 /dev/null "$REMOTE_RUN_LOG"
+  chown root:root "$REMOTE_RUN_LOG" 2>/dev/null || true
+
+  cat > /tmp/deploy-supersets-detached-runner.sh <<'EORUN'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+. "$REMOTE_ENV_PATH"
+set +a
+
+write_status() {
+  local rc="$1"
+  printf '%s\n' "$rc" > "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+  chmod 0666 "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+  chown root:root "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+}
+
+rc=0
+trap 'rc=$?; write_status "$rc"; exit "$rc"' EXIT
+
+set +e
+bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
+rc=$?
+set -e
+
+exit "$rc"
+EORUN
+
+  chmod 700 /tmp/deploy-supersets-detached-runner.sh
+
+  nohup env \
+    REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+    REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+    REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
+    DEPLOY_CMD="$DEPLOY_CMD" \
+    RUN_USER="$run_user" \
+    /tmp/deploy-supersets-detached-runner.sh >> "$REMOTE_RUN_LOG" 2>&1 < /dev/null &
+  local pid=$!
+
+  printf '%s\n' "$pid" > "$REMOTE_RUN_PID_FILE"
+  chmod 0666 "$REMOTE_RUN_PID_FILE" || true
+  chown root:root "$REMOTE_RUN_PID_FILE" 2>/dev/null || true
+
+  printf 'REMOTE_PID=%s\nREMOTE_LOG=%s\nREMOTE_STATUS=%s\n' "$pid" "$REMOTE_RUN_LOG" "$REMOTE_RUN_STATUS_FILE"
+}
+
+main() {
+  if [[ -f "${REMOTE_ENV_PATH:-}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$REMOTE_ENV_PATH"
+    set +a
+  fi
+
+  if [[ "${1:-}" == "__root" ]]; then
+    shift || true
+    remote_bootstrap_root "$@"
+    exit 0
+  fi
+
+  local sudo_rc=0
+  if [[ -n "${REMOTE_SUDO_PASSWORD:-}" ]]; then
+    set +e
+    sudo -S -p "$SUDO_PROMPT" -v <<<"$REMOTE_SUDO_PASSWORD"
+    sudo_rc=$?
+    set -e
+  else
+    set +e
+    sudo -p "$SUDO_PROMPT" -v
+    sudo_rc=$?
+    set -e
+  fi
+
+  if [[ "$sudo_rc" -ne 0 ]]; then
+    printf 'ERROR: remote sudo authentication failed for %s\n' "$(id -un)" >&2
+    exit 1
+  fi
+
+  if [[ -n "${REMOTE_SUDO_PASSWORD:-}" ]]; then
+    exec sudo -S -p '' env \
+      RUN_USER="$(id -un)" \
+      REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+      REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+      REMOTE_DETACH="${REMOTE_DETACH:-1}" \
+      REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-}" \
+      REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-}" \
+      REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-}" \
+      DEPLOY_CMD="$DEPLOY_CMD" \
+      bash "$0" __root <<<"$REMOTE_SUDO_PASSWORD"
+  fi
+
+  exec sudo -n env \
+    RUN_USER="$(id -un)" \
+    REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+    REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+    REMOTE_DETACH="${REMOTE_DETACH:-1}" \
+    REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-}" \
+    REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-}" \
+    REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-}" \
+    DEPLOY_CMD="$DEPLOY_CMD" \
+    bash "$0" __root
+}
+
+main "$@"
+EOF
+  chmod 700 "$f"
 }
 
 write_remote_env_file() {
@@ -250,8 +441,10 @@ write_remote_env_file() {
     WIPE_METADATA CONFIRM_WIPE_METADATA DO_BACKUP
     CONFIG_SYNC FORCE_CONFIG_SYNC CONFIG_CANDIDATE_PATH
     ALEMBIC_FIX_MODE ALEMBIC_AUTO_FALLBACK
+    REMOTE_SUDO_PASSWORD
     ADMIN_USER ADMIN_EMAIL ADMIN_PASS ADMIN_FIRST ADMIN_LAST
     HOST_LOG
+    REMOTE_BOOTSTRAP_PATH
     REMOTE_DETACH REMOTE_POLL_INTERVAL_SECONDS REMOTE_RUN_LOG REMOTE_RUN_PID_FILE REMOTE_RUN_STATUS_FILE
   )
 
@@ -276,6 +469,7 @@ remote_worker() {
   sudo touch "$HOST_LOG" || true
   sudo chown "$(id -un)":"$(id -gn)" "$HOST_LOG" 2>/dev/null || true
   exec > >(tee -a "$HOST_LOG") 2>&1
+  trap 'rc=$?; echo "[remote_worker] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}' ERR
 
   local RUN_USER="${SUDO_USER:-$(id -un)}"
 
@@ -488,7 +682,7 @@ print(''.join(secrets.choice(alphabet) for _ in range(32)))
 PY
           return 0
         fi
-        date +%s | sha256sum | awk '{print substr($1,1,32)}'
+        date +%s | sha256sum | awk '{print substr(\$1,1,32)}'
       }
 
       requested_user='${CLICKHOUSE_USER}'
@@ -623,8 +817,8 @@ PY
       _add_or_update_env_var DHIS2_CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
-      _add_or_update_ENV_VAR DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
-      _add_or_update_ENV_VAR DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+      _add_or_update_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_USER '${CLICKHOUSE_USER}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_PASSWORD '${CLICKHOUSE_PASSWORD}'
       _add_or_update_env_var DHIS2_CLICKHOUSE_SECURE false
@@ -971,6 +1165,7 @@ PY
   git_clone_or_update() {
     ensure_host_tools
     ensure_host_src_dir
+    sudo chown -R "$RUN_USER":"$RUN_USER" "$HOST_SRC_DIR" 2>/dev/null || true
 
     if [[ ! -d "$HOST_SRC_DIR/.git" ]]; then
       log "[host] cloning $REPO_URL -> $HOST_SRC_DIR"
@@ -985,6 +1180,8 @@ PY
       fi
     fi
 
+    sudo chown -R "$RUN_USER":"$RUN_USER" "$HOST_SRC_DIR" 2>/dev/null || true
+    run_as_user "rm -f '$HOST_SRC_DIR/.git/index.lock' '$HOST_SRC_DIR/.git/shallow.lock' '$HOST_SRC_DIR/.git/HEAD.lock' 2>/dev/null || true"
     run_as_user "cd '$HOST_SRC_DIR' && git remote set-url origin '$REPO_URL' && git fetch origin --tags --prune"
 
     local ref="$GIT_REF"
@@ -995,13 +1192,16 @@ PY
 
     if run_as_user "cd '$HOST_SRC_DIR' && git show-ref --verify --quiet refs/remotes/origin/$ref"; then
       log "[host] checkout origin/$ref"
-      run_as_user "cd '$HOST_SRC_DIR' && git checkout -B '$ref' 'origin/$ref' && git reset --hard 'origin/$ref'"
+      run_as_user "cd '$HOST_SRC_DIR' && git reset --hard HEAD && git clean -fd"
+      run_as_user "cd '$HOST_SRC_DIR' && git checkout -B '$ref' 'origin/$ref' && git reset --hard 'origin/$ref' && git clean -fd"
     elif run_as_user "cd '$HOST_SRC_DIR' && git show-ref --verify --quiet refs/heads/$ref"; then
       log "[host] checkout local $ref"
-      run_as_user "cd '$HOST_SRC_DIR' && git checkout --force '$ref' && git reset --hard '$ref'"
+      run_as_user "cd '$HOST_SRC_DIR' && git reset --hard HEAD && git clean -fd"
+      run_as_user "cd '$HOST_SRC_DIR' && git checkout --force '$ref' && git reset --hard '$ref' && git clean -fd"
     elif run_as_user "cd '$HOST_SRC_DIR' && git rev-parse --verify --quiet '$ref^{commit}' >/dev/null"; then
       log "[host] checkout commit/tag $ref"
-      run_as_user "cd '$HOST_SRC_DIR' && git checkout --force '$ref'"
+      run_as_user "cd '$HOST_SRC_DIR' && git reset --hard HEAD && git clean -fd"
+      run_as_user "cd '$HOST_SRC_DIR' && git checkout --force '$ref' && git clean -fd"
     else
       run_as_user "cd '$HOST_SRC_DIR' && git for-each-ref --format='%(refname:short)' refs/remotes/origin/" >&2 || true
       die "Requested ref '$ref' does not exist in $REPO_URL"
@@ -1451,7 +1651,7 @@ PY
         else
           run_with_log 'npm install' npm install
         fi
-      }
+      fi
 
       run_with_log 'npm run type:refs' npm run type:refs
 
@@ -1816,11 +2016,12 @@ PY")"
   }
 
   patch_python_migration_tree() {
-    local target_root="$1"
-    local label="$2"
+  local target_root="$1"
+  local label="$2"
 
-    exec_in_ct "$CT_SUP" "
-      python3 - <<'PY'
+  exec_in_ct "$CT_SUP" "
+    python3 - <<'PY'
+import hashlib
 import re
 import shutil
 from datetime import datetime
@@ -1841,10 +2042,12 @@ BOOLEAN_COLUMNS = [
     'published',
 ]
 
+PG_IDENTIFIER_LIMIT = 63
+ALEMBIC_VERSION_LIMIT = 32
+
 def patch_boolean_sql(text: str) -> str:
     for col in BOOLEAN_COLUMNS:
         name = re.escape(col)
-
         text = re.sub(rf'(\\bWHERE\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
         text = re.sub(rf'(\\bWHERE\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
         text = re.sub(rf'(\\bAND\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
@@ -1853,11 +2056,78 @@ def patch_boolean_sql(text: str) -> str:
         text = re.sub(rf'(\\bOR\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
         text = re.sub(rf'(\\bSET\\s+{name}\\s*=\\s*)1\\b', r'\\1TRUE', text, flags=re.I)
         text = re.sub(rf'(\\bSET\\s+{name}\\s*=\\s*)0\\b', r'\\1FALSE', text, flags=re.I)
-
     return text
 
 def patch_sanitize(text: str) -> str:
     return text.replace('%(idd)s', '%(id)s').replace(':idd', ':id')
+
+def shorten_alembic_revision(name: str) -> str:
+    if len(name) <= ALEMBIC_VERSION_LIMIT:
+        return name
+    suffix = ''
+    match = re.search(r'(_v\\d+)$', name)
+    if match:
+        suffix = match.group(1)
+        stem = name[:-len(suffix)]
+    else:
+        stem = name
+    digest = hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]
+    keep = ALEMBIC_VERSION_LIMIT - len(suffix) - len(digest) - 1
+    keep = max(keep, 12)
+    stem = stem[:keep].rstrip('_')
+    return f'{stem}_{digest}{suffix}'
+
+def shorten_identifier(name: str) -> str:
+    if len(name) <= PG_IDENTIFIER_LIMIT:
+        return name
+    digest = hashlib.sha1(name.encode('utf-8')).hexdigest()[:10]
+    keep = PG_IDENTIFIER_LIMIT - 1 - len(digest)
+    keep = max(keep, 16)
+    return f'{name[:keep]}_{digest}'
+
+def patch_long_constraint_names(text: str) -> str:
+    seen = {}
+
+    patterns = [
+        r\"create_foreign_key\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"create_unique_constraint\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"create_index\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"ForeignKeyConstraint\\([^\\)]*name\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"sa\\.ForeignKeyConstraint\\([^\\)]*name\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"batch_op\\.create_foreign_key\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"batch_op\\.create_unique_constraint\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+        r\"batch_op\\.create_index\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\",
+    ]
+
+    names = set()
+    for pat in patterns:
+      for m in re.finditer(pat, text, flags=re.S):
+          names.add(m.group(1))
+
+    for old in sorted(names, key=len, reverse=True):
+        new = shorten_identifier(old)
+        if new != old:
+            seen[old] = new
+
+    for old, new in seen.items():
+        text = text.replace(f'\"{old}\"', f'\"{new}\"')
+        text = text.replace(f\"'{old}'\", f\"'{new}'\")
+
+    return text
+
+alembic_revision_map = {}
+for p in sorted(root.glob('*.py')):
+    original = p.read_text(errors='ignore')
+    match = re.search(r\"^revision\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]\", original, flags=re.M)
+    if not match:
+        continue
+    revision = match.group(1)
+    shortened = shorten_alembic_revision(revision)
+    if shortened != revision:
+        alembic_revision_map[revision] = shortened
+
+for old, new in sorted(alembic_revision_map.items()):
+    print('PATCH_REVISION', old, '->', new)
 
 patched = 0
 for p in sorted(root.glob('*.py')):
@@ -1865,8 +2135,12 @@ for p in sorted(root.glob('*.py')):
     updated = original
     lower = p.name.lower()
 
-    if 'dhis2' in lower or 'portal' in lower or 'cms' in lower:
+    for old, new in alembic_revision_map.items():
+        updated = updated.replace(old, new)
+
+    if 'dhis2' in lower or 'portal' in lower or 'cms' in lower or 'design_system' in lower:
         updated = patch_boolean_sql(updated)
+        updated = patch_long_constraint_names(updated)
 
     if 'sanitize_dhis2_columns' in lower or 'preview' in lower:
         updated = patch_sanitize(updated)
@@ -1880,8 +2154,8 @@ for p in sorted(root.glob('*.py')):
 
 print('PATCH_DONE label=$label count=' + str(patched))
 PY
-    "
-  }
+  "
+}
 
   patch_dhis2_migrations_in_workdir() {
     [[ "$PATCH_MIGRATIONS" == "1" ]] || return 0
@@ -2457,7 +2731,7 @@ AP
       restart_gunicorn
       ;;
     restart-celery)
-      ensure_env_EXISTS
+      ensure_env_exists
       ensure_superset_config_exists
       install_celery_systemd_units
       restart_celery_worker
@@ -2484,6 +2758,8 @@ main() {
       --ref) GIT_REF="$2"; shift 2 ;;
       --depth) GIT_DEPTH="$2"; shift 2 ;;
       --submodules) GIT_SUBMODULES=1; shift ;;
+      --remote-detach) REMOTE_DETACH=1; shift ;;
+      --no-remote-detach) REMOTE_DETACH=0; shift ;;
 
       --alembic-fix) ALEMBIC_FIX_MODE="$2"; shift 2 ;;
       --alembic-fallback) ALEMBIC_AUTO_FALLBACK="$2"; shift 2 ;;
@@ -2539,6 +2815,18 @@ main() {
     ''|*[!0-9]*) die "--celery-concurrency must be an integer" ;;
   esac
 
+  case "$REMOTE_POLL_INTERVAL_SECONDS" in
+    ''|*[!0-9]*) die "REMOTE_POLL_INTERVAL_SECONDS must be an integer" ;;
+  esac
+
+  case "$REMOTE_POLL_MAX_FAILURES" in
+    ''|*[!0-9]*) die "REMOTE_POLL_MAX_FAILURES must be an integer" ;;
+  esac
+
+  if [[ "$REMOTE_POLL_MAX_FAILURES" -lt 1 ]]; then
+    die "REMOTE_POLL_MAX_FAILURES must be >= 1"
+  fi
+
   if is_local_lxd_host; then
     log "Detected local LXD host; running locally"
     remote_worker "$cmd"
@@ -2548,112 +2836,44 @@ main() {
   log "Remote target: $TARGET:$SSH_PORT"
 
   local env_tmp
+  local bootstrap_tmp
   env_tmp="$(mktemp /tmp/deploy-supersets-env.XXXXXX)"
+  bootstrap_tmp="$(mktemp /tmp/deploy-supersets-bootstrap.XXXXXX)"
   write_remote_env_file "$env_tmp"
+  write_remote_bootstrap_file "$bootstrap_tmp"
 
   scp_to_remote "$0" "$REMOTE_SCRIPT_PATH"
   scp_to_remote "$env_tmp" "$REMOTE_ENV_PATH"
+  scp_to_remote "$bootstrap_tmp" "$REMOTE_BOOTSTRAP_PATH"
   rm -f "$env_tmp"
+  rm -f "$bootstrap_tmp"
 
-  ssh_cmd "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH'"
+  ssh_cmd "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH' '$REMOTE_BOOTSTRAP_PATH'"
 
-  local q_remote_script q_remote_env q_remote_log q_remote_pid q_remote_status q_cmd q_sudo_prompt
+  local q_remote_script q_remote_env q_remote_bootstrap q_remote_log q_remote_pid q_remote_status q_cmd q_sudo_prompt q_remote_detach
   q_remote_script="$(quote_env_value "$REMOTE_SCRIPT_PATH")"
   q_remote_env="$(quote_env_value "$REMOTE_ENV_PATH")"
+  q_remote_bootstrap="$(quote_env_value "$REMOTE_BOOTSTRAP_PATH")"
   q_remote_log="$(quote_env_value "$REMOTE_RUN_LOG")"
   q_remote_pid="$(quote_env_value "$REMOTE_RUN_PID_FILE")"
   q_remote_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
   q_cmd="$(quote_env_value "$cmd")"
   q_sudo_prompt="$(quote_env_value "$(remote_sudo_prompt)")"
+  q_remote_detach="$(quote_env_value "$REMOTE_DETACH")"
 
-if [[ "$REMOTE_DETACH" != "1" ]]; then
-    ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt bash -s" <<'EOSSH'
-set -euo pipefail
-
-if ! sudo -p "$SUDO_PROMPT" -v; then
-  printf 'ERROR: remote sudo authentication failed for %s\n' "$(id -un)" >&2
-  exit 1
-fi
-
-exec sudo -n env \
-  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
-  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
-  DEPLOY_CMD="$DEPLOY_CMD" \
-  bash -s
-set -euo pipefail
-set -a
-. "$REMOTE_ENV_PATH"
-set +a
-exec bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
-EOSSH
+  if [[ "$REMOTE_DETACH" != "1" ]]; then
+    ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt REMOTE_DETACH=$q_remote_detach bash $q_remote_bootstrap"
     exit $?
   fi
 
-  ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env REMOTE_RUN_LOG=$q_remote_log REMOTE_RUN_PID_FILE=$q_remote_pid REMOTE_RUN_STATUS_FILE=$q_remote_status DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt bash -s" <<'EOSSH'
-set -euo pipefail
-
-if ! sudo -p "$SUDO_PROMPT" -v; then
-  printf 'ERROR: remote sudo authentication failed for %s\n' "$(id -un)" >&2
-  exit 1
-fi
-
-exec sudo -n env \
-  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
-  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
-  REMOTE_RUN_LOG="$REMOTE_RUN_LOG" \
-  REMOTE_RUN_PID_FILE="$REMOTE_RUN_PID_FILE" \
-  REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
-  DEPLOY_CMD="$DEPLOY_CMD" \
-  bash -s
-set -euo pipefail
-
-run_user="${SUDO_USER:-$(id -un)}"
-
-rm -f "$REMOTE_RUN_PID_FILE" "$REMOTE_RUN_STATUS_FILE"
-install -m 0664 /dev/null "$REMOTE_RUN_LOG"
-chown "$run_user":"$run_user" "$REMOTE_RUN_LOG" 2>/dev/null || true
-
-cat > /tmp/deploy-supersets-detached-runner.sh <<'EORUN'
-#!/usr/bin/env bash
-set -euo pipefail
-
-set -a
-. "$REMOTE_ENV_PATH"
-set +a
-
-rc=0
-if ! bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"; then
-  rc=$?
-fi
-
-printf '%s\n' "$rc" > "$REMOTE_RUN_STATUS_FILE"
-chmod 0664 "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
-chown "$run_user":"$run_user" "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
-exit "$rc"
-EORUN
-
-chmod 700 /tmp/deploy-supersets-detached-runner.sh
-
-nohup env \
-  REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
-  REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
-  REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
-  DEPLOY_CMD="$DEPLOY_CMD" \
-  run_user="$run_user" \
-  /tmp/deploy-supersets-detached-runner.sh >> "$REMOTE_RUN_LOG" 2>&1 < /dev/null &
-pid=$!
-
-printf '%s\n' "$pid" > "$REMOTE_RUN_PID_FILE"
-chmod 0664 "$REMOTE_RUN_PID_FILE" || true
-chown "$run_user":"$run_user" "$REMOTE_RUN_PID_FILE" 2>/dev/null || true
-
-printf 'REMOTE_PID=%s\nREMOTE_LOG=%s\nREMOTE_STATUS=%s\n' "$pid" "$REMOTE_RUN_LOG" "$REMOTE_RUN_STATUS_FILE"
-EOSSH
+  ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env REMOTE_RUN_LOG=$q_remote_log REMOTE_RUN_PID_FILE=$q_remote_pid REMOTE_RUN_STATUS_FILE=$q_remote_status DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt REMOTE_DETACH=$q_remote_detach bash $q_remote_bootstrap"
 
   log "Remote deploy started; polling $REMOTE_RUN_LOG"
 
   local last_line=0
   local poll_failures=0
+  local no_status_failures=0
+  local reconnect_window_seconds=$((REMOTE_POLL_INTERVAL_SECONDS * REMOTE_POLL_MAX_FAILURES))
   local q_poll_log q_poll_status q_poll_pid
   q_poll_log="$(quote_env_value "$REMOTE_RUN_LOG")"
   q_poll_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
@@ -2685,7 +2905,7 @@ EOSSH
       running=0
       if [ -f \"\$pid_file\" ]; then
         pid=\$(cat \"\$pid_file\" 2>/dev/null || true)
-        if [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null; then
+        if [ -n \"\$pid\" ] && { [ -d \"/proc/\$pid\" ] || ps -p \"\$pid\" -o pid= >/dev/null 2>&1; }; then
           running=1
         fi
       fi
@@ -2701,10 +2921,10 @@ EOSSH
 
     if [[ "$poll_rc" -ne 0 ]]; then
       poll_failures=$((poll_failures + 1))
-      if [[ "$poll_failures" -ge 3 ]]; then
-        die "Lost connection while polling remote deploy log after $poll_failures attempt(s). Inspect $REMOTE_RUN_LOG on the remote host."
+      if [[ "$poll_failures" -ge "$REMOTE_POLL_MAX_FAILURES" ]]; then
+        die "Lost connection while polling remote deploy log after $poll_failures attempt(s) (~${reconnect_window_seconds}s window). Inspect $REMOTE_RUN_LOG on the remote host."
       fi
-      warn "Polling remote deploy log failed (attempt $poll_failures); retrying in ${REMOTE_POLL_INTERVAL_SECONDS}s"
+      warn "Polling remote deploy log failed (attempt $poll_failures/$REMOTE_POLL_MAX_FAILURES); retrying in ${REMOTE_POLL_INTERVAL_SECONDS}s"
       sleep "$REMOTE_POLL_INTERVAL_SECONDS"
       continue
     fi
@@ -2727,14 +2947,22 @@ EOSSH
 
     case "$rc" in
       RUNNING)
+        no_status_failures=0
         ;;
       0)
         exit 0
         ;;
       FAILED_NO_STATUS)
+        no_status_failures=$((no_status_failures + 1))
+        if [[ "$no_status_failures" -lt 4 ]]; then
+          warn "Remote deploy exited without status yet; waiting for status write (attempt $no_status_failures)"
+          sleep "$REMOTE_POLL_INTERVAL_SECONDS"
+          continue
+        fi
         die "Remote deploy process exited before writing status. Inspect $REMOTE_RUN_LOG on the remote host."
         ;;
       *)
+        no_status_failures=0
         die "Remote deploy failed with rc=$rc. Inspect $REMOTE_RUN_LOG on the remote host."
         ;;
     esac

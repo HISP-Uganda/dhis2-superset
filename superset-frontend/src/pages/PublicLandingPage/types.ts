@@ -254,6 +254,7 @@ export type PortalPageBlock = {
   chart?: PortalChartSummary | null;
   dashboard?: PortalDashboardSummary | null;
   asset?: PortalMediaAsset | null;
+  reusable_block?: PortalReusableBlock | null;
   children: PortalPageBlock[];
   style_bundle?: PortalStyleBundle | null;
   rendering?: PortalRendering;
@@ -294,6 +295,44 @@ export type PortalBlockDefinition = {
   description?: string;
   icon?: string;
   is_container?: boolean;
+};
+
+export type PortalReusableBlock = {
+  id: number;
+  slug: string;
+  title: string;
+  description?: string | null;
+  category?: string | null;
+  status?: string;
+  is_active?: boolean;
+  block_count?: number;
+  settings: Record<string, any>;
+  blocks: PortalPageBlock[];
+  rendering?: {
+    scope_class?: string;
+    css_text?: string;
+    warnings?: string[];
+  };
+  archived_on?: string | null;
+  created_on?: string | null;
+  changed_on?: string | null;
+  created_by?: PortalUserRef | null;
+  changed_by?: PortalUserRef | null;
+  archived_by?: PortalUserRef | null;
+};
+
+export type PortalStarterPattern = {
+  id: string;
+  slug: string;
+  title: string;
+  description?: string;
+  category?: string;
+  blocks: PortalPageBlock[];
+  rendering?: {
+    scope_class?: string;
+    css_text?: string;
+    warnings?: string[];
+  };
 };
 
 export type PortalRevision = {
@@ -392,6 +431,7 @@ export type PortalAdminPayload = {
     templates: number;
     style_bundles: number;
     media_assets?: number;
+    reusable_blocks?: number;
   };
   pages: PortalPageSummary[];
   current_page: PortalPage | null;
@@ -403,6 +443,8 @@ export type PortalAdminPayload = {
   available_charts: PortalChartSummary[];
   media_assets?: PortalMediaAsset[];
   block_types?: PortalBlockDefinition[];
+  reusable_blocks?: PortalReusableBlock[];
+  starter_patterns?: PortalStarterPattern[];
   themes: PortalTheme[];
   templates: PortalTemplate[];
   style_bundles: PortalStyleBundle[];
@@ -419,6 +461,7 @@ export type PortalAdminPayload = {
     can_manage_themes: boolean;
     can_manage_templates: boolean;
     can_manage_styles: boolean;
+    can_manage_reusable_blocks?: boolean;
   };
   recent_edits: PortalRevision[];
   recently_published_pages: PortalPageSummary[];

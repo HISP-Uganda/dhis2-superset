@@ -42,6 +42,7 @@ import { getPadding } from '../Timeseries/transformers';
 import { OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export default function transformProps(
   chartProps: EchartsBoxPlotChartProps,
@@ -55,10 +56,14 @@ export default function transformProps(
     queriesData,
     inContextMenu,
     emitCrossFilters,
+    datasource,
   } = chartProps;
   const { data = [] } = queriesData[0];
   const { setDataMask = () => {}, onContextMenu } = hooks;
   const coltypeMapping = getColtypesMapping(queriesData[0]);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
   const {
     colorScheme,
     groupby = [],
@@ -88,6 +93,7 @@ export default function transformProps(
         groupby: groupbyLabels,
         coltypeMapping,
         timeFormatter: getTimeFormatter(dateFormat),
+        dhis2PeriodColumns,
       });
       return metricLabels.map(metric => {
         const name =
@@ -126,6 +132,7 @@ export default function transformProps(
           groupby: groupbyLabels,
           coltypeMapping,
           timeFormatter: getTimeFormatter(dateFormat),
+          dhis2PeriodColumns,
         });
         const name =
           metricLabels.length === 1
@@ -167,6 +174,7 @@ export default function transformProps(
       groupby: groupbyLabels,
       coltypeMapping,
       timeFormatter: getTimeFormatter(dateFormat),
+      dhis2PeriodColumns,
     });
     return {
       ...acc,

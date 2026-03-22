@@ -51,6 +51,10 @@ import os
 import re
 from typing import Any, Iterator
 
+from superset.local_staging.admin_tools import (
+    build_table_metadata,
+    is_safe_identifier,
+)
 from superset.local_staging.base_engine import LocalStagingEngineBase
 from superset.local_staging.exceptions import (
     EngineNotConfiguredError,
@@ -97,6 +101,12 @@ def _staging_table_name(staged_dataset: Any) -> str:
 def _serving_table_name(staged_dataset: Any) -> str:
     sanitized = _sanitize_name(staged_dataset.name)
     return f"{_SERVING_PREFIX}_{staged_dataset.id}_{sanitized}"[:_PG_IDENT_MAX]
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not is_safe_identifier(identifier):
+        raise ValueError(f"Unsafe identifier: {identifier!r}")
+    return f'"{identifier}"'
 
 
 class DuckDBStagingEngine(LocalStagingEngineBase):
@@ -1470,12 +1480,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                     row_count = int(count_row[0]) if count_row else 0
                 except Exception:  # pylint: disable=broad-except
                     row_count = None
-                tables.append({
-                    "schema": schema,
-                    "name": name,
-                    "type": ttype,
-                    "row_count": row_count,
-                })
+                tables.append(
+                    build_table_metadata(
+                        schema=str(schema or ""),
+                        name=str(name or ""),
+                        table_type=str(ttype or "table"),
+                        row_count=row_count,
+                    )
+                )
             return tables
         finally:
             try:
@@ -1513,6 +1525,72 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 conn.close()
             except Exception:  # pylint: disable=broad-except
                 pass
+
+    def preview_table(
+        self,
+        schema: str,
+        table_name: str,
+        *,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        conn = None
+        try:
+            conn = self._connect_read_only()
+        except (EngineNotConfiguredError, EngineUnavailableError) as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        result = conn.execute(f"SELECT * FROM {qualified} LIMIT ?", [int(limit)])
+        column_names = [description[0] for description in result.description]
+        rows = result.fetchall()
+        try:
+            row_count = conn.execute(
+                f"SELECT COUNT(*) FROM {qualified}"
+            ).fetchone()
+        except Exception:  # pylint: disable=broad-except
+            row_count = None
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return {
+            "columns": column_names,
+            "rows": [dict(zip(column_names, row)) for row in rows],
+            "rowcount": len(rows),
+            "total_row_count": int(row_count[0]) if row_count else None,
+            "table": build_table_metadata(
+                schema=schema,
+                name=table_name,
+                table_type="table",
+                row_count=int(row_count[0]) if row_count else None,
+            ),
+        }
+
+    def truncate_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        conn = self._connect()
+        qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        conn.execute(f"DELETE FROM {qualified}")
+        self.close()
+        return {"message": f"Cleared rows from {schema}.{table_name}"}
+
+    def drop_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        conn = self._connect()
+        qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        conn.execute(f"DROP TABLE IF EXISTS {qualified}")
+        self.close()
+        return {"message": f"Dropped table {schema}.{table_name}"}
+
+    def optimize_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        conn = self._connect()
+        qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        conn.execute(f"ANALYZE {qualified}")
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception:  # pylint: disable=broad-except
+            pass
+        self.close()
+        return {"message": f"Refreshed statistics for {schema}.{table_name}"}
 
     # ------------------------------------------------------------------
     # Superset database registration

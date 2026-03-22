@@ -44,6 +44,7 @@ import {
   SunburstTransformedProps,
 } from './types';
 import { getDefaultTooltip } from '../utils/tooltip';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function getLinearDomain(
   treeData: TreeNode[],
@@ -193,6 +194,9 @@ export default function transformProps(
     columnFormats = {},
     verboseMap = {},
   } = datasource;
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
   const refs: Refs = {};
   const primaryValueFormatter = getValueFormatter(
     metric,
@@ -290,6 +294,7 @@ export default function transformProps(
       let name = formatSeriesName(nodeName, {
         numberFormatter,
         timeFormatter: getTimeFormatter(dateFormat),
+        isDHIS2Period: Boolean(groupBy && dhis2PeriodColumns.has(groupBy)),
         ...(coltypeMapping[groupBy] && {
           coltype: coltypeMapping[groupBy],
         }),

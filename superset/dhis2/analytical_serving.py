@@ -40,10 +40,21 @@ _ORG_UNIT_LEVELS_NAMESPACE = "dhis2_snapshot:organisationUnitLevels"
 _DHIS2_OU_HIERARCHY_EXTRA_KEY = "dhis2_is_ou_hierarchy"
 _DHIS2_OU_LEVEL_EXTRA_KEY = "dhis2_ou_level"
 _DHIS2_PERIOD_EXTRA_KEY = "dhis2_is_period"
+_DHIS2_PERIOD_HIERARCHY_EXTRA_KEY = "dhis2_is_period_hierarchy"
+_DHIS2_PERIOD_KEY_EXTRA_KEY = "dhis2_period_key"
 _DHIS2_LEGEND_EXTRA_KEY = "dhis2_legend"
 # Category Option Combo dimension columns (opt-in disaggregation-as-dimension)
 _DHIS2_COC_EXTRA_KEY = "dhis2_is_coc"
 _DHIS2_COC_UID_EXTRA_KEY = "dhis2_is_coc_uid"
+_DHIS2_TERMINAL_PERIOD_KEYS = (
+    "period_year",
+    "period_half",
+    "period_quarter",
+    "period_month",
+    "period_week",
+    "period_biweek",
+    "period_bimonth",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1085,6 +1096,36 @@ def get_dhis2_period_column_name(columns: Sequence[Any]) -> str | None:
         if extra.get(_DHIS2_PERIOD_EXTRA_KEY) is True:
             return column_name
     return fallback_column_name
+
+
+def get_dhis2_period_hierarchy_column_names(columns: Sequence[Any]) -> list[str]:
+    hierarchy_columns: list[tuple[int, str]] = []
+    key_positions = {
+        period_key: index
+        for index, period_key in enumerate(_DHIS2_TERMINAL_PERIOD_KEYS)
+    }
+    for column in columns:
+        if isinstance(column, Mapping):
+            column_name = str(column.get("column_name") or "").strip()
+        else:
+            column_name = str(getattr(column, "column_name", "") or "").strip()
+        if not column_name:
+            continue
+
+        extra = _load_column_extra(column)
+        if extra.get(_DHIS2_PERIOD_HIERARCHY_EXTRA_KEY) is not True:
+            continue
+
+        period_key = str(
+            extra.get(_DHIS2_PERIOD_KEY_EXTRA_KEY) or column_name
+        ).strip()
+        position = key_positions.get(period_key)
+        if position is None:
+            continue
+
+        hierarchy_columns.append((position, column_name))
+
+    return [column_name for _, column_name in sorted(hierarchy_columns)]
 
 
 def resolve_terminal_hierarchy_column(

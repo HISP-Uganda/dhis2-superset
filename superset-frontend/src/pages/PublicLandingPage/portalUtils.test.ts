@@ -17,8 +17,19 @@
  * under the License.
  */
 
-import { applyUserLayoutToSections, normalizeDraftPage } from './portalUtils';
-import type { PortalPage, PortalPageSection } from './types';
+import {
+  applyUserLayoutToSections,
+  normalizeDraftPage,
+  resolveLandingPagePath,
+  resolvePortalPagePath,
+  withDefaultWelcomeNavigationItems,
+} from './portalUtils';
+import type {
+  PortalNavigationMenu,
+  PortalPage,
+  PortalPageSection,
+  PortalPageSummary,
+} from './types';
 
 const sections: PortalPageSection[] = [
   {
@@ -103,7 +114,11 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
           height: 300,
           show_header: true,
         },
-        styles: {},
+        styles: {
+          backgroundColor: '#0f172a',
+          borderRadius: '24px',
+          boxShadow: '0 18px 42px rgba(15, 23, 42, 0.14)',
+        },
         metadata: { label: 'Chart' },
         tree_path: '0000',
         depth: 0,
@@ -189,6 +204,10 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
       settings: expect.objectContaining({
         chart_ref: { id: 7 },
       }),
+      styles: expect.objectContaining({
+        backgroundColor: '#0f172a',
+        borderRadius: '24px',
+      }),
     }),
   );
   expect(normalized.blocks[0]).not.toHaveProperty('chart');
@@ -198,4 +217,179 @@ test('normalizeDraftPage strips nested chart metadata from save payload', () => 
   expect(normalized.blocks[0]).not.toHaveProperty('style_bundle');
   expect(normalized.blocks[0]).not.toHaveProperty('asset');
   expect(normalized.blocks[0]).not.toHaveProperty('dashboard');
+});
+
+test('withDefaultWelcomeNavigationItems injects Welcome before Dashboards', () => {
+  const headerMenus: PortalNavigationMenu[] = [
+    {
+      id: 1,
+      slug: 'header',
+      title: 'Header',
+      location: 'header',
+      display_order: 0,
+      settings: {},
+      items: [
+        {
+          id: 11,
+          label: 'Dashboards',
+          item_type: 'menu',
+          path: '/superset/public/dashboards/',
+          is_visible: true,
+          children: [],
+        },
+      ],
+    },
+  ];
+  const pages: PortalPageSummary[] = [
+    {
+      id: 4,
+      slug: 'welcome',
+      path: 'welcome',
+      title: 'Welcome',
+      is_published: true,
+      is_homepage: true,
+      display_order: 0,
+      settings: {},
+    },
+  ];
+
+  const items = withDefaultWelcomeNavigationItems(headerMenus, pages);
+
+  expect(items.map(item => item.label)).toEqual(['Welcome', 'Dashboards']);
+  expect(items[0]).toEqual(
+    expect.objectContaining({
+      label: 'Welcome',
+      item_type: 'page',
+      page_id: 4,
+      path: '/superset/public/welcome/',
+    }),
+  );
+});
+
+test('withDefaultWelcomeNavigationItems injects Home for a custom landing page', () => {
+  const headerMenus: PortalNavigationMenu[] = [
+    {
+      id: 1,
+      slug: 'header',
+      title: 'Header',
+      location: 'header',
+      display_order: 0,
+      settings: {},
+      items: [
+        {
+          id: 11,
+          label: 'Dashboards',
+          item_type: 'menu',
+          path: '/superset/public/dashboards/',
+          is_visible: true,
+          children: [],
+        },
+      ],
+    },
+  ];
+  const pages: PortalPageSummary[] = [
+    {
+      id: 7,
+      slug: 'malaria-insights',
+      path: 'stories/malaria-insights',
+      title: 'Malaria Insights',
+      is_published: true,
+      is_homepage: true,
+      display_order: 0,
+      settings: {},
+    },
+  ];
+
+  const items = withDefaultWelcomeNavigationItems(headerMenus, pages);
+
+  expect(items.map(item => item.label)).toEqual(['Home', 'Dashboards']);
+  expect(items[0]).toEqual(
+    expect.objectContaining({
+      label: 'Home',
+      item_type: 'page',
+      page_id: 7,
+      path: '/superset/public/stories/malaria-insights/',
+    }),
+  );
+});
+
+test('withDefaultWelcomeNavigationItems moves an existing Welcome item ahead of Dashboards', () => {
+  const headerMenus: PortalNavigationMenu[] = [
+    {
+      id: 1,
+      slug: 'header',
+      title: 'Header',
+      location: 'header',
+      display_order: 0,
+      settings: {},
+      items: [
+        {
+          id: 11,
+          label: 'Dashboards',
+          item_type: 'menu',
+          path: '/superset/public/dashboards/',
+          is_visible: true,
+          children: [],
+        },
+        {
+          id: 12,
+          label: 'Welcome',
+          item_type: 'page',
+          path: '/superset/public/welcome/',
+          page_id: 4,
+          is_visible: true,
+          children: [],
+        },
+      ],
+    },
+  ];
+  const pages: PortalPageSummary[] = [
+    {
+      id: 4,
+      slug: 'welcome',
+      path: 'welcome',
+      title: 'Welcome',
+      is_published: true,
+      is_homepage: false,
+      display_order: 0,
+      settings: {},
+    },
+  ];
+
+  const items = withDefaultWelcomeNavigationItems(headerMenus, pages);
+
+  expect(items.map(item => item.label)).toEqual(['Welcome', 'Dashboards']);
+  expect(items.filter(item => item.label === 'Welcome')).toHaveLength(1);
+});
+
+test('resolvePortalPagePath keeps the canonical landing page path', () => {
+  expect(
+    resolvePortalPagePath({
+      id: 9,
+      slug: 'malaria-insights',
+      path: 'stories/malaria-insights',
+      title: 'Malaria Insights',
+      is_published: true,
+      is_homepage: true,
+      display_order: 0,
+      settings: {},
+    }),
+  ).toBe('/superset/public/stories/malaria-insights/');
+});
+
+test('resolveLandingPagePath returns the welcome page route', () => {
+  expect(
+    resolveLandingPagePath([
+      {
+        id: 4,
+        slug: 'welcome',
+        path: 'welcome',
+        title: 'Welcome',
+        is_published: true,
+        is_homepage: true,
+        display_order: 0,
+        settings: {},
+      },
+    ]),
+  ).toBe('/superset/public/welcome/');
 });

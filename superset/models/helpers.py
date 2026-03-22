@@ -2021,6 +2021,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         orderby = orderby or []
         need_groupby = bool(metrics is not None or groupby)
         metrics = metrics or []
+        requested_granularity = granularity
 
         # For backward compatibility
         if granularity not in self.dttm_cols and granularity is not None:
@@ -2035,16 +2036,26 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             from superset.dhis2.analytical_serving import (
                 build_terminal_hierarchy_sqla_predicate,
                 get_dhis2_hierarchy_column_names,
+                get_dhis2_period_column_name,
+                get_dhis2_period_hierarchy_column_names,
                 resolve_terminal_hierarchy_column,
             )
 
             dhis2_hierarchy_column_names = get_dhis2_hierarchy_column_names(
                 queryable_columns
             )
+            dhis2_period_hierarchy_column_names = (
+                get_dhis2_period_hierarchy_column_names(queryable_columns)
+            )
+            dhis2_raw_period_column_name = get_dhis2_period_column_name(
+                queryable_columns
+            )
         else:
             build_terminal_hierarchy_sqla_predicate = None
             resolve_terminal_hierarchy_column = None
             dhis2_hierarchy_column_names = []
+            dhis2_period_hierarchy_column_names = []
+            dhis2_raw_period_column_name = None
         columns_by_name: dict[str, "TableColumn"] = {
             col.column_name: col for col in queryable_columns
         }
@@ -2054,17 +2065,22 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             m.metric_name: m for m in self.metrics
         }
         selected_hierarchy_candidates: list[str] = []
+        selected_period_candidates: list[str] = []
         for selected in [*(groupby or []), *(columns or [])]:
             if isinstance(selected, str):
-                selected_hierarchy_candidates.append(
-                    self._sanitize_column_reference(selected)
-                )
+                normalized_selected = self._sanitize_column_reference(selected)
+                selected_hierarchy_candidates.append(normalized_selected)
+                selected_period_candidates.append(normalized_selected)
+        if isinstance(requested_granularity, str):
+            selected_period_candidates.append(
+                self._sanitize_column_reference(requested_granularity)
+            )
         for filter_clause in filter or []:
             filter_col = filter_clause.get("col")
             if isinstance(filter_col, str):
-                selected_hierarchy_candidates.append(
-                    self._sanitize_column_reference(filter_col)
-                )
+                normalized_filter_col = self._sanitize_column_reference(filter_col)
+                selected_hierarchy_candidates.append(normalized_filter_col)
+                selected_period_candidates.append(normalized_filter_col)
         preferred_terminal_hierarchy_column = None
         explicit_selected_org_unit_column = extras.get(
             "dhis2_selected_org_unit_column"
@@ -2089,6 +2105,27 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             if resolve_terminal_hierarchy_column
             else None
         )
+        if (
+            selected_terminal_hierarchy_column is None
+            and dhis2_hierarchy_column_names
+        ):
+            selected_terminal_hierarchy_column = dhis2_hierarchy_column_names[-1]
+
+        selected_terminal_period_column = (
+            resolve_terminal_hierarchy_column(
+                selected_period_candidates,
+                dhis2_period_hierarchy_column_names,
+            )
+            if resolve_terminal_hierarchy_column
+            else None
+        )
+        if (
+            selected_terminal_period_column is None
+            and dhis2_period_hierarchy_column_names
+            and dhis2_raw_period_column_name
+            not in selected_period_candidates
+        ):
+            selected_terminal_period_column = dhis2_period_hierarchy_column_names[-1]
 
         # DHIS2 FIX: Skip temporal validation for DHIS2 datasets
         # DHIS2 data is multi-dimensional (period, orgUnit, dataElements, etc.)
@@ -2636,8 +2673,8 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                         raise QueryObjectValidationError(
                             _("Invalid filter operation type: %(op)s", op=op)
                         )
-        # When users select an OU hierarchy dimension, only keep rows where that
-        # selected level is the terminal populated OU level for the record.
+        # Keep only rows at the selected OU level; when no OU hierarchy column is
+        # selected, default to the deepest staged OU level to avoid recounting.
         if selected_terminal_hierarchy_column:
             terminal_hierarchy_predicate = build_terminal_hierarchy_sqla_predicate(
                 selected_terminal_hierarchy_column,
@@ -2645,6 +2682,15 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             )
             if terminal_hierarchy_predicate is not None:
                 where_clause_and.append(terminal_hierarchy_predicate)
+        # Period hierarchies behave similarly: if no explicit period hierarchy
+        # column is selected, prefer the most granular staged period level.
+        if selected_terminal_period_column:
+            terminal_period_predicate = build_terminal_hierarchy_sqla_predicate(
+                selected_terminal_period_column,
+                dhis2_period_hierarchy_column_names,
+            )
+            if terminal_period_predicate is not None:
+                where_clause_and.append(terminal_period_predicate)
         where_clause_and += self.get_sqla_row_level_filters(template_processor)
         if extras:
             where = extras.get("where")

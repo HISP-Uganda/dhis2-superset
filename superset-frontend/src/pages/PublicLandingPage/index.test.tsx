@@ -482,6 +482,24 @@ test('renders portal content without exposing CMS admin controls', async () => {
   ).toBe(true);
 });
 
+test('redirects the portal root to the canonical welcome route', async () => {
+  fetchMock.get('glob:*/api/v1/public_page/portal*', {
+    result: portalPayload,
+  });
+  window.history.pushState({}, '', '/superset/public/');
+
+  render(<PublicLandingPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  await screen.findByText('Towards malaria elimination in Uganda');
+
+  await waitFor(() =>
+    expect(window.location.pathname).toBe('/superset/public/welcome/'),
+  );
+});
+
 test('renders block-authored pages without relying on legacy sections', async () => {
   fetchMock.get('glob:*/api/v1/public_page/portal*', {
     result: {

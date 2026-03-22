@@ -69,18 +69,26 @@ import {
   createDraftPage,
   createEmptySection,
   normalizeDraftPage,
+  resolvePortalPagePath,
 } from 'src/pages/PublicLandingPage/portalUtils';
 import type {
   PortalAdminPayload,
+  PortalBlockDefinition,
   PortalNavigationItem,
   PortalNavigationMenu,
   PortalPage,
   PortalPageSummary,
+  PortalReusableBlock,
+  PortalStarterPattern,
   PortalStyleBundle,
   PortalTemplate,
   PortalTheme,
 } from 'src/pages/PublicLandingPage/types';
 import BlockStudio from './BlockStudio';
+import {
+  buildPublishPagePayload,
+  buildPublishStatePayload,
+} from './publishPayload';
 
 type AdminTab =
   | 'overview'
@@ -95,6 +103,9 @@ type AdminTab =
 
 const PAGE_QUERY_PARAM = 'page';
 const TAB_QUERY_PARAM = 'tab';
+const EMPTY_BLOCK_TYPES: PortalBlockDefinition[] = [];
+const EMPTY_REUSABLE_BLOCKS: PortalReusableBlock[] = [];
+const EMPTY_STARTER_PATTERNS: PortalStarterPattern[] = [];
 
 const SHELL_STYLE: CSSProperties = {
   minHeight: '100vh',
@@ -441,17 +452,6 @@ const PageCardActions = styled.div`
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 14px;
-`;
-
-const StudioBanner = styled.div`
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 18px 20px;
-  border-radius: 18px;
-  background: #ffffff;
-  border: 1px solid rgba(148, 163, 184, 0.22);
 `;
 
 const DesignLayout = styled.div`
@@ -1019,11 +1019,7 @@ export default function CMSAdminPage() {
       return;
     }
     if (page.slug && page.visibility === 'public' && page.is_published) {
-      window.open(
-        `/superset/public/${page.path || page.slug}/`,
-        '_blank',
-        'noopener',
-      );
+      window.open(resolvePortalPagePath(page), '_blank', 'noopener');
       return;
     }
     openStudioPage(page.slug || null);
@@ -1134,15 +1130,7 @@ export default function CMSAdminPage() {
     try {
       const response = await SupersetClient.post({
         endpoint: `/api/v1/public_page/admin/pages/${draftPage.id}/publish`,
-        jsonPayload: {
-          is_published: isPublished,
-          visibility: isPublished
-            ? draftPage.visibility === 'draft'
-              ? 'public'
-              : draftPage.visibility
-            : draftPage.visibility,
-          scheduled_publish_at: draftPage.scheduled_publish_at || null,
-        },
+        jsonPayload: buildPublishPagePayload(draftPage, isPublished),
       });
       const savedPage = response.json?.result as PortalPage;
       await loadBootstrap(savedPage.slug);
@@ -2682,14 +2670,18 @@ export default function CMSAdminPage() {
                       {pageStateLabel(page)}
                     </Tag>
                     {page.is_homepage ? (
-                      <Tag color="gold">{t('Homepage')}</Tag>
+                      <Tag color="gold">{t('Landing Page')}</Tag>
                     ) : null}
                     {page.page_type ? <Tag>{page.page_type}</Tag> : null}
                   </Space>
                   <div style={{ fontSize: 18, fontWeight: 700 }}>
                     {page.title}
                   </div>
-                  <TinyMeta>{page.path || page.slug || '—'}</TinyMeta>
+                  <TinyMeta>
+                    {page.path || page.slug || page.is_homepage
+                      ? resolvePortalPagePath(page)
+                      : '—'}
+                  </TinyMeta>
                   <TinyMeta>
                     {page.changed_on
                       ? t('Updated %s', page.changed_on)
@@ -2761,16 +2753,20 @@ export default function CMSAdminPage() {
                         try {
                           await SupersetClient.post({
                             endpoint: `/api/v1/public_page/admin/pages/${page.id}/publish`,
-                            jsonPayload: {
-                              is_published: !page.is_published,
-                              visibility:
-                                !page.is_published &&
-                                page.visibility === 'draft'
-                                  ? 'public'
-                                  : page.visibility,
-                              scheduled_publish_at:
-                                page.scheduled_publish_at || null,
-                            },
+                            jsonPayload:
+                              draftPage?.id === page.id
+                                ? buildPublishPagePayload(
+                                    draftPage,
+                                    !page.is_published,
+                                  )
+                                : buildPublishStatePayload(
+                                    {
+                                      visibility: page.visibility,
+                                      scheduled_publish_at:
+                                        page.scheduled_publish_at,
+                                    },
+                                    !page.is_published,
+                                  ),
                           });
                           await loadBootstrap(draftPage?.slug || undefined);
                           messageApi.success(
@@ -2948,31 +2944,6 @@ export default function CMSAdminPage() {
     if (requestedTab === 'studio') {
       return (
         <ContentStack>
-          <StudioBanner>
-            <div>
-              <Eyebrow>{t('Page Studio')}</Eyebrow>
-              <Title style={{ fontSize: 28 }}>
-                {draftPage?.title || t('Select or create a page')}
-              </Title>
-              <Subtitle>
-                {draftPage
-                  ? t(
-                      'Compose blocks, manage metadata, and preview the page across responsive regions.',
-                    )
-                  : t(
-                      'Choose a page from the Pages view or create a new page to start authoring.',
-                    )}
-              </Subtitle>
-            </div>
-            {draftPage ? (
-              <Space wrap>
-                <Tag color={pageStateColor(draftPage)}>
-                  {pageStateLabel(draftPage)}
-                </Tag>
-                {draftPage.path ? <Tag>{draftPage.path}</Tag> : null}
-              </Space>
-            ) : null}
-          </StudioBanner>
           <BlockStudio
             draftPage={draftPage}
             pages={data?.pages || []}
@@ -2981,7 +2952,9 @@ export default function CMSAdminPage() {
             mediaAssets={data?.media_assets || []}
             navigationMenus={menus}
             styleBundles={data?.style_bundles || []}
-            blockTypes={data?.block_types || []}
+            blockTypes={data?.block_types || EMPTY_BLOCK_TYPES}
+            reusableBlocks={data?.reusable_blocks || EMPTY_REUSABLE_BLOCKS}
+            starterPatterns={data?.starter_patterns || EMPTY_STARTER_PATTERNS}
             themes={data?.themes || []}
             templates={data?.templates || []}
             search={search}
@@ -2991,6 +2964,8 @@ export default function CMSAdminPage() {
             onChangeDraftPage={nextPage => {
               setDraftPage(nextPage);
             }}
+            onSaveDraft={savePage}
+            savingDraft={savingPage}
           />
         </ContentStack>
       );
@@ -3490,7 +3465,10 @@ export default function CMSAdminPage() {
   }
 
   const currentStatus = draftPage?.status || 'draft';
-  const currentPath = draftPage?.path || draftPage?.slug || null;
+  const currentPath =
+    draftPage && (draftPage.is_homepage || draftPage.path || draftPage.slug)
+      ? resolvePortalPagePath(draftPage)
+      : null;
   const tabTitleMap: Record<AdminTab, string> = {
     overview: t('Portal Administration'),
     pages: t('Pages'),
@@ -3666,7 +3644,7 @@ export default function CMSAdminPage() {
                       {pageStateLabel(draftPage)}
                     </Tag>
                     {draftPage.is_homepage ? (
-                      <Tag color="gold">{t('Homepage')}</Tag>
+                      <Tag color="gold">{t('Landing Page')}</Tag>
                     ) : null}
                   </Space>
                 </Stack>

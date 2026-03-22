@@ -33,9 +33,15 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 from flask_appbuilder.api import expose, protect, safe
+from flask_appbuilder.security.decorators import permission_name
 from marshmallow import Schema, ValidationError, fields, validate
 
 from superset import db
+from superset.local_staging.admin_tools import (
+    classify_table_name,
+    get_dependency_status,
+    install_engine_dependencies,
+)
 from superset.local_staging.engine_factory import (
     get_active_staging_engine,
     get_engine_health_status,
@@ -92,6 +98,33 @@ class LocalStagingSettingsSchema(Schema):
     retention_config = fields.Dict(load_default=None, allow_none=True)
 
 
+class ExplorerTableActionSchema(Schema):
+    schema = fields.Str(required=True)
+    name = fields.Str(required=True)
+    action = fields.Str(
+        required=True,
+        validate=validate.OneOf(["preview", "truncate", "drop", "optimize"]),
+    )
+    limit = fields.Int(
+        load_default=100,
+        validate=validate.Range(min=1, max=1000),
+    )
+
+
+class ExplorerDatabaseActionSchema(Schema):
+    action = fields.Str(
+        required=True,
+        validate=validate.OneOf(["optimize_managed_tables", "cleanup_build_tables"]),
+    )
+
+
+class DependencyInstallSchema(Schema):
+    engine = fields.Str(
+        required=True,
+        validate=validate.OneOf([ENGINE_SUPERSET_DB, ENGINE_DUCKDB, ENGINE_CLICKHOUSE]),
+    )
+
+
 # ------------------------------------------------------------------
 # Blueprint / view
 # ------------------------------------------------------------------
@@ -123,6 +156,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/settings", methods=["PUT"])
     @protect()
     @safe
+    @permission_name("write")
     def update_settings(self) -> Any:
         """Update local staging engine settings.
         ---
@@ -185,6 +219,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/health-check", methods=["POST"])
     @protect()
     @safe
+    @permission_name("write")
     def run_health_check(self) -> Any:
         """Run a live health check against the active engine.
         ---
@@ -204,6 +239,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/test-connection", methods=["POST"])
     @protect()
     @safe
+    @permission_name("write")
     def test_connection(self) -> Any:
         """Test connectivity using the submitted (unsaved) config.
 
@@ -283,6 +319,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/run-query", methods=["POST"])
     @protect()
     @safe
+    @permission_name("write")
     def run_query(self) -> Any:
         """Run a read-only SQL query against the active staging engine.
         ---
@@ -359,6 +396,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/migrate-from-superset-db", methods=["POST"])
     @protect()
     @safe
+    @permission_name("write")
     def migrate_from_superset_db(self) -> Any:
         """Copy staging rows from the legacy superset_db engine into the active
         staging engine (typically DuckDB), then rebuild the serving table.
@@ -406,6 +444,7 @@ class LocalStagingRestApi(BaseSupersetApi):
     @expose("/sqllab-expose", methods=["PUT"])
     @protect()
     @safe
+    @permission_name("write")
     def set_sqllab_expose(self) -> Any:
         """Toggle SQL Lab visibility for the staging engine database.
         ---
@@ -447,4 +486,149 @@ class LocalStagingRestApi(BaseSupersetApi):
             })
         except Exception as ex:  # pylint: disable=broad-except
             logger.exception("Failed to update SQL Lab exposure")
+            return self.response_500(message=str(ex))
+
+    @expose("/dependencies", methods=["GET"])
+    @protect()
+    @safe
+    def get_dependencies(self) -> Any:
+        try:
+            return self.response(200, result=get_dependency_status())
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Failed to load dependency status")
+            return self.response_500(message=str(ex))
+
+    @expose("/install-dependencies", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def install_dependencies(self) -> Any:
+        try:
+            body = request.json or {}
+            payload = DependencyInstallSchema().load(body)
+            result = install_engine_dependencies(payload["engine"])
+            return self.response(200, result=result)
+        except ValidationError as err:
+            return self.response_400(message=str(err.messages))
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Dependency installation failed")
+            return self.response_500(message=str(ex))
+
+    @expose("/table-action", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def run_table_action(self) -> Any:
+        try:
+            body = request.json or {}
+            payload = ExplorerTableActionSchema().load(body)
+        except ValidationError as err:
+            return self.response_400(message=str(err.messages))
+
+        try:
+            engine = get_active_staging_engine(0)
+            table_info = classify_table_name(payload["name"])
+            action = payload["action"]
+            destructive_actions = {"truncate", "drop", "optimize"}
+            if action in destructive_actions and not table_info.get("managed"):
+                return self.response_400(
+                    message=(
+                        "Only managed staging/serving/build tables can be "
+                        "modified from the explorer"
+                    )
+                )
+
+            if action == "preview":
+                result = engine.preview_table(
+                    payload["schema"],
+                    payload["name"],
+                    limit=payload["limit"],
+                )
+            elif action == "truncate":
+                result = engine.truncate_table(payload["schema"], payload["name"])
+            elif action == "drop":
+                result = engine.drop_table(payload["schema"], payload["name"])
+            else:
+                result = engine.optimize_table(payload["schema"], payload["name"])
+
+            return self.response(
+                200,
+                result={
+                    **table_info,
+                    "action": action,
+                    "schema": payload["schema"],
+                    "name": payload["name"],
+                    **(result if isinstance(result, dict) else {"message": str(result)}),
+                },
+            )
+        except NotImplementedError as ex:
+            return self.response_400(message=str(ex))
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Explorer table action failed")
+            return self.response_500(message=str(ex))
+
+    @expose("/database-action", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def run_database_action(self) -> Any:
+        try:
+            body = request.json or {}
+            payload = ExplorerDatabaseActionSchema().load(body)
+        except ValidationError as err:
+            return self.response_400(message=str(err.messages))
+
+        try:
+            engine = get_active_staging_engine(0)
+            tables = engine.list_tables()
+            if tables and isinstance(tables[0], dict) and tables[0].get("error"):
+                return self.response_400(message=str(tables[0]["error"]))
+
+            action = payload["action"]
+            processed: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
+            for table in tables:
+                role = str(table.get("role") or "other")
+                managed = bool(table.get("managed"))
+                schema = str(table.get("schema") or "")
+                name = str(table.get("name") or "")
+                try:
+                    if action == "cleanup_build_tables":
+                        if role != "build":
+                            continue
+                        outcome = engine.drop_table(schema, name)
+                    else:
+                        if not managed or role == "build":
+                            continue
+                        outcome = engine.optimize_table(schema, name)
+                    processed.append(
+                        {
+                            "schema": schema,
+                            "name": name,
+                            "role": role,
+                            "outcome": outcome,
+                        }
+                    )
+                except Exception as ex:  # pylint: disable=broad-except
+                    errors.append(
+                        {
+                            "schema": schema,
+                            "name": name,
+                            "role": role,
+                            "error": str(ex),
+                        }
+                    )
+
+            return self.response(
+                200,
+                result={
+                    "action": action,
+                    "processed_count": len(processed),
+                    "error_count": len(errors),
+                    "processed": processed,
+                    "errors": errors,
+                },
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.exception("Explorer database action failed")
             return self.response_500(message=str(ex))

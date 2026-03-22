@@ -1,25 +1,15 @@
-ATTACH TABLE _ UUID 'f186c984-af20-4381-b719-80bb60aa3a13'
+ATTACH TABLE _ UUID 'c7d77d9b-f064-4c90-bc34-282d472edf0e'
 (
-    `dhis2_instance` String,
-    `national` String,
-    `region` Nullable(String),
-    `district_city` Nullable(String),
-    `dlg_municipality_city_council` Nullable(String),
-    `sub_county_town_council_division` Nullable(String),
-    `health_facility` Nullable(String),
-    `ward_department` Nullable(String),
-    `period` String,
-    `ou_level` Nullable(Int64),
-    `period_level` String,
-    `period_parent` String,
-    `period_year` String,
-    `period_half` String,
-    `period_quarter` String,
-    `period_month` String,
-    `period_week` Nullable(String),
-    `period_biweek` Nullable(String),
-    `period_bimonth` Nullable(String),
-    `period_variant` Nullable(String),
+    `dhis2_instance` LowCardinality(String),
+    `national` LowCardinality(String),
+    `region` LowCardinality(Nullable(String)),
+    `district_city` LowCardinality(Nullable(String)),
+    `dlg_municipality_city_council` LowCardinality(Nullable(String)),
+    `sub_county_town_council_division` LowCardinality(Nullable(String)),
+    `health_facility` LowCardinality(Nullable(String)),
+    `ward_department` LowCardinality(Nullable(String)),
+    `period` LowCardinality(String),
+    `ou_level` Nullable(UInt16),
     `c_105_ep01a_suspected_malaria_fever` Nullable(Float64),
     `c_105_ep01b_2019_malaria_total` Nullable(Float64),
     `c_105_ep01b_malaria_tested_b_s_rdt` Nullable(Float64),
@@ -32,5 +22,6 @@ ATTACH TABLE _ UUID 'f186c984-af20-4381-b719-80bb60aa3a13'
     `c_105_ep01d_malaria_cases_treated` Nullable(Float64)
 )
 ENGINE = MergeTree
-ORDER BY (dhis2_instance, period, period_year, period_quarter, period_month, period_week, period_parent, ou_level, national, region, district_city, dlg_municipality_city_council, sub_county_town_council_division, health_facility, ward_department)
+PARTITION BY toUInt16OrZero(substring(replaceRegexpAll(ifNull(period, ''), '[^0-9]', ''), 1, 4))
+ORDER BY (dhis2_instance, period, ou_level, national, region, district_city, dlg_municipality_city_council, sub_county_town_council_division, health_facility, ward_department)
 SETTINGS allow_nullable_key = 1, index_granularity = 8192

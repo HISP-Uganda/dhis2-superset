@@ -50,6 +50,7 @@ import { OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
 import { treeBuilder, TreeNode } from '../utils/treeBuilder';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function formatLabel({
   params,
@@ -123,6 +124,9 @@ export default function transformProps(
   const { columnFormats = {}, currencyFormats = {} } = datasource;
   const { setDataMask = () => {}, onContextMenu } = hooks;
   const coltypeMapping = getColtypesMapping(queriesData[0]);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
   const BORDER_COLOR = theme.colorBgBase;
 
   const {
@@ -173,6 +177,7 @@ export default function transformProps(
       const { name: nodeName, value, groupBy } = treeNode;
       const name = formatSeriesName(nodeName, {
         timeFormatter: getTimeFormatter(dateFormat),
+        isDHIS2Period: Boolean(groupBy && dhis2PeriodColumns.has(groupBy)),
         ...(coltypeMapping[groupBy] && {
           coltype: coltypeMapping[groupBy],
         }),

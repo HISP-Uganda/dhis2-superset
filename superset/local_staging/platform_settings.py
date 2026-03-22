@@ -121,11 +121,9 @@ class LocalStagingSettings(db.Model):  # type: ignore[name-defined]
         self.engine_health_status = json.dumps(status)
 
     def to_dict(self) -> dict[str, Any]:
-        import importlib.util as _ilu
+        from superset.local_staging.admin_tools import get_dependency_status
 
-        clickhouse_available = (
-            _ilu.find_spec("clickhouse_connect") is not None
-        )
+        dependency_status = get_dependency_status()
         return {
             "active_engine": self.active_engine,
             "duckdb_config": self.get_duckdb_config(),
@@ -133,7 +131,13 @@ class LocalStagingSettings(db.Model):  # type: ignore[name-defined]
             "retention_enabled": self.retention_enabled,
             "retention_config": self.get_retention_config(),
             "engine_health_status": self.get_engine_health_status(),
-            "clickhouse_available": clickhouse_available,
+            "duckdb_available": bool(
+                dependency_status.get(ENGINE_DUCKDB, {}).get("ready")
+            ),
+            "clickhouse_available": bool(
+                dependency_status.get(ENGINE_CLICKHOUSE, {}).get("ready")
+            ),
+            "dependency_status": dependency_status,
         }
 
     # ------------------------------------------------------------------

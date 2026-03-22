@@ -500,6 +500,84 @@ class CMSMediaAsset(Model):
         self.settings_json = _json_dumps(value)
 
 
+class CMSReusableBlock(Model):
+    """Reusable synced block section saved independently from page trees."""
+
+    __tablename__ = "public_cms_reusable_blocks"
+
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_public_cms_reusable_block_slug"),
+        sa.Index("ix_public_cms_reusable_blocks_status", "status"),
+        sa.Index("ix_public_cms_reusable_blocks_is_active", "is_active"),
+        sa.Index("ix_public_cms_reusable_blocks_category", "category"),
+        sa.Index("ix_public_cms_reusable_blocks_created_on", "created_on"),
+    )
+
+    id = sa.Column(sa.Integer, primary_key=True)
+    slug = sa.Column(sa.String(255), nullable=False)
+    title = sa.Column(sa.String(255), nullable=False)
+    description = sa.Column(Text, nullable=True)
+    category = sa.Column(sa.String(64), nullable=False, default="custom")
+    status = sa.Column(sa.String(32), nullable=False, default="active")
+    is_active = sa.Column(sa.Boolean, nullable=False, default=True)
+    blocks_json = sa.Column(Text, nullable=True)
+    settings_json = sa.Column(Text, nullable=True)
+    archived_on = sa.Column(sa.DateTime, nullable=True)
+    archived_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    changed_by_fk = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("ab_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=False)
+    changed_on = sa.Column(
+        sa.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    archived_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[archived_by_fk],
+    )
+    created_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[created_by_fk],
+    )
+    changed_by = relationship(
+        security_manager.user_model,
+        foreign_keys=[changed_by_fk],
+    )
+
+    def get_blocks(self) -> list[dict[str, Any]]:
+        if not self.blocks_json:
+            return []
+        try:
+            parsed = json.loads(self.blocks_json)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def set_blocks(self, value: list[dict[str, Any]] | None) -> None:
+        self.blocks_json = json.dumps(value or [])
+
+    def get_settings(self) -> dict[str, Any]:
+        return _json_loads(self.settings_json)
+
+    def set_settings(self, value: dict[str, Any] | None) -> None:
+        self.settings_json = _json_dumps(value)
+
+
 class Page(Model):
     """CMS-like public portal page."""
 
@@ -1067,6 +1145,7 @@ class PageRevision(Model):
 # Backwards-compatible aliases for local imports. The mapped class names stay
 # CMS-prefixed to avoid collisions with Superset's existing Theme model.
 MediaAsset = CMSMediaAsset
+ReusableBlock = CMSReusableBlock
 StyleBundle = CMSStyleBundle
 Theme = CMSTheme
 Template = CMSTemplate

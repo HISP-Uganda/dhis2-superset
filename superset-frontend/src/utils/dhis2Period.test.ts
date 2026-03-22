@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-globals */
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -16,8 +17,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
-import { formatDHIS2Period, isDHIS2Period, periodSelectLabel } from './dhis2Period';
+import {
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
+  isDHIS2Period,
+  isDHIS2PeriodColumn,
+  periodSelectLabel,
+} from './dhis2Period';
 
 describe('formatDHIS2Period', () => {
   // Daily
@@ -166,5 +172,47 @@ describe('periodSelectLabel', () => {
 
   test('unknown returns as-is', () => {
     expect(periodSelectLabel('FOO')).toBe('FOO');
+  });
+});
+
+describe('DHIS2 period column helpers', () => {
+  test('detects raw and hierarchy period columns from metadata', () => {
+    expect(
+      isDHIS2PeriodColumn({
+        column_name: 'period',
+        extra: { dhis2_is_period: true },
+      }),
+    ).toBe(true);
+    expect(
+      isDHIS2PeriodColumn({
+        column_name: 'monthly_period',
+        extra: { dhis2_is_period_hierarchy: true, dhis2_period_key: 'monthly' },
+      }),
+    ).toBe(true);
+    expect(
+      isDHIS2PeriodColumn({
+        column_name: 'org_unit',
+        extra: { dhis2_is_ou_hierarchy: true },
+      }),
+    ).toBe(false);
+  });
+
+  test('collects raw and verbose period column names', () => {
+    expect(
+      Array.from(
+        getDHIS2PeriodColumnNames([
+          {
+            column_name: 'monthly_period',
+            verbose_name: 'Monthly Period',
+            extra: { dhis2_is_period_hierarchy: true },
+          },
+          {
+            column_name: 'org_unit',
+            verbose_name: 'Organisation Unit',
+            extra: { dhis2_is_ou_hierarchy: true },
+          },
+        ]),
+      ),
+    ).toEqual(['monthly_period', 'Monthly Period']);
   });
 });

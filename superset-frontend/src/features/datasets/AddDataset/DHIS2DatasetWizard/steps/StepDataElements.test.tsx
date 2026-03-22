@@ -89,6 +89,33 @@ function mockDefaultDataElementFilterCatalog() {
   });
 }
 
+test('toggles the disaggregation dimension setting in wizard state', async () => {
+  const updateState = jest.fn();
+  mockDefaultDataElementFilterCatalog();
+  fetchMock.get(metadataEndpoint, {
+    status: 'success',
+    result: [],
+    instance_results: [],
+  });
+
+  render(
+    <WizardStepDataElements
+      databaseId={9}
+      errors={{}}
+      instances={instances}
+      updateState={updateState}
+      wizardState={baseWizardState}
+    />,
+    { useRedux: true },
+  );
+
+  await userEvent.click(screen.getByRole('switch'));
+
+  expect(updateState).toHaveBeenCalledWith({
+    includeDisaggregationDimension: true,
+  });
+});
+
 test('loads federated variables across configured connections and preserves source lineage', async () => {
   const updateState = jest.fn();
   mockDefaultDataElementFilterCatalog();

@@ -635,6 +635,16 @@ describe('extractGroupbyLabel', () => {
     ).toEqual('');
     expect(extractGroupbyLabel({})).toEqual('');
   });
+
+  it('formats DHIS2 period groupby values when marked in metadata', () => {
+    expect(
+      extractGroupbyLabel({
+        datum: { period: '202503', org_unit: 'Kampala' },
+        groupby: ['period', 'org_unit'],
+        dhis2PeriodColumns: new Set(['period']),
+      }),
+    ).toEqual('March 2025, Kampala');
+  });
 });
 
 describe('extractShowValueIndexes', () => {
@@ -765,6 +775,14 @@ describe('formatSeriesName', () => {
 
   it('should handle string values properly', () => {
     expect(formatSeriesName('abc XYZ!')).toEqual('abc XYZ!');
+  });
+
+  it('should format DHIS2 period strings when flagged', () => {
+    expect(
+      formatSeriesName('202503', {
+        isDHIS2Period: true,
+      }),
+    ).toEqual('March 2025');
   });
 
   it('should handle boolean values properly', () => {

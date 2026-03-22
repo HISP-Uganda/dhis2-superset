@@ -49,6 +49,7 @@ import { defaultGrid } from '../defaults';
 import { Refs } from '../types';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { findGlobalMax, renderNormalizedTooltip } from './utils';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function formatLabel({
   params,
@@ -97,11 +98,15 @@ export default function transformProps(
     theme,
     inContextMenu,
     emitCrossFilters,
+    datasource,
   } = chartProps;
   const refs: Refs = {};
   const { data = [] } = queriesData[0];
   const globalMax = findGlobalMax(data, Object.keys(data[0] || {}));
   const coltypeMapping = getColtypesMapping(queriesData[0]);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
 
   const {
     colorScheme,
@@ -172,6 +177,7 @@ export default function transformProps(
       groupby: groupbyLabels,
       coltypeMapping,
       timeFormatter: getTimeFormatter(dateFormat),
+      dhis2PeriodColumns,
     });
     // map(joined_name: [columnLabel_1, columnLabel_2, ...])
     columnsLabelMap.set(

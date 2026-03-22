@@ -162,7 +162,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     },
     title: {
       enabled: true,
-      text: 'Uganda Malaria Repository',
+      text: 'Uganda Malaria Analytics Portal',
       fontSize: '16px',
       fontWeight: 700,
       color: '#1e2d45',
@@ -192,15 +192,15 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     backgroundColor: '#ffffff',
     padding: '0',
     showWelcomeMessage: true,
-    welcomeTitle: 'Uganda Malaria Data Repository',
+    welcomeTitle: 'Uganda Malaria Analytics Portal',
     welcomeDescription:
-      'Select a dashboard category below to explore malaria surveillance data and programme analytics.',
+      'Explore curated public dashboards, recent highlights, and staged analytics prepared for programme review.',
   },
   footer: {
     enabled: true,
     height: 52,
     backgroundColor: '#201F1E',
-    text: '© Uganda Malaria Data Repository · Ministry of Health',
+    text: '© Uganda Malaria Analytics Portal · Ministry of Health',
     textColor: '#A19F9D',
     links: [
       { text: 'Data Sources', url: '#' },

@@ -50,6 +50,7 @@ import { defaultGrid } from '../defaults';
 import { DEFAULT_LEGEND_FORM_DATA, OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 const percentFormatter = getNumberFormatter(NumberFormats.PERCENT_2_POINT);
 
@@ -100,6 +101,9 @@ export default function transformProps(
   } = chartProps;
   const data: DataRecord[] = queriesData[0].data || [];
   const coltypeMapping = getColtypesMapping(queriesData[0]);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
   const {
     colorScheme,
     groupby,
@@ -132,13 +136,19 @@ export default function transformProps(
   const metricLabel = getMetricLabel(metric);
   const groupbyLabels = groupby.map(getColumnLabel);
   const keys = data.map(datum =>
-    extractGroupbyLabel({ datum, groupby: groupbyLabels, coltypeMapping: {} }),
+    extractGroupbyLabel({
+      datum,
+      groupby: groupbyLabels,
+      coltypeMapping: {},
+      dhis2PeriodColumns,
+    }),
   );
   const labelMap = data.reduce((acc: Record<string, string[]>, datum) => {
     const label = extractGroupbyLabel({
       datum,
       groupby: groupbyLabels,
       coltypeMapping: {},
+      dhis2PeriodColumns,
     });
     return {
       ...acc,
@@ -165,6 +175,7 @@ export default function transformProps(
       datum,
       groupby: groupbyLabels,
       coltypeMapping: {},
+      dhis2PeriodColumns,
     });
     const value = datum[metricLabel] as number;
     const isFiltered =

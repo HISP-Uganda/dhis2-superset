@@ -29,6 +29,7 @@ import {
   getCustomFormatter,
   getMetricLabel,
   getNumberFormatter,
+  getTimeFormatter,
   getXAxisLabel,
   isDefined,
   isEventAnnotationLayer,
@@ -65,6 +66,7 @@ import {
   calculateLowerLogTick,
   dedupSeries,
   extractDataTotalValues,
+  extractGroupbyLabel,
   extractSeries,
   extractShowValueIndexes,
   extractTooltipKeys,
@@ -109,6 +111,10 @@ import {
   getXAxisFormatter,
   getYAxisFormatter,
 } from '../utils/formatters';
+import {
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
+} from '../../../../src/utils/dhis2Period';
 
 export default function transformProps(
   chartProps: EchartsTimeseriesChartProps,
@@ -134,6 +140,7 @@ export default function transformProps(
     verboseMap = {},
     columnFormats = {},
     currencyFormats = {},
+    columns = [],
   } = datasource;
   const [queryData] = queriesData;
   const { data = [], label_map = {} } =
@@ -216,6 +223,7 @@ export default function transformProps(
   }, {});
   const colorScale = CategoricalColorNamespace.getScale(colorScheme as string);
   const rebasedData = rebaseForecastDatum(data, verboseMap);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(columns as any[]);
   let xAxisLabel = getXAxisLabel(chartProps.rawFormData) as string;
   if (
     isPhysicalColumn(chartProps.rawFormData?.x_axis) &&
@@ -224,6 +232,39 @@ export default function transformProps(
     xAxisLabel = verboseMap[xAxisLabel];
   }
   const isHorizontal = orientation === OrientationType.Horizontal;
+  const displayLabelMap: { [key: string]: string[] } = { ...labelMap };
+  const displaySeriesNames = new Map<string, string>();
+  const formatGroupbySeriesName = (rawSeriesName: string): string => {
+    if (!groupBy.length) {
+      return rawSeriesName;
+    }
+
+    const labelValues = labelMap[rawSeriesName];
+    const dimensionValues = labelValues?.slice(-groupBy.length);
+
+    if (!dimensionValues?.length) {
+      return groupBy.length === 1 &&
+        dhis2PeriodColumns.has(groupBy[0] as string)
+        ? formatDHIS2Period(rawSeriesName)
+        : rawSeriesName;
+    }
+
+    const labelDatum = groupBy.reduce<Record<string, string>>(
+      (accumulator, column, index) => ({
+        ...accumulator,
+        [column]: dimensionValues[index],
+      }),
+      {},
+    );
+
+    return extractGroupbyLabel({
+      datum: labelDatum,
+      groupby: groupBy,
+      coltypeMapping: dataTypes,
+      timeFormatter: getTimeFormatter(xAxisTimeFormat),
+      dhis2PeriodColumns,
+    });
+  };
   const { totalStackedValues, thresholdValues } = extractDataTotalValues(
     rebasedData,
     {
@@ -302,10 +343,21 @@ export default function transformProps(
 
     const entryName = String(entry.name || '');
     const seriesName = inverted[entryName] || entryName;
+    const displaySeriesName = formatGroupbySeriesName(seriesName);
+    displaySeriesNames.set(seriesName, displaySeriesName);
+    if (labelMap[seriesName]) {
+      displayLabelMap[displaySeriesName] = labelMap[seriesName];
+    }
     const colorScaleKey = getOriginalSeries(seriesName, array);
 
     const transformedSeries = transformSeries(
-      entry,
+      displaySeriesName === entryName
+        ? entry
+        : {
+            ...entry,
+            id: displaySeriesName,
+            name: displaySeriesName,
+          },
       colorScale,
       colorScaleKey,
       {
@@ -365,10 +417,17 @@ export default function transformProps(
   }
   const selectedValues = (filterState.selectedValues || []).reduce(
     (acc: Record<string, number>, selectedValue: string) => {
-      const index = series.findIndex(({ name }) => name === selectedValue);
+      const normalizedSelectedValue =
+        displaySeriesNames.get(selectedValue) ?? selectedValue;
+      const index = series.findIndex(
+        ({ name }) => name === normalizedSelectedValue,
+      );
+      if (index < 0) {
+        return acc;
+      }
       return {
         ...acc,
-        [index]: selectedValue,
+        [index]: normalizedSelectedValue,
       };
     },
     {},
@@ -439,7 +498,7 @@ export default function transformProps(
         : 0 + chartProps.rawFormData.groupby.indexOf(stackDimension);
     for (const s of series) {
       if (s.id) {
-        const columnsArr = labelMap[s.id];
+        const columnsArr = displayLabelMap[s.id] ?? labelMap[s.id];
         (s as any).stack = columnsArr[idxSelectedDimension];
       }
     }
@@ -464,11 +523,15 @@ export default function transformProps(
   const tooltipFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getTooltipTimeFormatter(tooltipTimeFormat)
-      : String;
+      : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
+        ? formatDHIS2Period
+        : String;
   const xAxisFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getXAxisFormatter(xAxisTimeFormat)
-      : String;
+      : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
+        ? formatDHIS2Period
+        : String;
 
   const {
     setDataMask = () => {},
@@ -499,7 +562,10 @@ export default function transformProps(
         extractForecastSeriesContext(entry.name || '').type ===
         ForecastSeriesEnum.Observation,
     )
-    .map(entry => entry.name || '')
+    .map(
+      entry =>
+        displaySeriesNames.get(String(entry.name || '')) || entry.name || '',
+    )
     .concat(extractAnnotationLabels(annotationLayers));
 
   let xAxis: any = {
@@ -736,7 +802,7 @@ export default function transformProps(
     formData,
     groupby: groupBy,
     height,
-    labelMap,
+    labelMap: displayLabelMap,
     selectedValues,
     setDataMask,
     setControlValue,

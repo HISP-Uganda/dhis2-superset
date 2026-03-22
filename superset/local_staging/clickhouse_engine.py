@@ -61,6 +61,10 @@ import time
 from io import StringIO
 from typing import Any, Iterator
 
+from superset.local_staging.admin_tools import (
+    build_table_metadata,
+    is_safe_identifier,
+)
 from superset.local_staging.base_engine import LocalStagingEngineBase
 from superset.local_staging.exceptions import (
     EngineNotConfiguredError,
@@ -148,6 +152,12 @@ def _wrap_low_cardinality_type(col_type: str, *, nullable: bool) -> str:
             else "LowCardinality(String)"
         )
     return _wrap_nullable_type(normalized) if nullable else normalized
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not is_safe_identifier(identifier):
+        raise ValueError(f"Unsafe identifier: {identifier!r}")
+    return f"`{identifier}`"
 
 
 class ClickHouseStagingEngine(LocalStagingEngineBase):
@@ -1401,12 +1411,12 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 f"ORDER BY database, name"
             )
             return [
-                {
-                    "schema": r[0],
-                    "name": r[1],
-                    "type": r[2],
-                    "row_count": int(r[3] or 0),
-                }
+                build_table_metadata(
+                    schema=str(r[0] or ""),
+                    name=str(r[1] or ""),
+                    table_type=str(r[2] or "table"),
+                    row_count=int(r[3] or 0),
+                )
                 for r in result.result_rows
             ]
         except Exception as exc:  # pylint: disable=broad-except
@@ -1429,6 +1439,48 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             "rows": [dict(zip(col_names, r)) for r in result.result_rows],
             "rowcount": len(result.result_rows),
         }
+
+    def preview_table(
+        self,
+        schema: str,
+        table_name: str,
+        *,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        table_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        result = self._qry(f"SELECT * FROM {table_ref} LIMIT {int(limit)}")
+        count_result = self._qry(f"SELECT count() FROM {table_ref}")
+        col_names = list(result.column_names)
+        total_row_count = int(
+            count_result.result_rows[0][0] if count_result.result_rows else 0
+        )
+        return {
+            "columns": col_names,
+            "rows": [dict(zip(col_names, row)) for row in result.result_rows],
+            "rowcount": len(result.result_rows),
+            "total_row_count": total_row_count,
+            "table": build_table_metadata(
+                schema=schema,
+                name=table_name,
+                table_type="table",
+                row_count=total_row_count,
+            ),
+        }
+
+    def truncate_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        table_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        self._cmd(f"TRUNCATE TABLE IF EXISTS {table_ref}")
+        return {"message": f"Cleared rows from {schema}.{table_name}"}
+
+    def drop_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        table_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        self._cmd(f"DROP TABLE IF EXISTS {table_ref}")
+        return {"message": f"Dropped table {schema}.{table_name}"}
+
+    def optimize_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        table_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table_name)}"
+        self._cmd(f"OPTIMIZE TABLE {table_ref} FINAL")
+        return {"message": f"Optimized table {schema}.{table_name}"}
 
     # ------------------------------------------------------------------
     # Superset database registration

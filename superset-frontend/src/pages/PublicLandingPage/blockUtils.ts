@@ -23,6 +23,7 @@ import type {
   PortalPageBlock,
   PortalPageComponent,
   PortalPageSection,
+  PortalReusableBlock,
 } from './types';
 
 const CONTAINER_BLOCK_TYPES = new Set([
@@ -56,6 +57,18 @@ function defaultGridSpan(blockType?: string | null) {
   }
 }
 
+function clampColumnCount(value: any, fallback = 2) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.round(parsed), 1), 4);
+}
+
+function templateColumnSpan(columnCount: number) {
+  return columnCount > 1 ? Math.max(Math.floor(12 / columnCount), 1) : 12;
+}
+
 function makeUid(prefix = 'blk') {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -83,8 +96,116 @@ export function cloneBlockTree(blocks: PortalPageBlock[]): PortalPageBlock[] {
       : block.rendering,
     chart: block.chart ? { ...block.chart } : block.chart,
     dashboard: block.dashboard ? { ...block.dashboard } : block.dashboard,
+    reusable_block: block.reusable_block
+      ? cloneReusableBlock(block.reusable_block)
+      : block.reusable_block,
     children: cloneBlockTree(block.children || []),
   }));
+}
+
+function cloneReusableBlock(
+  reusableBlock: PortalReusableBlock,
+): PortalReusableBlock {
+  return {
+    ...reusableBlock,
+    settings: { ...(reusableBlock.settings || {}) },
+    blocks: cloneBlockTree(reusableBlock.blocks || []),
+    rendering: reusableBlock.rendering
+      ? {
+          ...reusableBlock.rendering,
+        }
+      : reusableBlock.rendering,
+    created_by: reusableBlock.created_by
+      ? { ...reusableBlock.created_by }
+      : reusableBlock.created_by,
+    changed_by: reusableBlock.changed_by
+      ? { ...reusableBlock.changed_by }
+      : reusableBlock.changed_by,
+    archived_by: reusableBlock.archived_by
+      ? { ...reusableBlock.archived_by }
+      : reusableBlock.archived_by,
+  };
+}
+
+function normalizeGridSpan(value: any, fallback = 12) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.round(parsed), 1), 12);
+}
+
+function normalizeRowMinHeight(value: any) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.round(parsed);
+}
+
+function createGridTemplateColumns(
+  columnCount: number,
+  slot = 'content',
+  rowMinHeight?: number,
+) {
+  const safeColumnCount = clampColumnCount(columnCount, 2);
+  const columnSpan = templateColumnSpan(safeColumnCount);
+  return Array.from({ length: safeColumnCount }, (_, index) => {
+    const column = createEmptyBlock('column');
+    column.slot = slot;
+    column.settings = {
+      ...(column.settings || {}),
+      gridSpan: columnSpan,
+      minHeight: rowMinHeight ?? column.settings?.minHeight ?? null,
+    };
+    column.metadata = {
+      ...(column.metadata || {}),
+      label:
+        safeColumnCount === 1 ? t('Content Column') : t('Column %s', index + 1),
+    };
+    return column;
+  });
+}
+
+export function createGridTemplateBlock(
+  columnCount = 2,
+  options?: {
+    slot?: string;
+    rowMinHeight?: number;
+    gridSpan?: number;
+    title?: string;
+    subtitle?: string;
+  },
+): PortalPageBlock {
+  const safeColumnCount = clampColumnCount(columnCount, 2);
+  const slot = options?.slot || 'content';
+  const rowMinHeight = normalizeRowMinHeight(options?.rowMinHeight) ?? 240;
+  const gridBlock = createEmptyBlock('columns');
+  gridBlock.slot = slot;
+  gridBlock.content = {
+    ...(gridBlock.content || {}),
+    title: options?.title || '',
+    subtitle: options?.subtitle || '',
+  };
+  gridBlock.settings = {
+    ...(gridBlock.settings || {}),
+    columnCount: safeColumnCount,
+    gridSpan: normalizeGridSpan(options?.gridSpan, 12),
+    rowMinHeight,
+  };
+  gridBlock.metadata = {
+    ...(gridBlock.metadata || {}),
+    label:
+      safeColumnCount === 1
+        ? t('Single Column Row')
+        : t('%s Column Row', safeColumnCount),
+  };
+  gridBlock.children = createGridTemplateColumns(
+    safeColumnCount,
+    slot,
+    rowMinHeight,
+  );
+  return gridBlock;
 }
 
 export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
@@ -202,6 +323,7 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
         ...base.settings,
         columnCount: 2,
         gap: 24,
+        rowMinHeight: 240,
       };
       base.children = [createEmptyBlock('column'), createEmptyBlock('column')];
       break;
@@ -210,6 +332,7 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       base.settings = {
         ...base.settings,
         gridSpan: 6,
+        minHeight: 240,
       };
       break;
     case 'chart':
@@ -222,6 +345,8 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
         height: 360,
         responsive: true,
         show_header: true,
+        surface_preset: 'default',
+        legend_preset: 'default',
       };
       break;
     case 'dashboard':
@@ -259,6 +384,14 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
         ...base.settings,
         menu_slug: 'header',
         location: 'header',
+      };
+      break;
+    case 'reusable_reference':
+      base.content = { title: t('Reusable Section') };
+      base.settings = {
+        ...base.settings,
+        reusable_block_id: null,
+        displayMode: 'synced',
       };
       break;
     case 'callout':
@@ -553,11 +686,86 @@ export function updateBlockSettings(
   });
 }
 
+export function updateBlockStyles(
+  blocks: PortalPageBlock[],
+  targetUid: string,
+  patch: Record<string, any>,
+): PortalPageBlock[] {
+  return updateBlockByUid(blocks, targetUid, {
+    styles: {
+      ...(flattenBlocks(blocks).find(
+        ({ block }) => (block.uid || String(block.id)) === targetUid,
+      )?.block.styles || {}),
+      ...patch,
+    },
+  });
+}
+
 export function addRootBlock(
   blocks: PortalPageBlock[],
   blockType: string,
 ): PortalPageBlock[] {
   return [...cloneBlockTree(blocks), createEmptyBlock(blockType)];
+}
+
+export function cloneBlocksForInsertion(
+  blocks: PortalPageBlock[],
+): PortalPageBlock[] {
+  function regenerateIds(node: PortalPageBlock): PortalPageBlock {
+    return {
+      ...node,
+      id: undefined,
+      uid: makeUid(node.block_type.slice(0, 3) || 'blk'),
+      parent_block_id: null,
+      tree_path: undefined,
+      depth: undefined,
+      rendering: undefined,
+      chart: node.chart ? { ...node.chart } : node.chart,
+      dashboard: node.dashboard ? { ...node.dashboard } : node.dashboard,
+      asset: node.asset ? { ...node.asset } : node.asset,
+      style_bundle: node.style_bundle
+        ? { ...node.style_bundle }
+        : node.style_bundle,
+      reusable_block: node.reusable_block
+        ? cloneReusableBlock(node.reusable_block)
+        : node.reusable_block,
+      content: { ...(node.content || {}) },
+      settings: { ...(node.settings || {}) },
+      styles: { ...(node.styles || {}) },
+      metadata: { ...(node.metadata || {}) },
+      children: (node.children || []).map(regenerateIds),
+    };
+  }
+
+  return cloneBlockTree(blocks).map(regenerateIds);
+}
+
+export function insertBlocksRelative(
+  blocks: PortalPageBlock[],
+  targetUid: string | null,
+  newBlocks: PortalPageBlock[],
+  mode: 'after' | 'child' = 'after',
+): PortalPageBlock[] {
+  if (!targetUid) {
+    return [...cloneBlockTree(blocks), ...cloneBlockTree(newBlocks)];
+  }
+  const preparedBlocks = cloneBlockTree(newBlocks);
+  return updateBlockList(blocks, targetUid, (block, siblings) => {
+    if (mode === 'child' && isContainerBlock(block.block_type)) {
+      return siblings.map(item =>
+        item === block
+          ? {
+              ...item,
+              children: [...(item.children || []), ...preparedBlocks],
+            }
+          : item,
+      );
+    }
+    const index = siblings.findIndex(item => item === block);
+    const result = siblings.slice();
+    result.splice(index + 1, 0, ...preparedBlocks);
+    return result;
+  });
 }
 
 export function insertBlockRelative(
@@ -566,26 +774,157 @@ export function insertBlockRelative(
   blockType: string,
   mode: 'after' | 'child' = 'after',
 ): PortalPageBlock[] {
-  if (!targetUid) {
-    return addRootBlock(blocks, blockType);
-  }
-  const nextBlock = createEmptyBlock(blockType);
+  return insertBlocksRelative(
+    blocks,
+    targetUid,
+    [createEmptyBlock(blockType)],
+    mode,
+  );
+}
+
+export function setColumnsBlockTemplateByUid(
+  blocks: PortalPageBlock[],
+  targetUid: string,
+  columnCount: number,
+): PortalPageBlock[] {
+  const safeColumnCount = clampColumnCount(columnCount, 2);
   return updateBlockList(blocks, targetUid, (block, siblings) => {
-    if (mode === 'child' && isContainerBlock(block.block_type)) {
-      return siblings.map(item =>
-        item === block
-          ? {
-              ...item,
-              children: [...(item.children || []), nextBlock],
-            }
-          : item,
-      );
+    if (block.block_type !== 'columns') {
+      return siblings;
     }
-    const index = siblings.findIndex(item => item === block);
-    const result = siblings.slice();
-    result.splice(index + 1, 0, nextBlock);
-    return result;
+    const targetSlot = block.slot || 'content';
+    const rowMinHeight = normalizeRowMinHeight(block.settings?.rowMinHeight);
+    const columnSpan = templateColumnSpan(safeColumnCount);
+    const existingColumns = (block.children || []).filter(
+      child => child.block_type === 'column',
+    );
+    const nonColumnChildren = (block.children || []).filter(
+      child => child.block_type !== 'column',
+    );
+    let nextColumns = cloneBlockTree(existingColumns);
+
+    if (nextColumns.length < safeColumnCount) {
+      nextColumns = [
+        ...nextColumns,
+        ...createGridTemplateColumns(
+          safeColumnCount - nextColumns.length,
+          targetSlot,
+          rowMinHeight,
+        ),
+      ];
+    }
+
+    if (nextColumns.length > safeColumnCount) {
+      const overflowColumns = nextColumns.slice(safeColumnCount);
+      nextColumns = nextColumns.slice(0, safeColumnCount);
+      if (overflowColumns.length && nextColumns.length) {
+        nextColumns[nextColumns.length - 1] = {
+          ...nextColumns[nextColumns.length - 1],
+          children: [
+            ...(nextColumns[nextColumns.length - 1].children || []),
+            ...overflowColumns.flatMap(column =>
+              cloneBlockTree(column.children || []),
+            ),
+          ],
+        };
+      }
+    }
+
+    nextColumns = nextColumns.map((column, index) => ({
+      ...column,
+      slot: targetSlot,
+      settings: {
+        ...(column.settings || {}),
+        gridSpan: columnSpan,
+        minHeight:
+          rowMinHeight ??
+          normalizeRowMinHeight(column.settings?.minHeight) ??
+          null,
+      },
+      metadata: {
+        ...(column.metadata || {}),
+        label:
+          safeColumnCount === 1
+            ? t('Content Column')
+            : t('Column %s', index + 1),
+      },
+    }));
+
+    return siblings.map(item =>
+      item === block
+        ? {
+            ...item,
+            settings: {
+              ...(item.settings || {}),
+              columnCount: safeColumnCount,
+            },
+            children: [...nextColumns, ...cloneBlockTree(nonColumnChildren)],
+          }
+        : item,
+    );
   });
+}
+
+export function splitBlockIntoColumnsByUid(
+  blocks: PortalPageBlock[],
+  targetUid: string,
+  columnCount = 2,
+): {
+  blocks: PortalPageBlock[];
+  wrapperUid: string | null;
+  focusUid: string | null;
+} {
+  const targetBlock = flattenBlocks(blocks).find(
+    ({ block }) => (block.uid || String(block.id)) === targetUid,
+  )?.block;
+  if (!targetBlock) {
+    return {
+      blocks: cloneBlockTree(blocks),
+      wrapperUid: null,
+      focusUid: null,
+    };
+  }
+
+  const safeColumnCount = clampColumnCount(columnCount, 2);
+  const targetSlot = targetBlock.slot || 'content';
+  const wrapper = createGridTemplateBlock(safeColumnCount, {
+    slot: targetSlot,
+    rowMinHeight: normalizeRowMinHeight(targetBlock.settings?.minHeight) ?? 240,
+    gridSpan: targetBlock.settings?.gridSpan,
+  });
+  wrapper.metadata = {
+    ...(wrapper.metadata || {}),
+    label: targetBlock.metadata?.label
+      ? t('%s Layout', targetBlock.metadata.label)
+      : t('Columns'),
+  };
+
+  const [firstColumn, ...additionalColumns] = wrapper.children || [];
+
+  const movedBlock = cloneBlockTree([targetBlock])[0];
+  movedBlock.settings = {
+    ...(movedBlock.settings || {}),
+    gridSpan: 12,
+  };
+  wrapper.children = [
+    {
+      ...firstColumn,
+      children: [movedBlock],
+    },
+    ...additionalColumns,
+  ];
+
+  return {
+    blocks: updateBlockList(blocks, targetUid, (block, siblings) => {
+      const index = siblings.findIndex(item => item === block);
+      const result = siblings.slice();
+      result.splice(index, 1, wrapper);
+      return result;
+    }),
+    wrapperUid: wrapper.uid || null,
+    focusUid:
+      additionalColumns[0]?.uid || firstColumn.uid || wrapper.uid || null,
+  };
 }
 
 export function removeBlockByUid(
@@ -629,20 +968,70 @@ export function duplicateBlockByUid(
 ): PortalPageBlock[] {
   return updateBlockList(blocks, targetUid, (block, siblings) => {
     const index = siblings.findIndex(item => item === block);
-    const clone = cloneBlockTree([block])[0];
-    function regenerateIds(node: PortalPageBlock): PortalPageBlock {
-      return {
-        ...node,
-        id: undefined,
-        uid: makeUid(node.block_type.slice(0, 3) || 'blk'),
-        children: (node.children || []).map(regenerateIds),
-      };
-    }
-    const duplicated = regenerateIds(clone);
+    const duplicated = cloneBlocksForInsertion([block])[0];
     const result = siblings.slice();
     result.splice(index + 1, 0, duplicated);
     return result;
   });
+}
+
+export function createReusableReferenceBlock(
+  reusableBlock: Pick<PortalReusableBlock, 'id' | 'title' | 'slug' | 'blocks'>,
+): PortalPageBlock {
+  const block = createEmptyBlock('reusable_reference');
+  block.content = {
+    ...block.content,
+    title: reusableBlock.title,
+  };
+  block.settings = {
+    ...block.settings,
+    reusable_block_id: reusableBlock.id,
+    reusable_block_ref: { id: reusableBlock.id },
+  };
+  block.metadata = {
+    ...(block.metadata || {}),
+    label: reusableBlock.title,
+    reusable_slug: reusableBlock.slug,
+  };
+  block.reusable_block = {
+    id: reusableBlock.id,
+    slug: reusableBlock.slug,
+    title: reusableBlock.title,
+    description: '',
+    settings: {},
+    blocks: cloneBlockTree(reusableBlock.blocks || []),
+  };
+  return block;
+}
+
+export function replaceBlockByUid(
+  blocks: PortalPageBlock[],
+  targetUid: string,
+  replacements: PortalPageBlock[],
+): PortalPageBlock[] {
+  return updateBlockList(blocks, targetUid, (block, siblings) => {
+    const index = siblings.findIndex(item => item === block);
+    const result = siblings.slice();
+    result.splice(index, 1, ...cloneBlockTree(replacements));
+    return result;
+  });
+}
+
+export function detachReusableBlockByUid(
+  blocks: PortalPageBlock[],
+  targetUid: string,
+): PortalPageBlock[] {
+  const targetBlock = flattenBlocks(blocks).find(
+    ({ block }) => (block.uid || String(block.id)) === targetUid,
+  )?.block;
+  if (!targetBlock?.reusable_block?.blocks?.length) {
+    return cloneBlockTree(blocks);
+  }
+  return replaceBlockByUid(
+    blocks,
+    targetUid,
+    cloneBlocksForInsertion(targetBlock.reusable_block.blocks),
+  );
 }
 
 export function normalizeBlocks(blocks: PortalPageBlock[]): PortalPageBlock[] {

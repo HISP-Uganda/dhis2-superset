@@ -27,7 +27,14 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from sqlalchemy import inspect, text
+
+from superset import db
 from superset.dhis2.staging_engine import DHIS2StagingEngine
+from superset.local_staging.admin_tools import (
+    build_table_metadata,
+    is_safe_identifier,
+)
 from superset.local_staging.base_engine import LocalStagingEngineBase
 
 
@@ -56,8 +63,6 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
     # ------------------------------------------------------------------
 
     def health_check(self) -> dict[str, Any]:
-        from superset import db  # local import to avoid circular
-
         try:
             db.session.execute(db.text("SELECT 1"))
             dialect = str(getattr(db.engine.dialect, "name", "unknown"))
@@ -262,7 +267,6 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
         the metadata DB, or None (callers using this engine don't need a
         separate Database object).
         """
-        from superset import db  # local import
         from superset.models.core import Database  # local import
 
         metadata_uri = str(db.engine.url)
@@ -282,3 +286,133 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
     def __getattr__(self, name: str) -> Any:
         # Only called when the attribute is not found on this class.
         return getattr(self._inner, name)
+
+    # ------------------------------------------------------------------
+    # Explorer (admin UI table browser / SQL runner)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _quote_identifier(identifier: str) -> str:
+        if not is_safe_identifier(identifier):
+            raise ValueError(f"Unsafe identifier: {identifier!r}")
+        return f'"{identifier}"'
+
+    def _qualified_table_name(self, schema: str, table_name: str) -> str:
+        if self._inner._supports_schema and schema:
+            return (
+                f"{self._quote_identifier(schema)}."
+                f"{self._quote_identifier(table_name)}"
+            )
+        return self._quote_identifier(table_name)
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        inspector = inspect(db.engine)
+        schema = self._inner.STAGING_SCHEMA if self._inner._supports_schema else None
+        try:
+            table_names = inspector.get_table_names(schema=schema)
+        except Exception as exc:  # pylint: disable=broad-except
+            return [{"error": str(exc)}]
+
+        filtered = [
+            table_name
+            for table_name in table_names
+            if table_name.startswith("ds_") or table_name.startswith("sv_")
+        ]
+        tables: list[dict[str, Any]] = []
+        with db.engine.connect() as conn:
+            self._inner.apply_connection_optimizations(
+                conn, self._inner._dialect_name
+            )
+            for table_name in sorted(filtered):
+                qualified = self._qualified_table_name(schema or "", table_name)
+                try:
+                    row_count = int(
+                        conn.execute(text(f"SELECT COUNT(*) FROM {qualified}")).scalar()
+                        or 0
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    row_count = None
+                tables.append(
+                    build_table_metadata(
+                        schema=schema or "",
+                        name=table_name,
+                        table_type="table",
+                        row_count=row_count,
+                    )
+                )
+        return tables
+
+    def run_explorer_query(self, sql: str, *, limit: int = 500) -> dict[str, Any]:
+        sql_stripped = sql.rstrip("; \t\n")
+        upper = sql_stripped.upper()
+        if " LIMIT " not in upper:
+            sql_stripped = f"SELECT * FROM ({sql_stripped}) __q LIMIT {int(limit)}"
+
+        with db.engine.connect() as conn:
+            self._inner.apply_connection_optimizations(
+                conn, self._inner._dialect_name
+            )
+            result = conn.execute(text(sql_stripped))
+            column_names = list(result.keys())
+            rows = result.fetchall()
+        return {
+            "columns": column_names,
+            "rows": [dict(zip(column_names, row)) for row in rows],
+            "rowcount": len(rows),
+        }
+
+    def preview_table(
+        self,
+        schema: str,
+        table_name: str,
+        *,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        qualified = self._qualified_table_name(schema, table_name)
+        with db.engine.connect() as conn:
+            self._inner.apply_connection_optimizations(
+                conn, self._inner._dialect_name
+            )
+            result = conn.execute(text(f"SELECT * FROM {qualified} LIMIT :limit"), {
+                "limit": int(limit),
+            })
+            rows = result.fetchall()
+            column_names = list(result.keys())
+            total_row_count = int(
+                conn.execute(text(f"SELECT COUNT(*) FROM {qualified}")).scalar() or 0
+            )
+        return {
+            "columns": column_names,
+            "rows": [dict(zip(column_names, row)) for row in rows],
+            "rowcount": len(rows),
+            "total_row_count": total_row_count,
+            "table": build_table_metadata(
+                schema=schema or "",
+                name=table_name,
+                table_type="table",
+                row_count=total_row_count,
+            ),
+        }
+
+    def truncate_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        qualified = self._qualified_table_name(schema, table_name)
+        with self._inner._write_connection() as conn:
+            conn.execute(text(f"DELETE FROM {qualified}"))
+        return {"message": f"Cleared rows from {schema or self._inner.STAGING_SCHEMA}.{table_name}"}
+
+    def drop_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        qualified = self._qualified_table_name(schema, table_name)
+        with self._inner._write_connection() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
+        return {"message": f"Dropped table {schema or self._inner.STAGING_SCHEMA}.{table_name}"}
+
+    def optimize_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        qualified = self._qualified_table_name(schema, table_name)
+        with self._inner._write_connection() as conn:
+            self._inner._run_analyze(conn, qualified)
+        return {
+            "message": (
+                f"Refreshed statistics for "
+                f"{schema or self._inner.STAGING_SCHEMA}.{table_name}"
+            )
+        }

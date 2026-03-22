@@ -38,6 +38,7 @@ import { format } from 'echarts/core';
 import type { LegendComponentOption } from 'echarts/components';
 import type { SeriesOption } from 'echarts';
 import { isEmpty, maxBy, meanBy, minBy, orderBy, sumBy } from 'lodash';
+import { formatDHIS2Period } from '../../../../src/utils/dhis2Period';
 import {
   NULL_STRING,
   StackControlsValue,
@@ -377,10 +378,12 @@ export function formatSeriesName(
     numberFormatter,
     timeFormatter,
     coltype,
+    isDHIS2Period,
   }: {
     numberFormatter?: ValueFormatter;
     timeFormatter?: TimeFormatter;
     coltype?: GenericDataType;
+    isDHIS2Period?: boolean;
   } = {},
 ): string {
   if (name === undefined || name === null) {
@@ -401,6 +404,9 @@ export function formatSeriesName(
   }
   if (typeof name === 'number') {
     return numberFormatter ? numberFormatter(name) : name.toString();
+  }
+  if (typeof name === 'string' && isDHIS2Period) {
+    return formatDHIS2Period(name);
   }
   return name;
 }
@@ -423,18 +429,21 @@ export function extractGroupbyLabel({
   numberFormatter,
   timeFormatter,
   coltypeMapping = {},
+  dhis2PeriodColumns,
 }: {
   datum?: DataRecord;
   groupby?: string[] | null;
   numberFormatter?: NumberFormatter;
   timeFormatter?: TimeFormatter;
   coltypeMapping?: Record<string, GenericDataType>;
+  dhis2PeriodColumns?: Set<string>;
 }): string {
   return ensureIsArray(groupby)
     .map(val =>
       formatSeriesName(datum[val], {
         numberFormatter,
         timeFormatter,
+        isDHIS2Period: Boolean(dhis2PeriodColumns?.has(val)),
         ...(coltypeMapping[val] && { coltype: coltypeMapping[val] }),
       }),
     )

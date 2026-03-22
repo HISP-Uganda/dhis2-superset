@@ -277,3 +277,29 @@ class LocalStagingEngineBase(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support the Explorer query runner"
         )
+
+    def preview_table(
+        self,
+        schema: str,
+        table_name: str,
+        *,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support previewing explorer tables"
+        )
+
+    def truncate_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support truncating explorer tables"
+        )
+
+    def drop_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support dropping explorer tables"
+        )
+
+    def optimize_table(self, schema: str, table_name: str) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support optimizing explorer tables"
+        )

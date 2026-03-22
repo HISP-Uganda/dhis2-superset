@@ -18,6 +18,7 @@
  */
 
 import { ChartProps, QueryFormData, supersetTheme } from '@superset-ui/core';
+import { GenericDataType } from '@apache-superset/core/api/core';
 import transformProps from '../../src/plugin/transformProps';
 import { MetricsLayoutEnum } from '../../src/types';
 
@@ -94,5 +95,33 @@ describe('PivotTableChart transformProps', () => {
       currencyFormats: {},
       currencyFormat: { symbol: 'USD', symbolPosition: 'prefix' },
     });
+  });
+
+  it('formats DHIS2 period row and column headers', () => {
+    const dhis2ChartProps = new ChartProps<QueryFormData>({
+      ...chartProps,
+      queriesData: [
+        {
+          data: [{ period: '202503', sum__num: 1 }],
+          colnames: ['period', 'sum__num'],
+          coltypes: [GenericDataType.String, GenericDataType.Numeric],
+        },
+      ],
+      datasource: {
+        verboseMap: {},
+        columnFormats: {},
+        currencyFormats: {},
+        columns: [
+          {
+            column_name: 'period',
+            extra: { dhis2_is_period: true },
+          },
+        ],
+      },
+    });
+
+    const transformed = transformProps(dhis2ChartProps);
+
+    expect(transformed.dateFormatters.period?.('202503')).toBe('March 2025');
   });
 });

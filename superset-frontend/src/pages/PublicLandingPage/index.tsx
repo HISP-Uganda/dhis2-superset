@@ -44,6 +44,8 @@ import {
   createEmptySection,
   moveArrayItem,
   normalizeDraftPage,
+  resolveLandingPagePath,
+  withDefaultWelcomeNavigationItems,
 } from './portalUtils';
 import { ensurePageBlocks } from './blockUtils';
 import { groupBlocksBySlot, RenderBlockTree } from './BlockRenderer';
@@ -391,7 +393,8 @@ function readDashboardSlug(search: string) {
   return new URLSearchParams(search).get(DASHBOARD_QUERY_PARAM);
 }
 
-function resolveMaxWidth(
+function resolveCssLength(
+  fallback: string,
   ...candidates: Array<string | number | null | undefined>
 ) {
   for (const candidate of candidates) {
@@ -407,7 +410,32 @@ function resolveMaxWidth(
     }
     return /^\d+$/.test(text) ? `${text}px` : text;
   }
-  return '100%';
+  return fallback;
+}
+
+function resolveMaxWidth(
+  ...candidates: Array<string | number | null | undefined>
+) {
+  return resolveCssLength('100%', ...candidates);
+}
+
+function resolveGapValue(
+  ...candidates: Array<string | number | null | undefined>
+) {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    if (typeof candidate === 'number') {
+      return candidate >= 0 ? `${candidate}px` : '24px';
+    }
+    const text = candidate.trim();
+    if (!text || text === 'none') {
+      continue;
+    }
+    return /^\d+$/.test(text) ? `${text}px` : text;
+  }
+  return '24px';
 }
 
 function buildEditableSections(
@@ -483,13 +511,23 @@ export default function PublicLandingPage() {
   const [draftPage, setDraftPage] = useState<PortalPage | null>(null);
 
   const currentPage = data?.current_page || null;
+  const landingPagePath = resolveLandingPagePath(data?.pages || [], currentPage);
   const pageBlocks = ensurePageBlocks(currentPage);
   const themeTokens = currentPage?.rendering?.theme?.tokens || {};
   const themeColors = themeTokens.colors || {};
   const themeContainers = themeTokens.containers || {};
   const pageMaxWidth = resolveMaxWidth(
+    currentPage?.settings?.pageMaxWidth,
     themeContainers.pageMaxWidth,
     data?.portal_layout.config.pageMaxWidth,
+  );
+  const contentShellGap = resolveGapValue(
+    currentPage?.settings?.contentAreaGap,
+  );
+  const sidebarWidth = resolveCssLength(
+    '320px',
+    currentPage?.settings?.sidebarWidth,
+    currentPage?.rendering?.template_structure?.settings?.sidebarWidth,
   );
   const selectedDashboard =
     data?.dashboards.find(
@@ -592,6 +630,25 @@ export default function PublicLandingPage() {
     if (!currentPage) {
       return;
     }
+    if (
+      location.pathname === '/superset/public/' &&
+      landingPagePath !== '/superset/public/'
+    ) {
+      history.replace(`${landingPagePath}${location.search}${location.hash}`);
+    }
+  }, [
+    currentPage,
+    history,
+    landingPagePath,
+    location.hash,
+    location.pathname,
+    location.search,
+  ]);
+
+  useEffect(() => {
+    if (!currentPage) {
+      return;
+    }
     document.title =
       currentPage.seo_title ||
       currentPage.title ||
@@ -622,6 +679,12 @@ export default function PublicLandingPage() {
       return;
     }
     const target = new URL(path, window.location.origin);
+    if (
+      target.pathname === '/superset/public/' &&
+      landingPagePath !== '/superset/public/'
+    ) {
+      target.pathname = new URL(landingPagePath, window.location.origin).pathname;
+    }
     const targetPath = `${target.pathname}${target.search}${target.hash}`;
 
     if (openInNewTab) {
@@ -641,7 +704,7 @@ export default function PublicLandingPage() {
   }
 
   function openHomepage() {
-    history.push('/superset/public/');
+    history.push(landingPagePath);
   }
 
   function navigateToPublicDashboard(dashboard: PortalDashboardSummary) {
@@ -1087,6 +1150,11 @@ export default function PublicLandingPage() {
     Boolean(
       currentPage?.rendering?.template_structure?.regions?.sidebar?.enabled,
     ) && renderedRegions.sidebar.length > 0;
+  const headerItems = withDefaultWelcomeNavigationItems(
+    data?.navigation.header || [],
+    data?.pages || [],
+    currentPage,
+  );
 
   return (
     <PageShell
@@ -1115,32 +1183,30 @@ export default function PublicLandingPage() {
           </Brand>
           <HeaderActions>
             <NavRow>
-              {data?.navigation.header
-                .flatMap(menu => menu.items)
-                .map(item =>
-                  item.children?.length ? (
-                    <Dropdown
-                      key={String(item.id)}
-                      trigger={['click', 'hover']}
-                      menu={{ items: toMenuItems(item.children) }}
-                    >
-                      <NavButton $active={isNavItemActive(item)} type="button">
-                        {item.label}
-                      </NavButton>
-                    </Dropdown>
-                  ) : (
-                    <NavButton
-                      key={String(item.id)}
-                      $active={isNavItemActive(item)}
-                      type="button"
-                      onClick={() =>
-                        navigateToPath(item.path, item.open_in_new_tab)
-                      }
-                    >
+              {headerItems.map(item =>
+                item.children?.length ? (
+                  <Dropdown
+                    key={String(item.id)}
+                    trigger={['click', 'hover']}
+                    menu={{ items: toMenuItems(item.children) }}
+                  >
+                    <NavButton $active={isNavItemActive(item)} type="button">
                       {item.label}
                     </NavButton>
-                  ),
-                )}
+                  </Dropdown>
+                ) : (
+                  <NavButton
+                    key={String(item.id)}
+                    $active={isNavItemActive(item)}
+                    type="button"
+                    onClick={() =>
+                      navigateToPath(item.path, item.open_in_new_tab)
+                    }
+                  >
+                    {item.label}
+                  </NavButton>
+                ),
+              )}
               {(data?.config.navbar.customLinks || []).map(link => (
                 <NavButton
                   key={link.url}
@@ -1226,7 +1292,19 @@ export default function PublicLandingPage() {
               />
               {renderedRegions.content.length ||
               renderedRegions.sidebar.length ? (
-                <div className="cms-template-content-shell">
+                <div
+                  className="cms-template-content-shell"
+                  style={
+                    hasSidebar
+                      ? {
+                          display: 'grid',
+                          gridTemplateColumns: `minmax(0, 1fr) ${sidebarWidth}`,
+                          gap: contentShellGap,
+                          alignItems: 'start',
+                        }
+                      : undefined
+                  }
+                >
                   <div>
                     <RenderBlockTree
                       blocks={renderedRegions.content}
@@ -1514,7 +1592,7 @@ export default function PublicLandingPage() {
                   />
                 </div>
                 <div>
-                  <FieldLabel>{t('Homepage')}</FieldLabel>
+                  <FieldLabel>{t('Landing Page')}</FieldLabel>
                   <Switch
                     checked={draftPage.is_homepage}
                     onChange={checked =>

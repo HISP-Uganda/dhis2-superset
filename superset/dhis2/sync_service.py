@@ -2225,11 +2225,13 @@ class DHIS2SyncService:
             ]
             if not primary_units:
                 primary_units = concrete_units
-            primary_units = _prune_ancestor_org_units(
-                list(dict.fromkeys(primary_units)),
-                selected_detail_map,
-                prefer_roots=True,
-            )
+            primary_units = list(dict.fromkeys(primary_units))
+            if org_unit_scope != _ORG_UNIT_SCOPE_SELECTED:
+                primary_units = _prune_ancestor_org_units(
+                    primary_units,
+                    selected_detail_map,
+                    prefer_roots=True,
+                )
             scoped_units = _expand_org_units_for_scope(
                 instance=instance,
                 allowed_units=primary_units,
@@ -2291,10 +2293,13 @@ class DHIS2SyncService:
                     for key in concrete_units
                 ]
 
-        allowed_units = _prune_ancestor_org_units(
-            list(dict.fromkeys(allowed_units)),
-            selected_detail_map,
-        )
+        allowed_units = list(dict.fromkeys(allowed_units))
+        if org_unit_scope != _ORG_UNIT_SCOPE_SELECTED:
+            allowed_units = _prune_ancestor_org_units(
+                allowed_units,
+                selected_detail_map,
+                prefer_roots=True,
+            )
         scoped_units = _expand_org_units_for_scope(
             instance=instance,
             allowed_units=allowed_units,

@@ -18,9 +18,12 @@
  */
 
 import {
+  PortalNavigationItem,
+  PortalNavigationMenu,
   PortalPage,
   PortalPageComponent,
   PortalPageSection,
+  PortalPageSummary,
   PortalUserLayout,
 } from './types';
 import { cloneDraftPageWithBlocks, normalizeBlocks } from './blockUtils';
@@ -302,4 +305,161 @@ export function normalizeDraftPage(page: PortalPage): PortalPage {
       })),
     })),
   };
+}
+
+function normalizePortalPath(path?: string | null) {
+  if (!path) {
+    return '';
+  }
+  return path.replace(/[?#].*$/, '').replace(/\/+$/, '') || '/superset/public';
+}
+
+export function resolvePortalPagePath(
+  page: PortalPageSummary | PortalPage | null | undefined,
+) {
+  if (!page) {
+    return '/superset/public/';
+  }
+  const rawPath = page.path?.trim();
+  if (rawPath) {
+    if (rawPath.startsWith('/superset/public/')) {
+      return rawPath.endsWith('/') ? rawPath : `${rawPath}/`;
+    }
+    const normalized = rawPath.replace(/^\/+|\/+$/g, '');
+    return normalized ? `/superset/public/${normalized}/` : '/superset/public/';
+  }
+  const slug = page.slug?.trim();
+  return slug ? `/superset/public/${slug}/` : '/superset/public/';
+}
+
+function resolveLandingPageLabel(
+  page: PortalPageSummary | PortalPage | null | undefined,
+  existingLabel?: string | null,
+) {
+  const normalizedExistingLabel = existingLabel?.trim();
+  if (
+    normalizedExistingLabel &&
+    ['home', 'welcome'].includes(normalizedExistingLabel.toLowerCase())
+  ) {
+    return normalizedExistingLabel;
+  }
+
+  const matchesWelcome = [page?.navigation_label, page?.title, page?.slug].some(
+    value => value?.trim().toLowerCase() === 'welcome',
+  );
+
+  return matchesWelcome ? 'Welcome' : 'Home';
+}
+
+function resolveWelcomePage(
+  pages: Array<PortalPageSummary | PortalPage> = [],
+  currentPage?: PortalPage | null,
+) {
+  const candidates = [...pages];
+  if (
+    currentPage &&
+    !candidates.some(
+      page =>
+        (page.id && currentPage.id && page.id === currentPage.id) ||
+        (page.slug && currentPage.slug && page.slug === currentPage.slug),
+    )
+  ) {
+    candidates.unshift(currentPage);
+  }
+  return (
+    candidates.find(page => page.is_homepage) ||
+    candidates.find(page => page.slug?.trim().toLowerCase() === 'welcome') ||
+    candidates.find(page => page.title?.trim().toLowerCase() === 'welcome') ||
+    currentPage ||
+    candidates[0] ||
+    null
+  );
+}
+
+export function resolveLandingPagePath(
+  pages: Array<PortalPageSummary | PortalPage> = [],
+  currentPage?: PortalPage | null,
+) {
+  return resolvePortalPagePath(resolveWelcomePage(pages, currentPage));
+}
+
+function isDashboardMenuItem(item: PortalNavigationItem) {
+  const label = item.label?.trim().toLowerCase();
+  return (
+    label === 'dashboards' ||
+    item.dashboard_id != null ||
+    Boolean(item.children?.some(child => child.dashboard_id != null))
+  );
+}
+
+function isWelcomeMenuItem(
+  item: PortalNavigationItem,
+  welcomePath: string,
+  welcomePageId?: number | null,
+) {
+  const label = item.label?.trim().toLowerCase();
+  return (
+    label === 'welcome' ||
+    label === 'home' ||
+    (welcomePageId != null && item.page_id === welcomePageId) ||
+    normalizePortalPath(item.path) === normalizePortalPath(welcomePath)
+  );
+}
+
+export function withDefaultWelcomeNavigationItems(
+  headerMenus: PortalNavigationMenu[] = [],
+  pages: Array<PortalPageSummary | PortalPage> = [],
+  currentPage?: PortalPage | null,
+): PortalNavigationItem[] {
+  const headerItems = headerMenus
+    .flatMap(menu => menu.items || [])
+    .filter(item => item.is_visible !== false);
+  const welcomePage = resolveWelcomePage(pages, currentPage);
+  if (!welcomePage) {
+    return headerItems;
+  }
+
+  const welcomePath = resolvePortalPagePath(welcomePage);
+  const welcomePageId = welcomePage.id ?? currentPage?.id ?? null;
+  const existingWelcomeItem = headerItems.find(item =>
+    isWelcomeMenuItem(item, welcomePath, welcomePageId),
+  );
+  const landingPageLabel = resolveLandingPageLabel(
+    welcomePage,
+    existingWelcomeItem?.label,
+  );
+  const welcomeItem: PortalNavigationItem = existingWelcomeItem
+    ? {
+        ...existingWelcomeItem,
+        label: landingPageLabel,
+        item_type: existingWelcomeItem.item_type || 'page',
+        path: welcomePath,
+        page_id: existingWelcomeItem.page_id ?? welcomePageId,
+        open_in_new_tab: existingWelcomeItem.open_in_new_tab === true,
+      }
+    : {
+        id: `virtual-home-${welcomePageId || welcomePage.slug || 'home'}`,
+        label: landingPageLabel,
+        item_type: 'page',
+        path: welcomePath,
+        page_id: welcomePageId,
+        display_order: -1,
+        is_visible: true,
+        open_in_new_tab: false,
+        visibility: 'public',
+        settings: {},
+        children: [],
+      };
+
+  const remainingItems = headerItems.filter(
+    item => !isWelcomeMenuItem(item, welcomePath, welcomePageId),
+  );
+  const dashboardIndex = remainingItems.findIndex(isDashboardMenuItem);
+  const insertAt = dashboardIndex >= 0 ? dashboardIndex : 0;
+
+  return [
+    ...remainingItems.slice(0, insertAt),
+    welcomeItem,
+    ...remainingItems.slice(insertAt),
+  ];
 }

@@ -27,6 +27,7 @@ import {
   ensureIsArray,
   getCustomFormatter,
   getNumberFormatter,
+  getTimeFormatter,
   getXAxisLabel,
   isDefined,
   isEventAnnotationLayer,
@@ -60,6 +61,7 @@ import { parseAxisBound } from '../utils/controls';
 import {
   dedupSeries,
   extractDataTotalValues,
+  extractGroupbyLabel,
   extractSeries,
   extractShowValueIndexes,
   extractTooltipKeys,
@@ -98,6 +100,10 @@ import {
   getYAxisFormatter,
 } from '../utils/formatters';
 import { getMetricDisplayName } from '../utils/metricDisplayName';
+import {
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
+} from '../../../../src/utils/dhis2Period';
 
 const getFormatter = (
   customFormatters: Record<string, ValueFormatter>,
@@ -138,6 +144,7 @@ export default function transformProps(
     verboseMap = {},
     currencyFormats = {},
     columnFormats = {},
+    columns = [],
   } = datasource;
   const { label_map: labelMap } =
     queriesData[0] as TimeseriesChartDataResponseResult;
@@ -223,6 +230,47 @@ export default function transformProps(
 
   const refs: Refs = {};
   const colorScale = CategoricalColorNamespace.getScale(colorScheme as string);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(columns as any[]);
+  const displayLabelMap: Record<string, string[]> = { ...(labelMap || {}) };
+  const displayLabelMapB: Record<string, string[]> = { ...(labelMapB || {}) };
+  const displaySeriesNamesA = new Map<string, string>();
+  const displaySeriesNamesB = new Map<string, string>();
+  const formatGroupbySeriesName = (
+    rawSeriesName: string,
+    currentGroupBy: string[],
+    currentLabelMap: Record<string, string[]>,
+    labelLookupKey = rawSeriesName,
+  ): string => {
+    if (!currentGroupBy.length) {
+      return rawSeriesName;
+    }
+
+    const labelValues = currentLabelMap?.[labelLookupKey];
+    const dimensionValues = labelValues?.slice(-currentGroupBy.length);
+
+    if (!dimensionValues?.length) {
+      return currentGroupBy.length === 1 &&
+        dhis2PeriodColumns.has(currentGroupBy[0] as string)
+        ? formatDHIS2Period(rawSeriesName)
+        : rawSeriesName;
+    }
+
+    const labelDatum = currentGroupBy.reduce<Record<string, string>>(
+      (accumulator, column, index) => ({
+        ...accumulator,
+        [column]: dimensionValues[index],
+      }),
+      {},
+    );
+
+    return extractGroupbyLabel({
+      datum: labelDatum,
+      groupby: currentGroupBy,
+      coltypeMapping,
+      timeFormatter: getTimeFormatter(xAxisTimeFormat),
+      dhis2PeriodColumns,
+    });
+  };
 
   let xAxisLabel = getXAxisLabel(
     chartProps.rawFormData as QueryFormData,
@@ -397,6 +445,11 @@ export default function transformProps(
     const entryName = String(entry.name || '');
     const seriesName = inverted[entryName] || entryName;
     const colorScaleKey = getOriginalSeries(seriesName, array);
+    const displayEntryName = formatGroupbySeriesName(
+      seriesName,
+      groupby,
+      labelMap || {},
+    );
 
     let displayName: string;
 
@@ -405,10 +458,14 @@ export default function transformProps(
       const metricPart = showQueryIdentifiers
         ? `${MetricDisplayNameA} (Query A)`
         : MetricDisplayNameA;
-      displayName = `${metricPart}, ${entryName}`;
+      displayName = `${metricPart}, ${displayEntryName}`;
     } else {
       // When no groupby, format as just the entry name with optional query identifier
       displayName = showQueryIdentifiers ? `${entryName} (Query A)` : entryName;
+    }
+    displaySeriesNamesA.set(seriesName, displayName);
+    if (labelMap?.[seriesName]) {
+      displayLabelMap[displayName] = labelMap[seriesName];
     }
 
     const seriesFormatter = getFormatter(
@@ -468,6 +525,12 @@ export default function transformProps(
     const seriesEntry = inverted[entryName] || entryName;
     const seriesName = `${seriesEntry} (1)`;
     const colorScaleKey = getOriginalSeries(seriesEntry, array);
+    const displayEntryName = formatGroupbySeriesName(
+      seriesEntry,
+      groupbyB,
+      labelMapB || {},
+      seriesName,
+    );
 
     let displayName: string;
 
@@ -476,10 +539,15 @@ export default function transformProps(
       const metricPart = showQueryIdentifiers
         ? `${MetricDisplayNameB} (Query B)`
         : MetricDisplayNameB;
-      displayName = `${metricPart}, ${entryName}`;
+      displayName = `${metricPart}, ${displayEntryName}`;
     } else {
       // When no groupby, format as just the entry name with optional query identifier
       displayName = showQueryIdentifiers ? `${entryName} (Query B)` : entryName;
+    }
+    displaySeriesNamesB.set(seriesName, displayName);
+    displaySeriesNamesB.set(seriesEntry, displayName);
+    if (labelMapB?.[seriesName]) {
+      displayLabelMapB[displayName] = labelMapB[seriesName];
     }
 
     const seriesFormatter = getFormatter(
@@ -546,11 +614,15 @@ export default function transformProps(
   const tooltipFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getTooltipTimeFormatter(tooltipTimeFormat)
-      : String;
+      : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
+        ? formatDHIS2Period
+        : String;
   const xAxisFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getXAxisFormatter(xAxisTimeFormat)
-      : String;
+      : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
+        ? formatDHIS2Period
+        : String;
 
   const addYAxisTitleOffset = !!(yAxisTitle || yAxisTitleSecondary);
   const addXAxisTitleOffset = !!xAxisTitle;
@@ -688,10 +760,14 @@ export default function transformProps(
             let formatterKey;
             if (primarySeries.has(key)) {
               formatterKey =
-                groupby.length === 0 ? inverted[key] : labelMap[key]?.[0];
+                groupby.length === 0
+                  ? inverted[key]
+                  : displayLabelMap[key]?.[0];
             } else {
               formatterKey =
-                groupbyB.length === 0 ? inverted[key] : labelMapB[key]?.[0];
+                groupbyB.length === 0
+                  ? inverted[key]
+                  : displayLabelMapB[key]?.[0];
             }
             const tooltipFormatter = getFormatter(
               customFormatters,
@@ -784,12 +860,17 @@ export default function transformProps(
     echartOptions,
     setDataMask,
     emitCrossFilters,
-    labelMap,
-    labelMapB,
+    labelMap: displayLabelMap,
+    labelMapB: displayLabelMapB,
     groupby,
     groupbyB,
     seriesBreakdown: rawSeriesA.length,
-    selectedValues: filterState.selectedValues || [],
+    selectedValues: (filterState.selectedValues || []).map(
+      (value: string) =>
+        displaySeriesNamesA.get(value) ??
+        displaySeriesNamesB.get(value) ??
+        value,
+    ),
     onContextMenu,
     onFocusedSeries,
     xValueFormatter: tooltipFormatter,

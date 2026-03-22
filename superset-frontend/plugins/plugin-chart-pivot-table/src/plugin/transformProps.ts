@@ -29,6 +29,10 @@ import {
 import { GenericDataType } from '@apache-superset/core/api/core';
 import { getColorFormatters } from '@superset-ui/chart-controls';
 import { DateFormatter } from '../types';
+import {
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
+} from '../../../../src/utils/dhis2Period';
 
 const { DATABASE_DATETIME } = TimeFormats;
 
@@ -79,7 +83,12 @@ export default function transformProps(chartProps: ChartProps<QueryFormData>) {
     rawFormData,
     hooks: { setDataMask = () => {}, onContextMenu },
     filterState,
-    datasource: { verboseMap = {}, columnFormats = {}, currencyFormats = {} },
+    datasource: {
+      verboseMap = {},
+      columnFormats = {},
+      currencyFormats = {},
+      columns = [],
+    },
     emitCrossFilters,
     theme,
   } = chartProps;
@@ -110,11 +119,13 @@ export default function transformProps(chartProps: ChartProps<QueryFormData>) {
   } = formData;
   const { selectedFilters } = filterState;
   const granularity = extractTimegrain(rawFormData);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(columns as any[]);
 
   const dateFormatters = colnames
     .filter(
       (colname: string, index: number) =>
-        coltypes[index] === GenericDataType.Temporal,
+        coltypes[index] === GenericDataType.Temporal ||
+        dhis2PeriodColumns.has(colname),
     )
     .reduce(
       (
@@ -122,7 +133,9 @@ export default function transformProps(chartProps: ChartProps<QueryFormData>) {
         temporalColname: string,
       ) => {
         let formatter: DateFormatter | undefined;
-        if (dateFormat === SMART_DATE_ID) {
+        if (dhis2PeriodColumns.has(temporalColname)) {
+          formatter = value => formatDHIS2Period(String(value ?? ''));
+        } else if (dateFormat === SMART_DATE_ID) {
           if (granularity) {
             // time column use formats based on granularity
             formatter = getTimeFormatterForGranularity(granularity);

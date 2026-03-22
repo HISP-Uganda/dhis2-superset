@@ -25,12 +25,12 @@ import {
 } from 'react';
 
 import { Link, useHistory } from 'react-router-dom';
-import { styled, css, t, useTheme } from '@superset-ui/core';
+import { styled, t } from '@superset-ui/core';
 import cx from 'classnames';
 import { debounce } from 'lodash';
-import { Menu, MenuMode } from '@superset-ui/core/components/Menu';
 import {
   Button,
+  Dropdown,
   Tooltip,
   Row,
   type OnClickHandler,
@@ -40,8 +40,10 @@ import { IconType } from '@superset-ui/core/components/Icons/types';
 import { MenuObjectProps } from 'src/types/bootstrapTypes';
 import { Typography } from '@superset-ui/core/components/Typography';
 
+/* eslint-disable-next-line theme-colors/no-literal-colors */
 const StyledHeader = styled.div<{ backgroundColor?: string }>`
-  background-color: ${({ backgroundColor }) => backgroundColor || '#ffffff'};
+  background-color: ${({ backgroundColor, theme }) =>
+    backgroundColor || theme.colorBgElevated};
   border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   align-items: center;
   position: relative;
@@ -90,23 +92,59 @@ const StyledHeader = styled.div<{ backgroundColor?: string }>`
     align-items: center;
   }
 
-  .menu > .ant-menu {
+  .tab-list {
+    display: flex;
+    align-items: center;
     padding-left: ${({ theme }) => theme.sizeUnit * 5}px;
     line-height: ${({ theme }) => theme.sizeUnit * 5}px;
+    min-width: 0;
+  }
 
-    .ant-menu-item {
-      border-radius: 0;
-      font-size: ${({ theme }) => theme.fontSizeSM}px;
-      padding: ${({ theme }) => theme.sizeUnit * 2}px
-        ${({ theme }) => theme.sizeUnit * 3}px;
-      margin-right: ${({ theme }) => theme.sizeUnit}px;
-    }
-    .ant-menu-item:hover,
-    .ant-menu-item:has(> span > .active) {
-      background-color: transparent;
-      color: #2b6a6a;
-      border-bottom: 2px solid #2b6a6a;
-    }
+  .tab-list-inline {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    padding-top: ${({ theme }) => theme.sizeUnit * 2}px;
+  }
+
+  .tab-item {
+    display: inline-flex;
+    align-items: center;
+    margin-right: ${({ theme }) => theme.sizeUnit}px;
+  }
+
+  .tab-list-inline .tab-item {
+    margin-right: 0;
+    width: 100%;
+  }
+
+  .tab-link {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 0;
+    font-size: ${({ theme }) => theme.fontSizeSM}px;
+    padding: ${({ theme }) => theme.sizeUnit * 2}px
+      ${({ theme }) => theme.sizeUnit * 3}px;
+    color: ${({ theme }) => theme.colorText};
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+  }
+
+  .tab-list-inline .tab-link {
+    width: 100%;
+  }
+
+  .tab-link:hover,
+  .tab-link.active {
+    background-color: transparent;
+    color: ${({ theme }) => theme.colorPrimary};
+    border-bottom-color: ${({ theme }) => theme.colorPrimary};
+  }
+
+  .dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: ${({ theme }) => theme.sizeUnit}px;
   }
 
   .btn-link {
@@ -155,11 +193,26 @@ export interface SubMenuProps {
   backgroundColor?: string;
 }
 
+type ResponsiveMenuMode = 'horizontal' | 'inline';
+
+const getMenuMode = (): ResponsiveMenuMode =>
+  typeof window !== 'undefined' && window.innerWidth <= 767
+    ? 'inline'
+    : 'horizontal';
+
+const getNavRightStyle = (buttonCount: number): string =>
+  typeof window !== 'undefined' && buttonCount >= 3 && window.innerWidth <= 795
+    ? 'nav-right-collapse'
+    : 'nav-right';
+
 const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
-  const [showMenu, setMenu] = useState<MenuMode>('horizontal');
-  const [navRightStyle, setNavRightStyle] = useState('nav-right');
-  const theme = useTheme();
   const buttonCount = props.buttons?.length ?? 0;
+  const hasDropdownLinks = (props.dropDownLinks?.length ?? 0) > 0;
+  const hasActions = hasDropdownLinks || buttonCount > 0;
+  const [showMenu, setMenu] = useState<ResponsiveMenuMode>(() => getMenuMode());
+  const [navRightStyle, setNavRightStyle] = useState(() =>
+    getNavRightStyle(buttonCount),
+  );
 
   let hasHistory = true;
   // If no parent <Router> component exists, useHistory throws an error
@@ -172,11 +225,8 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
 
   useEffect(() => {
     function handleResize() {
-      const nextMenuMode = window.innerWidth <= 767 ? 'inline' : 'horizontal';
-      const nextNavRightStyle =
-        buttonCount >= 3 && window.innerWidth <= 795
-          ? 'nav-right-collapse'
-          : 'nav-right';
+      const nextMenuMode = getMenuMode();
+      const nextNavRightStyle = getNavRightStyle(buttonCount);
       setMenu(currentMenu =>
         currentMenu === nextMenuMode ? currentMenu : nextMenuMode,
       );
@@ -193,116 +243,125 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
     };
   }, [buttonCount]);
 
-  const menuItems = useMemo(
+  const renderedTabs = useMemo(
     () =>
       props.tabs?.map(tab => {
-        if ((props.usesRouter || hasHistory) && !!tab.usesRouter) {
-          return {
-            key: tab.label,
-            label: (
+        const linkClassName = cx('tab-link', {
+          active: tab.name === props.activeChild,
+        });
+        const commonProps = {
+          role: 'tab' as const,
+          id: tab.id || tab.name,
+          'data-test': tab['data-test'],
+          'aria-selected': tab.name === props.activeChild,
+          'aria-controls': tab['aria-controls'] || '',
+        };
+        return (
+          <div key={tab.label} className="tab-item">
+            {(props.usesRouter || hasHistory) && tab.usesRouter ? (
               <Link
                 to={tab.url || ''}
-                role="tab"
-                id={tab.id || tab.name}
-                data-test={tab['data-test']}
-                aria-selected={tab.name === props.activeChild}
-                aria-controls={tab['aria-controls'] || ''}
-                className={tab.name === props.activeChild ? 'active' : ''}
+                {...commonProps}
+                className={linkClassName}
               >
                 {tab.label}
               </Link>
-            ),
-          };
-        }
-        return {
-          key: tab.label,
-          label: (
-            <div
-              className={cx('no-router', {
-                active: tab.name === props.activeChild,
-              })}
-              role="tab"
-              aria-selected={tab.name === props.activeChild}
-            >
-              <Typography.Link href={tab.url} onClick={tab.onClick}>
+            ) : (
+              <Typography.Link
+                {...commonProps}
+                href={tab.url}
+                onClick={tab.onClick}
+                className={linkClassName}
+              >
                 {tab.label}
               </Typography.Link>
-            </div>
-          ),
-        };
+            )}
+          </div>
+        );
       }),
     [hasHistory, props.activeChild, props.tabs, props.usesRouter],
+  );
+  const dropdownMenus = useMemo(
+    () =>
+      props.dropDownLinks?.map((link, i) => ({
+        key: `submenu-${i}`,
+        label: link.label,
+        items: link.childs
+          ?.map((item, idx) => {
+            if (typeof item === 'object' && item !== null) {
+              return {
+                key: `${i}-${idx}`,
+                label: item.disable ? (
+                  <Tooltip
+                    placement="top"
+                    title={t(
+                      "Enable 'Allow file uploads to database' in any database's settings",
+                    )}
+                  >
+                    {item.label}
+                  </Tooltip>
+                ) : (
+                  <Typography.Link href={item.url} onClick={item.onClick}>
+                    {item.label}
+                  </Typography.Link>
+                ),
+                disabled: item.disable,
+              };
+            }
+            return null;
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null),
+      })),
+    [props.dropDownLinks],
   );
 
   return (
     <StyledHeader backgroundColor={props.backgroundColor}>
       <Row className="menu" role="navigation">
         {props.name && <div className="header">{props.name}</div>}
-        <Menu
-          mode={showMenu}
-          disabledOverflow
-          role="tablist"
-          items={menuItems}
-        />
-        <div className={navRightStyle}>
-          <Menu
-            mode="horizontal"
-            triggerSubMenuAction="click"
-            disabledOverflow
-            items={props.dropDownLinks?.map((link, i) => ({
-              key: `submenu-${i}`,
-              label: link.label,
-              icon: <Icons.CaretDownOutlined />,
-              popupOffset: [10, 20],
-              children: link.childs
-                ?.map((item, idx) => {
-                  if (typeof item === 'object' && item !== null) {
-                    return {
-                      key: `${i}-${idx}`,
-                      label: item.disable ? (
-                        <Tooltip
-                          placement="top"
-                          title={t(
-                            "Enable 'Allow file uploads to database' in any database's settings",
-                          )}
-                        >
-                          {item.label}
-                        </Tooltip>
-                      ) : (
-                        <Typography.Link href={item.url} onClick={item.onClick}>
-                          {item.label}
-                        </Typography.Link>
-                      ),
-                      disabled: item.disable,
-                    };
-                  }
-                  return null;
-                })
-                .filter(Boolean),
-            }))}
-            css={css`
-              .dropdown-menu-links {
-                [data-icon='caret-down'] {
-                  color: ${theme.colorIcon};
-                  font-size: ${theme.fontSizeXS}px;
-                  margin-left: ${theme.sizeUnit}px;
-                }
-              }
-            `}
-          />
-          {props.buttons?.map((btn, i) => (
-            <Button
-              key={i}
-              buttonStyle={btn.buttonStyle}
-              icon={btn.icon}
-              onClick={btn.onClick}
-              data-test={btn['data-test']}
-              loading={btn.loading ?? false}
-            >
-              {btn.name}
-            </Button>
-          ))}
-        </div>
+        {props.tabs?.length ? (
+          <div
+            role="tablist"
+            className={cx('tab-list', {
+              'tab-list-inline': showMenu === 'inline',
+            })}
+          >
+            {renderedTabs}
+          </div>
+        ) : null}
+        {hasActions ? (
+          <div className={navRightStyle}>
+            {hasDropdownLinks
+              ? dropdownMenus?.map(menu => (
+                  <Dropdown
+                    key={menu.key}
+                    trigger={['click']}
+                    menu={{ items: menu.items }}
+                    overlayClassName="dropdown-menu-links"
+                  >
+                    <Button buttonStyle="link">
+                      <span className="dropdown-trigger">
+                        {menu.label}
+                        <Icons.CaretDownOutlined iconSize="xs" />
+                      </span>
+                    </Button>
+                  </Dropdown>
+                ))
+              : null}
+            {props.buttons?.map((btn, i) => (
+              <Button
+                key={i}
+                buttonStyle={btn.buttonStyle}
+                icon={btn.icon}
+                onClick={btn.onClick}
+                data-test={btn['data-test']}
+                loading={btn.loading ?? false}
+              >
+                {btn.name}
+              </Button>
+            ))}
+          </div>
+        ) : null}
       </Row>
       {props.children}
     </StyledHeader>

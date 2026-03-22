@@ -121,9 +121,19 @@ test('should render the buttons', async () => {
       buttonStyle: 'danger' as ButtonProps['buttonStyle'],
     },
   ];
-  setup({ buttons });
+  setup({ buttons, dropDownLinks: undefined });
   const testButton = screen.getByText(buttons[0].name);
   expect(await screen.findAllByRole('button')).toHaveLength(2);
   userEvent.click(testButton);
   expect(mockFunc).toHaveBeenCalled();
+});
+
+test('should not render the right action container when there are no actions', async () => {
+  const { container } = setup({
+    dropDownLinks: undefined,
+    buttons: undefined,
+  });
+
+  expect(await screen.findByText('Title')).toBeInTheDocument();
+  expect(container.querySelector('.nav-right, .nav-right-collapse')).toBeNull();
 });

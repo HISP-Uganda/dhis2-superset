@@ -53,6 +53,7 @@ import { convertInteger } from '../utils/convertInteger';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
 import { getContributionLabel } from './utils';
+import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 const percentFormatter = getNumberFormatter(NumberFormats.PERCENT_2_POINT);
 
@@ -138,6 +139,9 @@ export default function transformProps(
   const { columnFormats = {}, currencyFormats = {} } = datasource;
   const { data: rawData = [] } = queriesData[0];
   const coltypeMapping = getColtypesMapping(queriesData[0]);
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasource?.columns as any[],
+  );
 
   const {
     colorScheme,
@@ -204,6 +208,7 @@ export default function transformProps(
           groupby: groupbyLabels,
           coltypeMapping,
           timeFormatter: getTimeFormatter(dateFormat),
+          dhis2PeriodColumns,
         }),
         numberFormatter(datum[metricLabel] as number),
         percentFormatter(contribution),
@@ -239,6 +244,7 @@ export default function transformProps(
       groupby: groupbyLabels,
       coltypeMapping,
       timeFormatter: getTimeFormatter(dateFormat),
+      dhis2PeriodColumns,
     });
     return {
       ...acc,
@@ -257,6 +263,7 @@ export default function transformProps(
       groupby: groupbyLabels,
       coltypeMapping,
       timeFormatter: getTimeFormatter(dateFormat),
+      dhis2PeriodColumns,
     });
 
     const isFiltered =

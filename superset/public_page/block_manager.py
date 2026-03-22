@@ -241,6 +241,14 @@ BLOCK_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "is_container": False,
     },
     {
+        "type": "reusable_reference",
+        "label": "Reusable Section",
+        "category": "layout",
+        "description": "Synced section managed from the reusable block library.",
+        "icon": "copy",
+        "is_container": False,
+    },
+    {
         "type": "callout",
         "label": "Callout",
         "category": "design",
@@ -272,6 +280,7 @@ CONTAINER_BLOCK_TYPES = {
     for definition in BLOCK_DEFINITIONS
     if definition.get("is_container")
 }
+DEFAULT_WELCOME_PAGE_SEED_VERSION = 2
 
 LEGACY_COMPONENT_TYPE_MAP = {
     "markdown": "rich_text",
@@ -389,6 +398,8 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
             "height": 360,
             "responsive": True,
             "show_header": True,
+            "surface_preset": "default",
+            "legend_preset": "default",
         }
     elif definition["type"] == "dashboard":
         payload["content"] = {
@@ -409,6 +420,9 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
     elif definition["type"] == "menu":
         payload["content"] = {"title": "Menu"}
         payload["settings"] = {"menu_slug": "header", "location": "header"}
+    elif definition["type"] == "reusable_reference":
+        payload["content"] = {"title": "Reusable Section"}
+        payload["settings"] = {"reusable_block_id": None, "displayMode": "synced"}
     elif definition["type"] == "callout":
         payload["content"] = {"title": "Callout", "body": "Highlight an important note."}
         payload["settings"] = {"tone": "info"}
@@ -632,3 +646,630 @@ def legacy_sections_to_blocks(sections: list[dict[str, Any]]) -> list[dict[str, 
             block["children"] = [highlight_block]
         blocks.append(block)
     return blocks
+
+
+def _starter_pattern_block(
+    block_type: str,
+    *,
+    slot: str | None = None,
+    content: dict[str, Any] | None = None,
+    settings: dict[str, Any] | None = None,
+    styles: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    children: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    block = default_block_payload(block_type)
+    block["content"] = {
+        **(block.get("content") or {}),
+        **(content or {}),
+    }
+    block["settings"] = {
+        **(block.get("settings") or {}),
+        **(settings or {}),
+    }
+    block["styles"] = {
+        **(block.get("styles") or {}),
+        **(styles or {}),
+    }
+    block["metadata"] = {
+        **(block.get("metadata") or {}),
+        **(metadata or {}),
+    }
+    if slot is not None:
+        block["slot"] = slot
+    if children is not None:
+        block["children"] = children
+    return block
+
+
+def build_default_welcome_page_blocks(
+    *,
+    featured_charts: list[dict[str, Any]] | None = None,
+    has_public_dashboards: bool = False,
+) -> list[dict[str, Any]]:
+    featured_chart_payload = [
+        chart
+        for chart in (featured_charts or [])[:4]
+        if chart.get("id") is not None
+    ]
+    seed_metadata = {
+        "seedSource": "default_welcome_page",
+        "seedVersion": DEFAULT_WELCOME_PAGE_SEED_VERSION,
+    }
+
+    def welcome_block(
+        block_type: str,
+        *,
+        slot: str | None = None,
+        content: dict[str, Any] | None = None,
+        settings: dict[str, Any] | None = None,
+        styles: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        children: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return _starter_pattern_block(
+            block_type,
+            slot=slot,
+            content=content,
+            settings=settings,
+            styles=styles,
+            metadata={
+                **seed_metadata,
+                **(metadata or {}),
+            },
+            children=children,
+        )
+
+    hero_children = [
+        welcome_block(
+            "statistic",
+            content={
+                "title": "Dashboards",
+                "value": "Curated",
+                "caption": "Published views prepared for rapid public exploration.",
+            },
+            settings={"gridSpan": 4, "minHeight": 156},
+            styles={
+                "backgroundColor": "rgba(255, 255, 255, 0.84)",
+                "borderColor": "rgba(148, 163, 184, 0.3)",
+            },
+        ),
+        welcome_block(
+            "statistic",
+            content={
+                "title": "Serving data",
+                "value": "Scoped",
+                "caption": "Staged with the selected org units, periods, dimensions, and variables.",
+            },
+            settings={"gridSpan": 4, "minHeight": 156},
+            styles={
+                "backgroundColor": "rgba(255, 255, 255, 0.84)",
+                "borderColor": "rgba(148, 163, 184, 0.3)",
+            },
+        ),
+        welcome_block(
+            "statistic",
+            content={
+                "title": "Narrative pages",
+                "value": "Balanced",
+                "caption": "Reusable sections keep public interpretation consistent across pages.",
+            },
+            settings={"gridSpan": 4, "minHeight": 156},
+            styles={
+                "backgroundColor": "rgba(255, 255, 255, 0.84)",
+                "borderColor": "rgba(148, 163, 184, 0.3)",
+            },
+        ),
+        welcome_block(
+            "callout",
+            content={
+                "title": "What this portal guarantees",
+                "body": (
+                    "Published highlights and featured analytics are served from local "
+                    "staging tables that preserve the configured geography, time period, "
+                    "dimensions, and variables selected for publication."
+                ),
+            },
+            settings={"tone": "info", "gridSpan": 12},
+            styles={
+                "backgroundColor": "rgba(255, 255, 255, 0.74)",
+                "borderColor": "rgba(15, 118, 110, 0.32)",
+            },
+        ),
+    ]
+
+    blocks = [
+        welcome_block(
+            "hero",
+            slot="hero",
+            content={
+                "eyebrow": "Uganda Malaria Analytics Portal",
+                "title": "Welcome to a trusted public analytics workspace",
+                "subtitle": (
+                    "Explore curated dashboards, recent highlights, and published pages "
+                    "prepared for programme teams, district leaders, and partners."
+                ),
+                "body": (
+                    "This landing page brings together the fastest entry points into "
+                    "public malaria evidence. Start with the summary blocks, then move "
+                    "into dashboard views when deeper analysis is needed."
+                ),
+            },
+            settings={
+                "primaryActionLabel": "Browse dashboards",
+                "primaryActionUrl": "/superset/public/dashboards/",
+                "secondaryActionLabel": "View methodology",
+                "secondaryActionUrl": "/superset/public/about/",
+            },
+            styles={
+                "background": (
+                    "linear-gradient(135deg, rgba(15, 118, 110, 0.1) 0%, "
+                    "rgba(29, 78, 216, 0.05) 100%)"
+                ),
+                "padding": "40px",
+            },
+            children=hero_children,
+        ),
+        welcome_block(
+            "section",
+            content={
+                "title": "Use this portal to answer core questions",
+                "subtitle": (
+                    "The welcome page is structured for fast scanning first, then deeper "
+                    "navigation into dashboards and supporting pages."
+                ),
+            },
+            settings={"columns": 3, "anchor": "portal-overview"},
+            children=[
+                welcome_block(
+                    "card",
+                    content={
+                        "title": "Review performance quickly",
+                        "body": (
+                            "Start with highlights and featured analysis to spot shifts "
+                            "before opening a full dashboard."
+                        ),
+                    },
+                    settings={"minHeight": 208},
+                ),
+                welcome_block(
+                    "card",
+                    content={
+                        "title": "Move across hierarchy levels",
+                        "body": (
+                            "Published content can surface national, regional, district, "
+                            "subcounty, and facility views when those levels are staged."
+                        ),
+                    },
+                    settings={"minHeight": 208},
+                ),
+                welcome_block(
+                    "card",
+                    content={
+                        "title": "Share a consistent public story",
+                        "body": (
+                            "Balanced narrative blocks, dashboard links, and notes keep "
+                            "public interpretation aligned with the published scope."
+                        ),
+                    },
+                    settings={"minHeight": 208},
+                ),
+            ],
+        ),
+        welcome_block(
+            "dynamic_widget",
+            content={
+                "title": "Latest published highlights",
+                "subtitle": (
+                    "Recent staged observations surfaced for a quick programme readout."
+                ),
+            },
+            settings={"widgetType": "indicator_highlights", "limit": 6},
+        ),
+    ]
+
+    if featured_chart_payload:
+        blocks.append(
+            welcome_block(
+                "section",
+                content={
+                    "title": "Featured public analysis",
+                    "subtitle": (
+                        "Selected charts built from serving datasets and ready for public sharing."
+                    ),
+                },
+                settings={"columns": 2, "anchor": "featured-analysis"},
+                children=[
+                    welcome_block(
+                        "chart",
+                        content={
+                            "title": str(chart.get("title") or "Featured chart"),
+                            "caption": str(
+                                chart.get("caption")
+                                or "Published chart from a staged serving dataset."
+                            ),
+                        },
+                        settings={
+                            "chart_ref": {"id": chart["id"]},
+                            "height": 380,
+                            "responsive": True,
+                            "show_header": True,
+                        },
+                    )
+                    for chart in featured_chart_payload
+                ],
+            )
+        )
+
+    if has_public_dashboards:
+        blocks.append(
+            welcome_block(
+                "dynamic_widget",
+                content={
+                    "title": "Published dashboards",
+                    "subtitle": (
+                        "Open curated dashboard collections for broader exploration and drill-down."
+                    ),
+                },
+                settings={"widgetType": "dashboard_list"},
+            )
+        )
+    else:
+        blocks.append(
+            welcome_block(
+                "section",
+                content={
+                    "title": "Dashboard directory",
+                    "subtitle": (
+                        "The landing page is ready to guide readers into dashboards as "
+                        "soon as public views are promoted."
+                    ),
+                },
+                settings={"columns": 2, "anchor": "dashboard-directory"},
+                children=[
+                    welcome_block(
+                        "card",
+                        content={
+                            "title": "Publish the first dashboard",
+                            "body": (
+                                "Once a public dashboard is available, it will appear here "
+                                "as a direct entry point from the welcome page."
+                            ),
+                        },
+                        settings={"minHeight": 196},
+                    ),
+                    welcome_block(
+                        "card",
+                        content={
+                            "title": "Keep the story balanced",
+                            "body": (
+                                "Use the welcome page for framing and navigation, and "
+                                "reserve the dashboard directory for detailed visual analysis."
+                            ),
+                        },
+                        settings={"minHeight": 196},
+                    ),
+                ],
+            )
+        )
+
+    blocks.append(
+        welcome_block(
+            "section",
+            content={
+                "title": "How published data is prepared",
+                "subtitle": (
+                    "The public view stays aligned to the selected publication scope."
+                ),
+            },
+            settings={"columns": 2, "anchor": "data-methodology"},
+            children=[
+                welcome_block(
+                    "card",
+                    content={
+                        "title": "Serving datasets follow the published scope",
+                        "body": (
+                            "Each staged dataset is prepared from the exact org units, "
+                            "periods, dimensions, and variables selected during publication. "
+                            "Public pages read from those serving tables for stable access."
+                        ),
+                    },
+                    settings={"minHeight": 220},
+                ),
+                welcome_block(
+                    "callout",
+                    content={
+                        "title": "Interpret figures with their labels",
+                        "body": (
+                            "Read indicator names, period labels, and geography context "
+                            "together. Those labels reflect the scope configured at staging time."
+                        ),
+                    },
+                    settings={"tone": "success", "minHeight": 220},
+                    styles={"backgroundColor": "#f8fafc", "borderColor": "#0f766e"},
+                ),
+            ],
+        )
+    )
+    blocks.extend(
+        [
+            welcome_block(
+                "callout",
+                slot="cta",
+                content={
+                    "title": "Start with the dashboard directory",
+                    "body": (
+                        "Move from this summary page into published dashboards for deeper "
+                        "trend, geography, and indicator exploration."
+                    ),
+                },
+                settings={"tone": "success"},
+                styles={
+                    "padding": "28px",
+                    "backgroundColor": "rgba(15, 118, 110, 0.06)",
+                    "borderColor": "#0f766e",
+                },
+            ),
+            welcome_block(
+                "button",
+                slot="cta",
+                content={"label": "Open dashboards"},
+                settings={"url": "/superset/public/dashboards/", "variant": "primary"},
+                styles={"justifySelf": "start"},
+            ),
+        ]
+    )
+    return blocks
+
+
+def list_starter_patterns() -> list[dict[str, Any]]:
+    welcome_pattern = {
+        "id": "welcome-homepage",
+        "slug": "welcome-homepage",
+        "title": "Welcome Homepage",
+        "description": "Complete default landing page with a professional hero, balanced guidance, and dashboard CTA.",
+        "category": "landing",
+        "blocks": build_default_welcome_page_blocks(
+            featured_charts=[],
+            has_public_dashboards=False,
+        ),
+    }
+    hero_pattern = {
+        "id": "hero-storytelling",
+        "slug": "hero-storytelling",
+        "title": "Hero Storytelling",
+        "description": "Lead with a narrative headline, supporting summary, and clear next steps.",
+        "category": "storytelling",
+        "blocks": [
+            _starter_pattern_block(
+                "hero",
+                content={
+                    "eyebrow": "National snapshot",
+                    "title": "Malaria programme performance at a glance",
+                    "subtitle": "Frame the key message, current period, and audience before readers enter the detail.",
+                    "body": "Summarize what changed, why it matters, and where to explore deeper evidence on the page.",
+                },
+                settings={
+                    "primaryActionLabel": "Explore dashboards",
+                    "primaryActionUrl": "/superset/public/dashboards/",
+                    "secondaryActionLabel": "Read methodology",
+                    "secondaryActionUrl": "#methodology",
+                },
+                children=[
+                    _starter_pattern_block(
+                        "card",
+                        content={
+                            "title": "What to watch",
+                            "body": "Highlight one priority trend, one risk, and the next operational decision.",
+                        },
+                        styles={
+                            "backgroundColor": "#ffffff",
+                            "padding": "24px",
+                            "borderColor": "#cbd5e1",
+                        },
+                    ),
+                ],
+            ),
+        ],
+    }
+    feature_grid_pattern = {
+        "id": "feature-grid",
+        "slug": "feature-grid",
+        "title": "Feature Grid",
+        "description": "Show three to four programme focus areas or service offers in a balanced grid.",
+        "category": "storytelling",
+        "blocks": [
+            _starter_pattern_block(
+                "section",
+                content={
+                    "title": "Priority focus areas",
+                    "subtitle": "Use cards to summarize service pillars, interventions, or programme workstreams.",
+                },
+                settings={"columns": 3},
+                children=[
+                    _starter_pattern_block(
+                        "card",
+                        content={
+                            "title": "Case management",
+                            "body": "Explain the operational objective and supporting evidence in two short sentences.",
+                        },
+                    ),
+                    _starter_pattern_block(
+                        "card",
+                        content={
+                            "title": "Surveillance",
+                            "body": "Describe the insight this workstream provides and who depends on it.",
+                        },
+                    ),
+                    _starter_pattern_block(
+                        "card",
+                        content={
+                            "title": "Supply chain",
+                            "body": "Summarize stock visibility, response timing, or another execution concern.",
+                        },
+                    ),
+                ],
+            ),
+        ],
+    }
+    cta_pattern = {
+        "id": "call-to-action-band",
+        "slug": "call-to-action-band",
+        "title": "Call To Action Band",
+        "description": "Close a page or section with a strong next action for analysts or programme teams.",
+        "category": "conversion",
+        "blocks": [
+            _starter_pattern_block(
+                "callout",
+                content={
+                    "title": "Need the full district breakdown?",
+                    "body": "Direct readers to the most relevant dashboard, download, or briefing pack.",
+                },
+                settings={"tone": "success"},
+                styles={
+                    "padding": "24px",
+                    "backgroundColor": "#f8fafc",
+                    "borderColor": "#0f766e",
+                },
+            ),
+            _starter_pattern_block(
+                "button",
+                content={"label": "Open district dashboard"},
+                settings={"url": "/superset/public/dashboards/", "variant": "primary"},
+                styles={"justifySelf": "start"},
+            ),
+        ],
+    }
+    faq_pattern = {
+        "id": "faq-answers",
+        "slug": "faq-answers",
+        "title": "FAQ Answers",
+        "description": "Stack common questions and concise answers for public guidance pages.",
+        "category": "documentation",
+        "blocks": [
+            _starter_pattern_block(
+                "section",
+                content={
+                    "title": "Frequently asked questions",
+                    "subtitle": "Keep each answer short and link out when deeper references are needed.",
+                },
+                children=[
+                    _starter_pattern_block(
+                        "group",
+                        content={"title": "How often is the data refreshed?"},
+                        children=[
+                            _starter_pattern_block(
+                                "paragraph",
+                                content={
+                                    "body": "Describe the refresh cadence, the latest refresh date, and any known publication lag.",
+                                },
+                            )
+                        ],
+                    ),
+                    _starter_pattern_block(
+                        "group",
+                        content={"title": "Who should use this page?"},
+                        children=[
+                            _starter_pattern_block(
+                                "paragraph",
+                                content={
+                                    "body": "Clarify the intended audience, recommended decisions, and important caveats.",
+                                },
+                            )
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    }
+    chart_showcase_pattern = {
+        "id": "chart-showcase",
+        "slug": "chart-showcase",
+        "title": "Chart Showcase",
+        "description": "Combine narrative framing with a featured chart and supporting interpretation.",
+        "category": "analytics",
+        "blocks": [
+            _starter_pattern_block(
+                "section",
+                content={
+                    "title": "Featured analysis",
+                    "subtitle": "Pair one key chart with the interpretation readers should take away.",
+                },
+                children=[
+                    _starter_pattern_block(
+                        "chart",
+                        content={
+                            "title": "Coverage trend",
+                            "caption": "Replace this placeholder with a serving-table chart.",
+                        },
+                        settings={"height": 420},
+                    ),
+                    _starter_pattern_block(
+                        "callout",
+                        content={
+                            "title": "Interpretation",
+                            "body": "Use this space to explain the trend, caveats, and suggested follow-up action.",
+                        },
+                        settings={"tone": "info"},
+                    ),
+                ],
+            ),
+        ],
+    }
+    two_column_pattern = {
+        "id": "two-column-briefing",
+        "slug": "two-column-briefing",
+        "title": "Two Column Briefing",
+        "description": "Balance narrative text and supporting evidence side by side.",
+        "category": "briefing",
+        "blocks": [
+            _starter_pattern_block(
+                "columns",
+                settings={"columnCount": 2, "gap": 24},
+                children=[
+                    _starter_pattern_block(
+                        "column",
+                        children=[
+                            _starter_pattern_block(
+                                "heading",
+                                content={"text": "Context and key message", "level": 2},
+                            ),
+                            _starter_pattern_block(
+                                "paragraph",
+                                content={
+                                    "body": "Use the left column for narrative explanation, interpretation, or methodology notes.",
+                                },
+                            ),
+                        ],
+                    ),
+                    _starter_pattern_block(
+                        "column",
+                        children=[
+                            _starter_pattern_block(
+                                "statistic",
+                                content={
+                                    "title": "Reporting completeness",
+                                    "value": "94%",
+                                    "caption": "Latest available month",
+                                },
+                            ),
+                            _starter_pattern_block(
+                                "button",
+                                content={"label": "Download source file"},
+                                settings={"url": "/superset/public/dashboards/", "variant": "default"},
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    }
+    return [
+        welcome_pattern,
+        hero_pattern,
+        feature_grid_pattern,
+        cta_pattern,
+        faq_pattern,
+        chart_showcase_pattern,
+        two_column_pattern,
+    ]

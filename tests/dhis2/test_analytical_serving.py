@@ -521,6 +521,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         "Region",
         "District",
         "Subcounty",
+        "Facility",
         "Period",
         "OU Level",
         "Period Year",
@@ -612,6 +613,134 @@ def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
     ]
 
 
+def test_build_serving_manifest_keeps_all_explicit_selected_org_unit_levels():
+    from superset.dhis2.analytical_serving import build_serving_manifest
+
+    dataset = SimpleNamespace(
+        id=12,
+        database_id=10,
+        variables=[
+            SimpleNamespace(
+                instance_id=1,
+                variable_id="de_cases",
+                variable_type="dataElement",
+                variable_name="Malaria Cases",
+                alias=None,
+                instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                get_extra_params=lambda: {},
+            ),
+        ],
+        get_dataset_config=lambda: {
+            "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
+            "org_unit_scope": "selected",
+            "org_units": [
+                "ou-national",
+                "ou-region",
+                "ou-district",
+                "ou-subcounty",
+                "ou-facility",
+            ],
+            "org_unit_details": [
+                {
+                    "id": "ou-national",
+                    "selectionKey": "ou-national",
+                    "sourceOrgUnitId": "ou-national",
+                    "level": 1,
+                    "path": "/ou-national",
+                    "sourceInstanceIds": [1],
+                },
+                {
+                    "id": "ou-region",
+                    "selectionKey": "ou-region",
+                    "sourceOrgUnitId": "ou-region",
+                    "level": 2,
+                    "path": "/ou-national/ou-region",
+                    "sourceInstanceIds": [1],
+                },
+                {
+                    "id": "ou-district",
+                    "selectionKey": "ou-district",
+                    "sourceOrgUnitId": "ou-district",
+                    "level": 3,
+                    "path": "/ou-national/ou-region/ou-district",
+                    "sourceInstanceIds": [1],
+                },
+                {
+                    "id": "ou-subcounty",
+                    "selectionKey": "ou-subcounty",
+                    "sourceOrgUnitId": "ou-subcounty",
+                    "level": 4,
+                    "path": "/ou-national/ou-region/ou-district/ou-subcounty",
+                    "sourceInstanceIds": [1],
+                },
+                {
+                    "id": "ou-facility",
+                    "selectionKey": "ou-facility",
+                    "sourceOrgUnitId": "ou-facility",
+                    "level": 5,
+                    "path": "/ou-national/ou-region/ou-district/ou-subcounty/ou-facility",
+                    "sourceInstanceIds": [1],
+                },
+            ],
+        },
+    )
+    payloads = {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [
+                {"level": 1, "displayName": "National"},
+                {"level": 2, "displayName": "Region"},
+                {"level": 3, "displayName": "District"},
+                {"level": 4, "displayName": "Subcounty"},
+                {"level": 5, "displayName": "Facility"},
+            ],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {"id": "ou-national", "displayName": "Uganda", "level": 1, "path": "/ou-national"},
+                {"id": "ou-region", "displayName": "Acholi", "level": 2, "path": "/ou-national/ou-region"},
+                {"id": "ou-district", "displayName": "Gulu", "level": 3, "path": "/ou-national/ou-region/ou-district"},
+                {"id": "ou-subcounty", "displayName": "Pece", "level": 4, "path": "/ou-national/ou-region/ou-district/ou-subcounty"},
+                {"id": "ou-facility", "displayName": "Health Centre IV", "level": 5, "path": "/ou-national/ou-region/ou-district/ou-subcounty/ou-facility"},
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_cases",
+                    "displayName": "Malaria Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    assert [column["verbose_name"] for column in manifest["columns"]] == [
+        "National",
+        "Region",
+        "District",
+        "Subcounty",
+        "Facility",
+        "Period",
+        "OU Level",
+        "Period Year",
+        "Period Half",
+        "Period Quarter",
+        "Malaria Cases",
+    ]
+
+
 def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_populated():
     from superset.dhis2.analytical_serving import (
         build_terminal_hierarchy_sqla_predicate,
@@ -700,6 +829,71 @@ def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_p
     assert "level2" in predicate_sql
     assert "level3" in predicate_sql
     assert "CAST(" not in predicate_sql
+
+
+def test_period_hierarchy_helpers_ignore_raw_period_and_order_specific_levels():
+    from superset.dhis2.analytical_serving import (
+        build_terminal_hierarchy_sqla_predicate,
+        get_dhis2_period_hierarchy_column_names,
+        resolve_terminal_hierarchy_column,
+    )
+
+    columns = [
+        {
+            "column_name": "period",
+            "extra": {
+                "dhis2_is_period": True,
+                "dhis2_is_period_hierarchy": True,
+                "dhis2_period_key": "period",
+            },
+        },
+        {
+            "column_name": "period_year",
+            "extra": {
+                "dhis2_is_period_hierarchy": True,
+                "dhis2_period_key": "period_year",
+            },
+        },
+        {
+            "column_name": "period_quarter",
+            "extra": {
+                "dhis2_is_period_hierarchy": True,
+                "dhis2_period_key": "period_quarter",
+            },
+        },
+        {
+            "column_name": "period_month",
+            "extra": {
+                "dhis2_is_period_hierarchy": True,
+                "dhis2_period_key": "period_month",
+            },
+        },
+    ]
+
+    period_column_names = get_dhis2_period_hierarchy_column_names(columns)
+
+    assert period_column_names == [
+        "period_year",
+        "period_quarter",
+        "period_month",
+    ]
+    assert (
+        resolve_terminal_hierarchy_column(
+            ["period_year"],
+            period_column_names,
+        )
+        == "period_year"
+    )
+
+    predicate = build_terminal_hierarchy_sqla_predicate(
+        "period_year",
+        period_column_names,
+    )
+    assert predicate is not None
+    predicate_sql = str(predicate)
+    assert "period_year" in predicate_sql
+    assert "period_quarter" in predicate_sql
+    assert "period_month" in predicate_sql
 
 
 # ── COC / disaggregation-dimension tests ──────────────────────────────────────

@@ -53,6 +53,10 @@ import {
   TableChartTransformedProps,
   TableColumnConfig,
 } from './types';
+import {
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
+} from '../../../src/utils/dhis2Period';
 
 const { PERCENT_3_POINT } = NumberFormats;
 const { DATABASE_DATETIME } = TimeFormats;
@@ -200,7 +204,12 @@ const processColumns = memoizeOne(function processColumns(
   props: TableChartProps,
 ) {
   const {
-    datasource: { columnFormats, currencyFormats, verboseMap },
+    datasource: {
+      columnFormats,
+      currencyFormats,
+      verboseMap,
+      columns: datasourceColumns = [],
+    },
     rawFormData: {
       table_timestamp_format: tableTimestampFormat,
       metrics: metrics_,
@@ -211,6 +220,9 @@ const processColumns = memoizeOne(function processColumns(
   } = props;
   const granularity = extractTimegrain(props.rawFormData);
   const { data: records, colnames, coltypes } = queriesData[0] || {};
+  const dhis2PeriodColumns = getDHIS2PeriodColumnNames(
+    datasourceColumns as any[],
+  );
   // convert `metrics` and `percentMetrics` to the key names in `data.records`
   const metrics = (metrics_ ?? []).map(getMetricLabel);
   const rawPercentMetrics = (percentMetrics_ ?? []).map(getMetricLabel);
@@ -275,6 +287,8 @@ const processColumns = memoizeOne(function processColumns(
       } else if (isPercentMetric) {
         // percent metrics have a default format
         formatter = getNumberFormatter(numberFormat || PERCENT_3_POINT);
+      } else if (dhis2PeriodColumns.has(key)) {
+        formatter = value => formatDHIS2Period(String(value ?? ''));
       } else if (isMetric || (isNumber && (numberFormat || currency))) {
         formatter = currency?.symbol
           ? new CurrencyFormatter({

@@ -18,6 +18,7 @@
  */
 import '@testing-library/jest-dom';
 import { render, screen } from '@superset-ui/core/spec';
+import { GenericDataType } from '@apache-superset/core/api/core';
 import TableChart from '../src/TableChart';
 import transformProps from '../src/transformProps';
 import DateWithFormatter from '../src/utils/DateWithFormatter';
@@ -64,6 +65,41 @@ describe('plugin-chart-table', () => {
       expect(String(parsedDate)).toBe('2020-01-01 12:34:56');
       expect(parsedDate.getTime()).toBe(1577882096000);
     });
+
+    it('should format DHIS2 period columns with human-readable labels', () => {
+      const transformed = transformProps({
+        ...testData.basic,
+        datasource: {
+          ...testData.basic.datasource,
+          columns: [
+            {
+              column_name: 'period',
+              extra: { dhis2_is_period: true },
+            },
+          ],
+        },
+        queriesData: [
+          {
+            ...testData.basic.queriesData[0],
+            colnames: ['period', 'sum__num'],
+            coltypes: [GenericDataType.String, GenericDataType.Numeric],
+            data: [
+              {
+                period: '202503',
+                sum__num: 42,
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(
+        transformed.columns
+          .find(column => column.key === 'period')
+          ?.formatter?.('202503'),
+      ).toBe('March 2025');
+    });
+
     it('should process comparison columns when time_compare and comparison_type are set', () => {
       const transformedProps = transformProps(testData.comparison);
       const comparisonColumns = transformedProps.columns.filter(

@@ -18,15 +18,28 @@ import pytest
 from uuid import uuid4
 from marshmallow import ValidationError
 
+import superset.public_page.api as public_page_api
 from superset.extensions import db
 from superset.models.dashboard import Dashboard
-from superset.public_page.api import PublicPageRestApi
+from superset.models.slice import Slice
+from superset.public_page.api import (
+    DEFAULT_WELCOME_PAGE_CTA_TARGET,
+    DEFAULT_WELCOME_PAGE_DESCRIPTION,
+    DEFAULT_WELCOME_PAGE_SUBTITLE,
+    LEGACY_WELCOME_PAGE_DESCRIPTION,
+    LEGACY_WELCOME_PAGE_SUBTITLE,
+    PublicPageRestApi,
+)
+from superset.public_page.block_manager import DEFAULT_WELCOME_PAGE_SEED_VERSION
 from superset.public_page.models import (
     MediaAsset,
+    NavigationItem,
     Page,
+    PageBlock,
     PageComponent,
     PageRevision,
     PageSection,
+    ReusableBlock,
     StyleBundle,
     Template,
     Theme,
@@ -219,6 +232,180 @@ def test_serialize_page_derives_block_tree_from_legacy_sections(
     assert serialized["blocks"][0]["children"][0]["content"]["body"] == "Portal overview"
 
 
+def test_serialize_page_resolves_updated_reusable_block_references(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    reusable_block = ReusableBlock(
+        slug="shared-faq",
+        title="Shared FAQ",
+        category="documentation",
+        status="active",
+        is_active=True,
+    )
+    reusable_block.set_settings({})
+    reusable_block.set_blocks(
+        [
+            {
+                "uid": "faq_group",
+                "block_type": "group",
+                "slot": "content",
+                "sort_order": 0,
+                "is_container": True,
+                "content": {"title": "How current is the data?"},
+                "settings": {},
+                "styles": {},
+                "metadata": {"label": "FAQ Group"},
+                "children": [
+                    {
+                        "uid": "faq_answer",
+                        "block_type": "paragraph",
+                        "slot": "content",
+                        "sort_order": 0,
+                        "is_container": False,
+                        "content": {"body": "Data refreshes daily."},
+                        "settings": {},
+                        "styles": {},
+                        "metadata": {"label": "Answer"},
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+    )
+    page = Page(
+        slug="faq",
+        title="FAQ",
+        visibility="public",
+        is_published=True,
+        status="published",
+    )
+    reference_block = PageBlock(
+        page=page,
+        uid="faq_synced",
+        block_type="reusable_reference",
+        slot="content",
+        sort_order=0,
+        tree_path="0000",
+        depth=0,
+        is_container=False,
+        visibility="public",
+        status="active",
+        schema_version=1,
+    )
+    reference_block.set_content({"title": "Shared FAQ"})
+    reference_block.set_settings({"reusable_block_id": 1})
+    reference_block.set_styles({})
+    reference_block.set_metadata({"label": "Shared FAQ"})
+
+    db.session.add(reusable_block)
+    db.session.flush()
+    reference_block.set_settings({"reusable_block_id": reusable_block.id})
+    db.session.add(page)
+    db.session.add(reference_block)
+    db.session.flush()
+
+    serialized = api._serialize_page(page, include_admin=True, public_context=False)
+
+    assert serialized["blocks"][0]["reusable_block"]["title"] == "Shared FAQ"
+    assert (
+        serialized["blocks"][0]["reusable_block"]["blocks"][0]["content"]["title"]
+        == "How current is the data?"
+    )
+
+    reusable_block.set_blocks(
+        [
+            {
+                "uid": "faq_group",
+                "block_type": "group",
+                "slot": "content",
+                "sort_order": 0,
+                "is_container": True,
+                "content": {"title": "How current is the refreshed data?"},
+                "settings": {},
+                "styles": {},
+                "metadata": {"label": "FAQ Group"},
+                "children": [],
+            }
+        ]
+    )
+    db.session.flush()
+
+    refreshed = api._serialize_page(page, include_admin=True, public_context=False)
+
+    assert (
+        refreshed["blocks"][0]["reusable_block"]["blocks"][0]["content"]["title"]
+        == "How current is the refreshed data?"
+    )
+
+
+def test_upsert_reusable_block_creates_updates_and_deletes(app_context: None) -> None:
+    api = PublicPageRestApi()
+
+    created = api._upsert_reusable_block(
+        {
+            "title": "Shared CTA Band",
+            "description": "Shared call to action",
+            "category": "conversion",
+            "blocks": [
+                {
+                    "block_type": "callout",
+                    "content": {
+                        "title": "Open the national dashboard",
+                        "body": "Shared guidance for all district pages.",
+                    },
+                    "settings": {"tone": "success"},
+                    "styles": {},
+                    "metadata": {"label": "Shared CTA"},
+                    "children": [],
+                }
+            ],
+        }
+    )
+    db.session.flush()
+
+    assert created.id is not None
+    assert created.slug == "shared-cta-band"
+    assert created.get_blocks()[0]["content"]["title"] == "Open the national dashboard"
+
+    updated = api._upsert_reusable_block(
+        {
+            "id": created.id,
+            "title": "Shared CTA Band Updated",
+            "description": "Updated shared call to action",
+            "category": "conversion",
+            "blocks": [
+                {
+                    "block_type": "callout",
+                    "content": {
+                        "title": "Open the updated dashboard",
+                        "body": "This change should propagate to synced sections.",
+                    },
+                    "settings": {"tone": "info"},
+                    "styles": {},
+                    "metadata": {"label": "Shared CTA"},
+                    "children": [],
+                }
+            ],
+        }
+    )
+    db.session.flush()
+
+    assert updated.id == created.id
+    assert updated.title == "Shared CTA Band Updated"
+    assert updated.get_blocks()[0]["settings"]["tone"] == "info"
+
+    db.session.delete(updated)
+    db.session.flush()
+
+    assert (
+        db.session.query(ReusableBlock)
+        .filter(ReusableBlock.id == created.id)
+        .one_or_none()
+        is None
+    )
+
+
 def test_public_draft_page_save_does_not_require_public_references(
     app_context: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,6 +490,7 @@ def test_published_public_page_save_requires_public_references(
     api = PublicPageRestApi()
     captured: dict[str, list[bool]] = {"block_flags": [], "asset_flags": []}
 
+    monkeypatch.setattr(public_page_api, "_can_embed_charts", lambda: False)
     monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         api,
@@ -373,6 +561,85 @@ def test_published_public_page_save_requires_public_references(
     assert captured["asset_flags"] == [True, True]
 
 
+def test_published_public_page_publish_promotes_referenced_serving_charts(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    private_chart = Slice(id=101, slice_name="District trend", is_public=False)
+    original_query = db.session.query
+
+    class SliceQueryStub:
+        def filter(self, *args, **kwargs):
+            del args, kwargs
+            return self
+
+        def all(self):
+            return [private_chart]
+
+        def one_or_none(self):
+            return private_chart
+
+    def fake_query(model):
+        if model is Slice:
+            return SliceQueryStub()
+        return original_query(model)
+
+    monkeypatch.setattr(public_page_api, "_can_embed_charts", lambda: True)
+    monkeypatch.setattr(db.session, "query", fake_query)
+    monkeypatch.setattr(api, "_chart_uses_serving_tables", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_validate_template_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_style_bundle_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_parent_page_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_asset_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(api, "_upsert_blocks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_clear_legacy_sections", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_ensure_homepage_exists", lambda *_args, **_kwargs: None)
+
+    page = api._upsert_page(
+        {
+            "title": "Published page",
+            "slug": "published-page",
+            "visibility": "public",
+            "is_published": True,
+            "status": "published",
+            "settings": {},
+            "blocks": [
+                {
+                    "block_type": "chart",
+                    "content": {},
+                    "settings": {"chart_ref": {"id": 101}},
+                    "styles": {},
+                    "metadata": {},
+                    "children": [],
+                }
+            ],
+            "sections": [],
+        }
+    )
+
+    assert page.is_published is True
+    assert page.status == "published"
+    assert private_chart.is_public is True
+
+
 def test_page_breadcrumbs_include_parent_hierarchy(app_context: None) -> None:
     api = PublicPageRestApi()
     about = Page(
@@ -410,6 +677,115 @@ def test_page_breadcrumbs_include_parent_hierarchy(app_context: None) -> None:
             "path": "/superset/public/about/team/",
         },
     ]
+
+
+def test_page_breadcrumbs_use_canonical_path_for_homepage(app_context: None) -> None:
+    api = PublicPageRestApi()
+    homepage = Page(
+        id=1,
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+    )
+    team = Page(
+        id=2,
+        slug="team",
+        title="Team",
+        parent_page=homepage,
+        visibility="public",
+        is_published=True,
+        status="published",
+    )
+
+    breadcrumbs = api._page_breadcrumbs(team, public_context=True)
+
+    assert api._public_page_url(homepage) == "/superset/public/welcome/"
+    assert breadcrumbs[0]["path"] == "/superset/public/welcome/"
+    assert breadcrumbs[1]["path"] == "/superset/public/welcome/team/"
+
+
+def test_serialize_navigation_item_uses_canonical_path_for_homepage(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    homepage = Page(
+        id=4,
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+    )
+    item = NavigationItem(
+        id=9,
+        label="Welcome",
+        item_type="page",
+        visibility="public",
+        is_visible=True,
+        page=homepage,
+    )
+
+    serialized = api._serialize_navigation_item(
+        item,
+        pages=[homepage],
+        dashboards=[],
+        public_context=True,
+    )
+
+    assert serialized is not None
+    assert serialized["path"] == "/superset/public/welcome/"
+
+
+def test_ensure_homepage_exists_promotes_first_public_page(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    first_page = Page(
+        id=11,
+        slug="insights",
+        title="Insights",
+        visibility="public",
+        is_published=True,
+        status="published",
+        is_homepage=False,
+        display_order=0,
+    )
+    second_page = Page(
+        id=12,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        status="published",
+        is_homepage=False,
+        display_order=1,
+    )
+    pages = [first_page, second_page]
+
+    class QueryStub:
+        def filter(self, *args, **kwargs):
+            del args, kwargs
+            return self
+
+        def update(self, values, synchronize_session=False):
+            del synchronize_session
+            for page in pages:
+                page.is_homepage = values.get("is_homepage", page.is_homepage)
+
+    monkeypatch.setattr(api, "_list_pages", lambda admin=False: pages)
+    monkeypatch.setattr(db.session, "query", lambda model: QueryStub())
+    monkeypatch.setattr(db.session, "flush", lambda: None)
+
+    target_page = api._ensure_homepage_exists()
+
+    assert target_page is first_page
+    assert first_page.is_homepage is True
+    assert second_page.is_homepage is False
 
 
 def test_serialize_media_asset_exposes_download_url(app_context: None) -> None:
@@ -460,3 +836,241 @@ def test_validate_parent_page_reference_rejects_cycles(app_context: None) -> Non
         monkeypatch.setattr(db.session, "query", fake_query)
         with pytest.raises(ValidationError):
             api._validate_parent_page_reference(12, page=page)
+
+
+def test_seed_default_portal_creates_balanced_welcome_page_blocks(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(api, "_get_or_create_layout_config", lambda: None)
+    monkeypatch.setattr(
+        api,
+        "_list_public_serving_charts",
+        lambda: [
+            Slice(
+                id=7,
+                slice_name="Regional malaria burden trend",
+                description="Trend across the latest reporting periods.",
+            ),
+            Slice(
+                id=8,
+                slice_name="District reporting completeness",
+                description="Published completeness snapshot.",
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        api,
+        "_list_public_dashboards",
+        lambda: [
+            Dashboard(
+                id=31,
+                dashboard_title="National overview",
+                slug="national-overview",
+            )
+        ],
+    )
+
+    api._seed_default_portal()
+
+    welcome_page = db.session.query(Page).filter(Page.slug == "welcome").one()
+    root_blocks = [
+        block for block in welcome_page.blocks if block.parent_block_id is None
+    ]
+    hero_block = next(block for block in root_blocks if block.block_type == "hero")
+
+    assert welcome_page.subtitle == DEFAULT_WELCOME_PAGE_SUBTITLE
+    assert welcome_page.description == DEFAULT_WELCOME_PAGE_DESCRIPTION
+    assert (
+        welcome_page.get_settings()["defaultWelcomeSeedVersion"]
+        == DEFAULT_WELCOME_PAGE_SEED_VERSION
+    )
+    assert hero_block.get_content()["title"] == "Welcome to a trusted public analytics workspace"
+    assert any(
+        block.block_type == "dynamic_widget"
+        and block.get_settings().get("widgetType") == "indicator_highlights"
+        for block in root_blocks
+    )
+    assert any(
+        block.block_type == "dynamic_widget"
+        and block.get_settings().get("widgetType") == "dashboard_list"
+        for block in root_blocks
+    )
+    assert {
+        block.get_settings().get("chart_ref", {}).get("id")
+        for block in welcome_page.blocks
+        if block.block_type == "chart"
+    } == {7, 8}
+    assert welcome_page.sections == []
+
+
+def test_seed_default_portal_refreshes_legacy_welcome_page(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(api, "_get_or_create_layout_config", lambda: None)
+    monkeypatch.setattr(api, "_list_public_serving_charts", lambda: [])
+    monkeypatch.setattr(api, "_list_public_dashboards", lambda: [])
+
+    welcome_page = db.session.query(Page).filter(Page.slug == "welcome").one_or_none()
+    if welcome_page is None:
+        welcome_page = Page(slug="welcome", title="Welcome")
+        db.session.add(welcome_page)
+    for block in list(welcome_page.blocks):
+        db.session.delete(block)
+    for section in list(welcome_page.sections):
+        db.session.delete(section)
+    welcome_page.subtitle = LEGACY_WELCOME_PAGE_SUBTITLE
+    welcome_page.description = LEGACY_WELCOME_PAGE_DESCRIPTION
+    welcome_page.excerpt = None
+    welcome_page.seo_title = None
+    welcome_page.seo_description = None
+    welcome_page.status = "published"
+    welcome_page.is_published = True
+    welcome_page.is_homepage = True
+    welcome_page.display_order = 0
+    welcome_page.set_settings(
+        {
+            "heroCtaLabel": "Browse dashboards",
+            "heroCtaTarget": DEFAULT_WELCOME_PAGE_CTA_TARGET,
+        }
+    )
+    db.session.flush()
+
+    hero_section = PageSection(
+        page=welcome_page,
+        section_key="hero",
+        title="Towards malaria elimination in Uganda",
+        subtitle=(
+            "Serving-table powered public analytics for surveillance, programme "
+            "performance, and transparent reporting."
+        ),
+        section_type="hero",
+        display_order=0,
+        is_visible=True,
+    )
+    hero_section.set_settings({"columns": 1})
+    highlights_section = PageSection(
+        page=welcome_page,
+        section_key="highlights",
+        title="Latest Indicator Highlights",
+        subtitle="Derived from the most recent staged DHIS2 observations.",
+        section_type="kpi_band",
+        display_order=1,
+        is_visible=True,
+    )
+    db.session.add_all([hero_section, highlights_section])
+    db.session.flush()
+
+    hero_component = PageComponent(
+        section=hero_section,
+        component_key="welcome-intro",
+        component_type="markdown",
+        title="Portal Overview",
+        body="Legacy portal overview.",
+        display_order=0,
+        is_visible=True,
+    )
+    hero_component.set_settings({})
+    highlights_component = PageComponent(
+        section=highlights_section,
+        component_key="indicator-highlights",
+        component_type="indicator_highlights",
+        title="Indicator Highlights",
+        display_order=0,
+        is_visible=True,
+    )
+    highlights_component.set_settings({"limit": 6})
+    db.session.add_all([hero_component, highlights_component])
+    db.session.flush()
+    db.session.expire(welcome_page, ["blocks", "sections"])
+
+    api._seed_default_portal()
+
+    refreshed_page = db.session.query(Page).filter(Page.slug == "welcome").one()
+    hero_block = next(
+        block
+        for block in refreshed_page.blocks
+        if block.parent_block_id is None and block.block_type == "hero"
+    )
+
+    assert refreshed_page.subtitle == DEFAULT_WELCOME_PAGE_SUBTITLE
+    assert refreshed_page.description == DEFAULT_WELCOME_PAGE_DESCRIPTION
+    assert refreshed_page.sections == []
+    assert (
+        refreshed_page.get_settings()["defaultWelcomeSeedVersion"]
+        == DEFAULT_WELCOME_PAGE_SEED_VERSION
+    )
+    assert hero_block.get_content()["title"] == "Welcome to a trusted public analytics workspace"
+
+
+def test_seed_default_portal_preserves_custom_welcome_page(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(api, "_get_or_create_layout_config", lambda: None)
+    monkeypatch.setattr(api, "_list_public_serving_charts", lambda: [])
+    monkeypatch.setattr(api, "_list_public_dashboards", lambda: [])
+
+    welcome_page = db.session.query(Page).filter(Page.slug == "welcome").one_or_none()
+    if welcome_page is None:
+        welcome_page = Page(slug="welcome", title="Welcome")
+        db.session.add(welcome_page)
+    for block in list(welcome_page.blocks):
+        db.session.delete(block)
+    for section in list(welcome_page.sections):
+        db.session.delete(section)
+    welcome_page.subtitle = "Custom landing subtitle"
+    welcome_page.description = "Custom landing description."
+    welcome_page.excerpt = None
+    welcome_page.seo_title = None
+    welcome_page.seo_description = None
+    welcome_page.status = "published"
+    welcome_page.is_published = True
+    welcome_page.is_homepage = True
+    welcome_page.display_order = 0
+    welcome_page.set_settings(
+        {
+            "heroCtaLabel": "Open reports",
+            "heroCtaTarget": "/superset/public/reports/",
+        }
+    )
+    db.session.flush()
+
+    block = PageBlock(
+        page=welcome_page,
+        uid="custom_welcome_block",
+        block_type="paragraph",
+        slot="content",
+        sort_order=0,
+        tree_path="0000",
+        depth=0,
+        is_container=False,
+        visibility="public",
+        status="active",
+        schema_version=1,
+    )
+    block.set_content({"body": "Custom public welcome copy."})
+    block.set_settings({})
+    block.set_styles({})
+    block.set_metadata({"label": "Paragraph"})
+    db.session.add(block)
+    db.session.flush()
+    db.session.expire(welcome_page, ["blocks", "sections"])
+
+    api._seed_default_portal()
+
+    refreshed_page = db.session.query(Page).filter(Page.slug == "welcome").one()
+    root_blocks = [
+        candidate for candidate in refreshed_page.blocks if candidate.parent_block_id is None
+    ]
+
+    assert refreshed_page.subtitle == "Custom landing subtitle"
+    assert refreshed_page.description == "Custom landing description."
+    assert refreshed_page.get_settings().get("defaultWelcomeSeedVersion") is None
+    assert len(root_blocks) == 1
+    assert root_blocks[0].block_type == "paragraph"
+    assert root_blocks[0].get_content()["body"] == "Custom public welcome copy."

@@ -827,6 +827,294 @@ def test_staged_local_query_prefers_explicit_selected_hierarchy_level_for_termin
     assert "facility" in where_sql
 
 
+def test_staged_local_query_defaults_to_deepest_ou_and_selected_period_level(
+    mocker: MockerFixture,
+) -> None:
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+    engine = create_engine("sqlite://")
+
+    @contextmanager
+    def mock_get_sqla_engine(catalog=None, schema=None, **kwargs):
+        yield engine
+
+    mocker.patch.object(
+        serving_database,
+        "get_sqla_engine",
+        new=mock_get_sqla_engine,
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_4_anc_coverage",
+        sql="SELECT * FROM sv_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=serving_database,
+        database_id=7,
+        columns=[],
+        metrics=[],
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "region",
+                "verbose_name": "Region",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 2}'
+                ),
+            },
+            {
+                "column_name": "district",
+                "verbose_name": "District",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 3}'
+                ),
+            },
+            {
+                "column_name": "facility",
+                "verbose_name": "Facility",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 4}'
+                ),
+            },
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period": true, "dhis2_is_period_hierarchy": true, "dhis2_period_key": "period"}'
+                ),
+            },
+            {
+                "column_name": "period_year",
+                "verbose_name": "Period Year",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_year"}'
+                ),
+            },
+            {
+                "column_name": "period_quarter",
+                "verbose_name": "Period Quarter",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_quarter"}'
+                ),
+            },
+            {
+                "column_name": "period_month",
+                "verbose_name": "Period Month",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_month"}'
+                ),
+            },
+            {
+                "column_name": "cases",
+                "verbose_name": "Cases",
+                "type": "FLOAT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    sql = sqla_table.get_query_str_extended(
+        {
+            "granularity": None,
+            "from_dttm": None,
+            "to_dttm": None,
+            "groupby": ["period_year"],
+            "metrics": [],
+            "is_timeseries": False,
+            "filter": [],
+        },
+        mutate=False,
+    ).sql
+
+    where_sql = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "facility" in where_sql
+    assert "period_year" in where_sql
+    assert "period_quarter" in where_sql
+    assert "period_month" in where_sql
+
+
+def test_staged_local_query_skips_default_period_terminal_filter_for_raw_period_filters(
+    mocker: MockerFixture,
+) -> None:
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+    engine = create_engine("sqlite://")
+
+    @contextmanager
+    def mock_get_sqla_engine(catalog=None, schema=None, **kwargs):
+        yield engine
+
+    mocker.patch.object(
+        serving_database,
+        "get_sqla_engine",
+        new=mock_get_sqla_engine,
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_4_anc_coverage",
+        sql="SELECT * FROM sv_4_anc_coverage",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 4}',
+        database=serving_database,
+        database_id=7,
+        columns=[],
+        metrics=[],
+    )
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "region",
+                "verbose_name": "Region",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 2}'
+                ),
+            },
+            {
+                "column_name": "district",
+                "verbose_name": "District",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 3}'
+                ),
+            },
+            {
+                "column_name": "period",
+                "verbose_name": "Period",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period": true, "dhis2_is_period_hierarchy": true, "dhis2_period_key": "period"}'
+                ),
+            },
+            {
+                "column_name": "period_year",
+                "verbose_name": "Period Year",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_year"}'
+                ),
+            },
+            {
+                "column_name": "period_quarter",
+                "verbose_name": "Period Quarter",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_quarter"}'
+                ),
+            },
+            {
+                "column_name": "period_month",
+                "verbose_name": "Period Month",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+                "extra": (
+                    '{"dhis2_is_period_hierarchy": true, "dhis2_period_key": "period_month"}'
+                ),
+            },
+            {
+                "column_name": "cases",
+                "verbose_name": "Cases",
+                "type": "FLOAT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    sql = sqla_table.get_query_str_extended(
+        {
+            "granularity": None,
+            "from_dttm": None,
+            "to_dttm": None,
+            "groupby": ["region"],
+            "metrics": [],
+            "is_timeseries": False,
+            "filter": [{"col": "period", "op": "==", "val": "2024Q1"}],
+        },
+        mutate=False,
+    ).sql
+
+    where_sql = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "period" in where_sql
+    assert "period_year" not in where_sql
+    assert "period_quarter" not in where_sql
+    assert "period_month" not in where_sql
+
+
 def test_query_repairs_staged_local_dataset_before_generating_sql(
     mocker: MockerFixture,
 ) -> None:

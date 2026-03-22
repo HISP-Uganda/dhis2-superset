@@ -18,14 +18,16 @@
  */
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors, import/no-extraneous-dependencies */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppstoreOutlined,
   BarChartOutlined,
   BorderOutlined,
   CodeOutlined,
   ColumnHeightOutlined,
+  CopyOutlined,
   DashboardOutlined,
+  DeleteOutlined,
   DesktopOutlined,
   EditOutlined,
   EyeOutlined,
@@ -44,12 +46,13 @@ import {
   PaperClipOutlined,
   PictureOutlined,
   ProfileOutlined,
+  SaveOutlined,
   SettingOutlined,
   TableOutlined,
   TabletOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { styled, t } from '@superset-ui/core';
+import { styled, SupersetClient, t } from '@superset-ui/core';
 import {
   Alert,
   Button,
@@ -66,19 +69,30 @@ import {
   groupBlocksBySlot,
   RenderBlockTree,
 } from 'src/pages/PublicLandingPage/BlockRenderer';
+import { isMapLikeViz } from 'src/pages/PublicLandingPage/PublicChartContainer';
 import {
   addRootBlock,
+  cloneBlockTree,
+  cloneBlocksForInsertion,
+  createGridTemplateBlock,
+  createReusableReferenceBlock,
   createEmptyBlock,
+  detachReusableBlockByUid,
   duplicateBlockByUid,
   ensurePageBlocks,
   flattenBlocks,
+  insertBlocksRelative,
   insertBlockRelative,
   isContainerBlock,
   moveBlockByUid,
+  normalizeBlocks,
   removeBlockByUid,
+  setColumnsBlockTemplateByUid,
+  splitBlockIntoColumnsByUid,
   updateBlockByUid,
   updateBlockContent,
   updateBlockSettings,
+  updateBlockStyles,
 } from 'src/pages/PublicLandingPage/blockUtils';
 import type {
   PortalBlockDefinition,
@@ -89,10 +103,13 @@ import type {
   PortalPage,
   PortalPageBlock,
   PortalPageSummary,
+  PortalReusableBlock,
+  PortalStarterPattern,
   PortalStyleBundle,
   PortalTemplate,
   PortalTheme,
 } from 'src/pages/PublicLandingPage/types';
+import { resolvePortalPagePath } from 'src/pages/PublicLandingPage/portalUtils';
 import RichTextComposer, { extractPlainText } from './RichTextComposer';
 
 const StudioLayout = styled.div`
@@ -173,7 +190,7 @@ const FieldLabel = styled.div`
   color: ${({ theme }) => theme.colorTextLabel};
 `;
 
-const StudioBar = styled(Panel)`
+const StudioBar = styled.div`
   position: sticky;
   top: 76px;
   z-index: 10;
@@ -182,6 +199,9 @@ const StudioBar = styled(Panel)`
   justify-content: space-between;
   gap: 16px;
   padding: 12px 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.18);
 `;
 
 const StudioBarGroup = styled.div`
@@ -265,8 +285,35 @@ const DrawerStack = styled.div`
   gap: 18px;
 `;
 
-const DrawerSection = styled(Panel)`
+const DrawerSection = styled.div`
   padding: 14px 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+`;
+
+const StudioShell = styled.div`
+  display: grid;
+  gap: 18px;
+  align-items: start;
+
+  @media (min-width: 1440px) {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  }
+`;
+
+const StudioCenter = styled.div`
+  min-width: 0;
+`;
+
+const DockRail = styled.aside`
+  position: sticky;
+  top: 144px;
+  align-self: start;
+  max-height: calc(100vh - 164px);
+  overflow-y: auto;
+  padding-right: 4px;
+  scroll-margin-top: 144px;
 `;
 
 const RegionHeader = styled.div`
@@ -305,14 +352,30 @@ type BlockStudioProps = {
   themes: PortalTheme[];
   templates: PortalTemplate[];
   blockTypes?: PortalBlockDefinition[];
+  reusableBlocks?: PortalReusableBlock[];
+  starterPatterns?: PortalStarterPattern[];
   search: string;
   onSearchChange: (value: string) => void;
   onSelectPage: (pageSlug: string | null) => void;
   onNewPage: () => void;
   onChangeDraftPage: (nextPage: PortalPage) => void;
+  onSaveDraft?: () => void;
+  savingDraft?: boolean;
 };
 
 type Selection = { type: 'page' } | { type: 'block'; uid: string };
+
+type ReusableDraft = {
+  id?: number | null;
+  title: string;
+  description: string;
+  category: string;
+};
+
+type StatusMessage = {
+  type: 'success' | 'error' | 'info';
+  message: string;
+};
 
 const SLOT_OPTIONS = [
   { value: 'header', label: t('Header') },
@@ -321,6 +384,13 @@ const SLOT_OPTIONS = [
   { value: 'sidebar', label: t('Sidebar') },
   { value: 'cta', label: t('CTA') },
   { value: 'footer', label: t('Footer') },
+] as const;
+
+const GRID_TEMPLATE_OPTIONS = [
+  { value: 1, label: t('1 Col') },
+  { value: 2, label: t('2 Col') },
+  { value: 3, label: t('3 Col') },
+  { value: 4, label: t('4 Col') },
 ] as const;
 
 const PAGE_TYPE_OPTIONS = [
@@ -339,8 +409,90 @@ const PREVIEW_VIEWPORTS = [
   { value: 'mobile', label: t('Mobile') },
 ] as const;
 
+const SURFACE_PRESET_OPTIONS = [
+  { value: 'custom', label: t('Custom') },
+  { value: 'plain', label: t('Plain') },
+  { value: 'subtle', label: t('Subtle Card') },
+  { value: 'outlined', label: t('Outlined Card') },
+  { value: 'elevated', label: t('Elevated Card') },
+  { value: 'inverse', label: t('Inverse Card') },
+] as const;
+
+const BORDER_STYLE_OPTIONS = [
+  { value: 'solid', label: t('Solid') },
+  { value: 'dashed', label: t('Dashed') },
+  { value: 'dotted', label: t('Dotted') },
+  { value: 'double', label: t('Double') },
+  { value: 'none', label: t('None') },
+] as const;
+
+const CONTENT_ALIGN_OPTIONS = [
+  { value: 'stretch', label: t('Stretch') },
+  { value: 'start', label: t('Left') },
+  { value: 'center', label: t('Center') },
+  { value: 'end', label: t('Right') },
+] as const;
+
+const OVERFLOW_OPTIONS = [
+  { value: 'visible', label: t('Visible') },
+  { value: 'hidden', label: t('Hidden') },
+  { value: 'auto', label: t('Auto') },
+  { value: 'scroll', label: t('Scroll') },
+] as const;
+
+const CHART_SURFACE_OPTIONS = [
+  { value: 'default', label: t('Default Card') },
+  { value: 'borderless', label: t('Borderless') },
+  { value: 'map_focus', label: t('Map Focus') },
+] as const;
+
+const CHART_LEGEND_OPTIONS = [
+  { value: 'default', label: t('Inherit Chart') },
+  { value: 'horizontal_top', label: t('Horizontal Top') },
+  { value: 'horizontal_bottom', label: t('Horizontal Bottom') },
+  { value: 'vertical_right', label: t('Vertical Right') },
+  { value: 'hidden', label: t('Hide Legend') },
+] as const;
+
+const DOCKED_DRAWER_BREAKPOINT = 1440;
+
 function blockKey(block: PortalPageBlock) {
   return block.uid || String(block.id);
+}
+
+function createReusableDraft(
+  reusableBlock?: PortalReusableBlock | null,
+  fallbackTitle?: string,
+): ReusableDraft {
+  return {
+    id: reusableBlock?.id ?? null,
+    title: reusableBlock?.title || fallbackTitle || '',
+    description: reusableBlock?.description || '',
+    category: reusableBlock?.category || 'custom',
+  };
+}
+
+function sortReusableLibrary(reusableBlocks: PortalReusableBlock[]) {
+  return [...(reusableBlocks || [])].sort((left, right) =>
+    (left.title || '').localeCompare(right.title || ''),
+  );
+}
+
+function sameReusableLibrary(
+  left: PortalReusableBlock[],
+  right: PortalReusableBlock[],
+) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((item, index) => {
+    const other = right[index];
+    return (
+      item.id === other?.id &&
+      item.title === other?.title &&
+      item.changed_on === other?.changed_on
+    );
+  });
 }
 
 function blockIcon(type?: string, iconName?: string | null) {
@@ -382,6 +534,9 @@ function blockIcon(type?: string, iconName?: string | null) {
     case 'button':
     case 'link':
       return <LinkOutlined />;
+    case 'copy':
+    case 'reusable_reference':
+      return <CopyOutlined />;
     case 'divider':
     case 'minus':
       return <BorderOutlined />;
@@ -451,6 +606,12 @@ const FALLBACK_BLOCK_TYPES: PortalBlockDefinition[] = [
     label: t('Card'),
     category: 'layout',
     is_container: true,
+  },
+  {
+    type: 'reusable_reference',
+    label: t('Reusable Section'),
+    category: 'layout',
+    is_container: false,
   },
   {
     type: 'rich_text',
@@ -670,6 +831,113 @@ function richTextValue(
   );
 }
 
+function richFieldValue(
+  block: PortalPageBlock | null,
+  field: string,
+  fallback = '',
+) {
+  if (!block) {
+    return fallback;
+  }
+  return block.content?.[`${field}_html`] || block.content?.[field] || fallback;
+}
+
+function settingsFieldValue(
+  block: PortalPageBlock | null,
+  field: string,
+  fallback = '',
+) {
+  if (!block) {
+    return fallback;
+  }
+  return (
+    block.settings?.[`${field}_html`] || block.settings?.[field] || fallback
+  );
+}
+
+function normalizedStyleValue(value: any) {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  return value;
+}
+
+function numericStyleValue(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const match = value.trim().match(/^(-?\d+(?:\.\d+)?)px?$/i);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
+function pixelStyleValue(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return `${Math.max(Number(value), 0)}px`;
+}
+
+function surfacePresetStyles(preset: string) {
+  switch (preset) {
+    case 'plain':
+      return {
+        backgroundColor: 'transparent',
+        color: undefined,
+        borderColor: 'transparent',
+        borderStyle: 'solid',
+        borderWidth: '0px',
+        boxShadow: 'none',
+      };
+    case 'subtle':
+      return {
+        backgroundColor: '#ffffff',
+        color: undefined,
+        borderColor: 'rgba(148, 163, 184, 0.18)',
+        borderStyle: 'solid',
+        borderWidth: '1px',
+        boxShadow: 'none',
+      };
+    case 'outlined':
+      return {
+        backgroundColor: '#ffffff',
+        color: undefined,
+        borderColor: 'rgba(148, 163, 184, 0.35)',
+        borderStyle: 'solid',
+        borderWidth: '1px',
+        boxShadow: 'none',
+      };
+    case 'elevated':
+      return {
+        backgroundColor: '#ffffff',
+        color: undefined,
+        borderColor: 'rgba(148, 163, 184, 0.14)',
+        borderStyle: 'solid',
+        borderWidth: '1px',
+        boxShadow: '0 18px 42px rgba(15, 23, 42, 0.14)',
+      };
+    case 'inverse':
+      return {
+        backgroundColor: '#0f172a',
+        color: '#f8fafc',
+        borderColor: '#0f172a',
+        borderStyle: 'solid',
+        borderWidth: '1px',
+        boxShadow: '0 18px 42px rgba(15, 23, 42, 0.2)',
+      };
+    default:
+      return {};
+  }
+}
+
 export default function BlockStudio({
   draftPage,
   pages,
@@ -681,11 +949,15 @@ export default function BlockStudio({
   themes,
   templates,
   blockTypes = [],
+  reusableBlocks = [],
+  starterPatterns = [],
   search,
   onSearchChange,
   onSelectPage,
   onNewPage,
   onChangeDraftPage,
+  onSaveDraft,
+  savingDraft = false,
 }: BlockStudioProps) {
   const [selection, setSelection] = useState<Selection>({ type: 'page' });
   const [quickInsertType, setQuickInsertType] = useState('paragraph');
@@ -698,6 +970,25 @@ export default function BlockStudio({
   );
   const [documentOpen, setDocumentOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(true);
+  const [reusableLibrary, setReusableLibrary] = useState<PortalReusableBlock[]>(
+    () => sortReusableLibrary(reusableBlocks),
+  );
+  const [selectedReusableId, setSelectedReusableId] = useState<number | null>(
+    reusableBlocks[0]?.id || null,
+  );
+  const [reusableDraft, setReusableDraft] = useState<ReusableDraft>(() =>
+    createReusableDraft(reusableBlocks[0] || null),
+  );
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const [libraryStatus, setLibraryStatus] = useState<StatusMessage | null>(
+    null,
+  );
+  const [desktopDockedPanels, setDesktopDockedPanels] = useState(
+    typeof window !== 'undefined'
+      ? window.matchMedia(`(min-width: ${DOCKED_DRAWER_BREAKPOINT}px)`).matches
+      : false,
+  );
+  const settingsDockRef = useRef<HTMLElement | null>(null);
   const blocks = useMemo(() => ensurePageBlocks(draftPage), [draftPage]);
   const slotGroups = useMemo(() => groupBlocksBySlot(blocks), [blocks]);
   const flattenedBlocks = useMemo(() => flattenBlocks(blocks), [blocks]);
@@ -739,10 +1030,55 @@ export default function BlockStudio({
   const insertableBlockTypes = blockTypes.length
     ? blockTypes
     : FALLBACK_BLOCK_TYPES;
+  const selectedReusableBlock =
+    reusableLibrary.find(
+      reusableBlock => reusableBlock.id === selectedReusableId,
+    ) || null;
+  const reusableBlockOptions = useMemo(
+    () =>
+      reusableLibrary.map(reusableBlock => ({
+        value: reusableBlock.id,
+        label: `${reusableBlock.title} · ${reusableBlock.category || 'custom'}`,
+      })),
+    [reusableLibrary],
+  );
+  const selectedBlockCanSeedReusable =
+    Boolean(selectedBlock) &&
+    selectedBlock?.block_type !== 'reusable_reference';
 
   useEffect(() => {
     setSelection({ type: 'page' });
   }, [draftPage?.id]);
+
+  useEffect(() => {
+    const nextLibrary = sortReusableLibrary(reusableBlocks);
+    if (sameReusableLibrary(nextLibrary, reusableLibrary)) {
+      return;
+    }
+    setReusableLibrary(nextLibrary);
+    setSelectedReusableId(previous => {
+      if (previous && nextLibrary.some(item => item.id === previous)) {
+        return previous;
+      }
+      return nextLibrary[0]?.id || null;
+    });
+  }, [reusableBlocks, reusableLibrary]);
+
+  useEffect(() => {
+    setReusableDraft(
+      createReusableDraft(
+        selectedReusableBlock,
+        selectedBlock?.content?.title ||
+          selectedBlock?.content?.text ||
+          selectedBlock?.metadata?.label,
+      ),
+    );
+  }, [
+    selectedBlock?.content?.text,
+    selectedBlock?.content?.title,
+    selectedBlock?.metadata?.label,
+    selectedReusableBlock,
+  ]);
 
   useEffect(() => {
     if (selection.type === 'block' && !selectedBlock) {
@@ -755,6 +1091,25 @@ export default function BlockStudio({
       setSettingsOpen(true);
     }
   }, [draftPage?.id, hasDraftPage, selection.type, selectionKey]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) {
+      return undefined;
+    }
+    const mediaQuery = window.matchMedia(
+      `(min-width: ${DOCKED_DRAWER_BREAKPOINT}px)`,
+    );
+    const syncDockedPanels = (event: MediaQueryList | MediaQueryListEvent) => {
+      setDesktopDockedPanels(event.matches);
+    };
+    syncDockedPanels(mediaQuery);
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', syncDockedPanels);
+      return () => mediaQuery.removeEventListener('change', syncDockedPanels);
+    }
+    mediaQuery.addListener(syncDockedPanels);
+    return () => mediaQuery.removeListener(syncDockedPanels);
+  }, []);
 
   function pushBlocks(nextBlocks: PortalPageBlock[]) {
     if (!draftPage || isPublishedPage) {
@@ -775,6 +1130,19 @@ export default function BlockStudio({
       ...patch,
       blocks,
     });
+  }
+
+  function updatePageSettings(patch: Record<string, any>) {
+    if (!draftPage || isPublishedPage) {
+      return;
+    }
+    const nextSettings = {
+      ...(draftPage.settings || {}),
+    };
+    Object.entries(patch).forEach(([key, value]) => {
+      nextSettings[key] = normalizedStyleValue(value);
+    });
+    updatePage({ settings: nextSettings });
   }
 
   function updatePageRichText(field: 'description' | 'excerpt', html: string) {
@@ -823,6 +1191,332 @@ export default function BlockStudio({
     if (insertedBlock) {
       setSelection({ type: 'block', uid: blockKey(insertedBlock) });
     }
+  }
+
+  function addBlockToSlot(blockType: string, slot: string) {
+    if (!draftPage || isPublishedPage) {
+      return;
+    }
+    const nextBlock = createEmptyBlock(blockType);
+    nextBlock.slot = blockType === 'hero' ? 'hero' : slot || 'content';
+    pushBlocks([...cloneBlockTree(blocks), nextBlock]);
+    setSelection({ type: 'block', uid: blockKey(nextBlock) });
+  }
+
+  function addBlockRelativeToBlock(
+    block: PortalPageBlock,
+    mode: 'after' | 'child',
+    blockType = quickInsertType,
+  ) {
+    if (!draftPage || isPublishedPage) {
+      return;
+    }
+    const targetUid = blockKey(block);
+    const existingKeys = new Set(
+      flattenBlocks(blocks).map(({ block: item }) => blockKey(item)),
+    );
+    let nextBlocks = insertBlockRelative(blocks, targetUid, blockType, mode);
+    let insertedBlock = flattenBlocks(nextBlocks)
+      .map(({ block: item }) => item)
+      .find(item => !existingKeys.has(blockKey(item)));
+    if (insertedBlock) {
+      const insertedKey = blockKey(insertedBlock);
+      const resolvedSlot =
+        block.block_type === 'hero'
+          ? 'hero'
+          : block.slot || quickInsertSlot || insertedBlock.slot || 'content';
+      nextBlocks = updateBlockByUid(nextBlocks, insertedKey, {
+        slot: resolvedSlot,
+      });
+      insertedBlock =
+        flattenBlocks(nextBlocks)
+          .map(({ block: item }) => item)
+          .find(item => blockKey(item) === insertedKey) || insertedBlock;
+    }
+    pushBlocks(nextBlocks);
+    if (insertedBlock) {
+      setSelection({ type: 'block', uid: blockKey(insertedBlock) });
+    }
+  }
+
+  function insertGridTemplate(
+    columnCount: number,
+    targetBlock?: PortalPageBlock | null,
+    mode?: 'after' | 'child',
+  ) {
+    if (!draftPage || isPublishedPage) {
+      return;
+    }
+    const templateBlock = createGridTemplateBlock(columnCount, {
+      slot:
+        targetBlock?.block_type === 'hero'
+          ? 'hero'
+          : targetBlock?.slot || quickInsertSlot || 'content',
+      rowMinHeight:
+        Number(targetBlock?.settings?.rowMinHeight) ||
+        Number(targetBlock?.settings?.minHeight) ||
+        240,
+    });
+    const nextBlocks = insertBlocksRelative(
+      blocks,
+      targetBlock ? blockKey(targetBlock) : null,
+      [templateBlock],
+      mode ||
+        (targetBlock && isContainerBlock(targetBlock.block_type)
+          ? 'child'
+          : 'after'),
+    );
+    pushBlocks(nextBlocks);
+    setSelection({ type: 'block', uid: blockKey(templateBlock) });
+  }
+
+  function resolveInsertionMode() {
+    return selectedBlock && isContainerBlock(selectedBlock.block_type)
+      ? 'child'
+      : 'after';
+  }
+
+  function applyInsertionSlot(nextBlocks: PortalPageBlock[]) {
+    const preferredSlot = selectedBlock?.slot || quickInsertSlot || 'content';
+    return nextBlocks.map(block => ({
+      ...block,
+      slot:
+        block.block_type === 'hero'
+          ? 'hero'
+          : preferredSlot || block.slot || 'content',
+    }));
+  }
+
+  function insertPreparedBlocks(preparedBlocks: PortalPageBlock[]) {
+    if (!draftPage || isPublishedPage || !preparedBlocks.length) {
+      return;
+    }
+    const targetUid = selection.type === 'block' ? selection.uid : null;
+    const nextInsertedBlocks = applyInsertionSlot(
+      cloneBlockTree(preparedBlocks),
+    );
+    const nextBlocks = insertBlocksRelative(
+      blocks,
+      targetUid,
+      nextInsertedBlocks,
+      resolveInsertionMode(),
+    );
+    pushBlocks(nextBlocks);
+    setSelection({ type: 'block', uid: blockKey(nextInsertedBlocks[0]) });
+  }
+
+  function syncReusableReferences(nextReusableBlock: PortalReusableBlock) {
+    if (!draftPage) {
+      return;
+    }
+    const nextBlocks = cloneBlockTree(blocks);
+    function walk(items: PortalPageBlock[]): PortalPageBlock[] {
+      return items.map(item => {
+        const reusableBlockId =
+          item.settings?.reusable_block_id ||
+          item.settings?.reusable_block_ref?.id ||
+          item.reusable_block?.id;
+        const children = walk(item.children || []);
+        if (reusableBlockId !== nextReusableBlock.id) {
+          return { ...item, children };
+        }
+        return {
+          ...item,
+          content: {
+            ...(item.content || {}),
+            title: item.content?.title || nextReusableBlock.title,
+          },
+          metadata: {
+            ...(item.metadata || {}),
+            label: nextReusableBlock.title,
+          },
+          settings: {
+            ...(item.settings || {}),
+            reusable_block_id: nextReusableBlock.id,
+            reusable_block_ref: { id: nextReusableBlock.id },
+          },
+          reusable_block: nextReusableBlock,
+          children,
+        };
+      });
+    }
+    pushBlocks(walk(nextBlocks));
+  }
+
+  function markReusableReferencesUnavailable(reusableBlockId: number) {
+    if (!draftPage) {
+      return;
+    }
+    const nextBlocks = cloneBlockTree(blocks);
+    function walk(items: PortalPageBlock[]): PortalPageBlock[] {
+      return items.map(item => {
+        const referencedId =
+          item.settings?.reusable_block_id ||
+          item.settings?.reusable_block_ref?.id ||
+          item.reusable_block?.id;
+        const children = walk(item.children || []);
+        if (referencedId !== reusableBlockId) {
+          return { ...item, children };
+        }
+        return {
+          ...item,
+          reusable_block: null,
+          settings: {
+            ...(item.settings || {}),
+            render_error: t('Reusable section is unavailable for rendering'),
+          },
+          children,
+        };
+      });
+    }
+    pushBlocks(walk(nextBlocks));
+  }
+
+  async function saveReusableBlockDraft(options?: { overwrite?: boolean }) {
+    const overwrite = options?.overwrite ?? false;
+    const sourceBlocks = selectedBlockCanSeedReusable
+      ? cloneBlocksForInsertion([selectedBlock as PortalPageBlock])
+      : selectedReusableBlock?.blocks || [];
+    if (!sourceBlocks.length) {
+      setLibraryStatus({
+        type: 'error',
+        message: t('Select a non-synced block or reusable item before saving.'),
+      });
+      return;
+    }
+    const title =
+      reusableDraft.title.trim() ||
+      selectedBlock?.content?.title ||
+      selectedBlock?.content?.text ||
+      selectedReusableBlock?.title ||
+      t('Reusable Section');
+    setLibraryBusy(true);
+    setLibraryStatus(null);
+    try {
+      const response = await SupersetClient.post({
+        endpoint: '/api/v1/public_page/admin/reusable-blocks',
+        jsonPayload: {
+          id: overwrite ? reusableDraft.id || selectedReusableId : null,
+          title,
+          description: reusableDraft.description.trim(),
+          category: reusableDraft.category.trim() || 'custom',
+          status: selectedReusableBlock?.status || 'active',
+          is_active: selectedReusableBlock?.is_active ?? true,
+          settings: { ...(selectedReusableBlock?.settings || {}) },
+          blocks: normalizeBlocks(sourceBlocks),
+        },
+      });
+      const savedReusableBlock = response.json?.result as PortalReusableBlock;
+      setReusableLibrary(previous => {
+        const nextLibrary = previous.filter(
+          item => item.id !== savedReusableBlock.id,
+        );
+        return sortReusableLibrary([...nextLibrary, savedReusableBlock]);
+      });
+      setSelectedReusableId(savedReusableBlock.id);
+      setReusableDraft(createReusableDraft(savedReusableBlock));
+      syncReusableReferences(savedReusableBlock);
+      setLibraryStatus({
+        type: 'success',
+        message: overwrite
+          ? t('Reusable section updated from the current selection.')
+          : t('Reusable section saved from the current selection.'),
+      });
+    } catch (error) {
+      setLibraryStatus({
+        type: 'error',
+        message:
+          error instanceof Error
+            ? error.message
+            : t('Failed to save the reusable section.'),
+      });
+    } finally {
+      setLibraryBusy(false);
+    }
+  }
+
+  async function deleteSelectedReusableBlock() {
+    if (!selectedReusableId) {
+      return;
+    }
+    setLibraryBusy(true);
+    setLibraryStatus(null);
+    try {
+      await SupersetClient.delete({
+        endpoint: `/api/v1/public_page/admin/reusable-blocks/${selectedReusableId}`,
+      });
+      const remainingLibrary = reusableLibrary.filter(
+        reusableBlock => reusableBlock.id !== selectedReusableId,
+      );
+      setReusableLibrary(remainingLibrary);
+      markReusableReferencesUnavailable(selectedReusableId);
+      setSelectedReusableId(remainingLibrary[0]?.id || null);
+      setReusableDraft(createReusableDraft(remainingLibrary[0] || null));
+      setLibraryStatus({
+        type: 'success',
+        message: t(
+          'Reusable section deleted. Existing synced references were marked unavailable.',
+        ),
+      });
+    } catch (error) {
+      setLibraryStatus({
+        type: 'error',
+        message:
+          error instanceof Error
+            ? error.message
+            : t('Failed to delete the reusable section.'),
+      });
+    } finally {
+      setLibraryBusy(false);
+    }
+  }
+
+  function insertReusableReference(reusableBlock: PortalReusableBlock) {
+    insertPreparedBlocks([createReusableReferenceBlock(reusableBlock)]);
+    setLibraryStatus({
+      type: 'info',
+      message: t('Inserted a synced reusable section into the page.'),
+    });
+  }
+
+  function insertReusableCopy(reusableBlock: PortalReusableBlock) {
+    insertPreparedBlocks(cloneBlocksForInsertion(reusableBlock.blocks || []));
+    setLibraryStatus({
+      type: 'info',
+      message: t('Inserted a detached copy of the reusable section.'),
+    });
+  }
+
+  function insertStarterPattern(pattern: PortalStarterPattern) {
+    insertPreparedBlocks(cloneBlocksForInsertion(pattern.blocks || []));
+    setLibraryStatus({
+      type: 'info',
+      message: t('Starter pattern inserted into the draft page.'),
+    });
+  }
+
+  function detachSelectedReusableReference() {
+    if (!selectedBlock || selectedBlock.block_type !== 'reusable_reference') {
+      return;
+    }
+    const existingKeys = new Set(
+      flattenedBlocks.map(({ block }) => blockKey(block)),
+    );
+    const nextBlocks = detachReusableBlockByUid(
+      blocks,
+      blockKey(selectedBlock),
+    );
+    const firstInsertedBlock = flattenBlocks(nextBlocks)
+      .map(({ block }) => block)
+      .find(block => !existingKeys.has(blockKey(block)));
+    pushBlocks(nextBlocks);
+    if (firstInsertedBlock) {
+      setSelection({ type: 'block', uid: blockKey(firstInsertedBlock) });
+    }
+    setLibraryStatus({
+      type: 'info',
+      message: t('Detached the synced section into local editable blocks.'),
+    });
   }
 
   function updateSelectedBlock(patch: Partial<PortalPageBlock>) {
@@ -894,6 +1588,41 @@ export default function BlockStudio({
     pushBlocks(updateBlockSettings(blocks, blockKey(selectedBlock), patch));
   }
 
+  function updateSelectedBlockStyles(patch: Record<string, any>) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    const normalizedPatch = Object.fromEntries(
+      Object.entries(patch).map(([key, value]) => [
+        key,
+        normalizedStyleValue(value),
+      ]),
+    );
+    pushBlocks(
+      updateBlockStyles(blocks, blockKey(selectedBlock), normalizedPatch),
+    );
+  }
+
+  function updateSelectedBlockRichField(field: string, html: string) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    updateSelectedBlockContent({
+      [field]: extractPlainText(html),
+      [`${field}_html`]: html,
+    });
+  }
+
+  function updateSelectedBlockSettingsRichField(field: string, html: string) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    updateSelectedBlockSettings({
+      [field]: extractPlainText(html),
+      [`${field}_html`]: html,
+    });
+  }
+
   function removeSelectedBlock() {
     if (!selectedBlock || isPublishedPage) {
       return;
@@ -934,6 +1663,86 @@ export default function BlockStudio({
     updateSelectedBlockSettings({
       minHeight: Math.max(currentHeight + direction * 40, 0),
     });
+  }
+
+  function applySurfacePreset(preset: string) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    updateSelectedBlockSettings({ surfacePreset: preset });
+    if (preset !== 'custom') {
+      updateSelectedBlockStyles(surfacePresetStyles(preset));
+    }
+  }
+
+  function handleResizeBlock(
+    block: PortalPageBlock,
+    patch: { gridSpan: number; minHeight: number },
+  ) {
+    if (isPublishedPage) {
+      return;
+    }
+    pushBlocks(
+      updateBlockSettings(blocks, blockKey(block), {
+        gridSpan: patch.gridSpan,
+        minHeight: patch.minHeight,
+      }),
+    );
+  }
+
+  function splitSelectedBlockIntoColumns(columnCount = 2) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    const result = splitBlockIntoColumnsByUid(
+      blocks,
+      blockKey(selectedBlock),
+      columnCount,
+    );
+    pushBlocks(result.blocks);
+    if (result.focusUid) {
+      setSelection({ type: 'block', uid: result.focusUid });
+    }
+  }
+
+  function applySelectedGridTemplate(columnCount: number) {
+    if (!selectedBlock || isPublishedPage) {
+      return;
+    }
+    if (selectedBlock.block_type === 'column') {
+      insertGridTemplate(columnCount, selectedBlock, 'child');
+      return;
+    }
+    if (selectedBlock.block_type === 'columns') {
+      pushBlocks(
+        setColumnsBlockTemplateByUid(
+          blocks,
+          blockKey(selectedBlock),
+          columnCount,
+        ),
+      );
+      setSelection({ type: 'block', uid: blockKey(selectedBlock) });
+      return;
+    }
+    if (columnCount === 1) {
+      insertGridTemplate(1, selectedBlock);
+      return;
+    }
+    splitSelectedBlockIntoColumns(columnCount);
+  }
+
+  function openOrFocusPanel(
+    panelRef: { current: HTMLElement | null },
+    openPanel: () => void,
+  ) {
+    if (desktopDockedPanels && panelRef.current) {
+      panelRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+      return;
+    }
+    openPanel();
   }
 
   const quickInsertLabel =
@@ -1108,6 +1917,39 @@ export default function BlockStudio({
               />
             </FieldBlock>
             <FieldBlock>
+              <FieldLabel>{t('Content Width')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(draftPage.settings?.pageMaxWidth || '')}
+                placeholder={t('100%, 1280px, 90rem')}
+                onChange={event =>
+                  updatePageSettings({ pageMaxWidth: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Sidebar Width')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(draftPage.settings?.sidebarWidth || '')}
+                placeholder={t('320px')}
+                onChange={event =>
+                  updatePageSettings({ sidebarWidth: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Content Gap')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(draftPage.settings?.contentAreaGap || '')}
+                placeholder={t('24px')}
+                onChange={event =>
+                  updatePageSettings({ contentAreaGap: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
               <FieldLabel>{t('Published')}</FieldLabel>
               <Switch
                 disabled={isPublishedPage}
@@ -1116,7 +1958,7 @@ export default function BlockStudio({
               />
             </FieldBlock>
             <FieldBlock>
-              <FieldLabel>{t('Homepage')}</FieldLabel>
+              <FieldLabel>{t('Landing Page')}</FieldLabel>
               <Switch
                 disabled={isPublishedPage}
                 checked={draftPage.is_homepage}
@@ -1244,8 +2086,11 @@ export default function BlockStudio({
             </FieldBlock>
           </FieldGrid>
           <TinyMeta>
-            {t('Public path')}: /superset/public/
-            {draftPage.path || draftPage.slug || t('page-slug')}/
+            {t('Public path')}:{' '}
+            {resolvePortalPagePath({
+              ...draftPage,
+              slug: draftPage.slug || 'page-slug',
+            })}
           </TinyMeta>
           {draftPage.parent_page ? (
             <TinyMeta>
@@ -1293,6 +2138,10 @@ export default function BlockStudio({
                     ...selectedBlock.metadata,
                     ...nextDefinition.metadata,
                   },
+                  reusable_block:
+                    value === 'reusable_reference'
+                      ? selectedBlock.reusable_block || null
+                      : null,
                   children:
                     nextDefinition.is_container ||
                     !selectedBlock.children.length
@@ -1421,70 +2270,170 @@ export default function BlockStudio({
           selectedBlock.block_type === 'download') && (
           <FieldBlock>
             <FieldLabel>{t('Title')}</FieldLabel>
-            <Input
-              disabled={isPublishedPage}
-              value={selectedBlock.content?.title || ''}
-              onChange={event =>
-                updateSelectedBlockContent({ title: event.target.value })
-              }
+            <RichTextComposer
+              readOnly={isPublishedPage}
+              minHeight={120}
+              value={richFieldValue(selectedBlock, 'title')}
+              onChange={value => updateSelectedBlockRichField('title', value)}
             />
           </FieldBlock>
         )}
         {selectedBlock.block_type === 'heading' && (
-          <FieldGrid>
+          <SectionList>
             <FieldBlock>
               <FieldLabel>{t('Text')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.text || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ text: event.target.value })
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={120}
+                value={richFieldValue(selectedBlock, 'text')}
+                onChange={value => updateSelectedBlockRichField('text', value)}
+              />
+            </FieldBlock>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Level')}</FieldLabel>
+                <InputNumber
+                  disabled={isPublishedPage}
+                  style={{ width: '100%' }}
+                  min={1}
+                  max={6}
+                  value={Number(selectedBlock.content?.level) || 2}
+                  onChange={value =>
+                    updateSelectedBlockContent({ level: Number(value) || 2 })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+          </SectionList>
+        )}
+        {selectedBlock.block_type === 'hero' && (
+          <SectionList>
+            <FieldBlock>
+              <FieldLabel>{t('Eyebrow')}</FieldLabel>
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'eyebrow')}
+                onChange={value =>
+                  updateSelectedBlockRichField('eyebrow', value)
                 }
               />
             </FieldBlock>
             <FieldBlock>
-              <FieldLabel>{t('Level')}</FieldLabel>
-              <InputNumber
-                disabled={isPublishedPage}
-                style={{ width: '100%' }}
-                min={1}
-                max={6}
-                value={Number(selectedBlock.content?.level) || 2}
+              <FieldLabel>{t('Subtitle')}</FieldLabel>
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={140}
+                value={richFieldValue(selectedBlock, 'subtitle')}
                 onChange={value =>
-                  updateSelectedBlockContent({ level: Number(value) || 2 })
+                  updateSelectedBlockRichField('subtitle', value)
                 }
               />
             </FieldBlock>
-          </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Primary Action Label')}</FieldLabel>
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={settingsFieldValue(
+                    selectedBlock,
+                    'primaryActionLabel',
+                  )}
+                  onChange={value =>
+                    updateSelectedBlockSettingsRichField(
+                      'primaryActionLabel',
+                      value,
+                    )
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Primary Action URL')}</FieldLabel>
+                <Input
+                  disabled={isPublishedPage}
+                  value={selectedBlock.settings?.primaryActionUrl || ''}
+                  onChange={event =>
+                    updateSelectedBlockSettings({
+                      primaryActionUrl: event.target.value,
+                    })
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Secondary Action Label')}</FieldLabel>
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={settingsFieldValue(
+                    selectedBlock,
+                    'secondaryActionLabel',
+                  )}
+                  onChange={value =>
+                    updateSelectedBlockSettingsRichField(
+                      'secondaryActionLabel',
+                      value,
+                    )
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Secondary Action URL')}</FieldLabel>
+                <Input
+                  disabled={isPublishedPage}
+                  value={selectedBlock.settings?.secondaryActionUrl || ''}
+                  onChange={event =>
+                    updateSelectedBlockSettings({
+                      secondaryActionUrl: event.target.value,
+                    })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+          </SectionList>
         )}
-        {selectedBlock.block_type === 'hero' && (
-          <FieldBlock>
-            <FieldLabel>{t('Subtitle')}</FieldLabel>
-            <Input.TextArea
-              disabled={isPublishedPage}
-              rows={3}
-              value={selectedBlock.content?.subtitle || ''}
-              onChange={event =>
-                updateSelectedBlockContent({ subtitle: event.target.value })
-              }
-            />
-          </FieldBlock>
+        {selectedBlock.block_type === 'card' && (
+          <SectionList>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Button Label')}</FieldLabel>
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={richFieldValue(selectedBlock, 'buttonLabel')}
+                  onChange={value =>
+                    updateSelectedBlockRichField('buttonLabel', value)
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Button URL')}</FieldLabel>
+                <Input
+                  disabled={isPublishedPage}
+                  value={selectedBlock.settings?.buttonUrl || ''}
+                  onChange={event =>
+                    updateSelectedBlockSettings({
+                      buttonUrl: event.target.value,
+                    })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+          </SectionList>
         )}
         {selectedBlock.block_type === 'list' && (
           <FieldBlock>
             <FieldLabel>{t('Items')}</FieldLabel>
-            <Input.TextArea
-              disabled={isPublishedPage}
-              rows={6}
-              value={selectedBlock.content?.items || ''}
-              onChange={event =>
-                updateSelectedBlockContent({ items: event.target.value })
-              }
+            <RichTextComposer
+              readOnly={isPublishedPage}
+              minHeight={180}
+              value={richFieldValue(selectedBlock, 'items')}
+              onChange={value => updateSelectedBlockRichField('items', value)}
             />
           </FieldBlock>
         )}
         {selectedBlock.block_type === 'quote' && (
-          <FieldGrid>
+          <SectionList>
             <FieldBlock>
               <FieldLabel>{t('Quote')}</FieldLabel>
               <RichTextComposer
@@ -1499,15 +2448,16 @@ export default function BlockStudio({
             </FieldBlock>
             <FieldBlock>
               <FieldLabel>{t('Citation')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.citation || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ citation: event.target.value })
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'citation')}
+                onChange={value =>
+                  updateSelectedBlockRichField('citation', value)
                 }
               />
             </FieldBlock>
-          </FieldGrid>
+          </SectionList>
         )}
         {selectedBlock.block_type === 'image' && (
           <SectionList>
@@ -1559,11 +2509,12 @@ export default function BlockStudio({
               </FieldBlock>
               <FieldBlock>
                 <FieldLabel>{t('Caption')}</FieldLabel>
-                <Input
-                  disabled={isPublishedPage}
-                  value={selectedBlock.content?.caption || ''}
-                  onChange={event =>
-                    updateSelectedBlockContent({ caption: event.target.value })
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={120}
+                  value={richFieldValue(selectedBlock, 'caption')}
+                  onChange={value =>
+                    updateSelectedBlockRichField('caption', value)
                   }
                 />
               </FieldBlock>
@@ -1611,11 +2562,12 @@ export default function BlockStudio({
             <FieldGrid>
               <FieldBlock>
                 <FieldLabel>{t('Title')}</FieldLabel>
-                <Input
-                  disabled={isPublishedPage}
-                  value={selectedBlock.content?.title || ''}
-                  onChange={event =>
-                    updateSelectedBlockContent({ title: event.target.value })
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={richFieldValue(selectedBlock, 'title')}
+                  onChange={value =>
+                    updateSelectedBlockRichField('title', value)
                   }
                 />
               </FieldBlock>
@@ -1631,11 +2583,12 @@ export default function BlockStudio({
               </FieldBlock>
               <FieldBlock>
                 <FieldLabel>{t('Caption')}</FieldLabel>
-                <Input
-                  disabled={isPublishedPage}
-                  value={selectedBlock.content?.caption || ''}
-                  onChange={event =>
-                    updateSelectedBlockContent({ caption: event.target.value })
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={richFieldValue(selectedBlock, 'caption')}
+                  onChange={value =>
+                    updateSelectedBlockRichField('caption', value)
                   }
                 />
               </FieldBlock>
@@ -1682,17 +2635,12 @@ export default function BlockStudio({
               </FieldBlock>
               <FieldBlock>
                 <FieldLabel>{t('Button Label')}</FieldLabel>
-                <Input
-                  disabled={isPublishedPage}
-                  value={
-                    selectedBlock.content?.buttonLabel ||
-                    selectedBlock.content?.label ||
-                    ''
-                  }
-                  onChange={event =>
-                    updateSelectedBlockContent({
-                      buttonLabel: event.target.value,
-                    })
+                <RichTextComposer
+                  readOnly={isPublishedPage}
+                  minHeight={100}
+                  value={richFieldValue(selectedBlock, 'buttonLabel')}
+                  onChange={value =>
+                    updateSelectedBlockRichField('buttonLabel', value)
                   }
                 />
               </FieldBlock>
@@ -1712,12 +2660,11 @@ export default function BlockStudio({
           <FieldGrid>
             <FieldBlock>
               <FieldLabel>{t('Label')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.label || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ label: event.target.value })
-                }
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'label')}
+                onChange={value => updateSelectedBlockRichField('label', value)}
               />
             </FieldBlock>
             <FieldBlock>
@@ -1760,23 +2707,93 @@ export default function BlockStudio({
                 value={selectedBlock.settings?.chart_ref?.id || undefined}
                 options={charts.map(chart => ({
                   value: chart.id,
-                  label: `${chart.slice_name} (${chart.viz_type || t('Chart')})`,
+                  label: `${chart.slice_name} (${chart.viz_type || t('Chart')})${
+                    chart.is_public === false
+                      ? ` • ${t('Currently private')}`
+                      : ''
+                  }`,
                 }))}
-                onChange={value =>
-                  updateSelectedBlockSettings({
+                onChange={value => {
+                  const selectedChart =
+                    charts.find(chart => chart.id === value) || null;
+                  if (!selectedChart) {
+                    updateSelectedBlockSettings({
+                      chart_ref: value ? { id: value } : null,
+                    });
+                    return;
+                  }
+                  const mapLike = isMapLikeViz(selectedChart.viz_type);
+                  const currentTitle = String(
+                    selectedBlock.content?.title || '',
+                  ).trim();
+                  const currentCaption = String(
+                    selectedBlock.content?.caption || '',
+                  ).trim();
+                  const normalizedTitle = currentTitle.toLowerCase();
+                  const normalizedSliceName = String(
+                    selectedChart.slice_name || '',
+                  )
+                    .trim()
+                    .toLowerCase();
+                  const nextSettings = {
+                    ...(selectedBlock.settings || {}),
                     chart_ref: value ? { id: value } : null,
-                  })
-                }
+                  } as Record<string, any>;
+                  const nextContent = {
+                    ...(selectedBlock.content || {}),
+                  } as Record<string, any>;
+
+                  if (mapLike) {
+                    if (
+                      !selectedBlock.settings?.surface_preset ||
+                      selectedBlock.settings?.surface_preset === 'default'
+                    ) {
+                      nextSettings.surface_preset = 'map_focus';
+                    }
+                    if (
+                      !selectedBlock.settings?.legend_preset ||
+                      selectedBlock.settings?.legend_preset === 'default'
+                    ) {
+                      nextSettings.legend_preset = 'horizontal_bottom';
+                    }
+                    if (
+                      !selectedBlock.settings?.height ||
+                      Number(selectedBlock.settings?.height) < 560
+                    ) {
+                      nextSettings.height = 560;
+                    }
+                    if (
+                      !currentCaption &&
+                      (!normalizedTitle ||
+                        normalizedTitle === 'chart' ||
+                        normalizedTitle === normalizedSliceName)
+                    ) {
+                      nextSettings.show_header = false;
+                      if (
+                        normalizedTitle === 'chart' ||
+                        normalizedTitle === normalizedSliceName
+                      ) {
+                        nextContent.title = '';
+                        nextContent.title_html = '';
+                      }
+                    }
+                  }
+
+                  updateSelectedBlock({
+                    content: nextContent,
+                    settings: nextSettings,
+                  });
+                }}
               />
             </FieldBlock>
             <FieldBlock>
               <FieldLabel>{t('Caption')}</FieldLabel>
-              <Input.TextArea
-                disabled={isPublishedPage}
-                rows={3}
-                value={selectedBlock.content?.caption || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ caption: event.target.value })
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={120}
+                value={richFieldValue(selectedBlock, 'caption')}
+                onChange={value =>
+                  updateSelectedBlockRichField('caption', value)
                 }
               />
             </FieldBlock>
@@ -1788,6 +2805,44 @@ export default function BlockStudio({
                 value={Number(selectedBlock.settings?.height) || 360}
                 onChange={value =>
                   updateSelectedBlockSettings({ height: Number(value) || 360 })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Show Header')}</FieldLabel>
+              <Switch
+                disabled={isPublishedPage}
+                checked={selectedBlock.settings?.show_header ?? true}
+                onChange={checked =>
+                  updateSelectedBlockSettings({ show_header: checked })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Presentation')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.settings?.surface_preset || 'default'}
+                options={CHART_SURFACE_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value =>
+                  updateSelectedBlockSettings({ surface_preset: value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Legend')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.settings?.legend_preset || 'default'}
+                options={CHART_LEGEND_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value =>
+                  updateSelectedBlockSettings({ legend_preset: value })
                 }
               />
             </FieldBlock>
@@ -1831,13 +2886,11 @@ export default function BlockStudio({
               <InputNumber
                 disabled={isPublishedPage}
                 style={{ width: '100%' }}
-                min={2}
+                min={1}
                 max={4}
                 value={Number(selectedBlock.settings?.columnCount) || 2}
                 onChange={value =>
-                  updateSelectedBlockSettings({
-                    columnCount: Number(value) || 2,
-                  })
+                  applySelectedGridTemplate(Number(value) || 2)
                 }
               />
             </FieldBlock>
@@ -1849,6 +2902,21 @@ export default function BlockStudio({
                 value={Number(selectedBlock.settings?.gap) || 24}
                 onChange={value =>
                   updateSelectedBlockSettings({ gap: Number(value) || 24 })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Row Height')}</FieldLabel>
+              <InputNumber
+                disabled={isPublishedPage}
+                style={{ width: '100%' }}
+                min={0}
+                step={20}
+                value={Number(selectedBlock.settings?.rowMinHeight) || 240}
+                onChange={value =>
+                  updateSelectedBlockSettings({
+                    rowMinHeight: Math.max(Number(value) || 0, 0),
+                  })
                 }
               />
             </FieldBlock>
@@ -1912,12 +2980,11 @@ export default function BlockStudio({
           <SectionList>
             <FieldBlock>
               <FieldLabel>{t('Title')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.title || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ title: event.target.value })
-                }
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'title')}
+                onChange={value => updateSelectedBlockRichField('title', value)}
               />
             </FieldBlock>
             <FieldBlock>
@@ -2051,6 +3118,82 @@ export default function BlockStudio({
             </FieldBlock>
           </FieldGrid>
         )}
+        {selectedBlock.block_type === 'reusable_reference' && (
+          <SectionList>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Reusable Section')}</FieldLabel>
+                <Select
+                  disabled={isPublishedPage}
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  value={selectedBlock.settings?.reusable_block_id || undefined}
+                  options={reusableBlockOptions}
+                  onChange={value => {
+                    const reusableBlock =
+                      reusableLibrary.find(item => item.id === value) || null;
+                    updateSelectedBlock({
+                      content: {
+                        ...(selectedBlock.content || {}),
+                        title: reusableBlock?.title || t('Reusable Section'),
+                      },
+                      metadata: {
+                        ...(selectedBlock.metadata || {}),
+                        label: reusableBlock?.title || t('Reusable Section'),
+                      },
+                      settings: {
+                        ...(selectedBlock.settings || {}),
+                        reusable_block_id: value || null,
+                        reusable_block_ref: value ? { id: value } : null,
+                        render_error: undefined,
+                      },
+                      reusable_block: reusableBlock,
+                    });
+                  }}
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Delivery')}</FieldLabel>
+                <Input disabled value={t('Synced from library')} />
+              </FieldBlock>
+            </FieldGrid>
+            {selectedBlock.reusable_block ? (
+              <TinyMeta>
+                {selectedBlock.reusable_block.description ||
+                  t('This section stays synced to the reusable block library.')}
+              </TinyMeta>
+            ) : null}
+            {selectedBlock.settings?.render_error ? (
+              <Alert
+                showIcon
+                type="warning"
+                message={selectedBlock.settings.render_error}
+              />
+            ) : null}
+            <Space wrap>
+              <Button
+                disabled={isPublishedPage}
+                onClick={detachSelectedReusableReference}
+              >
+                <CopyOutlined /> {t('Detach To Local')}
+              </Button>
+              {selectedBlock.reusable_block?.id ? (
+                <Button
+                  disabled={isPublishedPage}
+                  onClick={() => {
+                    setSelectedReusableId(
+                      selectedBlock.reusable_block?.id || null,
+                    );
+                    setDocumentOpen(true);
+                  }}
+                >
+                  {t('Open Library Entry')}
+                </Button>
+              ) : null}
+            </Space>
+          </SectionList>
+        )}
         {selectedBlock.block_type === 'callout' && (
           <FieldBlock>
             <FieldLabel>{t('Tone')}</FieldLabel>
@@ -2068,28 +3211,28 @@ export default function BlockStudio({
           </FieldBlock>
         )}
         {selectedBlock.block_type === 'statistic' && (
-          <FieldGrid>
+          <SectionList>
             <FieldBlock>
               <FieldLabel>{t('Value')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.value || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ value: event.target.value })
-                }
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'value')}
+                onChange={value => updateSelectedBlockRichField('value', value)}
               />
             </FieldBlock>
             <FieldBlock>
               <FieldLabel>{t('Caption')}</FieldLabel>
-              <Input
-                disabled={isPublishedPage}
-                value={selectedBlock.content?.caption || ''}
-                onChange={event =>
-                  updateSelectedBlockContent({ caption: event.target.value })
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={100}
+                value={richFieldValue(selectedBlock, 'caption')}
+                onChange={value =>
+                  updateSelectedBlockRichField('caption', value)
                 }
               />
             </FieldBlock>
-          </FieldGrid>
+          </SectionList>
         )}
         {selectedBlock.block_type === 'divider' && (
           <FieldBlock>
@@ -2133,7 +3276,242 @@ export default function BlockStudio({
             />
           </FieldBlock>
         )}
+        <SectionList>
+          <InlinePills>
+            <Tag>{t('Layout & Style')}</Tag>
+          </InlinePills>
+          <TinyMeta>
+            {t(
+              'These options are saved with the draft and rendered the same way on public and authenticated page views.',
+            )}
+          </TinyMeta>
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Width')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.width || '')}
+                placeholder={t('100%, 420px, auto')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ width: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Max Width')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.maxWidth || '')}
+                placeholder={t('960px')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ maxWidth: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Height')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.height || '')}
+                placeholder={t('auto, 360px, 75vh')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ height: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Max Height')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.maxHeight || '')}
+                placeholder={t('640px')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ maxHeight: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Padding')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.padding || '')}
+                placeholder={t('24px or 16px 24px')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ padding: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Margin')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.margin || '')}
+                placeholder={t('0 auto')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ margin: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Content Align')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.styles?.justifySelf || 'stretch'}
+                options={CONTENT_ALIGN_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value =>
+                  updateSelectedBlockStyles({
+                    justifySelf: value === 'stretch' ? undefined : value,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Overflow')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.styles?.overflow || 'visible'}
+                options={OVERFLOW_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value =>
+                  updateSelectedBlockStyles({
+                    overflow: value === 'visible' ? undefined : value,
+                  })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Surface Preset')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.settings?.surfacePreset || 'custom'}
+                options={SURFACE_PRESET_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value => applySurfacePreset(value)}
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Background Color')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.backgroundColor || '')}
+                placeholder={t('#ffffff or rgba(...)')}
+                onChange={event =>
+                  updateSelectedBlockStyles({
+                    backgroundColor: event.target.value,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Text Color')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.color || '')}
+                placeholder={t('#0f172a')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ color: event.target.value })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Shadow')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.boxShadow || '')}
+                placeholder={t('0 18px 42px rgba(15, 23, 42, 0.14)')}
+                onChange={event =>
+                  updateSelectedBlockStyles({ boxShadow: event.target.value })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+          <FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Border Color')}</FieldLabel>
+              <Input
+                disabled={isPublishedPage}
+                value={String(selectedBlock.styles?.borderColor || '')}
+                placeholder={t('#cbd5e1')}
+                onChange={event =>
+                  updateSelectedBlockStyles({
+                    borderColor: event.target.value,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Border Style')}</FieldLabel>
+              <Select
+                disabled={isPublishedPage}
+                value={selectedBlock.styles?.borderStyle || 'solid'}
+                options={BORDER_STYLE_OPTIONS.map(option => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+                onChange={value =>
+                  updateSelectedBlockStyles({
+                    borderStyle: value === 'solid' ? undefined : value,
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Border Width')}</FieldLabel>
+              <InputNumber
+                disabled={isPublishedPage}
+                style={{ width: '100%' }}
+                min={0}
+                value={numericStyleValue(selectedBlock.styles?.borderWidth)}
+                onChange={value =>
+                  updateSelectedBlockStyles({
+                    borderWidth:
+                      value === null
+                        ? undefined
+                        : pixelStyleValue(Number(value)),
+                  })
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Corner Radius')}</FieldLabel>
+              <InputNumber
+                disabled={isPublishedPage}
+                style={{ width: '100%' }}
+                min={0}
+                value={numericStyleValue(selectedBlock.styles?.borderRadius)}
+                onChange={value =>
+                  updateSelectedBlockStyles({
+                    borderRadius:
+                      value === null
+                        ? undefined
+                        : pixelStyleValue(Number(value)),
+                  })
+                }
+              />
+            </FieldBlock>
+          </FieldGrid>
+        </SectionList>
         <Space wrap>
+          {onSaveDraft ? (
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={savingDraft}
+              disabled={isPublishedPage}
+              onClick={onSaveDraft}
+            >
+              {t('Save Draft')}
+            </Button>
+          ) : null}
           <Button
             disabled={isPublishedPage}
             onClick={() => resizeSelectedBlock('gridSpan', -1)}
@@ -2173,14 +3551,28 @@ export default function BlockStudio({
           <Button disabled={isPublishedPage} onClick={duplicateSelectedBlock}>
             {t('Duplicate')}
           </Button>
-          {isContainerBlock(selectedBlock.block_type) ? (
+          <Button
+            disabled={isPublishedPage}
+            onClick={() =>
+              addBlockRelativeToBlock(
+                selectedBlock,
+                isContainerBlock(selectedBlock.block_type) ? 'child' : 'after',
+              )
+            }
+          >
+            {isContainerBlock(selectedBlock.block_type)
+              ? t('Add Child')
+              : t('Add After')}
+          </Button>
+          {GRID_TEMPLATE_OPTIONS.map(option => (
             <Button
+              key={`selected-grid-${option.value}`}
               disabled={isPublishedPage}
-              onClick={() => addBlock(quickInsertType)}
+              onClick={() => applySelectedGridTemplate(option.value)}
             >
-              {t('Add Child')}
+              {option.label}
             </Button>
-          ) : null}
+          ))}
           <Button
             danger
             disabled={isPublishedPage}
@@ -2221,10 +3613,10 @@ export default function BlockStudio({
               <Button
                 size="small"
                 icon={<PlusOutlined />}
-                disabled={isPublishedPage || selection.type === 'block'}
+                disabled={isPublishedPage}
                 onClick={() => {
                   setQuickInsertSlot(slot.value);
-                  addBlock(quickInsertType);
+                  addBlockToSlot(quickInsertType, slot.value);
                 }}
               >
                 {t('Add Here')}
@@ -2247,8 +3639,20 @@ export default function BlockStudio({
                 : undefined
             }
             onSelectBlock={showSlotChrome ? handleSelectBlock : undefined}
+            onResizeBlock={showSlotChrome ? handleResizeBlock : undefined}
             onInlineRichTextChange={
               showSlotChrome ? updateRichTextBlock : undefined
+            }
+            onInsertBlockFromCanvas={
+              showSlotChrome
+                ? (block, mode) => addBlockRelativeToBlock(block, mode)
+                : undefined
+            }
+            onInsertGridTemplateFromCanvas={
+              showSlotChrome
+                ? (block, columnCount) =>
+                    insertGridTemplate(columnCount, block, 'child')
+                : undefined
             }
           />
         ) : showSlotChrome ? (
@@ -2375,6 +3779,224 @@ export default function BlockStudio({
             </SectionList>
           </DrawerSection>
         ) : null}
+        {libraryStatus ? (
+          <DrawerSection>
+            <Alert
+              showIcon
+              type={libraryStatus.type}
+              message={libraryStatus.message}
+            />
+          </DrawerSection>
+        ) : null}
+        <DrawerSection>
+          <PanelHeader>
+            <PanelTitle>{t('Starter Patterns')}</PanelTitle>
+            <Tag icon={<AppstoreOutlined />}>{starterPatterns.length || 0}</Tag>
+          </PanelHeader>
+          <SectionList>
+            {starterPatterns.length ? (
+              starterPatterns.map(pattern => (
+                <CardButton
+                  key={pattern.id}
+                  onClick={() => insertStarterPattern(pattern)}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                    }}
+                  >
+                    <strong>{pattern.title}</strong>
+                    <Tag>{pattern.category || 'pattern'}</Tag>
+                  </div>
+                  <TinyMeta>{pattern.description}</TinyMeta>
+                </CardButton>
+              ))
+            ) : (
+              <Empty description={t('Starter patterns are loading.')} />
+            )}
+          </SectionList>
+        </DrawerSection>
+        <DrawerSection>
+          <PanelHeader>
+            <PanelTitle>{t('Reusable Sections')}</PanelTitle>
+            <Button
+              size="small"
+              onClick={() => {
+                setSelectedReusableId(null);
+                setReusableDraft(
+                  createReusableDraft(
+                    null,
+                    selectedBlock?.content?.title ||
+                      selectedBlock?.content?.text ||
+                      selectedBlock?.metadata?.label,
+                  ),
+                );
+              }}
+            >
+              {t('New')}
+            </Button>
+          </PanelHeader>
+          <SectionList>
+            {reusableLibrary.length ? (
+              reusableLibrary.map(reusableBlock => (
+                <CardButton
+                  key={reusableBlock.id}
+                  $active={selectedReusableId === reusableBlock.id}
+                  onClick={() => setSelectedReusableId(reusableBlock.id)}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                    }}
+                  >
+                    <strong>{reusableBlock.title}</strong>
+                    <Tag color={reusableBlock.is_active ? 'green' : 'default'}>
+                      {reusableBlock.category || 'custom'}
+                    </Tag>
+                  </div>
+                  <TinyMeta>
+                    {reusableBlock.description || t('Reusable synced section')}
+                  </TinyMeta>
+                  <Space wrap style={{ marginTop: 10 }}>
+                    <Button
+                      size="small"
+                      disabled={isPublishedPage}
+                      onClick={event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        insertReusableReference(reusableBlock);
+                      }}
+                    >
+                      <LinkOutlined /> {t('Insert Synced')}
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={isPublishedPage}
+                      onClick={event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        insertReusableCopy(reusableBlock);
+                      }}
+                    >
+                      <CopyOutlined /> {t('Insert Copy')}
+                    </Button>
+                  </Space>
+                </CardButton>
+              ))
+            ) : (
+              <Empty
+                description={t(
+                  'Save a selected block to start your reusable library.',
+                )}
+              />
+            )}
+          </SectionList>
+        </DrawerSection>
+        <DrawerSection>
+          <PanelHeader>
+            <PanelTitle>
+              {selectedReusableId
+                ? t('Reusable Details')
+                : t('Save Selection As Reusable')}
+            </PanelTitle>
+          </PanelHeader>
+          <SectionList>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Title')}</FieldLabel>
+                <Input
+                  disabled={isPublishedPage || libraryBusy}
+                  value={reusableDraft.title}
+                  onChange={event =>
+                    setReusableDraft(previous => ({
+                      ...previous,
+                      title: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Category')}</FieldLabel>
+                <Input
+                  disabled={isPublishedPage || libraryBusy}
+                  value={reusableDraft.category}
+                  onChange={event =>
+                    setReusableDraft(previous => ({
+                      ...previous,
+                      category: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Description')}</FieldLabel>
+              <Input.TextArea
+                disabled={isPublishedPage || libraryBusy}
+                rows={3}
+                value={reusableDraft.description}
+                onChange={event =>
+                  setReusableDraft(previous => ({
+                    ...previous,
+                    description: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
+            <TinyMeta>
+              {selectedBlockCanSeedReusable
+                ? t(
+                    'Saving uses the currently selected local block subtree as the reusable source.',
+                  )
+                : selectedReusableBlock
+                  ? t(
+                      'No local source is selected. Saving will update metadata and keep the current reusable content.',
+                    )
+                  : t(
+                      'Select any non-synced block in the page canvas to save it as a reusable section.',
+                    )}
+            </TinyMeta>
+            <Space wrap>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={libraryBusy}
+                disabled={isPublishedPage || !selectedBlockCanSeedReusable}
+                onClick={() => saveReusableBlockDraft({ overwrite: false })}
+              >
+                {t('Save New')}
+              </Button>
+              {selectedReusableId ? (
+                <Button
+                  icon={<EditOutlined />}
+                  loading={libraryBusy}
+                  disabled={
+                    isPublishedPage ||
+                    (!selectedBlockCanSeedReusable && !selectedReusableBlock)
+                  }
+                  onClick={() => saveReusableBlockDraft({ overwrite: true })}
+                >
+                  {t('Update Selected')}
+                </Button>
+              ) : null}
+              {selectedReusableId ? (
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={libraryBusy}
+                  disabled={isPublishedPage}
+                  onClick={deleteSelectedReusableBlock}
+                >
+                  {t('Delete')}
+                </Button>
+              ) : null}
+            </Space>
+          </SectionList>
+        </DrawerSection>
       </DrawerStack>
     );
   }
@@ -2393,10 +4015,10 @@ export default function BlockStudio({
             icon={<SettingOutlined />}
             onClick={() => {
               setSelection({ type: 'page' });
-              setSettingsOpen(true);
+              openOrFocusPanel(settingsDockRef, () => setSettingsOpen(true));
             }}
           >
-            {t('Page Settings')}
+            {t('Page Options')}
           </Button>
           {selection.type === 'block' && selectedBlock ? (
             <Tag color="processing">
@@ -2464,108 +4086,188 @@ export default function BlockStudio({
           >
             {quickInsertLabel}
           </Button>
+          {GRID_TEMPLATE_OPTIONS.map(option => (
+            <Button
+              key={`toolbar-grid-${option.value}`}
+              disabled={isPublishedPage}
+              onClick={() =>
+                insertGridTemplate(
+                  option.value,
+                  selection.type === 'block' ? selectedBlock : null,
+                )
+              }
+            >
+              {option.label}
+            </Button>
+          ))}
           <Button
-            onClick={() => setSettingsOpen(true)}
+            onClick={() =>
+              openOrFocusPanel(settingsDockRef, () => setSettingsOpen(true))
+            }
             icon={<SettingOutlined />}
           >
-            {t('Settings')}
+            {t('Options')}
           </Button>
         </StudioBarGroup>
       </StudioBar>
-      <Panel>
-        <PanelHeader>
-          <div>
-            <PanelTitle>{t('Page Studio')}</PanelTitle>
-            <TinyMeta>
-              {draftPage
-                ? canvasMode === 'preview'
-                  ? t('Full-page preview of the current draft.')
-                  : t(
-                      'Compose blocks in-page and open Settings for block details.',
-                    )
-                : t('Choose a page or create a new one.')}
-            </TinyMeta>
-          </div>
-          {draftPage ? (
-            <InlinePills>
-              <Tag>
-                {draftPage.path || draftPage.slug || t('untitled-page')}
-              </Tag>
-              {selection.type === 'block' ? (
-                <Tag color="processing">{t('Block selected')}</Tag>
-              ) : (
-                <Tag>{t('Page settings')}</Tag>
-              )}
-            </InlinePills>
-          ) : null}
-        </PanelHeader>
-        {draftPage ? (
-          <>
-            {isPublishedPage ? (
-              <Alert
-                showIcon
-                type="info"
-                style={{ marginBottom: 16 }}
-                message={t(
-                  'Published pages are read-only. Unpublish to edit content.',
-                )}
-              />
-            ) : null}
-            <TinyMeta style={{ marginBottom: 12 }}>
-              {selection.type === 'block'
-                ? selectedBlock && isContainerBlock(selectedBlock.block_type)
-                  ? t(
-                      'The selected container can receive child blocks. Click any block in the canvas to edit it.',
-                    )
-                  : t(
-                      'Click any block in the canvas to edit it. New blocks insert after the current selection.',
-                    )
-                : t(
-                    'Use Document to switch pages or choose blocks, and Settings to format the selected content.',
+      <StudioShell>
+        <StudioCenter>
+          <Panel>
+            <PanelHeader>
+              <div>
+                <PanelTitle>{t('Page content')}</PanelTitle>
+                <TinyMeta>
+                  {draftPage
+                    ? canvasMode === 'preview'
+                      ? t('Full-page preview of the current draft.')
+                      : t(
+                          'Compose blocks in-page and open Page Options for block details.',
+                        )
+                    : t('Choose a page or create a new one.')}
+                </TinyMeta>
+              </div>
+              {draftPage ? (
+                <InlinePills>
+                  <Tag>
+                    {draftPage.path || draftPage.slug || t('untitled-page')}
+                  </Tag>
+                  {selection.type === 'block' ? (
+                    <Tag color="processing">{t('Block selected')}</Tag>
+                  ) : (
+                    <Tag>{t('Page options')}</Tag>
                   )}
-            </TinyMeta>
-            <CanvasSurface>
-              <ViewportFrame $mode={previewViewport}>
-                <StudioViewport>
-                  <RegionGrid>
-                    {SLOT_OPTIONS.map(slot =>
-                      renderSlotRegion(slot, canvasMode === 'compose'),
+                </InlinePills>
+              ) : null}
+            </PanelHeader>
+            {draftPage ? (
+              <>
+                {isPublishedPage ? (
+                  <Alert
+                    showIcon
+                    type="info"
+                    style={{ marginBottom: 16 }}
+                    message={t(
+                      'Published pages are read-only. Unpublish to edit content.',
                     )}
-                  </RegionGrid>
-                </StudioViewport>
-              </ViewportFrame>
-            </CanvasSurface>
-          </>
-        ) : (
-          <Empty description={t('Choose a page or create a new one.')} />
-        )}
-      </Panel>
+                  />
+                ) : null}
+                <TinyMeta style={{ marginBottom: 12 }}>
+                  {selection.type === 'block'
+                    ? selectedBlock &&
+                      isContainerBlock(selectedBlock.block_type)
+                      ? t(
+                          'The selected container can receive child blocks. Click any block in the canvas to edit it.',
+                        )
+                      : t(
+                          'Click any block in the canvas to edit it. Use Add After for a sibling, or the 1/2/3/4 column actions to place content into a 12-column grid row.',
+                        )
+                    : t(
+                        'Use Document to switch pages or choose blocks, and Page Options to format the selected content.',
+                      )}
+                </TinyMeta>
+                <CanvasSurface>
+                  <ViewportFrame $mode={previewViewport}>
+                    <StudioViewport>
+                      <RegionGrid>
+                        {SLOT_OPTIONS.map(slot =>
+                          renderSlotRegion(slot, canvasMode === 'compose'),
+                        )}
+                      </RegionGrid>
+                    </StudioViewport>
+                  </ViewportFrame>
+                </CanvasSurface>
+              </>
+            ) : (
+              <Empty description={t('Choose a page or create a new one.')} />
+            )}
+          </Panel>
+        </StudioCenter>
+        {desktopDockedPanels ? (
+          <DockRail ref={settingsDockRef} aria-label={t('Page Options')}>
+            <Panel>
+              <PanelHeader>
+                <div>
+                  <PanelTitle>{t('Page Options')}</PanelTitle>
+                  <TinyMeta>
+                    {selection.type === 'block'
+                      ? t(
+                          'Adjust the selected block content, layout, and styling.',
+                        )
+                      : t(
+                          'Manage page metadata, layout, visibility, and publishing details.',
+                        )}
+                  </TinyMeta>
+                </div>
+                {selection.type === 'block' && selectedBlock ? (
+                  <Tag color="processing">
+                    {selectedBlock.metadata?.label || selectedBlock.block_type}
+                  </Tag>
+                ) : draftPage ? (
+                  <Tag>{t('Page')}</Tag>
+                ) : null}
+              </PanelHeader>
+              {renderInspector()}
+            </Panel>
+          </DockRail>
+        ) : null}
+      </StudioShell>
       <Drawer
-        placement="left"
-        width={380}
         title={t('Document')}
+        placement="left"
         open={documentOpen}
-        getContainer={false}
+        width="min(560px, calc(100vw - 24px))"
         mask={false}
+        push={false}
+        styles={{
+          wrapper: {
+            top: 76,
+            height: 'calc(100vh - 76px)',
+          },
+          body: {
+            overflowY: 'auto',
+            paddingBottom: 24,
+          },
+        }}
         onClose={() => setDocumentOpen(false)}
       >
         {renderDocumentDrawer()}
       </Drawer>
-      <Drawer
-        placement="right"
-        width={420}
-        title={
-          selection.type === 'page'
-            ? t('Page Settings')
-            : selectedBlock?.metadata?.label || t('Block Settings')
-        }
-        open={settingsOpen}
-        getContainer={false}
-        mask={false}
-        onClose={() => setSettingsOpen(false)}
-      >
-        {renderInspector()}
-      </Drawer>
+      {!desktopDockedPanels ? (
+        <Drawer
+          title={t('Page Options')}
+          extra={
+            draftPage && onSaveDraft ? (
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={savingDraft}
+                disabled={isPublishedPage}
+                onClick={onSaveDraft}
+              >
+                {t('Save Draft')}
+              </Button>
+            ) : null
+          }
+          placement="right"
+          open={settingsOpen}
+          width="min(720px, calc(100vw - 24px))"
+          mask={false}
+          push={false}
+          styles={{
+            wrapper: {
+              top: 76,
+              height: 'calc(100vh - 76px)',
+            },
+            body: {
+              overflowY: 'auto',
+              paddingBottom: 24,
+            },
+          }}
+          onClose={() => setSettingsOpen(false)}
+        >
+          {renderInspector()}
+        </Drawer>
+      ) : null}
     </StudioLayout>
   );
 }

@@ -39,16 +39,20 @@ from superset.extensions import db, event_logger
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
 from superset.public_page.block_manager import (
+    DEFAULT_WELCOME_PAGE_SEED_VERSION,
+    build_default_welcome_page_blocks,
     default_block_payload,
     generate_block_uid,
     is_container_block,
     legacy_sections_to_blocks,
     list_block_definitions,
+    list_starter_patterns,
 )
 from superset.public_page.models import (
     StyleBundle,
     Template,
     MediaAsset,
+    ReusableBlock,
     Theme,
     NavigationItem,
     NavigationMenu,
@@ -133,7 +137,7 @@ DEFAULT_PUBLIC_PAGE_CONFIG: dict[str, Any] = {
         },
         "title": {
             "enabled": True,
-            "text": "Malaria Repository Analytics",
+            "text": "Uganda Malaria Analytics Portal",
             "fontSize": "18px",
             "fontWeight": 700,
             "color": "#0f172a",
@@ -160,14 +164,17 @@ DEFAULT_PUBLIC_PAGE_CONFIG: dict[str, Any] = {
         "backgroundColor": "#ffffff",
         "padding": "0",
         "showWelcomeMessage": True,
-        "welcomeTitle": "Welcome",
-        "welcomeDescription": "Explore public malaria dashboards and analytics.",
+        "welcomeTitle": "Uganda Malaria Analytics Portal",
+        "welcomeDescription": (
+            "Explore curated public dashboards, recent highlights, and staged "
+            "analytics prepared for programme review."
+        ),
     },
     "footer": {
         "enabled": True,
         "height": 56,
         "backgroundColor": "#0f172a",
-        "text": "Public Analytics Portal",
+        "text": "Uganda Malaria Analytics Portal · Ministry of Health",
         "textColor": "#cbd5e1",
         "links": [],
     },
@@ -183,6 +190,22 @@ DEFAULT_PORTAL_LAYOUT_CONFIG: dict[str, Any] = {
     "pageMaxWidth": "100%",
     "showThemeToggle": True,
 }
+DEFAULT_WELCOME_PAGE_SUBTITLE = "Trusted public analytics for Uganda malaria surveillance"
+DEFAULT_WELCOME_PAGE_DESCRIPTION = (
+    "Explore curated dashboards, staged highlights, and narrative pages built "
+    "from serving datasets that preserve the published org-unit, period, "
+    "dimension, and variable scope."
+)
+DEFAULT_WELCOME_PAGE_EXCERPT = (
+    "A professional public landing page for dashboards, highlights, and "
+    "evidence summaries."
+)
+DEFAULT_WELCOME_PAGE_CTA_TARGET = "/superset/public/dashboards/"
+LEGACY_WELCOME_PAGE_SUBTITLE = "Evidence-led public malaria analytics"
+LEGACY_WELCOME_PAGE_DESCRIPTION = (
+    "A public analytics portal for Uganda malaria surveillance, programme "
+    "reporting, and serving-table chart access."
+)
 
 
 def _now() -> datetime:
@@ -280,6 +303,10 @@ def _can_manage_templates() -> bool:
 
 def _can_manage_styles() -> bool:
     return security_manager.can_access(CMS_STYLE_MANAGE_PERMISSION, CMS_VIEW_NAME)
+
+
+def _can_manage_reusable_blocks() -> bool:
+    return _can_edit_pages() or _can_create_pages()
 
 
 class PortalComponentSchema(Schema):
@@ -483,6 +510,21 @@ class TemplateSchema(Schema):
     settings = fields.Dict(load_default=dict)
 
 
+class ReusableBlockSchema(Schema):
+    id = fields.Int(load_default=None, allow_none=True)
+    slug = fields.Str(load_default=None, allow_none=True)
+    title = fields.Str(required=True)
+    description = fields.Str(load_default=None, allow_none=True)
+    category = fields.Str(load_default="custom")
+    status = fields.Str(
+        load_default="active",
+        validate=validate.OneOf(["draft", "active", "archived"]),
+    )
+    is_active = fields.Bool(load_default=True)
+    blocks = fields.List(fields.Nested(PortalBlockSchema), load_default=list)
+    settings = fields.Dict(load_default=dict)
+
+
 class PublicPageRestApi(BaseApi):
     """API for public page configuration and portal CMS data."""
 
@@ -552,6 +594,73 @@ class PublicPageRestApi(BaseApi):
             for template in templates
             if self._design_item_is_publicly_usable(template)
         ]
+
+    def _reusable_block_is_usable(
+        self,
+        reusable_block: ReusableBlock | None,
+    ) -> bool:
+        return bool(
+            reusable_block
+            and reusable_block.is_active
+            and reusable_block.status == "active"
+            and reusable_block.archived_on is None
+        )
+
+    def _list_reusable_blocks(self, admin: bool = False) -> list[ReusableBlock]:
+        reusable_blocks = (
+            db.session.query(ReusableBlock)
+            .order_by(ReusableBlock.title.asc(), ReusableBlock.id.asc())
+            .all()
+        )
+        if admin:
+            return reusable_blocks
+        return [
+            reusable_block
+            for reusable_block in reusable_blocks
+            if self._reusable_block_is_usable(reusable_block)
+        ]
+
+    def _find_reusable_block(
+        self,
+        *,
+        reusable_block_id: int | None = None,
+        slug: str | None = None,
+        admin: bool = False,
+    ) -> ReusableBlock | None:
+        query = db.session.query(ReusableBlock)
+        if reusable_block_id is not None:
+            reusable_block = (
+                query.filter(ReusableBlock.id == reusable_block_id).one_or_none()
+            )
+        elif slug:
+            reusable_block = query.filter(ReusableBlock.slug == slug).one_or_none()
+        else:
+            reusable_block = None
+        if reusable_block is None:
+            return None
+        if admin or self._reusable_block_is_usable(reusable_block):
+            return reusable_block
+        return None
+
+    def _generate_unique_reusable_block_slug(
+        self,
+        candidate: str,
+        *,
+        reusable_block: ReusableBlock | None = None,
+    ) -> str:
+        base = slugify(candidate, "reusable-block")
+        next_slug = base
+        suffix = 2
+        while True:
+            existing = (
+                db.session.query(ReusableBlock)
+                .filter(ReusableBlock.slug == next_slug)
+                .one_or_none()
+            )
+            if existing is None or (reusable_block is not None and existing.id == reusable_block.id):
+                return next_slug
+            next_slug = f"{base}-{suffix}"
+            suffix += 1
 
     def _find_style_bundle(
         self,
@@ -736,6 +845,95 @@ class PublicPageRestApi(BaseApi):
                 }
             )
         return payload
+
+    def _collect_serialized_block_css(self, blocks: list[dict[str, Any]]) -> list[str]:
+        combined_css: list[str] = []
+        stack = list(reversed(blocks))
+        while stack:
+            current = stack.pop()
+            rendering = current.get("rendering") or {}
+            if rendering.get("css_text"):
+                combined_css.append(rendering["css_text"])
+            reusable_block = current.get("reusable_block") or {}
+            reusable_rendering = reusable_block.get("rendering") or {}
+            if reusable_rendering.get("css_text"):
+                combined_css.append(reusable_rendering["css_text"])
+            stack.extend(reversed(current.get("children") or []))
+        return combined_css
+
+    def _serialize_reusable_block(
+        self,
+        reusable_block: ReusableBlock | None,
+        *,
+        include_admin: bool = False,
+        public_context: bool = False,
+    ) -> dict[str, Any] | None:
+        if reusable_block is None:
+            return None
+        scope_class = (
+            f"cms-reusable-block-{slugify(reusable_block.slug or reusable_block.title, 'reusable')}"
+        )
+        serialized_blocks = [
+            self._serialize_block(
+                block,
+                page_rendering={"scope_class": scope_class},
+                public_context=public_context,
+            )
+            for block in reusable_block.get_blocks()
+        ]
+        payload = {
+            "id": reusable_block.id,
+            "slug": reusable_block.slug,
+            "title": reusable_block.title,
+            "description": reusable_block.description,
+            "category": reusable_block.category,
+            "status": reusable_block.status,
+            "is_active": reusable_block.is_active,
+            "settings": reusable_block.get_settings(),
+            "blocks": serialized_blocks,
+            "block_count": len(serialized_blocks),
+            "rendering": {
+                "scope_class": scope_class,
+                "css_text": "\n".join(self._collect_serialized_block_css(serialized_blocks)),
+                "warnings": [],
+            },
+        }
+        if include_admin:
+            payload.update(
+                {
+                    "created_on": _to_iso(reusable_block.created_on),
+                    "changed_on": _to_iso(reusable_block.changed_on),
+                    "archived_on": _to_iso(reusable_block.archived_on),
+                    "created_by": self._serialize_user_ref(reusable_block.created_by),
+                    "changed_by": self._serialize_user_ref(reusable_block.changed_by),
+                    "archived_by": self._serialize_user_ref(reusable_block.archived_by),
+                }
+            )
+        return payload
+
+    def _serialize_starter_pattern(self, pattern: dict[str, Any]) -> dict[str, Any]:
+        scope_class = f"cms-starter-pattern-{slugify(pattern.get('slug'), 'pattern')}"
+        serialized_blocks = [
+            self._serialize_block(
+                block,
+                page_rendering={"scope_class": scope_class},
+                public_context=False,
+            )
+            for block in (pattern.get("blocks") or [])
+        ]
+        return {
+            "id": pattern.get("id"),
+            "slug": pattern.get("slug"),
+            "title": pattern.get("title"),
+            "description": pattern.get("description"),
+            "category": pattern.get("category"),
+            "blocks": serialized_blocks,
+            "rendering": {
+                "scope_class": scope_class,
+                "css_text": "\n".join(self._collect_serialized_block_css(serialized_blocks)),
+                "warnings": [],
+            },
+        }
 
     def _style_css_variables(self, variables: dict[str, Any] | None) -> dict[str, str]:
         style_variables = style_variables_with_defaults(variables)
@@ -1119,6 +1317,11 @@ class PublicPageRestApi(BaseApi):
     def _page_path(self, page: Page) -> str:
         return "/".join(self._page_path_parts(page))
 
+    def _public_page_url(self, page: Page | None) -> str:
+        if page is None:
+            return "/superset/public/"
+        return f"/superset/public/{self._page_path(page)}/"
+
     def _page_breadcrumbs(
         self,
         page: Page | None,
@@ -1147,7 +1350,7 @@ class PublicPageRestApi(BaseApi):
                     "id": entry.id,
                     "title": entry.navigation_label or entry.title,
                     "slug": entry.slug,
-                    "path": f"/superset/public/{self._page_path(entry)}/",
+                    "path": self._public_page_url(entry),
                 }
             )
         return breadcrumbs
@@ -1201,6 +1404,43 @@ class PublicPageRestApi(BaseApi):
         if admin:
             return pages
         return [page for page in pages if self._page_is_publicly_viewable(page)]
+
+    def _ensure_homepage_exists(
+        self,
+        preferred_page: Page | None = None,
+    ) -> Page | None:
+        public_pages = self._list_pages(admin=False)
+        if not public_pages:
+            return None
+
+        current_homepage = next(
+            (page for page in public_pages if page.is_homepage),
+            None,
+        )
+        if current_homepage is not None:
+            return current_homepage
+
+        preferred_page_id = preferred_page.id if preferred_page is not None else None
+        target_page = next(
+            (
+                page
+                for page in public_pages
+                if page is preferred_page
+                or (preferred_page_id is not None and page.id == preferred_page_id)
+            ),
+            None,
+        )
+        if target_page is None:
+            target_page = public_pages[0]
+
+        (
+            db.session.query(Page)
+            .filter(Page.is_homepage == True)
+            .update({"is_homepage": False}, synchronize_session=False)
+        )
+        target_page.is_homepage = True
+        db.session.flush()
+        return target_page
 
     def _find_page(
         self,
@@ -1308,6 +1548,20 @@ class PublicPageRestApi(BaseApi):
         )
         return int(dashboard_id) if dashboard_id is not None else None
 
+    def _block_reusable_reference(
+        self,
+        block_settings: dict[str, Any],
+    ) -> int | None:
+        reusable_ref = block_settings.get("reusable_block_ref") or block_settings.get(
+            "reusableBlockRef"
+        )
+        if isinstance(reusable_ref, dict) and reusable_ref.get("id") is not None:
+            return int(reusable_ref["id"])
+        reusable_block_id = block_settings.get("reusable_block_id") or block_settings.get(
+            "reusableBlockId"
+        )
+        return int(reusable_block_id) if reusable_block_id is not None else None
+
     def _block_asset_reference(
         self,
         block_type: str,
@@ -1350,6 +1604,11 @@ class PublicPageRestApi(BaseApi):
             metadata = dict(block.get("metadata") or {})
             style_bundle = None
             style_bundle_id = block.get("style_bundle_id")
+            if style_bundle_id is not None:
+                style_bundle = self._find_style_bundle(
+                    style_bundle_id=int(style_bundle_id),
+                    admin=not public_context,
+                )
             scope_class = self._block_scope_class(block)
             children_payload = block.get("children") or []
             block_type = block.get("block_type") or "rich_text"
@@ -1393,17 +1652,25 @@ class PublicPageRestApi(BaseApi):
 
         chart_id = self._block_chart_reference(settings)
         dashboard_id = self._block_dashboard_reference(settings)
+        reusable_block_id = self._block_reusable_reference(settings)
         serialized_chart = None
         serialized_dashboard = None
         serialized_asset = None
+        serialized_reusable_block = None
         chart = None
         dashboard = None
         asset = None
+        reusable_block = None
         if chart_id is not None:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
         if dashboard_id is not None:
             dashboard = (
                 db.session.query(Dashboard).filter(Dashboard.id == dashboard_id).one_or_none()
+            )
+        if reusable_block_id is not None:
+            reusable_block = self._find_reusable_block(
+                reusable_block_id=reusable_block_id,
+                admin=not public_context,
             )
         asset_id = self._block_asset_reference(block_type, content, settings)
         if asset_id is not None:
@@ -1461,12 +1728,37 @@ class PublicPageRestApi(BaseApi):
                     "render_error": "Asset is unavailable for public rendering",
                 }
 
+        if reusable_block is not None:
+            serialized_reusable_block = self._serialize_reusable_block(
+                reusable_block,
+                include_admin=not public_context,
+                public_context=public_context,
+            )
+            content = {
+                **content,
+                "title": content.get("title") or reusable_block.title,
+            }
+            settings = {
+                **settings,
+                "reusable_block_id": reusable_block.id,
+            }
+        elif reusable_block_id is not None and block_type == "reusable_reference":
+            settings = {
+                **settings,
+                "render_error": "Reusable section is unavailable for rendering",
+            }
+
         page_scope = page_rendering["scope_class"] if page_rendering else "cms-page-scope-preview"
         style_rendering = self._resolve_scoped_style(
             style_bundle,
             f".{page_scope} .{scope_class}",
             public_context=public_context,
         )
+        block_css_parts = [style_rendering["css_text"]]
+        if serialized_reusable_block:
+            reusable_rendering = serialized_reusable_block.get("rendering") or {}
+            if reusable_rendering.get("css_text"):
+                block_css_parts.append(reusable_rendering["css_text"])
         children = [
             self._serialize_block(
                 child,
@@ -1496,11 +1788,12 @@ class PublicPageRestApi(BaseApi):
             "chart": serialized_chart,
             "dashboard": serialized_dashboard,
             "asset": serialized_asset,
+            "reusable_block": serialized_reusable_block,
             "children": children,
             "style_bundle": style_rendering["style_bundle"],
             "rendering": {
                 "scope_class": scope_class,
-                "css_text": style_rendering["css_text"],
+                "css_text": "\n".join(part for part in block_css_parts if part),
                 "css_variables": style_rendering["css_variables"],
                 "inline_style": style_rendering["inline_style"],
                 "warnings": style_rendering["warnings"],
@@ -1803,7 +2096,7 @@ class PublicPageRestApi(BaseApi):
         if item.page is not None:
             if public_context and item.page not in pages:
                 return None
-            path = f"/superset/public/{self._page_path(item.page)}/"
+            path = self._public_page_url(item.page)
         elif item.dashboard is not None:
             if public_context and item.dashboard not in dashboards:
                 return None
@@ -1817,7 +2110,7 @@ class PublicPageRestApi(BaseApi):
                 {
                     "id": f"page-{page.id}",
                     "label": page.navigation_label or page.title,
-                    "path": f"/superset/public/{self._page_path(page)}/",
+                    "path": self._public_page_url(page),
                     "item_type": "page",
                     "page_id": page.id,
                     "description": page.subtitle or page.description,
@@ -1998,6 +2291,30 @@ class PublicPageRestApi(BaseApi):
                     {"dashboard_ref": ["Dashboard must be published for public use"]}
                 )
 
+        reusable_block_id = self._block_reusable_reference(settings)
+        if reusable_block_id:
+            reusable_block = self._find_reusable_block(
+                reusable_block_id=reusable_block_id,
+                admin=True,
+            )
+            if reusable_block is None:
+                raise ValidationError(
+                    {"reusable_block_id": ["Reusable block not found"]}
+                )
+            if require_public and not self._reusable_block_is_usable(reusable_block):
+                raise ValidationError(
+                    {
+                        "reusable_block_id": [
+                            "Reusable block must be active for public pages"
+                        ]
+                    }
+                )
+            for referenced_block in reusable_block.get_blocks():
+                self._validate_block_references(
+                    referenced_block,
+                    require_public=require_public,
+                )
+
         asset_id = self._block_asset_reference(block_type, content, settings)
         if asset_id:
             self._validate_asset_reference(
@@ -2011,6 +2328,49 @@ class PublicPageRestApi(BaseApi):
                 child,
                 require_public=require_public,
             )
+
+    def _collect_referenced_chart_ids(
+        self,
+        blocks: list[dict[str, Any]],
+    ) -> set[int]:
+        chart_ids: set[int] = set()
+
+        def walk(block_data: dict[str, Any]) -> None:
+            chart_id = self._block_chart_reference(block_data.get("settings") or {})
+            if chart_id is not None:
+                chart_ids.add(chart_id)
+            for child in block_data.get("children") or []:
+                walk(child)
+
+        for block in blocks:
+            walk(block)
+
+        return chart_ids
+
+    def _ensure_referenced_charts_are_public(
+        self,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        if not blocks or not _can_embed_charts():
+            return
+
+        chart_ids = self._collect_referenced_chart_ids(blocks)
+        if not chart_ids:
+            return
+
+        charts = (
+            db.session.query(Slice)
+            .filter(Slice.id.in_(chart_ids))
+            .all()
+        )
+        for chart in charts:
+            if getattr(chart, "is_public", False):
+                continue
+            if not self._chart_uses_serving_tables(chart):
+                continue
+            # Public CMS pages render charts through the public embed path, so
+            # referenced serving-table charts must become public at publish time.
+            chart.is_public = True
 
     def _payload_requires_public_references(
         self,
@@ -2074,8 +2434,13 @@ class PublicPageRestApi(BaseApi):
                 db.session.flush()
                 if block.id is not None:
                     seen_ids.add(block.id)
+                child_payload = (
+                    []
+                    if block.block_type == "reusable_reference"
+                    else block_data.get("children") or []
+                )
                 walk(
-                    block_data.get("children") or [],
+                    child_payload,
                     parent=block,
                     depth=depth + 1,
                     prefix=f"{block.tree_path}.",
@@ -2255,6 +2620,75 @@ class PublicPageRestApi(BaseApi):
         if replacement is not None:
             self._mark_template_default(replacement)
         return replacement
+
+    def _validate_reusable_block_source_blocks(
+        self,
+        payload_blocks: list[dict[str, Any]],
+    ) -> None:
+        if not payload_blocks:
+            raise ValidationError({"blocks": ["At least one block is required"]})
+
+        def walk(block_data: dict[str, Any]) -> None:
+            settings = block_data.get("settings") or {}
+            if self._block_reusable_reference(settings):
+                raise ValidationError(
+                    {
+                        "blocks": [
+                            "Reusable sections cannot contain nested synced reusable references"
+                        ]
+                    }
+                )
+            self._validate_block_references(block_data, require_public=False)
+            for child in block_data.get("children") or []:
+                walk(child)
+
+        for block in payload_blocks:
+            walk(block)
+
+    def _upsert_reusable_block(self, payload: dict[str, Any]) -> ReusableBlock:
+        reusable_block_id = payload.get("id")
+        reusable_block = None
+        if reusable_block_id:
+            reusable_block = (
+                db.session.query(ReusableBlock)
+                .filter(ReusableBlock.id == reusable_block_id)
+                .one_or_none()
+            )
+        slug = self._ensure_unique_slug(
+            ReusableBlock,
+            payload.get("slug") or payload.get("title"),
+            exclude_id=reusable_block.id if reusable_block else None,
+            entity_label="reusable block",
+        )
+        payload_blocks = payload.get("blocks") or []
+        self._validate_reusable_block_source_blocks(payload_blocks)
+
+        if reusable_block is None:
+            reusable_block = ReusableBlock(created_by_fk=get_user_id())
+            db.session.add(reusable_block)
+
+        status = payload.get("status") or "active"
+        is_active = bool(payload.get("is_active", status == "active"))
+        if status == "archived":
+            is_active = False
+
+        reusable_block.slug = slug
+        reusable_block.title = payload["title"]
+        reusable_block.description = payload.get("description")
+        reusable_block.category = (payload.get("category") or "custom").strip() or "custom"
+        reusable_block.status = status
+        reusable_block.is_active = is_active
+        reusable_block.changed_by_fk = get_user_id()
+        reusable_block.set_blocks(payload_blocks)
+        reusable_block.set_settings(payload.get("settings") or {})
+        if status == "archived":
+            reusable_block.archived_on = reusable_block.archived_on or _now()
+            reusable_block.archived_by_fk = get_user_id()
+        else:
+            reusable_block.archived_on = None
+            reusable_block.archived_by_fk = None
+        db.session.flush()
+        return reusable_block
 
     def _upsert_style_bundle(self, payload: dict[str, Any]) -> StyleBundle:
         bundle_id = payload.get("id")
@@ -2642,6 +3076,8 @@ class PublicPageRestApi(BaseApi):
             page.is_homepage = False
 
         payload_blocks = self._coerce_page_blocks_payload(payload)
+        if require_public_references:
+            self._ensure_referenced_charts_are_public(payload_blocks)
         for block_data in payload_blocks:
             self._validate_block_references(
                 block_data,
@@ -2651,6 +3087,7 @@ class PublicPageRestApi(BaseApi):
         self._clear_legacy_sections(page)
 
         db.session.flush()
+        self._ensure_homepage_exists(preferred_page=page if page.is_homepage else None)
         self._snapshot_page_revision(
             page,
             action="saved",
@@ -2881,6 +3318,7 @@ class PublicPageRestApi(BaseApi):
             "can_manage_themes": _can_manage_themes(),
             "can_manage_templates": _can_manage_templates(),
             "can_manage_styles": _can_manage_styles(),
+            "can_manage_reusable_blocks": _can_manage_reusable_blocks(),
         }
 
     def _build_admin_stats(
@@ -2891,6 +3329,7 @@ class PublicPageRestApi(BaseApi):
         templates: list[Template],
         style_bundles: list[StyleBundle],
         media_assets: list[MediaAsset],
+        reusable_blocks: list[ReusableBlock],
     ) -> dict[str, int]:
         return {
             "total_pages": len(pages),
@@ -2922,6 +3361,7 @@ class PublicPageRestApi(BaseApi):
             "templates": len(templates),
             "style_bundles": len(style_bundles),
             "media_assets": len(media_assets),
+            "reusable_blocks": len(reusable_blocks),
         }
 
     def _get_admin_payload(
@@ -2941,6 +3381,7 @@ class PublicPageRestApi(BaseApi):
         themes = self._list_themes(admin=True)
         templates = self._list_templates(admin=True)
         style_bundles = self._list_style_bundles(admin=True)
+        reusable_blocks = self._list_reusable_blocks(admin=True)
         media_assets = self._list_media_assets(admin=True)
         dashboards = self._list_public_dashboards()
         charts = self._list_serving_charts(public_only=False)
@@ -2982,6 +3423,7 @@ class PublicPageRestApi(BaseApi):
                 templates,
                 style_bundles,
                 media_assets,
+                reusable_blocks,
             ),
             "pages": [
                 self._serialize_page_summary(page, include_admin=True) for page in pages
@@ -3015,6 +3457,18 @@ class PublicPageRestApi(BaseApi):
                 self._serialize_style_bundle(bundle, include_admin=True)
                 for bundle in style_bundles
             ],
+            "reusable_blocks": [
+                self._serialize_reusable_block(
+                    reusable_block,
+                    include_admin=True,
+                    public_context=False,
+                )
+                for reusable_block in reusable_blocks
+            ],
+            "starter_patterns": [
+                self._serialize_starter_pattern(pattern)
+                for pattern in list_starter_patterns()
+            ],
             "permissions": self._cms_permissions_payload(),
             "recent_edits": [
                 self._serialize_page_revision(revision) for revision in recent_revisions
@@ -3030,6 +3484,105 @@ class PublicPageRestApi(BaseApi):
                 ]
             ),
         }
+
+    def _default_welcome_page_settings(
+        self,
+        existing: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            **(existing or {}),
+            "heroCtaLabel": "Browse dashboards",
+            "heroCtaTarget": DEFAULT_WELCOME_PAGE_CTA_TARGET,
+            "defaultWelcomeSeedVersion": DEFAULT_WELCOME_PAGE_SEED_VERSION,
+        }
+
+    def _legacy_default_welcome_sections_match(self, page: Page) -> bool:
+        visible_sections = [section for section in page.sections if section.is_visible]
+        if not visible_sections:
+            return True
+
+        section_keys = [
+            (section.section_key, section.section_type) for section in visible_sections
+        ]
+        if section_keys not in (
+            [("hero", "hero"), ("highlights", "kpi_band")],
+            [
+                ("hero", "hero"),
+                ("highlights", "kpi_band"),
+                ("featured-charts", "chart_grid"),
+            ],
+        ):
+            return False
+
+        hero_section = visible_sections[0]
+        if hero_section.title != "Towards malaria elimination in Uganda":
+            return False
+
+        highlights_section = next(
+            (section for section in visible_sections if section.section_key == "highlights"),
+            None,
+        )
+        if highlights_section is None:
+            return False
+        return any(
+            component.component_type == "indicator_highlights"
+            for component in highlights_section.components
+        )
+
+    def _legacy_default_welcome_blocks_match(self, page: Page) -> bool:
+        root_blocks = [
+            block
+            for block in sorted(page.blocks, key=lambda item: (item.tree_path, item.id or 0))
+            if block.parent_block_id is None
+        ]
+        if len(root_blocks) < 2:
+            return False
+
+        hero_block = root_blocks[0]
+        if (
+            hero_block.block_type != "hero"
+            or hero_block.get_metadata().get("section_key") != "hero"
+        ):
+            return False
+        if hero_block.get_content().get("title") != "Towards malaria elimination in Uganda":
+            return False
+
+        highlights_block = next(
+            (
+                block
+                for block in root_blocks
+                if block.get_metadata().get("section_key") == "highlights"
+            ),
+            None,
+        )
+        if highlights_block is None or highlights_block.block_type != "group":
+            return False
+        return any(
+            child.block_type == "dynamic_widget"
+            and child.get_settings().get("widgetType") == "indicator_highlights"
+            for child in highlights_block.children
+        )
+
+    def _should_refresh_default_welcome_page(self, page: Page) -> bool:
+        if page.slug != "welcome" or page.title != "Welcome":
+            return False
+
+        settings = page.get_settings() or {}
+        if int(settings.get("defaultWelcomeSeedVersion") or 0) >= DEFAULT_WELCOME_PAGE_SEED_VERSION:
+            return False
+        if (
+            settings.get("heroCtaLabel") != "Browse dashboards"
+            or settings.get("heroCtaTarget") != DEFAULT_WELCOME_PAGE_CTA_TARGET
+        ):
+            return False
+        if page.subtitle != LEGACY_WELCOME_PAGE_SUBTITLE:
+            return False
+        if page.description != LEGACY_WELCOME_PAGE_DESCRIPTION:
+            return False
+
+        if page.blocks:
+            return self._legacy_default_welcome_blocks_match(page)
+        return self._legacy_default_welcome_sections_match(page)
 
     def _seed_default_portal(self) -> None:
         self._get_or_create_layout_config()
@@ -3141,110 +3694,71 @@ class PublicPageRestApi(BaseApi):
         pages = db.session.query(Page).order_by(Page.display_order.asc()).all()
         page_by_slug = {page.slug: page for page in pages}
 
-        if "welcome" not in page_by_slug:
+        welcome_page = page_by_slug.get("welcome")
+        if welcome_page is None:
+            featured_charts = [
+                {
+                    "id": chart.id,
+                    "title": chart.slice_name,
+                    "caption": chart.description or None,
+                }
+                for chart in self._list_public_serving_charts()[:4]
+            ]
             welcome_page = Page(
                 slug="welcome",
                 title="Welcome",
-                subtitle="Evidence-led public malaria analytics",
-                description=(
-                    "A public analytics portal for Uganda malaria surveillance, "
-                    "programme reporting, and serving-table chart access."
-                ),
+                subtitle=DEFAULT_WELCOME_PAGE_SUBTITLE,
+                description=DEFAULT_WELCOME_PAGE_DESCRIPTION,
+                excerpt=DEFAULT_WELCOME_PAGE_EXCERPT,
+                seo_title="Welcome | Uganda Malaria Analytics Portal",
+                seo_description=DEFAULT_WELCOME_PAGE_DESCRIPTION,
                 status="published",
                 is_published=True,
                 is_homepage=True,
                 display_order=0,
             )
             welcome_page.set_settings(
-                {
-                    "heroCtaLabel": "Browse dashboards",
-                    "heroCtaTarget": "/superset/public/dashboards/",
-                }
+                self._default_welcome_page_settings(welcome_page.get_settings())
             )
             db.session.add(welcome_page)
             db.session.flush()
-
-            hero_section = PageSection(
-                page=welcome_page,
-                section_key="hero",
-                title="Towards malaria elimination in Uganda",
-                subtitle=(
-                    "Serving-table powered public analytics for surveillance, "
-                    "programme performance, and transparent reporting."
+            self._upsert_blocks(
+                welcome_page,
+                build_default_welcome_page_blocks(
+                    featured_charts=featured_charts,
+                    has_public_dashboards=bool(self._list_public_dashboards()),
                 ),
-                section_type="hero",
-                display_order=0,
-                is_visible=True,
             )
-            hero_section.set_settings({"columns": 1})
-            db.session.add(hero_section)
-            db.session.flush()
-            db.session.add(
-                PageComponent(
-                    section=hero_section,
-                    component_key="welcome-intro",
-                    component_type="markdown",
-                    title="Portal Overview",
-                    body=(
-                        "Explore curated pages, public dashboards, and featured charts "
-                        "rendered from local serving tables without navigating the full "
-                        "authoring interface."
-                    ),
-                    display_order=0,
-                    is_visible=True,
-                )
+            page_by_slug["welcome"] = welcome_page
+        elif self._should_refresh_default_welcome_page(welcome_page):
+            featured_charts = [
+                {
+                    "id": chart.id,
+                    "title": chart.slice_name,
+                    "caption": chart.description or None,
+                }
+                for chart in self._list_public_serving_charts()[:4]
+            ]
+            welcome_page.title = "Welcome"
+            welcome_page.subtitle = DEFAULT_WELCOME_PAGE_SUBTITLE
+            welcome_page.description = DEFAULT_WELCOME_PAGE_DESCRIPTION
+            welcome_page.excerpt = DEFAULT_WELCOME_PAGE_EXCERPT
+            welcome_page.seo_title = "Welcome | Uganda Malaria Analytics Portal"
+            welcome_page.seo_description = DEFAULT_WELCOME_PAGE_DESCRIPTION
+            welcome_page.status = "published"
+            welcome_page.is_published = True
+            welcome_page.is_homepage = True
+            welcome_page.set_settings(
+                self._default_welcome_page_settings(welcome_page.get_settings())
             )
-
-            kpi_section = PageSection(
-                page=welcome_page,
-                section_key="highlights",
-                title="Latest Indicator Highlights",
-                subtitle="Derived from the most recent staged DHIS2 observations.",
-                section_type="kpi_band",
-                display_order=1,
-                is_visible=True,
+            self._upsert_blocks(
+                welcome_page,
+                build_default_welcome_page_blocks(
+                    featured_charts=featured_charts,
+                    has_public_dashboards=bool(self._list_public_dashboards()),
+                ),
             )
-            db.session.add(kpi_section)
-            db.session.flush()
-            kpi_component = PageComponent(
-                section=kpi_section,
-                component_key="indicator-highlights",
-                component_type="indicator_highlights",
-                title="Indicator Highlights",
-                body=None,
-                display_order=0,
-                is_visible=True,
-            )
-            kpi_component.set_settings({"limit": 6})
-            db.session.add(kpi_component)
-
-            public_charts = self._list_public_serving_charts()[:4]
-            if public_charts:
-                chart_section = PageSection(
-                    page=welcome_page,
-                    section_key="featured-charts",
-                    title="Featured Analytics",
-                    subtitle="Public charts backed by serving datasets.",
-                    section_type="chart_grid",
-                    display_order=2,
-                    is_visible=True,
-                )
-                chart_section.set_settings({"columns": 2})
-                db.session.add(chart_section)
-                db.session.flush()
-                for index, chart in enumerate(public_charts):
-                    chart_component = PageComponent(
-                        section=chart_section,
-                        component_key=f"chart-{chart.id}",
-                        component_type="chart",
-                        title=chart.slice_name,
-                        body=chart.description or None,
-                        chart_id=chart.id,
-                        display_order=index,
-                        is_visible=True,
-                    )
-                    chart_component.set_settings({"height": 360})
-                    db.session.add(chart_component)
+            self._clear_legacy_sections(welcome_page)
 
         if "dashboards" not in page_by_slug:
             dashboards_page = Page(
@@ -3830,6 +4344,88 @@ class PublicPageRestApi(BaseApi):
             return self.response(403, message="You do not have access to CMS Pages")
         return self.response(200, result=list_block_definitions(), count=len(list_block_definitions()))
 
+    @expose("/admin/reusable-blocks", methods=("GET",))
+    @protect()
+    @safe
+    def get_admin_reusable_blocks(self) -> Response:
+        """List reusable synced blocks for the CMS editor."""
+        if not (_can_manage_reusable_blocks() or _can_manage_pages()):
+            return self.response(
+                403,
+                message="You do not have access to reusable blocks",
+            )
+        reusable_blocks = self._list_reusable_blocks(admin=True)
+        return self.response(
+            200,
+            result=[
+                self._serialize_reusable_block(
+                    reusable_block,
+                    include_admin=True,
+                    public_context=False,
+                )
+                for reusable_block in reusable_blocks
+            ],
+            count=len(reusable_blocks),
+        )
+
+    @expose("/admin/reusable-blocks", methods=("POST",))
+    @protect()
+    @safe
+    def save_admin_reusable_block(self) -> Response:
+        """Create or update a reusable synced block."""
+        if not _can_manage_reusable_blocks():
+            return self.response(
+                403,
+                message="You do not have permission to manage reusable blocks",
+            )
+        try:
+            payload = ReusableBlockSchema().load(request.json or {})
+            reusable_block = self._upsert_reusable_block(payload)
+            db.session.commit()
+            return self.response(
+                200,
+                result=self._serialize_reusable_block(
+                    reusable_block,
+                    include_admin=True,
+                    public_context=False,
+                ),
+            )
+        except ValidationError as ex:
+            db.session.rollback()
+            return self.response_400(message=str(ex.messages))
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Error saving reusable CMS block")
+            return self.response_500(message=str(ex))
+
+    @expose("/admin/reusable-blocks/<int:reusable_block_id>", methods=("DELETE",))
+    @protect()
+    @safe
+    def delete_admin_reusable_block(self, reusable_block_id: int) -> Response:
+        """Delete a reusable synced block."""
+        if not _can_manage_reusable_blocks():
+            return self.response(
+                403,
+                message="You do not have permission to manage reusable blocks",
+            )
+        reusable_block = self._find_reusable_block(
+            reusable_block_id=reusable_block_id,
+            admin=True,
+        )
+        if reusable_block is None:
+            return self.response_404(message="Reusable block not found")
+        try:
+            db.session.delete(reusable_block)
+            db.session.commit()
+            return self.response(
+                200,
+                result={"id": reusable_block_id, "deleted": True},
+            )
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Error deleting reusable CMS block")
+            return self.response_500(message=str(ex))
+
     @expose("/admin/pages/<int:page_id>/duplicate", methods=("POST",))
     @protect()
     @safe
@@ -3915,6 +4511,7 @@ class PublicPageRestApi(BaseApi):
             page.archived_by_fk = get_user_id()
             page.changed_by_fk = get_user_id()
             db.session.flush()
+            self._ensure_homepage_exists()
             self._snapshot_page_revision(
                 page,
                 action="archived",

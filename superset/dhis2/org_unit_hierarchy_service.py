@@ -203,7 +203,24 @@ class OrgUnitHierarchyService:
         dataset_config: dict[str, Any],
         selected_instance_ids: list[int],
     ) -> list[dict[str, Any]]:
-        org_unit_details = self.infer_missing_structure(dataset_config, selected_instance_ids)
+        ordered_details = self._selected_details(dataset_config, selected_instance_ids)
+
+        roots: list[dict[str, Any]] = []
+        for detail in ordered_details:
+            if any(self._detail_is_descendant_of(detail, root) for root in roots):
+                continue
+            roots.append(detail)
+        return roots
+
+    def _selected_details(
+        self,
+        dataset_config: dict[str, Any],
+        selected_instance_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        org_unit_details = self.infer_missing_structure(
+            dataset_config,
+            selected_instance_ids,
+        )
 
         detail_map: dict[str, dict[str, Any]] = {}
         for detail in org_unit_details:
@@ -228,13 +245,7 @@ class OrgUnitHierarchyService:
                 self._detail_selection_key(detail) or "",
             ),
         )
-
-        roots: list[dict[str, Any]] = []
-        for detail in ordered_details:
-            if any(self._detail_is_descendant_of(detail, root) for root in roots):
-                continue
-            roots.append(detail)
-        return roots
+        return ordered_details
 
     @staticmethod
     def _scope_max_level(scope: str, selected_level: int, hierarchy_max_level: int) -> int:
@@ -329,7 +340,6 @@ class OrgUnitHierarchyService:
         dataset_config: dict[str, Any],
         selected_instance_ids: list[int],
         mapping_rows: list[dict[str, Any]] | None,
-        selected_root_details: list[dict[str, Any]],
     ) -> list[int]:
         if mapping_rows is not None:
             return sorted({row["merged_level"] for row in mapping_rows})
@@ -338,6 +348,10 @@ class OrgUnitHierarchyService:
             dataset_config.get("org_unit_scope") or "selected"
         ).strip().lower()
         resolved_levels: set[int] = set()
+        selected_details = self._selected_details(
+            dataset_config,
+            selected_instance_ids,
+        )
 
         for instance_id in selected_instance_ids:
             snapshot = self._load_snapshot(_ORG_UNIT_HIERARCHY_NAMESPACE, instance_id)
@@ -351,26 +365,40 @@ class OrgUnitHierarchyService:
                 except (TypeError, ValueError):
                     continue
 
-            selected_levels = [
-                level
-                for detail in selected_root_details
+            applicable_details = [
+                detail
+                for detail in selected_details
                 if isinstance(detail, dict)
                 and (
                     not self._detail_instance_ids(detail)
                     or instance_id in self._detail_instance_ids(detail)
                 )
+            ]
+            selected_levels = [
+                level
+                for detail in applicable_details
                 for level in [self._detail_level(detail)]
                 if level is not None
             ]
 
-            for selected_level in selected_levels:
-                resolved_levels.update(
-                    self._scope_levels(
+            if selected_levels:
+                min_selected_level = min(selected_levels)
+                max_scoped_level = max(
+                    self._scope_max_level(
                         normalized_scope,
                         selected_level,
                         hierarchy_max_level,
                     )
+                    for selected_level in selected_levels
                 )
+                if max_scoped_level >= min_selected_level:
+                    resolved_levels.update(
+                        range(min_selected_level, max_scoped_level + 1)
+                    )
+                continue
+
+            if applicable_details and hierarchy_max_level > 0:
+                resolved_levels.update(range(1, hierarchy_max_level + 1))
 
         return sorted(level for level in resolved_levels if level > 0)
 
@@ -519,7 +547,6 @@ class OrgUnitHierarchyService:
             dataset_config,
             selected_instance_ids,
             mapping_rows,
-            selected_root_details,
         )
 
         hierarchy_columns: list[dict[str, Any]] = []

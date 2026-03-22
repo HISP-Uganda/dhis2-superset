@@ -28,6 +28,7 @@ import {
   supersetTheme,
   TimeseriesAnnotationLayer,
 } from '@superset-ui/core';
+import { GenericDataType } from '@apache-superset/core/api/core';
 import { EchartsTimeseriesChartProps } from '../../src/types';
 import transformProps from '../../src/Timeseries/transformProps';
 
@@ -390,6 +391,63 @@ describe('EchartsTimeseries transformProps', () => {
         [599616000006, -442.9833136960517],
       ],
     });
+  });
+
+  it('formats DHIS2 period axes and series labels for categorical charts', () => {
+    const chartProps = new ChartProps({
+      ...chartPropsConfig,
+      formData: {
+        ...formData,
+        x_axis: 'period',
+        groupby: ['reporting_period'],
+      },
+      queriesData: [
+        {
+          data: [
+            { period: '202501', '202503': 1, '202504': 2 },
+            { period: '202502', '202503': 3, '202504': 4 },
+          ],
+          label_map: {
+            '202503': ['202503'],
+            '202504': ['202504'],
+          },
+          colnames: ['period', '202503', '202504'],
+          coltypes: [
+            GenericDataType.String,
+            GenericDataType.Numeric,
+            GenericDataType.Numeric,
+          ],
+        },
+      ],
+      datasource: {
+        verboseMap: {},
+        columnFormats: {},
+        currencyFormats: {},
+        columns: [
+          {
+            column_name: 'period',
+            extra: { dhis2_is_period: true },
+          },
+          {
+            column_name: 'reporting_period',
+            extra: { dhis2_is_period: true },
+          },
+        ],
+      },
+    });
+
+    const transformed = transformProps(
+      chartProps as EchartsTimeseriesChartProps,
+    );
+
+    expect((transformed.echartOptions.legend as any).data).toEqual(
+      expect.arrayContaining(['March 2025', 'April 2025']),
+    );
+    expect(
+      (transformed.echartOptions.xAxis as any).axisLabel.formatter('202503'),
+    ).toBe('March 2025');
+    expect(transformed.xValueFormatter('202503')).toBe('March 2025');
+    expect(transformed.labelMap['March 2025']).toEqual(['202503']);
   });
 });
 
