@@ -38,7 +38,6 @@ import {
   isIntervalAnnotationLayer,
   isPhysicalColumn,
   isTimeseriesAnnotationLayer,
-  QueryFormColumn,
   t,
   TimeseriesChartDataResponseResult,
   NumberFormats,
