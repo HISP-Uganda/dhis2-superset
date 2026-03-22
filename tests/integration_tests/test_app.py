@@ -14,7 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+import importlib
 from os import environ
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from superset.app import create_app
@@ -29,6 +31,17 @@ if TYPE_CHECKING:
 superset_config_module = environ.get(
     "SUPERSET_CONFIG", "tests.integration_tests.superset_test_config"
 )
+if superset_config_module.startswith("tests.integration_tests."):
+    config = importlib.import_module(superset_config_module)
+    database_uri = getattr(config, "SQLALCHEMY_DATABASE_URI", "")
+    if database_uri.startswith("sqlite:///"):
+        sqlite_path = Path(database_uri.removeprefix("sqlite:///"))
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-shm", "-wal"):
+            candidate = Path(f"{sqlite_path}{suffix}")
+            if candidate.exists():
+                candidate.unlink()
+
 app = create_app(superset_config_module=superset_config_module)
 
 

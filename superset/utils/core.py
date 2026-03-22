@@ -1271,9 +1271,7 @@ def get_metric_name(metric: Metric, verbose_map: dict[str, Any] | None = None) -
             if column and aggregate:
                 return f"{aggregate}({column_name})"
             if column_name:
-                # Return a default aggregation to avoid conflict with dimension columns
-                # This happens when a metric is created without specifying an aggregate
-                return f"COUNT({column_name})"
+                return column_name
 
     if isinstance(metric, str):
         verbose_map = verbose_map or {}
@@ -1906,7 +1904,7 @@ def _process_datetime_column(
                     lambda x: pd.Timestamp(x) if pd.notna(x) else pd.NaT
                 )
             except ValueError:
-                logger.warning(
+                logging.getLogger().warning(
                     "Unable to convert column %s to datetime, ignoring",
                     col.col_label,
                 )

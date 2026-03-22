@@ -144,6 +144,8 @@ class TestDatasourceApi(SupersetTestCase):
             column_name="col2",
             limit=10000,
             denormalize_column=False,
+            cascade_parent_column=None,
+            cascade_parent_value=None,
         )
 
     @pytest.mark.usefixtures("app_context", "virtual_dataset")
@@ -166,6 +168,8 @@ class TestDatasourceApi(SupersetTestCase):
             column_name="col2",
             limit=10000,
             denormalize_column=True,
+            cascade_parent_column=None,
+            cascade_parent_value=None,
         )
 
     @pytest.mark.usefixtures("app_context", "virtual_dataset")

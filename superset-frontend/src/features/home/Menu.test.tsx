@@ -480,6 +480,10 @@ test('should keep Data visible in the top navbar and include the local workspace
     'href',
     '/superset/dhis2/local-metadata/',
   );
+  expect(await screen.findByText('Download Datasets')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/downloads/',
+  );
 });
 
 test('should move DHIS2 and SQL into Data and place Data after Datasets', async () => {
@@ -508,6 +512,90 @@ test('should move DHIS2 and SQL into Data and place Data after Datasets', async 
     'href',
     '/sqllab/',
   );
+});
+
+test('should remove legacy DHIS2 admin links from Settings and normalize them into Data', async () => {
+  useSelectorMock.mockReturnValue({ roles: user.roles });
+
+  const legacyDhis2SettingsProps = {
+    ...wrapperMenuProps,
+    data: {
+      ...wrapperMenuProps.data,
+      menu: [
+        ...wrapperMenuProps.data.menu,
+        {
+          name: 'Settings',
+          icon: 'fa-cogs',
+          label: 'Settings',
+          index: 6,
+          childs: [
+            {
+              name: 'DHIS2 Instances',
+              icon: 'fa-link',
+              label: 'DHIS2 Instances',
+              url: '/superset/dhis2admin/list/',
+            },
+            {
+              name: 'DHIS2 Health',
+              icon: 'fa-heartbeat',
+              label: 'DHIS2 Health',
+              url: '/superset/dhis2admin/health/',
+            },
+            {
+              name: 'DHIS2 Sync History',
+              icon: 'fa-history',
+              label: 'DHIS2 Sync History',
+              url: '/superset/dhis2admin/sync-history/',
+            },
+            {
+              name: 'DHIS2 Local Metadata',
+              icon: 'fa-sitemap',
+              label: 'DHIS2 Local Metadata',
+              url: '/superset/dhis2admin/local-metadata/',
+            },
+            {
+              name: 'DHIS2 Local Data',
+              icon: 'fa-database',
+              label: 'DHIS2 Local Data',
+              url: '/superset/dhis2admin/local-data/',
+            },
+            {
+              name: 'DHIS2 Download Datasets',
+              icon: 'fa-download',
+              label: 'DHIS2 Download Datasets',
+              url: '/superset/dhis2admin/downloads/',
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  render(<MenuWrapper {...legacyDhis2SettingsProps} />, {
+    useRedux: true,
+    useQueryParams: true,
+    useRouter: true,
+    useTheme: true,
+  });
+
+  const dataTab = await screen.findByText('Data');
+  userEvent.hover(dataTab);
+
+  expect(await screen.findByText('Download Datasets')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/downloads/',
+  );
+  expect(await screen.findByText('Staged Datasets')).toHaveAttribute(
+    'href',
+    '/superset/dhis2/local-data/',
+  );
+
+  userEvent.hover(await screen.findByText('Settings'));
+
+  expect(screen.queryByText('DHIS2 Download Datasets')).not.toBeInTheDocument();
+  expect(screen.queryByText('DHIS2 Local Data')).not.toBeInTheDocument();
+  expect(screen.queryByText('DHIS2 Local Metadata')).not.toBeInTheDocument();
+  expect(screen.queryByText('DHIS2 Sync History')).not.toBeInTheDocument();
 });
 
 test('should add CMS Pages after Data for authenticated users', async () => {

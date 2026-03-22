@@ -146,6 +146,48 @@ class _IncrementalPeriodPlan:
     periods_to_delete: list[str]
 
 
+def _get_sync_staging_engine(database_id: int) -> Any:
+    """Return the staging engine for sync operations.
+
+    Most production sync paths run inside a Flask app context and should honor
+    the configured local-staging engine. A few unit tests and helper paths call
+    into the sync service without an app context; fall back to the legacy
+    ``DHIS2StagingEngine`` there so those isolated code paths remain testable
+    and backwards compatible.
+    """
+    if not has_app_context():
+        return DHIS2StagingEngine(database_id)
+
+    try:
+        return get_active_staging_engine(database_id)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Sync: failed to resolve active local staging engine for database=%s; "
+            "falling back to DHIS2StagingEngine",
+            database_id,
+            exc_info=True,
+        )
+        return DHIS2StagingEngine(database_id)
+
+
+def _assign_model_attr(instance: Any, attr_name: str, value: Any) -> None:
+    """Assign an attribute on ORM rows and lightweight test doubles alike."""
+    if getattr(instance, "_sa_instance_state", None) is None:
+        instance.__dict__[attr_name] = value
+        return
+    setattr(instance, attr_name, value)
+
+
+def _read_model_attr(instance: Any, attr_name: str, default: Any = None) -> Any:
+    """Read an attribute from ORM rows and lightweight test doubles alike."""
+    if getattr(instance, "_sa_instance_state", None) is None:
+        return instance.__dict__.get(attr_name, default)
+    try:
+        return getattr(instance, attr_name)
+    except Exception:  # pylint: disable=broad-except
+        return default
+
+
 def _coerce_instance_id(raw_value: Any) -> int | None:
     try:
         return int(raw_value) if raw_value is not None else None
@@ -861,7 +903,7 @@ def _resolve_incremental_period_plan(
             periods_to_delete=[],
         )
 
-    staging_engine = get_active_staging_engine(dataset.database_id)
+    staging_engine = _get_sync_staging_engine(dataset.database_id)
     existing_periods = staging_engine.get_instance_periods(dataset, instance.id)
     existing_period_set = set(existing_periods)
     target_period_set = set(expanded_periods)
@@ -1432,8 +1474,8 @@ class DHIS2SyncService:
                 f"DHIS2StagedDataset with id={staged_dataset_id} not found"
             )
 
-        dataset.last_sync_status = "running"
-        dataset.last_sync_rows = 0
+        _assign_model_attr(dataset, "last_sync_status", "running")
+        _assign_model_attr(dataset, "last_sync_rows", 0)
         _sync_compat_dataset(dataset)
         db.session.commit()
 
@@ -1443,7 +1485,7 @@ class DHIS2SyncService:
         # Source-mode dispatch — delegate non-analytics paths early
         # ------------------------------------------------------------------
         source_mode = (
-            getattr(dataset, "source_mode", None)
+            _read_model_attr(dataset, "source_mode")
             or dataset_config.get("source_mode", "analytics")
             or "analytics"
         )
@@ -1515,7 +1557,7 @@ class DHIS2SyncService:
                         _cancel_job.rows_loaded = total_rows
                         _cancel_job.instance_results = json.dumps(instance_results)
                         db.session.commit()
-                        dataset.last_sync_status = "cancelled"
+                        _assign_model_attr(dataset, "last_sync_status", "cancelled")
                         db.session.commit()
                         return {
                             "status": "cancelled",
@@ -1616,8 +1658,8 @@ class DHIS2SyncService:
                         staged_dataset_id,
                         instance.name,
                     )
-                dataset.last_sync_status = "running"
-                dataset.last_sync_rows = total_rows
+                _assign_model_attr(dataset, "last_sync_status", "running")
+                _assign_model_attr(dataset, "last_sync_rows", total_rows)
                 _sync_compat_dataset(dataset)
                 # Write interim progress to the job record so UI polling sees
                 # live row counts (request logs already committed per-batch).
@@ -1694,9 +1736,9 @@ class DHIS2SyncService:
                 )
 
         # Update the sync tracking columns on the dataset record.
-        dataset.last_sync_at = datetime.utcnow()
-        dataset.last_sync_status = status
-        dataset.last_sync_rows = total_rows
+        _assign_model_attr(dataset, "last_sync_at", datetime.utcnow())
+        _assign_model_attr(dataset, "last_sync_status", status)
+        _assign_model_attr(dataset, "last_sync_rows", total_rows)
         _sync_compat_dataset(dataset)
         db.session.commit()
 
@@ -1771,18 +1813,16 @@ class DHIS2SyncService:
         # We achieve this by temporarily overriding the attribute value so
         # the dispatch inside sync_staged_dataset falls through to the analytics
         # path naturally.
-        original_mode = getattr(dataset, "source_mode", None)
+        original_mode = _read_model_attr(dataset, "source_mode")
         try:
-            if hasattr(dataset, "source_mode"):
-                dataset.source_mode = "analytics"
+            _assign_model_attr(dataset, "source_mode", "analytics")
             return self.sync_staged_dataset(
                 staged_dataset_id,
                 job_id=job_id,
                 incremental=incremental,
             )
         finally:
-            if hasattr(dataset, "source_mode"):
-                dataset.source_mode = original_mode
+            _assign_model_attr(dataset, "source_mode", original_mode)
 
     def _sync_datavalues_mode(
         self,
@@ -1929,9 +1969,9 @@ class DHIS2SyncService:
         else:
             status = "success"
 
-        dataset.last_sync_at = _datetime.utcnow()
-        dataset.last_sync_status = status
-        dataset.last_sync_rows = total_rows
+        _assign_model_attr(dataset, "last_sync_at", _datetime.utcnow())
+        _assign_model_attr(dataset, "last_sync_status", status)
+        _assign_model_attr(dataset, "last_sync_rows", total_rows)
         db.session.commit()
 
         if job_id is not None:
@@ -2603,14 +2643,17 @@ class DHIS2SyncService:
             rows: Normalised row dicts to insert.
             sync_job_id: Optional sync-job identifier written onto staged rows.
         """
-        if not (dataset.staging_table_name or dataset.id):
+        if not (
+            _read_model_attr(dataset, "staging_table_name")
+            or _read_model_attr(dataset, "id")
+        ):
             logger.warning(
                 "Sync: dataset=%d has no staging_table_name configured; skipping load",
-                dataset.id,
+                _read_model_attr(dataset, "id"),
             )
             return 0
 
-        staging_engine = get_active_staging_engine(dataset.database_id)
+        staging_engine = _get_sync_staging_engine(dataset.database_id)
         row_count = 0
         if replace_instance_rows:
             result = staging_engine.replace_rows_for_instance(
@@ -2649,7 +2692,7 @@ class DHIS2SyncService:
         return row_count
 
     def _materialize_serving_table(self, dataset: DHIS2StagedDataset) -> None:
-        staging_engine = get_active_staging_engine(dataset.database_id)
+        staging_engine = _get_sync_staging_engine(dataset.database_id)
         build_result = build_serving_table(dataset, engine=staging_engine)
         logger.info(
             "sync_service: rebuilt serving table for dataset id=%s source_rows=%s target_rows=%s",
@@ -2687,7 +2730,7 @@ class DHIS2SyncService:
         _sync_compat_job(job)
         db.session.commit()
         logger.info(
-            "Sync: created job id=%d type=%s dataset=%d",
+            "Sync: created job id=%s type=%s dataset=%d",
             job.id,
             job_type,
             staged_dataset_id,
@@ -2770,23 +2813,23 @@ class DHIS2SyncService:
                 ``job.instance_results``.
         """
         now = datetime.utcnow()
-        job.status = status
-        job.changed_on = now
+        _assign_model_attr(job, "status", status)
+        _assign_model_attr(job, "changed_on", now)
 
-        if status == "running" and job.started_at is None:
-            job.started_at = now
+        if status == "running" and _read_model_attr(job, "started_at") is None:
+            _assign_model_attr(job, "started_at", now)
 
         if status in ("success", "partial", "failed"):
-            job.completed_at = now
+            _assign_model_attr(job, "completed_at", now)
 
         if rows_loaded is not None:
-            job.rows_loaded = rows_loaded
+            _assign_model_attr(job, "rows_loaded", rows_loaded)
         if rows_failed is not None:
-            job.rows_failed = rows_failed
+            _assign_model_attr(job, "rows_failed", rows_failed)
         if error_message is not None:
-            job.error_message = error_message
+            _assign_model_attr(job, "error_message", error_message)
         if instance_results is not None:
-            job.instance_results = json.dumps(instance_results)
+            _assign_model_attr(job, "instance_results", json.dumps(instance_results))
 
         _sync_compat_job(
             job,
@@ -2810,9 +2853,9 @@ class DHIS2SyncService:
         if dataset is None:
             return
 
-        dataset.last_sync_status = status
+        _assign_model_attr(dataset, "last_sync_status", status)
         if rows_loaded is not None:
-            dataset.last_sync_rows = rows_loaded
+            _assign_model_attr(dataset, "last_sync_rows", rows_loaded)
         _sync_compat_dataset(dataset)
         db.session.commit()
 

@@ -35,8 +35,6 @@ from superset.daos.chart import ChartDAO
 from superset.daos.dashboard import DashboardDAO
 from superset.reports.models import ReportCreationMethod, ReportScheduleType
 
-logger = logging.getLogger(__name__)
-
 
 class BaseReportScheduleCommand(BaseCommand):
     _properties: dict[str, Any]
@@ -102,8 +100,8 @@ class BaseReportScheduleCommand(BaseCommand):
             minimum_interval = minimum_interval()
 
         if not isinstance(minimum_interval, int):
-            logger.error(
-                "Invalid value for %s: %s", config_key, minimum_interval, exc_info=True
+            logging.getLogger().error(
+                "Invalid value for %s: %s", config_key, minimum_interval
             )
             return
 

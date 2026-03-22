@@ -27,6 +27,7 @@ class DHIS2DatasetRestApi(BaseApi):
     """REST API for optimized DHIS2 dataset management."""
 
     resource_name = "dhis2_dataset"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Dataset"
 

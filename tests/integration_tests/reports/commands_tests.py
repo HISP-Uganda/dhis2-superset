@@ -79,6 +79,7 @@ from superset.reports.notifications.exceptions import (
 from superset.tasks.types import ExecutorType
 from superset.utils import json
 from superset.utils.database import get_example_database
+from superset.utils.urls import get_url_path
 from tests.integration_tests.fixtures.birth_names_dashboard import (
     load_birth_names_dashboard_with_slices,  # noqa: F401
     load_birth_names_data,  # noqa: F401
@@ -135,6 +136,26 @@ def get_error_logs_query(report_schedule: ReportSchedule) -> BaseQuery:
             ReportExecutionLog.state == ReportState.ERROR,
         )
         .order_by(ReportExecutionLog.end_dttm.desc())
+    )
+
+
+def get_expected_chart_report_url(chart_id: int, force: str = "false") -> str:
+    return get_url_path(
+        "ExploreView.root",
+        user_friendly=True,
+        form_data=json.dumps({"slice_id": chart_id}),
+        force=force,
+    )
+
+
+def get_expected_dashboard_report_url(
+    dashboard_id_or_slug: str | int, force: str = "false"
+) -> str:
+    return get_url_path(
+        "Superset.dashboard",
+        user_friendly=True,
+        dashboard_id_or_slug=dashboard_id_or_slug,
+        force=force,
     )
 
 
@@ -691,9 +712,8 @@ def test_email_chart_report_schedule_with_cc_bcc(
 
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_report_email_chart_with_cc_and_bcc.chart.id}"
-            '%7D&force=false">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_report_email_chart_with_cc_and_bcc.chart.id)}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         if notification_targets:
@@ -748,9 +768,8 @@ def test_email_chart_report_schedule(
         )
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_report_email_chart.chart.id}"
-            '%7D&force=false">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_report_email_chart.chart.id)}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         assert email_mock.call_args[0][0] == notification_targets[0]
@@ -805,9 +824,8 @@ def test_email_chart_report_schedule_alpha_owner(
 
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_report_email_chart_alpha_owner.chart.id}"
-            '%7D&force=false">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_report_email_chart_alpha_owner.chart.id)}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         assert email_mock.call_args[0][0] == notification_targets[0]
@@ -852,9 +870,8 @@ def test_email_chart_report_schedule_force_screenshot(
         )
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_report_email_chart_force_screenshot.chart.id}"
-            '%7D&force=true">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_report_email_chart_force_screenshot.chart.id, force="true")}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         assert email_mock.call_args[0][0] == notification_targets[0]
@@ -889,9 +906,8 @@ def test_email_chart_alert_schedule(
         notification_targets = get_target_from_report_schedule(create_alert_email_chart)
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_alert_email_chart.chart.id}"
-            '%7D&force=true">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_alert_email_chart.chart.id, force="true")}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         assert email_mock.call_args[0][0] == notification_targets[0]
@@ -962,9 +978,8 @@ def test_email_chart_report_schedule_with_csv(
         )
         # assert that the link sent is correct
         assert (
-            '<a href="http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+'
-            f"{create_report_email_chart_with_csv.chart.id}%7D&"
-            'force=false">Explore in Superset</a>' in email_mock.call_args[0][2]
+            f'<a href="{get_expected_chart_report_url(create_report_email_chart_with_csv.chart.id)}">Explore in Superset</a>'
+            in email_mock.call_args[0][2]
         )
         # Assert the email smtp address
         assert email_mock.call_args[0][0] == notification_targets[0]
@@ -1540,11 +1555,13 @@ def test_slack_chart_report_schedule_v2(
 @pytest.mark.usefixtures(
     "load_birth_names_dashboard_with_slices", "create_report_slack_chart"
 )
-@patch("superset.utils.slack.get_slack_client")
+@patch("superset.reports.notifications.slack.should_use_v2_api", return_value=False)
+@patch("superset.reports.notifications.slack.get_slack_client")
 @patch("superset.utils.screenshots.ChartScreenshot.get_screenshot")
 def test_slack_chart_report_schedule_with_errors(
     screenshot_mock,
     web_client_mock,
+    slack_should_use_v2_api_mock,
     create_report_slack_chart,
 ):
     """
@@ -1698,7 +1715,7 @@ def test_slack_chart_report_schedule_with_text(
             ]
         )
         assert (
-            f"<http://0.0.0.0:8080/explore/?form_data=%7B%22slice_id%22:+{create_report_slack_chart_with_text.chart.id}%7D&force=false|Explore in Superset>"  # noqa: E501
+            f"<{get_expected_chart_report_url(create_report_slack_chart_with_text.chart.id)}|Explore in Superset>"
             in slack_client_mock_class.return_value.chat_postMessage.call_args[1][
                 "text"
             ]
@@ -1902,9 +1919,8 @@ def test_email_dashboard_report_fails_uncaught_exception(
 
     assert_log(ReportState.ERROR, error_message="Uncaught exception")
     assert (
-        '<a href="http://0.0.0.0:8080/superset/dashboard/'
-        f"{create_report_email_dashboard.dashboard.uuid}/"
-        '?force=false">Call to action</a>' in email_mock.call_args[0][2]
+        f'<a href="{get_expected_dashboard_report_url(create_report_email_dashboard.dashboard.uuid)}">Call to action</a>'
+        in email_mock.call_args[0][2]
     )
 
 

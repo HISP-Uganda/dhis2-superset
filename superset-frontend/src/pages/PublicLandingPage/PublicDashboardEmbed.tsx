@@ -28,10 +28,28 @@ const FrameShell = styled.div<{ $height: number }>`
   width: 100%;
   min-height: ${({ $height }) => $height}px;
   height: ${({ $height }) => $height}px;
+  padding: 10px;
   overflow: hidden;
-  border-radius: var(--portal-radius-md, 0);
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: var(--portal-surface, #ffffff);
+  border-radius: calc(var(--portal-radius-lg, 0px) + 6px);
+  border: 1px solid var(--portal-border-strong, rgba(148, 163, 184, 0.28));
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.76) 0%,
+      rgba(255, 255, 255, 0.96) 100%
+    ),
+    var(--portal-surface, #ffffff);
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
+`;
+
+const FrameViewport = styled.div`
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--portal-radius-lg, 0);
+  background: var(--portal-bg-elevated, #f8fafc);
+  border: 1px solid rgba(148, 163, 184, 0.14);
 `;
 
 const FrameOverlay = styled.div`
@@ -119,8 +137,8 @@ export default function PublicDashboardEmbed({
       iframeTitle: title,
       dashboardUiConfig: {
         hideTitle: true,
-        hideTab: false,
-        hideChartControls: false,
+        hideTab: true,
+        hideChartControls: true,
         filters: {
           visible: true,
           expanded: false,
@@ -163,9 +181,11 @@ export default function PublicDashboardEmbed({
 
   return (
     <FrameShell $height={height} role="region" aria-label={title}>
-      {isLoading && <FrameOverlay>{loadingLabel}</FrameOverlay>}
-      {error && <ErrorOverlay>{error}</ErrorOverlay>}
-      <MountPoint ref={mountRef} />
+      <FrameViewport>
+        {isLoading && <FrameOverlay>{loadingLabel}</FrameOverlay>}
+        {error && <ErrorOverlay>{error}</ErrorOverlay>}
+        <MountPoint ref={mountRef} />
+      </FrameViewport>
     </FrameShell>
   );
 }

@@ -28,6 +28,18 @@ export type PortalLayoutSettings = {
   surfaceColor?: string;
   pageMaxWidth?: number | string;
   showThemeToggle?: boolean;
+  lightModeLabel?: string;
+  darkModeLabel?: string;
+  loginButtonText?: string;
+  loginButtonUrl?: string;
+  footerText?: string;
+  emptyPageMessage?: string;
+  noPublicPageMessage?: string;
+  dashboardBadgeLabel?: string;
+  dashboardEmbedSubtitle?: string;
+  dashboardEmbedIntro?: string;
+  dashboardBackLabel?: string;
+  dashboardLoadingLabel?: string;
 };
 
 export type PortalUserRef = {

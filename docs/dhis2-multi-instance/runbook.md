@@ -401,3 +401,41 @@ GET https://your-dhis2.org/api/analytics.json
 ### Credentials visible in a log
 
 This should not happen. If you observe a credential in any log file, rotate the credential immediately in DHIS2, then update the instance record in Superset. File a security issue with the engineering team.
+
+---
+
+## 7. Maintainer Debug Guide
+
+### Add a new metadata field
+
+- staged metadata extraction and normalization live in [metadata_staging_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/metadata_staging_service.py)
+- if the field should survive into chart queries, also update:
+  - [analytical_serving.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/analytical_serving.py)
+  - [serving_build_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/serving_build_service.py)
+
+### Change serving logic
+
+- raw extraction and incremental loading: [sync_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/sync_service.py)
+- raw table DDL and conflict keys: [staging_engine.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/staging_engine.py)
+- serving manifest and column projection: [analytical_serving.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/analytical_serving.py)
+
+### Debug a missing disaggregation dimension
+
+1. Inspect the staged metadata snapshots for `categoryCombos`, `categories`, and `categoryOptionCombos`.
+2. Check the affected variable row in `dhis2_dataset_variables.dimension_availability_json`.
+3. Confirm the wizard saved `include_disaggregation_dimension`.
+4. Re-add the variable or restage metadata if the variable predates the dimension-availability population logic.
+
+### Debug inaccurate chart queries
+
+1. Confirm the serving table was rebuilt after the latest dataset-definition change.
+2. Verify the chart is not grouping across multiple org-unit hierarchy levels at once unless that is intentional.
+3. Verify the chart is not summing multiple staged period hierarchy levels at once unless that is intentional.
+4. Remember the query layer now defaults to the deepest staged org-unit and period levels when the chart does not explicitly choose hierarchy columns.
+
+### Debug GeoJSON or map loading issues
+
+1. Verify staged `geoJSON` snapshots exist for the contributing source instances.
+2. Check public metadata access through `/api/v1/database/<id>/dhis2_metadata_public/`.
+3. Check client-side fallback behavior in [dhis2GeoFeatureLoader.ts](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset-frontend/src/utils/dhis2GeoFeatureLoader.ts).
+4. If the public page or public dashboard still renders blank, verify the public chart route resolves the correct DHIS2 source database and linked dashboard context.

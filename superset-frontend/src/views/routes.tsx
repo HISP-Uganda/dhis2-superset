@@ -336,6 +336,10 @@ export const routes: Routes = [
     Component: Chart,
   },
   {
+    path: '/superset/explore/public/',
+    Component: Chart,
+  },
+  {
     path: '/superset/explore/p',
     Component: Chart,
   },

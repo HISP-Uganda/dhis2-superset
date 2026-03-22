@@ -17,6 +17,7 @@
 # from superset import db
 # from superset.models.dashboard import Dashboard
 
+import multiprocessing
 import urllib.request
 from unittest import skipUnless
 from unittest.mock import ANY, call, MagicMock, patch
@@ -46,6 +47,9 @@ from tests.integration_tests.fixtures.birth_names_dashboard import (
     load_birth_names_data,  # noqa: F401
 )
 from tests.integration_tests.test_app import app
+
+if "fork" in multiprocessing.get_all_start_methods():
+    multiprocessing.set_start_method("fork", force=True)
 
 CHART_URL = "/api/v1/chart/"
 DASHBOARD_URL = "/api/v1/dashboard/"

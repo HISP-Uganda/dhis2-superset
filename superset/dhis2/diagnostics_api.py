@@ -52,6 +52,7 @@ class DHIS2DiagnosticsApi(BaseApi):
     """
 
     resource_name = "dhis2/diagnostics"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Diagnostics"
 

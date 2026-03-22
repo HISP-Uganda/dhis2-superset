@@ -15,15 +15,20 @@
 # specific language governing permissions and limitations
 # under the License.
 # type: ignore
+import os
 from copy import copy
 
 from sqlalchemy.engine import make_url
 
 from superset.config import *  # noqa: F403
-from superset.config import DATA_DIR
 
 SECRET_KEY = "dummy_secret_key_for_test_to_silence_warnings"  # noqa: S105
 AUTH_USER_REGISTRATION_ROLE = "alpha"
+DATA_DIR = os.environ.get(
+    "SUPERSET_TEST_DATA_DIR",
+    os.path.join("/tmp", "superset-tests"),
+)
+os.makedirs(DATA_DIR, exist_ok=True)
 SQLALCHEMY_DATABASE_URI = "sqlite:///" + os.path.join(  # noqa: F405
     DATA_DIR,
     "unittests.integration_tests.db",  # noqa: F405
@@ -65,9 +70,12 @@ REDIS_RESULTS_DB = os.environ.get("REDIS_RESULTS_DB", 3)  # noqa: F405
 
 
 class CeleryConfig:
-    broker_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CELERY_DB}"
+    broker_url = "memory://"
     imports = ("superset.sql_lab", "superset.tasks.thumbnails")
     concurrency = 1
+    result_backend = "cache+memory://"
+    task_always_eager = True
+    task_store_eager_result = True
 
 
 CELERY_CONFIG = CeleryConfig
@@ -79,10 +87,8 @@ FEATURE_FLAGS = {
 }
 
 THUMBNAIL_CACHE_CONFIG = {
-    "CACHE_TYPE": "RedisCache",
+    "CACHE_TYPE": "SimpleCache",
     "CACHE_DEFAULT_TIMEOUT": 10000,
     "CACHE_KEY_PREFIX": "superset_thumbnails_",
-    "CACHE_REDIS_HOST": REDIS_HOST,
-    "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": REDIS_CELERY_DB,
+    "CACHE_THRESHOLD": math.inf,
 }

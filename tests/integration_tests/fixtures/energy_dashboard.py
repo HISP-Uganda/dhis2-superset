@@ -34,6 +34,12 @@ misc_dash_slices: set[str] = set()
 ENERGY_USAGE_TBL_NAME = "energy_usage"
 
 
+def _sqlite_safe_chunksize(df: pd.DataFrame, default: int = 500) -> int:
+    if len(df.columns) == 0:
+        return default
+    return max(1, min(default, 900 // len(df.columns)))
+
+
 @pytest.fixture(scope="session")
 def load_energy_table_data():
     with app.app_context():
@@ -44,7 +50,11 @@ def load_energy_table_data():
                 ENERGY_USAGE_TBL_NAME,
                 engine,
                 if_exists="replace",
-                chunksize=500,
+                chunksize=(
+                    _sqlite_safe_chunksize(df)
+                    if engine.dialect.name == "sqlite"
+                    else 500
+                ),
                 index=False,
                 dtype={"source": String(255), "target": String(255), "value": Float()},
                 method="multi",

@@ -695,6 +695,48 @@ def test_merge_dataset_lineage_persists_variable_instance_mappings():
     ]
 
 
+def test_list_variables_includes_dimension_availability_metadata():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = _make_test_app()
+    dataset = SimpleNamespace(id=5)
+    variable = SimpleNamespace(
+        to_json=lambda: {
+            "id": 99,
+            "variable_id": "abc123",
+            "variable_type": "dataElement",
+            "dimension_availability": [
+                {
+                    "dimension_key": "age_group",
+                    "dimension_scope": "groupby",
+                }
+            ],
+        },
+        instance=SimpleNamespace(to_json=lambda: {"id": 7, "name": "HMIS"}),
+    )
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/5/variables",
+        method="GET",
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_api.svc.get_dataset_variables",
+        return_value=[variable],
+    ):
+        response = DHIS2StagedDatasetApi().list_variables(5)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["result"][0]["dimension_availability"] == [
+        {
+            "dimension_key": "age_group",
+            "dimension_scope": "groupby",
+        }
+    ]
+
+
 def test_cleanup_dataset_returns_success_response():
     from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
 

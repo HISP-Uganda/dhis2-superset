@@ -1337,6 +1337,18 @@ export default function CMSAdminPage() {
           surfaceColor: portalLayout.surfaceColor || '',
           pageMaxWidth: Number(portalLayout.pageMaxWidth) || 1280,
           showThemeToggle: portalLayout.showThemeToggle !== false,
+          lightModeLabel: portalLayout.lightModeLabel || '',
+          darkModeLabel: portalLayout.darkModeLabel || '',
+          loginButtonText: portalLayout.loginButtonText || '',
+          loginButtonUrl: portalLayout.loginButtonUrl || '',
+          footerText: portalLayout.footerText || '',
+          emptyPageMessage: portalLayout.emptyPageMessage || '',
+          noPublicPageMessage: portalLayout.noPublicPageMessage || '',
+          dashboardBadgeLabel: portalLayout.dashboardBadgeLabel || '',
+          dashboardEmbedSubtitle: portalLayout.dashboardEmbedSubtitle || '',
+          dashboardEmbedIntro: portalLayout.dashboardEmbedIntro || '',
+          dashboardBackLabel: portalLayout.dashboardBackLabel || '',
+          dashboardLoadingLabel: portalLayout.dashboardLoadingLabel || '',
         },
       },
     })
@@ -2950,6 +2962,7 @@ export default function CMSAdminPage() {
             charts={data?.available_charts || []}
             dashboards={data?.dashboards || []}
             mediaAssets={data?.media_assets || []}
+            portalLayout={portalLayout}
             navigationMenus={menus}
             styleBundles={data?.style_bundles || []}
             blockTypes={data?.block_types || EMPTY_BLOCK_TYPES}
@@ -2964,8 +2977,11 @@ export default function CMSAdminPage() {
             onChangeDraftPage={nextPage => {
               setDraftPage(nextPage);
             }}
+            onChangePortalLayout={setPortalLayout}
+            onSavePortalLayout={savePortalLayout}
             onSaveDraft={savePage}
             savingDraft={savingPage}
+            savingPortalLayout={savingLayout}
           />
         </ContentStack>
       );
@@ -3378,6 +3394,32 @@ export default function CMSAdminPage() {
             </FieldGrid>
             <FieldGrid>
               <FieldBlock>
+                <FieldLabel>{t('Login Button Text')}</FieldLabel>
+                <Input
+                  value={portalLayout.loginButtonText || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      loginButtonText: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Login Button URL')}</FieldLabel>
+                <Input
+                  value={portalLayout.loginButtonUrl || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      loginButtonUrl: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
                 <FieldLabel>{t('Accent Color')}</FieldLabel>
                 <Input
                   value={portalLayout.accentColor || ''}
@@ -3428,6 +3470,133 @@ export default function CMSAdminPage() {
                 />
               </FieldBlock>
             </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Light Mode Label')}</FieldLabel>
+                <Input
+                  value={portalLayout.lightModeLabel || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      lightModeLabel: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Dark Mode Label')}</FieldLabel>
+                <Input
+                  value={portalLayout.darkModeLabel || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      darkModeLabel: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Footer Text')}</FieldLabel>
+              <Input
+                value={portalLayout.footerText || ''}
+                onChange={event =>
+                  setPortalLayout(previous => ({
+                    ...previous,
+                    footerText: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Empty Page Message')}</FieldLabel>
+                <Input
+                  value={portalLayout.emptyPageMessage || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      emptyPageMessage: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('No Public Page Message')}</FieldLabel>
+                <Input
+                  value={portalLayout.noPublicPageMessage || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      noPublicPageMessage: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Dashboard Badge Label')}</FieldLabel>
+                <Input
+                  value={portalLayout.dashboardBadgeLabel || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      dashboardBadgeLabel: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Dashboard Back Label')}</FieldLabel>
+                <Input
+                  value={portalLayout.dashboardBackLabel || ''}
+                  onChange={event =>
+                    setPortalLayout(previous => ({
+                      ...previous,
+                      dashboardBackLabel: event.target.value,
+                    }))
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            <FieldBlock>
+              <FieldLabel>{t('Dashboard Embed Subtitle')}</FieldLabel>
+              <Input
+                value={portalLayout.dashboardEmbedSubtitle || ''}
+                onChange={event =>
+                  setPortalLayout(previous => ({
+                    ...previous,
+                    dashboardEmbedSubtitle: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Dashboard Embed Intro')}</FieldLabel>
+              <Input.TextArea
+                rows={3}
+                value={portalLayout.dashboardEmbedIntro || ''}
+                onChange={event =>
+                  setPortalLayout(previous => ({
+                    ...previous,
+                    dashboardEmbedIntro: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
+            <FieldBlock>
+              <FieldLabel>{t('Dashboard Loading Label')}</FieldLabel>
+              <Input
+                value={portalLayout.dashboardLoadingLabel || ''}
+                onChange={event =>
+                  setPortalLayout(previous => ({
+                    ...previous,
+                    dashboardLoadingLabel: event.target.value,
+                  }))
+                }
+              />
+            </FieldBlock>
             <Button
               type="primary"
               icon={<SaveOutlined />}

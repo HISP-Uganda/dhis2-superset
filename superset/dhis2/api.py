@@ -32,6 +32,7 @@ class DHIS2RestApi(BaseApi):
     """REST API for DHIS2 metadata and dataset building."""
 
     resource_name = "dhis2"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2"
 
@@ -349,6 +350,7 @@ class DHIS2CacheApi(BaseApi):
     """
 
     resource_name = "dhis2_cache"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Cache"
 

@@ -32,6 +32,7 @@ from superset.commands.sql_lab.results import SqlExecutionResultsCommand
 from superset.constants import MODEL_API_RW_METHOD_PERMISSION_MAP
 from superset.daos.database import DatabaseDAO
 from superset.daos.query import QueryDAO
+from superset.exceptions import SupersetErrorException, SupersetErrorsException
 from superset.extensions import event_logger
 from superset.jinja_context import get_template_processor
 from superset.models.sql_lab import Query
@@ -419,6 +420,12 @@ class SqlLabRestApi(BaseSupersetApi):
                 403 if isinstance(ex, QueryIsForbiddenToAccessException) else ex.status
             )
             return self.response(response_status, **payload)
+        except SupersetErrorsException as ex:
+            payload = {"errors": [error.to_dict() for error in ex.errors]}
+            return self.response(ex.status, **payload)
+        except SupersetErrorException as ex:
+            payload = {"errors": [ex.to_dict()]}
+            return self.response(ex.status, **payload)
 
     @staticmethod
     def _create_sql_json_command(

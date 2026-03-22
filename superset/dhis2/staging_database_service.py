@@ -49,6 +49,29 @@ def _get_duckdb_serving_uri() -> str | None:
         return None
 
 
+def _get_database_extra(database: object) -> dict[str, object]:
+    getter = getattr(database, "get_extra", None)
+    if callable(getter):
+        try:
+            loaded = getter()
+            if isinstance(loaded, dict):
+                return dict(loaded)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    raw_extra = getattr(database, "extra", None)
+    if isinstance(raw_extra, dict):
+        return dict(raw_extra)
+    if isinstance(raw_extra, str) and raw_extra.strip():
+        try:
+            loaded = json.loads(raw_extra)
+            if isinstance(loaded, dict):
+                return loaded
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
 def get_staging_database(always_create: bool = True):
     """Return the Superset ``Database`` used to serve staged DHIS2 tables.
 
@@ -100,7 +123,7 @@ def get_staging_database(always_create: bool = True):
             current_app.config.get("DHIS2_STAGING_DATABASE_EXPOSE_IN_SQLLAB", False)
         )
         changed = False
-        extra = database.get_extra()
+        extra = _get_database_extra(database)
         if extra.get("dhis2_staging_internal") is not True:
             extra["dhis2_staging_internal"] = True
             changed = True

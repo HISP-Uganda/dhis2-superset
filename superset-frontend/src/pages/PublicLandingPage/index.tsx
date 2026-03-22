@@ -181,6 +181,44 @@ const NavButton = styled.button<{ $active?: boolean }>`
   }
 `;
 
+const NavButtonCluster = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+`;
+
+const NavDropdownTrigger = styled.button<{ $active?: boolean }>`
+  border: 0;
+  border-radius: var(--portal-radius-md, 0);
+  padding: 10px 12px;
+  background: ${({ $active }) =>
+    $active ? 'var(--portal-nav-active-bg)' : 'transparent'};
+  color: ${({ $active }) =>
+    $active ? 'var(--portal-nav-active-text)' : 'var(--portal-muted-strong)'};
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
+
+  &:hover {
+    background: var(--portal-nav-hover-bg);
+    color: var(--portal-text);
+  }
+`;
+
+const NavDropdownCaret = styled.span`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+`;
+
+const PageContentShell = styled.div`
+  width: 100%;
+`;
+
 const Main = styled.main<{ $maxWidth: string }>`
   width: 100%;
   max-width: ${({ $maxWidth }) => $maxWidth};
@@ -252,6 +290,64 @@ const CardBody = styled.div`
   line-height: 1.75;
 `;
 
+const DashboardShowcaseCard = styled(SurfaceCard)`
+  gap: 18px;
+  padding: 26px;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(15, 118, 110, 0.08) 0%,
+      rgba(255, 255, 255, 0.96) 34%,
+      rgba(29, 78, 216, 0.08) 100%
+    ),
+    var(--portal-surface);
+  border-color: var(--portal-border-strong);
+`;
+
+const DashboardMetaRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const DashboardBadge = styled.span`
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--portal-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+`;
+
+const DashboardSlug = styled.span`
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--portal-muted-strong);
+  font-size: 12px;
+  font-weight: 600;
+`;
+
+const DashboardIntro = styled.p`
+  margin: 0;
+  color: var(--portal-muted-strong);
+  font-size: 15px;
+  line-height: 1.75;
+`;
+
+const DashboardFrameCard = styled(SurfaceCard)`
+  padding: 14px;
+  gap: 12px;
+`;
+
 const Footer = styled.footer`
   border-top: 1px solid var(--portal-border);
   background: var(--portal-footer-bg);
@@ -285,6 +381,10 @@ const FooterLink = styled.a`
     color: var(--portal-text);
     text-decoration: none;
   }
+`;
+
+const FooterText = styled.span`
+  color: var(--portal-muted-strong);
 `;
 
 const DrawerStack = styled.div`
@@ -324,6 +424,13 @@ const FieldLabel = styled.div`
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+`;
+
+const FieldHint = styled.div`
+  margin-top: 6px;
+  color: var(--portal-muted);
+  font-size: 12px;
+  line-height: 1.5;
 `;
 
 const FieldRow = styled.div`
@@ -511,12 +618,18 @@ export default function PublicLandingPage() {
   const [draftPage, setDraftPage] = useState<PortalPage | null>(null);
 
   const currentPage = data?.current_page || null;
-  const landingPagePath = resolveLandingPagePath(data?.pages || [], currentPage);
+  const landingPagePath = resolveLandingPagePath(
+    data?.pages || [],
+    currentPage,
+  );
   const pageBlocks = ensurePageBlocks(currentPage);
   const themeTokens = currentPage?.rendering?.theme?.tokens || {};
   const themeColors = themeTokens.colors || {};
   const themeContainers = themeTokens.containers || {};
-  const pageMaxWidth = resolveMaxWidth(
+  const shellMaxWidth = resolveMaxWidth(
+    data?.portal_layout.config.pageMaxWidth,
+  );
+  const contentMaxWidth = resolveMaxWidth(
     currentPage?.settings?.pageMaxWidth,
     themeContainers.pageMaxWidth,
     data?.portal_layout.config.pageMaxWidth,
@@ -539,14 +652,9 @@ export default function PublicLandingPage() {
     data?.portal_layout.config.portalTitle ||
     data?.config.navbar.title.text ||
     t('Public Analytics Portal');
-  const accentColor =
-    themeColors.accent || data?.portal_layout.config.accentColor || '#0f766e';
-  const secondaryColor =
-    themeColors.secondary ||
-    data?.portal_layout.config.secondaryColor ||
-    '#1d4ed8';
-  const surfaceColor =
-    themeColors.surface || data?.portal_layout.config.surfaceColor || '#ffffff';
+  const accentColor = data?.portal_layout.config.accentColor || '#0f766e';
+  const secondaryColor = data?.portal_layout.config.secondaryColor || '#1d4ed8';
+  const surfaceColor = data?.portal_layout.config.surfaceColor || '#ffffff';
   const logoSrc =
     visualMode === 'dark'
       ? data?.config.navbar.logo.darkSrc ||
@@ -683,7 +791,10 @@ export default function PublicLandingPage() {
       target.pathname === '/superset/public/' &&
       landingPagePath !== '/superset/public/'
     ) {
-      target.pathname = new URL(landingPagePath, window.location.origin).pathname;
+      target.pathname = new URL(
+        landingPagePath,
+        window.location.origin,
+      ).pathname;
     }
     const targetPath = `${target.pathname}${target.search}${target.hash}`;
 
@@ -1070,33 +1181,57 @@ export default function PublicLandingPage() {
   }
 
   function renderSelectedDashboardView(dashboard: PortalDashboardSummary) {
+    const dashboardBadgeLabel =
+      data?.portal_layout.config.dashboardBadgeLabel || t('Public Dashboard');
+    const dashboardEmbedSubtitle =
+      data?.portal_layout.config.dashboardEmbedSubtitle ||
+      t(
+        'Viewing this dashboard inside the public portal keeps navigation, context, and access controls in one place.',
+      );
+    const dashboardEmbedIntro =
+      data?.portal_layout.config.dashboardEmbedIntro ||
+      t(
+        'This embedded view is tuned for public presentation with tighter chrome, balanced spacing, and the portal frame still available around it.',
+      );
+    const dashboardBackLabel =
+      data?.portal_layout.config.dashboardBackLabel || t('Back to page');
+    const dashboardLoadingLabel =
+      data?.portal_layout.config.dashboardLoadingLabel ||
+      t('Loading dashboard...');
     return (
       <Section>
-        <SectionHeader>
-          <SectionTitleGroup>
-            <SectionTitle>{dashboard.dashboard_title}</SectionTitle>
-            <SectionSubtitle>
-              {t(
-                'Viewing this dashboard inside the public portal keeps the public navigation available.',
-              )}
-            </SectionSubtitle>
-          </SectionTitleGroup>
-          <Button onClick={clearSelectedDashboard}>{t('Back to page')}</Button>
-        </SectionHeader>
-        <SurfaceCard>
+        <DashboardShowcaseCard>
+          <DashboardMetaRow>
+            <DashboardBadge>{dashboardBadgeLabel}</DashboardBadge>
+            {dashboard.slug ? (
+              <DashboardSlug>{dashboard.slug}</DashboardSlug>
+            ) : null}
+          </DashboardMetaRow>
+          <SectionHeader style={{ marginBottom: 0 }}>
+            <SectionTitleGroup>
+              <SectionTitle>{dashboard.dashboard_title}</SectionTitle>
+              <SectionSubtitle>{dashboardEmbedSubtitle}</SectionSubtitle>
+            </SectionTitleGroup>
+            <Button onClick={clearSelectedDashboard}>
+              {dashboardBackLabel}
+            </Button>
+          </SectionHeader>
+          <DashboardIntro>{dashboardEmbedIntro}</DashboardIntro>
+        </DashboardShowcaseCard>
+        <DashboardFrameCard>
           <PublicDashboardEmbed
             title={dashboard.dashboard_title}
             dashboardId={dashboard.id}
             dashboardUuid={dashboard.uuid}
-            height={920}
-            loadingLabel={t('Loading dashboard...')}
+            height={860}
+            loadingLabel={dashboardLoadingLabel}
           />
-        </SurfaceCard>
+        </DashboardFrameCard>
       </Section>
     );
   }
 
-  const themeStyle = {
+  const shellThemeStyle = {
     '--portal-accent': accentColor,
     '--portal-secondary': secondaryColor,
     '--portal-bg': visualMode === 'dark' ? '#08111f' : '#f3f7fb',
@@ -1134,18 +1269,25 @@ export default function PublicLandingPage() {
         ? 'rgba(45, 212, 191, 0.18)'
         : 'rgba(15, 118, 110, 0.12)',
     '--portal-nav-active-text': accentColor,
+  } as CSSProperties;
+  const pageContentStyle = {
     ...(currentPage?.rendering?.css_variables || {}),
+    ...(themeColors.accent ? { '--portal-accent': themeColors.accent } : {}),
+    ...(themeColors.secondary
+      ? { '--portal-secondary': themeColors.secondary }
+      : {}),
+    ...(themeColors.surface ? { '--portal-surface': themeColors.surface } : {}),
   } as CSSProperties;
 
   const footerItems = [
     ...(data?.navigation.footer.flatMap(menu => menu.items) || []),
-    ...(data?.config.footer.links.map(link => ({
-      id: link.url,
+    ...((data?.config.footer.links || []).map((link, index) => ({
+      id: link.url || `footer-config-${index}-${link.text || 'link'}`,
       label: link.text,
-      path: link.url,
+      path: link.url || null,
       open_in_new_tab: link.external,
     })) || []),
-  ];
+  ].filter(item => Boolean(item.label?.trim()));
   const hasSidebar =
     Boolean(
       currentPage?.rendering?.template_structure?.regions?.sidebar?.enabled,
@@ -1157,16 +1299,10 @@ export default function PublicLandingPage() {
   );
 
   return (
-    <PageShell
-      className={joinClassNames(currentPage?.rendering?.scope_class)}
-      style={themeStyle}
-    >
-      {currentPage?.rendering?.css_text ? (
-        <style>{currentPage.rendering.css_text}</style>
-      ) : null}
+    <PageShell style={shellThemeStyle}>
       {contextHolder}
       <StickyHeader>
-        <HeaderInner $maxWidth={pageMaxWidth}>
+        <HeaderInner $maxWidth={shellMaxWidth}>
           <Brand type="button" onClick={openHomepage}>
             {data?.config.navbar.logo.enabled !== false && (
               <BrandImage
@@ -1185,15 +1321,31 @@ export default function PublicLandingPage() {
             <NavRow>
               {headerItems.map(item =>
                 item.children?.length ? (
-                  <Dropdown
-                    key={String(item.id)}
-                    trigger={['click', 'hover']}
-                    menu={{ items: toMenuItems(item.children) }}
-                  >
-                    <NavButton $active={isNavItemActive(item)} type="button">
+                  <NavButtonCluster key={String(item.id)}>
+                    <NavButton
+                      $active={isNavItemActive(item)}
+                      type="button"
+                      onClick={() =>
+                        navigateToPath(item.path, item.open_in_new_tab)
+                      }
+                    >
                       {item.label}
                     </NavButton>
-                  </Dropdown>
+                    <Dropdown
+                      trigger={['click', 'hover']}
+                      menu={{ items: toMenuItems(item.children) }}
+                    >
+                      <NavDropdownTrigger
+                        $active={isNavItemActive(item)}
+                        type="button"
+                        aria-label={t('Open submenu for %s', item.label)}
+                      >
+                        <NavDropdownCaret aria-hidden="true">
+                          v
+                        </NavDropdownCaret>
+                      </NavDropdownTrigger>
+                    </Dropdown>
+                  </NavButtonCluster>
                 ) : (
                   <NavButton
                     key={String(item.id)}
@@ -1223,104 +1375,105 @@ export default function PublicLandingPage() {
                   setTheme(visualMode === 'dark' ? 'light' : 'dark')
                 }
               >
-                {visualMode === 'dark' ? t('Light mode') : t('Dark mode')}
+                {visualMode === 'dark'
+                  ? data?.portal_layout.config.lightModeLabel || t('Light mode')
+                  : data?.portal_layout.config.darkModeLabel || t('Dark mode')}
               </Button>
             )}
             {data?.config.navbar.loginButton.enabled !== false && (
               <Button
                 type={data?.config.navbar.loginButton.type || 'primary'}
                 onClick={() =>
-                  navigateToPath(data?.config.navbar.loginButton.url)
+                  navigateToPath(
+                    data?.portal_layout.config.loginButtonUrl ||
+                      data?.config.navbar.loginButton.url,
+                  )
                 }
               >
-                {data?.config.navbar.loginButton.text || t('Sign in')}
+                {data?.portal_layout.config.loginButtonText ||
+                  data?.config.navbar.loginButton.text ||
+                  t('Sign in')}
               </Button>
             )}
           </HeaderActions>
         </HeaderInner>
       </StickyHeader>
 
-      <Main $maxWidth={pageMaxWidth}>
-        {error && (
-          <Alert
-            style={{ marginBottom: 20 }}
-            type="error"
-            showIcon
-            message={error}
-            action={
-              <Button size="small" onClick={() => reloadPortal(pageSlug)}>
-                {t('Retry')}
-              </Button>
-            }
-          />
-        )}
+      <PageContentShell
+        className={joinClassNames(currentPage?.rendering?.scope_class)}
+        style={pageContentStyle}
+      >
+        {currentPage?.rendering?.css_text ? (
+          <style>{currentPage.rendering.css_text}</style>
+        ) : null}
+        <Main $maxWidth={contentMaxWidth}>
+          {error && (
+            <Alert
+              style={{ marginBottom: 20 }}
+              type="error"
+              showIcon
+              message={error}
+              action={
+                <Button size="small" onClick={() => reloadPortal(pageSlug)}>
+                  {t('Retry')}
+                </Button>
+              }
+            />
+          )}
 
-        {loading && !data ? (
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'center',
-              padding: '96px 0',
-            }}
-          >
-            <Spin size="large" />
-          </div>
-        ) : currentPage ? (
-          selectedDashboard ? (
-            renderSelectedDashboardView(selectedDashboard)
-          ) : pageBlocks.length ? (
-            <>
-              <RenderBlockTree
-                blocks={renderedRegions.header}
-                charts={data?.available_charts || []}
-                dashboards={data?.dashboards || []}
-                page={currentPage}
-                navigation={data?.navigation}
-                highlights={data?.indicator_highlights || []}
-                onNavigate={navigateToPath}
-                onOpenDashboard={navigateToPublicDashboard}
-              />
-              <RenderBlockTree
-                blocks={renderedRegions.hero}
-                charts={data?.available_charts || []}
-                dashboards={data?.dashboards || []}
-                page={currentPage}
-                navigation={data?.navigation}
-                highlights={data?.indicator_highlights || []}
-                onNavigate={navigateToPath}
-                onOpenDashboard={navigateToPublicDashboard}
-              />
-              {renderedRegions.content.length ||
-              renderedRegions.sidebar.length ? (
-                <div
-                  className="cms-template-content-shell"
-                  style={
-                    hasSidebar
-                      ? {
-                          display: 'grid',
-                          gridTemplateColumns: `minmax(0, 1fr) ${sidebarWidth}`,
-                          gap: contentShellGap,
-                          alignItems: 'start',
-                        }
-                      : undefined
-                  }
-                >
-                  <div>
-                    <RenderBlockTree
-                      blocks={renderedRegions.content}
-                      charts={data?.available_charts || []}
-                      dashboards={data?.dashboards || []}
-                      page={currentPage}
-                      navigation={data?.navigation}
-                      highlights={data?.indicator_highlights || []}
-                      onNavigate={navigateToPath}
-                      onOpenDashboard={navigateToPublicDashboard}
-                    />
-                  </div>
-                  {hasSidebar ? (
-                    <aside>
+          {loading && !data ? (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                padding: '96px 0',
+              }}
+            >
+              <Spin size="large" />
+            </div>
+          ) : currentPage ? (
+            selectedDashboard ? (
+              renderSelectedDashboardView(selectedDashboard)
+            ) : pageBlocks.length ? (
+              <>
+                <RenderBlockTree
+                  blocks={renderedRegions.header}
+                  charts={data?.available_charts || []}
+                  dashboards={data?.dashboards || []}
+                  page={currentPage}
+                  navigation={data?.navigation}
+                  highlights={data?.indicator_highlights || []}
+                  onNavigate={navigateToPath}
+                  onOpenDashboard={navigateToPublicDashboard}
+                />
+                <RenderBlockTree
+                  blocks={renderedRegions.hero}
+                  charts={data?.available_charts || []}
+                  dashboards={data?.dashboards || []}
+                  page={currentPage}
+                  navigation={data?.navigation}
+                  highlights={data?.indicator_highlights || []}
+                  onNavigate={navigateToPath}
+                  onOpenDashboard={navigateToPublicDashboard}
+                />
+                {renderedRegions.content.length ||
+                renderedRegions.sidebar.length ? (
+                  <div
+                    className="cms-template-content-shell"
+                    style={
+                      hasSidebar
+                        ? {
+                            display: 'grid',
+                            gridTemplateColumns: `minmax(0, 1fr) ${sidebarWidth}`,
+                            gap: contentShellGap,
+                            alignItems: 'start',
+                          }
+                        : undefined
+                    }
+                  >
+                    <div>
                       <RenderBlockTree
-                        blocks={renderedRegions.sidebar}
+                        blocks={renderedRegions.content}
                         charts={data?.available_charts || []}
                         dashboards={data?.dashboards || []}
                         page={currentPage}
@@ -1329,63 +1482,91 @@ export default function PublicLandingPage() {
                         onNavigate={navigateToPath}
                         onOpenDashboard={navigateToPublicDashboard}
                       />
-                    </aside>
-                  ) : null}
-                </div>
-              ) : null}
-              <RenderBlockTree
-                blocks={renderedRegions.cta}
-                charts={data?.available_charts || []}
-                dashboards={data?.dashboards || []}
-                page={currentPage}
-                navigation={data?.navigation}
-                highlights={data?.indicator_highlights || []}
-                onNavigate={navigateToPath}
-                onOpenDashboard={navigateToPublicDashboard}
-              />
-              <RenderBlockTree
-                blocks={renderedRegions.footer}
-                charts={data?.available_charts || []}
-                dashboards={data?.dashboards || []}
-                page={currentPage}
-                navigation={data?.navigation}
-                highlights={data?.indicator_highlights || []}
-                onNavigate={navigateToPath}
-                onOpenDashboard={navigateToPublicDashboard}
-              />
-            </>
+                    </div>
+                    {hasSidebar ? (
+                      <aside>
+                        <RenderBlockTree
+                          blocks={renderedRegions.sidebar}
+                          charts={data?.available_charts || []}
+                          dashboards={data?.dashboards || []}
+                          page={currentPage}
+                          navigation={data?.navigation}
+                          highlights={data?.indicator_highlights || []}
+                          onNavigate={navigateToPath}
+                          onOpenDashboard={navigateToPublicDashboard}
+                        />
+                      </aside>
+                    ) : null}
+                  </div>
+                ) : null}
+                <RenderBlockTree
+                  blocks={renderedRegions.cta}
+                  charts={data?.available_charts || []}
+                  dashboards={data?.dashboards || []}
+                  page={currentPage}
+                  navigation={data?.navigation}
+                  highlights={data?.indicator_highlights || []}
+                  onNavigate={navigateToPath}
+                  onOpenDashboard={navigateToPublicDashboard}
+                />
+                <RenderBlockTree
+                  blocks={renderedRegions.footer}
+                  charts={data?.available_charts || []}
+                  dashboards={data?.dashboards || []}
+                  page={currentPage}
+                  navigation={data?.navigation}
+                  highlights={data?.indicator_highlights || []}
+                  onNavigate={navigateToPath}
+                  onOpenDashboard={navigateToPublicDashboard}
+                />
+              </>
+            ) : (
+              <SurfaceCard>
+                <CardTitle>{currentPage.title}</CardTitle>
+                <CardBody>
+                  {currentPage.description ||
+                    data?.portal_layout.config.emptyPageMessage ||
+                    t('This page does not have any visible blocks yet.')}
+                </CardBody>
+              </SurfaceCard>
+            )
           ) : (
             <SurfaceCard>
-              <CardTitle>{currentPage.title}</CardTitle>
-              <CardBody>
-                {currentPage.description ||
-                  t('This page does not have any visible blocks yet.')}
-              </CardBody>
+              <Empty
+                description={
+                  data?.portal_layout.config.noPublicPageMessage ||
+                  t('No public page is available.')
+                }
+              />
             </SurfaceCard>
-          )
-        ) : (
-          <SurfaceCard>
-            <Empty description={t('No public page is available.')} />
-          </SurfaceCard>
-        )}
-      </Main>
+          )}
+        </Main>
+      </PageContentShell>
 
       <Footer>
-        <FooterInner $maxWidth={pageMaxWidth}>
-          <div>{data?.config.footer.text || portalTitle}</div>
+        <FooterInner $maxWidth={shellMaxWidth}>
+          <div>
+            {data?.portal_layout.config.footerText ||
+              data?.config.footer.text ||
+              portalTitle}
+          </div>
           <FooterLinks>
-            {footerItems.map(item => (
-              <FooterLink
-                key={String(item.id)}
-                href={item.path || '#'}
-                onClick={event => {
-                  event.preventDefault();
-                  navigateToPath(item.path, item.open_in_new_tab);
-                }}
-              >
-                {item.label}
-              </FooterLink>
-            ))}
+            {footerItems.map(item =>
+              item.path ? (
+                <FooterLink
+                  key={String(item.id)}
+                  href={item.path}
+                  onClick={event => {
+                    event.preventDefault();
+                    navigateToPath(item.path, item.open_in_new_tab);
+                  }}
+                >
+                  {item.label}
+                </FooterLink>
+              ) : (
+                <FooterText key={String(item.id)}>{item.label}</FooterText>
+              ),
+            )}
           </FooterLinks>
         </FooterInner>
       </Footer>
@@ -1599,6 +1780,11 @@ export default function PublicLandingPage() {
                       updateDraftPage({ is_homepage: checked })
                     }
                   />
+                  <FieldHint>
+                    {t(
+                      'Only one active landing page is allowed. Enabling this will replace the current landing page.',
+                    )}
+                  </FieldHint>
                 </div>
               </FieldRow>
 

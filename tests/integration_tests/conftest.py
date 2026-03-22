@@ -19,16 +19,20 @@ from __future__ import annotations
 import contextlib
 import functools
 import os
+from pathlib import Path
 from textwrap import dedent
 from typing import Any, Callable, TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from flask_migrate import upgrade
 from flask.ctx import AppContext
 from flask_appbuilder.security.sqla import models as ab_models
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 from superset import db, security_manager
+from superset.extensions import APP_DIR, appbuilder
 from superset.extensions import feature_flag_manager
 from superset.utils.database import get_example_database, remove_database
 from superset.utils.json import json_dumps_w_dates
@@ -121,7 +125,9 @@ def setup_sample_data() -> Any:
     # TODO(john-bodley): Determine a cleaner way of setting up the sample data without
     # relying on `tests.integration_tests.test_app.app` leveraging an `app` fixture
     # which is purposely scoped to the function level to ensure tests remain idempotent.
+    _reset_integration_sqlite_db()
     with app.app_context():
+        _bootstrap_integration_metadata_db()
         try:
             setup_presto_if_needed()
         except Exception:  # noqa: S110
@@ -129,7 +135,10 @@ def setup_sample_data() -> Any:
 
         from superset.examples.css_templates import load_css_templates
 
-        load_css_templates()
+        try:
+            load_css_templates()
+        except Exception:  # noqa: S110
+            pass
 
     yield
 
@@ -143,6 +152,50 @@ def setup_sample_data() -> Any:
         for table in sqla_base.metadata.sorted_tables:
             table.__table__.drop()
         db.session.commit()
+
+
+def _reset_integration_sqlite_db() -> None:
+    with app.app_context():
+        db.session.remove()
+        db.engine.dispose()
+
+    _delete_sqlite_database_from_uri(app.config.get("SQLALCHEMY_DATABASE_URI", ""))
+    _delete_sqlite_database_from_uri(app.config.get("SQLALCHEMY_EXAMPLES_URI", ""))
+
+    with app.app_context():
+        from flask_appbuilder.security.sqla import models as ab_models
+
+        engine = db.engine
+        for table in (
+            ab_models.Permission.__table__,
+            ab_models.ViewMenu.__table__,
+            ab_models.Role.__table__,
+            ab_models.PermissionView.__table__,
+            ab_models.User.__table__,
+            ab_models.Group.__table__,
+            ab_models.RegisterUser.__table__,
+            ab_models.assoc_permissionview_role,
+            ab_models.assoc_user_role,
+            ab_models.assoc_user_group,
+            ab_models.assoc_group_role,
+        ):
+            table.create(bind=engine, checkfirst=True)
+
+
+def _delete_sqlite_database_from_uri(database_uri: str) -> None:
+    if not database_uri:
+        return
+
+    url = make_url(database_uri)
+    if url.get_backend_name() != "sqlite" or not url.database:
+        return
+
+    sqlite_path = Path(url.database)
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-shm", "-wal"):
+        candidate = Path(f"{sqlite_path}{suffix}")
+        if candidate.exists():
+            candidate.unlink()
 
 
 def drop_from_schema(engine: Engine, schema_name: str):
@@ -219,6 +272,82 @@ def setup_presto_if_needed():
             drop_from_schema(engine, ADMIN_SCHEMA_NAME)
             engine.execute(f"DROP SCHEMA IF EXISTS {ADMIN_SCHEMA_NAME}")
             engine.execute(f"CREATE SCHEMA {ADMIN_SCHEMA_NAME}")
+
+
+def _bootstrap_integration_metadata_db() -> None:
+    upgrade(directory=f"{APP_DIR}/migrations")
+    # Integration tests register extra APIs at runtime and expect their
+    # permissions to be materialized immediately.
+    appbuilder.update_perms = True
+    _sync_baseview_permissions()
+    _ensure_sqllab_permission_views()
+    security_manager.sync_role_definitions()
+    _load_test_users()
+    db.session.commit()
+
+
+def _sync_baseview_permissions() -> None:
+    security_manager.add_role(security_manager.auth_role_admin)
+    merged_permissions: dict[str, set[str]] = {}
+    for baseview in appbuilder.baseviews:
+        merged_permissions.setdefault(baseview.class_permission_name, set()).update(
+            baseview.base_permissions
+        )
+
+    for view_menu_name, permissions in merged_permissions.items():
+        security_manager.add_permissions_view(sorted(permissions), view_menu_name)
+
+    appbuilder._add_menu_permissions(update_perms=True)
+
+
+def _ensure_sqllab_permission_views() -> None:
+    for permission_name, view_menu_name in (
+        security_manager.SQLLAB_ONLY_PERMISSIONS
+        | security_manager.SQLLAB_EXTRA_PERMISSION_VIEWS
+    ):
+        security_manager.add_permission_view_menu(permission_name, view_menu_name)
+
+
+def _load_test_users() -> None:
+    examples_db = get_example_database()
+    examples_pv = security_manager.add_permission_view_menu(
+        "database_access",
+        examples_db.perm,
+    )
+
+    gamma_sqllab_role = security_manager.add_role("gamma_sqllab")
+    security_manager.add_permission_role(gamma_sqllab_role, examples_pv)
+
+    gamma_no_csv_role = security_manager.add_role("gamma_no_csv")
+    security_manager.add_permission_role(gamma_no_csv_role, examples_pv)
+
+    for role_name in ["Gamma", "sql_lab"]:
+        role = security_manager.find_role(role_name)
+        if not role:
+            continue
+        for perm in role.permissions:
+            security_manager.add_permission_role(gamma_sqllab_role, perm)
+            if str(perm) != "can csv on Superset":
+                security_manager.add_permission_role(gamma_no_csv_role, perm)
+
+    for username, role_name in (
+        ("admin", "Admin"),
+        ("gamma", "Gamma"),
+        ("gamma2", "Gamma"),
+        ("gamma_sqllab", "gamma_sqllab"),
+        ("alpha", "Alpha"),
+        ("gamma_no_csv", "gamma_no_csv"),
+    ):
+        if security_manager.find_user(username):
+            continue
+        security_manager.add_user(
+            username,
+            username,
+            "user",
+            f"{username}@fab.org",
+            security_manager.find_role(role_name),
+            password="general",  # noqa: S106
+        )
 
 
 def with_feature_flags(**mock_feature_flags):

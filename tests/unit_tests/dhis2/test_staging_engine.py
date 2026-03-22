@@ -95,6 +95,7 @@ def test_create_staging_table_uses_sqlite_compatible_ddl(monkeypatch) -> None:
     assert "INTEGER PRIMARY KEY AUTOINCREMENT" in statements
     assert "DEFAULT CURRENT_TIMESTAMP" in statements
     assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_ds_7_test_multiple_sources_composite_key" in statements
+    assert "source_instance_id, dx_uid, pe, ou, co_uid, aoc_uid" in statements
     assert engine.begin_calls == 0
 
 
@@ -490,6 +491,14 @@ def test_upsert_rows_for_instance_uses_conflict_update(monkeypatch) -> None:
     )
 
     statements = "\n".join(statement for statement, _ in connection.statements)
-    assert "ON CONFLICT (source_instance_id, dx_uid, pe, ou)" in statements
+    assert "ON CONFLICT (source_instance_id, dx_uid, pe, ou, co_uid, aoc_uid)" in statements
     assert "DO UPDATE SET" in statements
     assert "synced_at = CURRENT_TIMESTAMP" in statements
+    upsert_params = next(
+        params
+        for statement, params in connection.statements
+        if "ON CONFLICT" in statement
+    )
+    assert isinstance(upsert_params, list)
+    assert upsert_params[0]["co_uid"] == ""
+    assert upsert_params[0]["aoc_uid"] == ""

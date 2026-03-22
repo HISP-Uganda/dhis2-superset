@@ -65,11 +65,12 @@ def get_cached_metadata_payload(
         )
         .one_or_none()
     )
-    if entry is None:
+    if entry is None or not isinstance(entry, SourceMetadataCache):
         return None
 
     now = datetime.utcnow()
-    if entry.expires_at and entry.expires_at <= now:
+    expires_at = entry.expires_at if isinstance(entry.expires_at, datetime) else None
+    if expires_at and expires_at <= now:
         def _delete_expired_entry() -> None:
             db.session.delete(entry)
             db.session.commit()
@@ -78,9 +79,14 @@ def get_cached_metadata_payload(
         return None
 
     payload = entry.get_metadata()
+    if not isinstance(payload, dict):
+        return None
+    payload = dict(payload)
     payload["cached"] = True
     payload["cache_refreshed_at"] = (
-        entry.refreshed_at.isoformat() if entry.refreshed_at else None
+        entry.refreshed_at.isoformat()
+        if isinstance(entry.refreshed_at, datetime)
+        else None
     )
     return payload
 

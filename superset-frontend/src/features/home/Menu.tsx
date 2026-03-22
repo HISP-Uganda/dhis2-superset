@@ -451,6 +451,11 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
       url: '/superset/dhis2/local-data/',
     },
     {
+      name: 'Download Datasets',
+      label: 'Download Datasets',
+      url: '/superset/dhis2/downloads/',
+    },
+    {
       name: 'Local Metadata',
       label: 'Local Metadata',
       url: '/superset/dhis2/local-metadata/',
@@ -500,18 +505,76 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     item.name === 'SQL Lab' ||
     item.label === 'SQL Lab';
 
+  const normalizeDHIS2MenuUrl = (url?: string) => {
+    if (!url) {
+      return url;
+    }
+
+    if (url.includes('/dhis2admin/list/')) {
+      return '/superset/dhis2/instances/';
+    }
+    if (url.includes('/dhis2admin/health/')) {
+      return '/superset/dhis2/health/';
+    }
+    if (url.includes('/dhis2admin/sync-history/')) {
+      return '/superset/dhis2/sync-history/';
+    }
+    if (url.includes('/dhis2admin/local-metadata/')) {
+      return '/superset/dhis2/local-metadata/';
+    }
+    if (url.includes('/dhis2admin/local-data/')) {
+      return '/superset/dhis2/local-data/';
+    }
+    if (url.includes('/dhis2admin/downloads/')) {
+      return '/superset/dhis2/downloads/';
+    }
+
+    return url;
+  };
+
+  const normalizeDHIS2MenuLabel = (label?: string) => {
+    switch (label) {
+      case 'DHIS2 Local Data':
+        return 'Staged Datasets';
+      case 'DHIS2 Local Metadata':
+        return 'Local Metadata';
+      case 'DHIS2 Sync History':
+        return 'Sync History';
+      case 'DHIS2 Download Datasets':
+        return 'Download Datasets';
+      default:
+        return label;
+    }
+  };
+
+  const isDHIS2Url = (url?: string) =>
+    Boolean(url) &&
+    (url?.includes('/superset/dhis2/') ||
+      url?.includes('/dhis2admin/') ||
+      url?.includes('/superset/local-staging/'));
+
+  const normalizeDHIS2Child = (
+    child: MenuObjectChildProps,
+  ): MenuObjectChildProps => ({
+    ...child,
+    label: normalizeDHIS2MenuLabel(child.label) || child.label,
+    url: normalizeDHIS2MenuUrl(child.url),
+  });
+
   const isDHIS2Menu = (item: MenuObjectProps) =>
-    item.url?.startsWith('/superset/dhis2/') ||
-    item.url?.startsWith('/superset/local-staging/') ||
+    isDHIS2Url(item.url) ||
     item.name === 'DHIS2' ||
     item.label === 'DHIS2' ||
     item.name === 'DHIS2 Federation' ||
     item.label === 'DHIS2 Federation' ||
+    item.name?.startsWith('DHIS2 ') ||
+    item.label?.startsWith('DHIS2 ') ||
     item.childs?.some(
       child =>
         typeof child !== 'string' &&
-        (child.url?.startsWith('/superset/dhis2/') ||
-          child.url?.startsWith('/superset/local-staging/')),
+        (isDHIS2Url(child.url) ||
+          child.name?.startsWith('DHIS2 ') ||
+          child.label?.startsWith('DHIS2 ')),
     );
 
   const dedupeChildren = (children: (MenuObjectChildProps | string)[]) =>
@@ -617,18 +680,15 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     if (isDHIS2Menu(newItem) && !isDataMenu(newItem)) {
       if (newItem.url) {
         movedDataChildren.push({
-          name: 'DHIS2',
-          label: 'DHIS2',
-          url: newItem.url,
+          name: newItem.name,
+          label: normalizeDHIS2MenuLabel(newItem.label) || newItem.label,
+          url: normalizeDHIS2MenuUrl(newItem.url),
         });
       }
       if (newItem.childs) {
         newItem.childs.forEach((child: MenuObjectChildProps | string) => {
-          if (
-            typeof child !== 'string' &&
-            child.url?.startsWith('/superset/dhis2/')
-          ) {
-            movedDataChildren.push(child);
+          if (typeof child !== 'string' && isDHIS2Url(child.url)) {
+            movedDataChildren.push(normalizeDHIS2Child(child));
           }
         });
       }
@@ -668,17 +728,14 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     if (isDHIS2Menu(item)) {
       if (item.url) {
         movedDataChildren.push({
-          name: 'DHIS2',
-          label: 'DHIS2',
-          url: item.url,
+          name: item.name,
+          label: normalizeDHIS2MenuLabel(item.label) || item.label,
+          url: normalizeDHIS2MenuUrl(item.url),
         });
       }
       item.childs?.forEach(child => {
-        if (
-          typeof child !== 'string' &&
-          child.url?.startsWith('/superset/dhis2/')
-        ) {
-          movedDataChildren.push(child);
+        if (typeof child !== 'string' && isDHIS2Url(child.url)) {
+          movedDataChildren.push(normalizeDHIS2Child(child));
         }
       });
     }
@@ -695,13 +752,15 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     .filter(item => !isDHIS2Menu(item))
     .map(item => ({
       ...item,
-      // Strip data-related children from settings dropdown (they moved to Data)
+      // Strip data- and DHIS2-related children from settings dropdown.
       childs: item.childs?.filter(
         child =>
           typeof child === 'string' ||
-          !isDataRelatedChild(child as MenuObjectChildProps),
+          (!isDataRelatedChild(child as MenuObjectChildProps) &&
+            !isDHIS2Menu(child as MenuObjectProps)),
       ),
-    }));
+    }))
+    .filter(item => item.childs?.some(child => typeof child !== 'string'));
   const existingDataMenu = cleanedMenu.find(isDataMenu);
   const cleanedMenuWithoutData = cleanedMenu.filter(
     item => !isDataMenu(item) && !isCmsPagesMenu(item),

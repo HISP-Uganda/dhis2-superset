@@ -28,6 +28,7 @@ export type ChartLegendPreset =
   | 'horizontal_bottom'
   | 'vertical_right'
   | 'hidden';
+export type ChartEmbedAccessMode = 'public' | 'authenticated';
 
 const MAP_VIZ_TYPES = new Set([
   'mapbox',
@@ -97,6 +98,26 @@ function serializeRelativeUrl(urlObject: URL) {
   return `${urlObject.pathname}${urlObject.search}${urlObject.hash}`;
 }
 
+function normalizeChartPath(
+  pathname: string,
+  accessMode: ChartEmbedAccessMode,
+) {
+  if (
+    accessMode === 'public' &&
+    (pathname === '/superset/explore/' || pathname === '/superset/explore')
+  ) {
+    return '/superset/explore/public/';
+  }
+  if (
+    accessMode === 'authenticated' &&
+    (pathname === '/superset/explore/public/' ||
+      pathname === '/superset/explore/public')
+  ) {
+    return '/superset/explore/';
+  }
+  return pathname;
+}
+
 function buildLegendOverrides(
   legendPreset: ChartLegendPreset,
 ): Record<string, unknown> {
@@ -141,19 +162,22 @@ export function buildPublicChartEmbedUrl(
   url: string,
   {
     legendPreset = 'default',
+    accessMode = 'public',
   }: {
     legendPreset?: ChartLegendPreset;
+    accessMode?: ChartEmbedAccessMode;
   } = {},
 ) {
   if (!url) {
     return url;
   }
+  const urlObject = new URL(url, getBaseOrigin());
+  urlObject.pathname = normalizeChartPath(urlObject.pathname, accessMode);
   const legendOverrides = buildLegendOverrides(legendPreset);
   if (!Object.keys(legendOverrides).length) {
-    return url;
+    return serializeRelativeUrl(urlObject);
   }
 
-  const urlObject = new URL(url, getBaseOrigin());
   const params = urlObject.searchParams;
   const sliceId = Number(params.get('slice_id'));
   const rawFormData = params.get('form_data');
@@ -296,6 +320,7 @@ type PublicChartContainerProps = {
   surfacePreset?: ChartSurfacePreset;
   legendPreset?: ChartLegendPreset;
   vizType?: string;
+  accessMode?: ChartEmbedAccessMode;
 };
 
 export default function PublicChartContainer({
@@ -306,12 +331,13 @@ export default function PublicChartContainer({
   surfacePreset = 'default',
   legendPreset = 'default',
   vizType,
+  accessMode = 'public',
 }: PublicChartContainerProps) {
   const [isLoading, setIsLoading] = useState(true);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const resolvedUrl = useMemo(
-    () => buildPublicChartEmbedUrl(url, { legendPreset }),
-    [legendPreset, url],
+    () => buildPublicChartEmbedUrl(url, { legendPreset, accessMode }),
+    [accessMode, legendPreset, url],
   );
   const resolvedHeight = resolveFrameHeight(height, surfacePreset);
 

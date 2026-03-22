@@ -86,10 +86,14 @@ class UpdateChartCommand(UpdateMixin, BaseCommand):
         requested_dashboard_ids = {d.id for d in requested_dashboards}
 
         if new_dashboard_ids := requested_dashboard_ids - existing_dashboard_ids:
-            # For NEW dashboard relationships, verify user has access
-            accessible_dashboards = DashboardDAO.find_by_ids(list(new_dashboard_ids))
-            accessible_dashboard_ids = {d.id for d in accessible_dashboards}
-            unauthorized_dashboard_ids = new_dashboard_ids - accessible_dashboard_ids
+            unauthorized_dashboard_ids = {
+                dashboard.id
+                for dashboard in requested_dashboards
+                if dashboard.id in new_dashboard_ids
+                and not (
+                    security_manager.is_admin() or security_manager.is_owner(dashboard)
+                )
+            }
 
             if unauthorized_dashboard_ids:
                 exceptions.append(DashboardsNotFoundValidationError())

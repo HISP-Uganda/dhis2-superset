@@ -30,6 +30,7 @@ from flask_appbuilder.api import BaseApi
 from flask_appbuilder.api.manager import resolver
 
 import superset.utils.database as database_utils
+from superset.openapi import ensure_openapi_operation_responses
 from superset.utils.decorators import transaction
 from superset.utils.encrypt import SecretsMigrator
 
@@ -95,7 +96,12 @@ def update_api_docs() -> None:
     if version_found:
         click.secho("Generating openapi.json", fg="green")
         with open(openapi_json, "w") as outfile:
-            json.dump(api_spec.to_dict(), outfile, sort_keys=True, indent=2)
+            json.dump(
+                ensure_openapi_operation_responses(api_spec.to_dict()),
+                outfile,
+                sort_keys=True,
+                indent=2,
+            )
             outfile.write("\n")
     else:
         click.secho("API version not found", err=True)

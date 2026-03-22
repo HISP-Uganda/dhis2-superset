@@ -53,6 +53,18 @@ def _dataset(**kw):
     return ds
 
 
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    import superset
+
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
+
+
 def test_create_staged_dataset_forces_auto_refresh_enabled():
     import superset
     from superset.dhis2 import staged_dataset_service as svc
@@ -606,6 +618,8 @@ def test_add_variable_coerces_instance_id_to_integer():
         "superset.dhis2.staged_dataset_service.get_staged_dataset",
         return_value=dataset,
     ), patch(
+        "superset.dhis2.staged_dataset_service._refresh_variable_dimension_availability",
+    ), patch(
         "superset.dhis2.staged_dataset_service._sync_compat_variable",
     ):
         variable = svc.add_variable(
@@ -621,6 +635,56 @@ def test_add_variable_coerces_instance_id_to_integer():
     assert variable.instance_id == 2
 
 
+def test_add_variable_persists_dimension_availability_for_data_elements():
+    import superset
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(id=1, database_id=10)
+    instance = SimpleNamespace(id=2, database_id=10)
+
+    superset.db.session.get = MagicMock(return_value=instance)
+    superset.db.session.add = MagicMock()
+    superset.db.session.flush = MagicMock()
+    superset.db.session.commit = MagicMock()
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.metadata_staging_service.get_dimension_availability_for_variable",
+        return_value=[
+            {
+                "dimension_key": "age_group",
+                "dimension_label": "Age Group",
+                "dimension_scope": "groupby",
+                "is_groupable": True,
+                "is_filterable": True,
+            }
+        ],
+    ), patch(
+        "superset.dhis2.staged_dataset_service._sync_compat_variable",
+    ):
+        variable = svc.add_variable(
+            1,
+            {
+                "instance_id": 2,
+                "variable_id": "abc123",
+                "variable_type": "dataElement",
+                "variable_name": "ANC 1st Visit",
+            },
+        )
+
+    assert variable.get_dimension_availability() == [
+        {
+            "dimension_key": "age_group",
+            "dimension_label": "Age Group",
+            "dimension_scope": "groupby",
+            "is_groupable": True,
+            "is_filterable": True,
+        }
+    ]
+
+
 def test_add_variable_rejects_instance_from_other_database():
     import superset
     from superset.dhis2 import staged_dataset_service as svc
@@ -633,6 +697,8 @@ def test_add_variable_rejects_instance_from_other_database():
     with patch(
         "superset.dhis2.staged_dataset_service.get_staged_dataset",
         return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._refresh_variable_dimension_availability",
     ):
         with pytest.raises(ValueError, match="does not belong to the dataset database"):
             svc.add_variable(

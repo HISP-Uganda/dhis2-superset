@@ -30,7 +30,7 @@ from superset.models.embedded_dashboard import EmbeddedDashboard
 from superset.models.slice import Slice
 from superset.security.guest_token import GuestTokenResourceType, GuestUser
 from superset.tags.filters import BaseTagIdFilter, BaseTagNameFilter
-from superset.utils.core import get_user_id
+from superset.utils.core import get_user, get_user_id
 from superset.utils.filters import get_dataset_access_filters
 from superset.views.base import BaseFilter
 from superset.views.base_api import BaseFavoriteFilter
@@ -114,6 +114,20 @@ class DashboardAccessFilter(BaseFilter):  # pylint: disable=too-few-public-metho
     """
 
     def apply(self, query: Query, value: Any) -> Query:
+        current_user = get_user()
+        if current_user is None:
+            try:
+                from superset.security import manager as security_manager_module
+
+                current_user = getattr(security_manager_module.g, "user", None)
+            except Exception:  # pragma: no cover - defensive fallback
+                current_user = None
+
+        if current_user is None:
+            return query.filter(False)
+
+        user_roles = security_manager.get_user_roles(current_user)
+
         if security_manager.is_admin():
             return query
 
@@ -139,10 +153,13 @@ class DashboardAccessFilter(BaseFilter):  # pylint: disable=too-few-public-metho
             )
         )
 
+        current_user_id = getattr(current_user, "id", None)
         owner_ids_query = (
             db.session.query(Dashboard.id)
             .join(Dashboard.owners)
-            .filter(security_manager.user_model.id == get_user_id())
+            .filter(security_manager.user_model.id == current_user_id)
+            if current_user_id is not None
+            else db.session.query(Dashboard.id).filter(False)
         )
 
         feature_flagged_filters = []
@@ -154,7 +171,7 @@ class DashboardAccessFilter(BaseFilter):  # pylint: disable=too-few-public-metho
                     and_(
                         Dashboard.published.is_(True),
                         dashboard_has_roles,
-                        Role.id.in_([x.id for x in security_manager.get_user_roles()]),
+                        Role.id.in_([x.id for x in user_roles]),
                     ),
                 )
             )
@@ -162,9 +179,9 @@ class DashboardAccessFilter(BaseFilter):  # pylint: disable=too-few-public-metho
             feature_flagged_filters.append(Dashboard.id.in_(roles_based_query))
 
         if is_feature_enabled("EMBEDDED_SUPERSET") and security_manager.is_guest_user(
-            g.user
+            current_user
         ):
-            guest_user: GuestUser = g.user
+            guest_user: GuestUser = current_user
             embedded_dashboard_ids = [
                 r["id"]
                 for r in guest_user.resources

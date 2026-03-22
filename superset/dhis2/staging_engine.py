@@ -54,7 +54,8 @@ Indexes created per table:
 * ``ix_pe``                  on (pe)
 * ``ix_ou``                  on (ou)
 * ``ix_synced_at``           on (synced_at)
-* ``ix_composite_key``       on (source_instance_id, dx_uid, pe, ou)  – deduplication
+* ``ix_composite_key``       on (source_instance_id, dx_uid, pe, ou, co_uid, aoc_uid)
+                             – fact-grain deduplication
 * ``ix_pe_ou``               on (pe, ou)                               – common filter
 * ``ix_dx_pe``               on (dx_uid, pe)                           – time-series
 """
@@ -141,6 +142,12 @@ def _sanitize_name(name: str) -> str:
     # Reserve space for the ``ds_{id}_`` prefix (up to ~15 chars) and keep
     # the name portion to 40 characters so the combined identifier is safe.
     return sanitized[:40] if sanitized else "dataset"
+
+
+def _normalize_fact_grain_uid(value: Any) -> str:
+    """Return a stable non-null value for nullable fact-grain combo identifiers."""
+    normalized = str(value or "").strip()
+    return normalized
 
 
 class DHIS2StagingEngine:
@@ -500,13 +507,18 @@ class DHIS2StagingEngine:
             for ix_name, ix_cols, is_unique in [
                 (
                     f"ux_{table}_composite_key",
-                    "source_instance_id, dx_uid, pe, ou",
+                    "source_instance_id, dx_uid, pe, ou, co_uid, aoc_uid",
                     True,
                 ),
                 (f"ix_{table}_pe_ou", "pe, ou", False),
                 (f"ix_{table}_dx_pe", "dx_uid, pe", False),
             ]:
                 unique_sql = "UNIQUE " if is_unique else ""
+                if is_unique:
+                    try:
+                        conn.execute(text(f"DROP INDEX IF EXISTS {ix_name}"))
+                    except Exception:  # pylint: disable=broad-except
+                        pass
                 conn.execute(
                     text(
                         f"CREATE {unique_sql}INDEX IF NOT EXISTS {ix_name} "
@@ -762,9 +774,9 @@ class DHIS2StagingEngine:
                         "ou_level": row.get("ou_level"),
                         "value": row.get("value"),
                         "value_numeric": row.get("value_numeric"),
-                        "co_uid": row.get("co_uid"),
+                        "co_uid": _normalize_fact_grain_uid(row.get("co_uid")),
                         "co_name": row.get("co_name"),
-                        "aoc_uid": row.get("aoc_uid"),
+                        "aoc_uid": _normalize_fact_grain_uid(row.get("aoc_uid")),
                         "sync_job_id": sync_job_id,
                     }
                 )
@@ -1660,9 +1672,9 @@ class DHIS2StagingEngine:
                         "ou_level": row.get("ou_level"),
                         "value": row.get("value"),
                         "value_numeric": row.get("value_numeric"),
-                        "co_uid": row.get("co_uid"),
+                        "co_uid": _normalize_fact_grain_uid(row.get("co_uid")),
                         "co_name": row.get("co_name"),
-                        "aoc_uid": row.get("aoc_uid"),
+                        "aoc_uid": _normalize_fact_grain_uid(row.get("aoc_uid")),
                         "sync_job_id": sync_job_id,
                     }
                     for row in batch
@@ -1726,7 +1738,7 @@ class DHIS2StagingEngine:
                 :aoc_uid,
                 :sync_job_id
             )
-            ON CONFLICT (source_instance_id, dx_uid, pe, ou)
+            ON CONFLICT (source_instance_id, dx_uid, pe, ou, co_uid, aoc_uid)
             DO UPDATE SET
                 source_instance_name = excluded.source_instance_name,
                 dx_name = excluded.dx_name,
@@ -1761,9 +1773,9 @@ class DHIS2StagingEngine:
                         "ou_level": row.get("ou_level"),
                         "value": row.get("value"),
                         "value_numeric": row.get("value_numeric"),
-                        "co_uid": row.get("co_uid"),
+                        "co_uid": _normalize_fact_grain_uid(row.get("co_uid")),
                         "co_name": row.get("co_name"),
-                        "aoc_uid": row.get("aoc_uid"),
+                        "aoc_uid": _normalize_fact_grain_uid(row.get("aoc_uid")),
                         "sync_job_id": sync_job_id,
                     }
                     for row in batch

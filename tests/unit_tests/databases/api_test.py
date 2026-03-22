@@ -343,7 +343,6 @@ def test_database_connection(
     }
 
 
-@pytest.mark.skip(reason="Works locally but fails on CI")
 def test_update_with_password_mask(
     app: Any,
     session: Session,
@@ -3326,6 +3325,36 @@ def test_resolve_dhis2_instance_ids_from_chart_context_prefers_source_instances(
     )
 
     assert resolved_instance_ids == [101, 102]
+
+
+def test_resolve_public_dhis2_chart_allows_guest_access_via_linked_dashboard(
+    app: Any,
+    mocker: MockerFixture,
+) -> None:
+    from superset.databases.api import DatabaseRestApi
+
+    chart_dashboard = SimpleNamespace(id=33)
+    chart = SimpleNamespace(
+        id=9,
+        is_public=False,
+        dashboards=[chart_dashboard],
+    )
+    query = mocker.Mock()
+    query.filter.return_value.one_or_none.return_value = chart
+    mocker.patch("superset.databases.api.db.session.query", return_value=query)
+    mocker.patch("superset.databases.api.security_manager.is_guest_user", return_value=True)
+    has_guest_access = mocker.patch(
+        "superset.databases.api.security_manager.has_guest_access",
+        side_effect=lambda dashboard: dashboard is chart_dashboard,
+    )
+
+    with app.test_request_context(
+        "/api/v1/database/1/dhis2_metadata_public/?slice_id=9"
+    ):
+        resolved_chart = DatabaseRestApi()._resolve_public_dhis2_chart()
+
+    assert resolved_chart is chart
+    has_guest_access.assert_called_once_with(chart_dashboard)
 
 
 def test_dhis2_metadata_resolves_source_context_for_staged_local_chart(

@@ -22,6 +22,7 @@ import tests.dhis2._bootstrap  # noqa: F401 - must be first
 
 from types import SimpleNamespace
 
+import pytest
 import superset
 
 from superset.dhis2.metadata_staging_service import MetadataContext
@@ -36,6 +37,16 @@ def _database(**kwargs: object) -> SimpleNamespace:
     }
     values.update(kwargs)
     return SimpleNamespace(**values)
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
 
 
 def test_prepare_metadata_item_normalizes_dhis2_legend_definition() -> None:
@@ -145,6 +156,150 @@ def test_prepare_metadata_item_normalizes_top_level_legend_set() -> None:
             },
         ],
     }
+
+
+def test_get_dimension_availability_for_variable_returns_groupable_and_filter_only_dimensions(
+    mocker,
+) -> None:
+    from superset.dhis2 import metadata_staging_service as svc
+
+    superset.db.session.get = mocker.MagicMock(
+        return_value=SimpleNamespace(
+            id=11,
+            url="https://dhis.example.org",
+            get_auth_headers=lambda: {"Authorization": "ApiToken token"},
+        )
+    )
+    response = mocker.MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "categoryCombo": {
+            "id": "cc_age_partner",
+            "displayName": "Age / Partner",
+            "dataDimensionType": "DISAGGREGATION",
+            "categories": [
+                {
+                    "id": "cat_age",
+                    "displayName": "Age Group",
+                    "dataDimensionType": "DISAGGREGATION",
+                    "categoryOptions": [
+                        {"id": "opt_u5", "displayName": "Under 5", "code": "U5"},
+                        {"id": "opt_5p", "displayName": "5+", "code": "5P"},
+                    ],
+                },
+                {
+                    "id": "cat_partner",
+                    "displayName": "Partner",
+                    "dataDimensionType": "ATTRIBUTE",
+                    "categoryOptions": [
+                        {"id": "opt_partner_a", "displayName": "Partner A"},
+                    ],
+                },
+            ],
+        }
+    }
+    mocker.patch(
+        "superset.dhis2.metadata_staging_service.requests.get",
+        return_value=response,
+    )
+
+    dimensions = svc.get_dimension_availability_for_variable(
+        11,
+        "de_anc",
+        variable_type="dataElement",
+    )
+
+    assert dimensions == [
+        {
+            "dimension_key": "age_group",
+            "dimension_label": "Age Group",
+            "dimension_scope": "groupby",
+            "is_groupable": True,
+            "is_filterable": True,
+            "category_id": "cat_age",
+            "category_name": "Age Group",
+            "category_combo_id": "cc_age_partner",
+            "category_combo_name": "Age / Partner",
+            "data_dimension_type": "DISAGGREGATION",
+            "display_order": 1,
+            "options": [
+                {
+                    "id": "opt_u5",
+                    "displayName": "Under 5",
+                    "name": None,
+                    "code": "U5",
+                },
+                {
+                    "id": "opt_5p",
+                    "displayName": "5+",
+                    "name": None,
+                    "code": "5P",
+                },
+            ],
+        },
+        {
+            "dimension_key": "partner",
+            "dimension_label": "Partner",
+            "dimension_scope": "filter_only",
+            "is_groupable": False,
+            "is_filterable": True,
+            "category_id": "cat_partner",
+            "category_name": "Partner",
+            "category_combo_id": "cc_age_partner",
+            "category_combo_name": "Age / Partner",
+            "data_dimension_type": "ATTRIBUTE",
+            "display_order": 2,
+            "options": [
+                {
+                    "id": "opt_partner_a",
+                    "displayName": "Partner A",
+                    "name": None,
+                    "code": None,
+                }
+            ],
+        },
+    ]
+
+
+def test_get_dimension_availability_for_variable_ignores_default_category_combo(
+    mocker,
+) -> None:
+    from superset.dhis2 import metadata_staging_service as svc
+
+    superset.db.session.get = mocker.MagicMock(
+        return_value=SimpleNamespace(
+            id=11,
+            url="https://dhis.example.org",
+            get_auth_headers=lambda: {},
+        )
+    )
+    response = mocker.MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "categoryCombo": {
+            "id": "cc_default",
+            "displayName": "Default",
+            "categories": [
+                {
+                    "id": "cat_default",
+                    "displayName": "Default",
+                    "categoryOptions": [
+                        {"id": "opt_default", "displayName": "default"}
+                    ],
+                }
+            ],
+        }
+    }
+    mocker.patch(
+        "superset.dhis2.metadata_staging_service.requests.get",
+        return_value=response,
+    )
+
+    assert svc.get_dimension_availability_for_variable(
+        11,
+        "de_total",
+        variable_type="dataElement",
+    ) == []
 
 
 def test_merge_org_unit_level_items_preserves_per_instance_level_names() -> None:

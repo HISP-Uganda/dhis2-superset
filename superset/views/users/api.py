@@ -79,20 +79,8 @@ class CurrentUserRestApi(BaseSupersetApi):
               $ref: '#/components/responses/401'
         """
         try:
-            if g.user is None:
+            if g.user is None or g.user.is_anonymous:
                 return self.response_401()
-            # Allow anonymous users for public access
-            if g.user.is_anonymous:
-                # Return minimal user data for anonymous/public users
-                return self.response(200, result={
-                    "username": "anonymous",
-                    "firstName": "Guest",
-                    "lastName": "User",
-                    "isAnonymous": True,
-                    "isActive": False,
-                    "roles": {},
-                    "permissions": {},
-                })
         except NoAuthorizationError:
             return self.response_401()
 

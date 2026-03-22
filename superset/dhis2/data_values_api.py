@@ -41,6 +41,7 @@ class DHIS2DataValuesRestApi(BaseApi):
     """REST API for DHIS2 dataValueSets data."""
 
     resource_name = "dhis2_data_values"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Data Values"
 

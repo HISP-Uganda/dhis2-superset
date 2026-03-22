@@ -376,6 +376,36 @@ function resolveWelcomePage(
   );
 }
 
+function resolveDashboardsPage(
+  pages: Array<PortalPageSummary | PortalPage> = [],
+  currentPage?: PortalPage | null,
+) {
+  const candidates = [...pages];
+  if (
+    currentPage &&
+    !candidates.some(
+      page =>
+        (page.id && currentPage.id && page.id === currentPage.id) ||
+        (page.slug && currentPage.slug && page.slug === currentPage.slug),
+    )
+  ) {
+    candidates.unshift(currentPage);
+  }
+
+  return (
+    candidates.find(
+      page =>
+        normalizePortalPath(resolvePortalPagePath(page)) ===
+        '/superset/public/dashboards',
+    ) ||
+    candidates.find(page => page.slug?.trim().toLowerCase() === 'dashboards') ||
+    candidates.find(
+      page => page.title?.trim().toLowerCase() === 'dashboards',
+    ) ||
+    null
+  );
+}
+
 export function resolveLandingPagePath(
   pages: Array<PortalPageSummary | PortalPage> = [],
   currentPage?: PortalPage | null,
@@ -428,6 +458,9 @@ export function withDefaultWelcomeNavigationItems(
     welcomePage,
     existingWelcomeItem?.label,
   );
+  const dashboardsPage = resolveDashboardsPage(pages, currentPage);
+  const dashboardsPath = resolvePortalPagePath(dashboardsPage);
+  const existingDashboardItem = headerItems.find(isDashboardMenuItem);
   const welcomeItem: PortalNavigationItem = existingWelcomeItem
     ? {
         ...existingWelcomeItem,
@@ -450,11 +483,52 @@ export function withDefaultWelcomeNavigationItems(
         settings: {},
         children: [],
       };
+  const dashboardsPageId = dashboardsPage?.id ?? null;
+  const dashboardItem: PortalNavigationItem | null = existingDashboardItem
+    ? {
+        ...existingDashboardItem,
+        label: existingDashboardItem.label?.trim() || 'Dashboards',
+        item_type: existingDashboardItem.item_type || 'page',
+        path: dashboardsPage ? dashboardsPath : existingDashboardItem.path,
+        page_id: existingDashboardItem.page_id ?? dashboardsPageId,
+        open_in_new_tab: existingDashboardItem.open_in_new_tab === true,
+      }
+    : dashboardsPage
+      ? {
+          id: `virtual-dashboards-${dashboardsPageId || dashboardsPage.slug || 'dashboards'}`,
+          label: 'Dashboards',
+          item_type: 'page',
+          path: dashboardsPath,
+          page_id: dashboardsPageId,
+          display_order: 0,
+          is_visible: true,
+          open_in_new_tab: false,
+          visibility: 'public',
+          settings: {},
+          children: [],
+        }
+      : null;
 
   const remainingItems = headerItems.filter(
     item => !isWelcomeMenuItem(item, welcomePath, welcomePageId),
   );
+  const itemsWithoutDashboard = remainingItems.filter(
+    item => !isDashboardMenuItem(item),
+  );
   const dashboardIndex = remainingItems.findIndex(isDashboardMenuItem);
+
+  if (dashboardItem) {
+    if (dashboardIndex >= 0) {
+      return [
+        ...itemsWithoutDashboard.slice(0, dashboardIndex),
+        welcomeItem,
+        dashboardItem,
+        ...itemsWithoutDashboard.slice(dashboardIndex),
+      ];
+    }
+    return [welcomeItem, dashboardItem, ...itemsWithoutDashboard];
+  }
+
   const insertAt = dashboardIndex >= 0 ? dashboardIndex : 0;
 
   return [

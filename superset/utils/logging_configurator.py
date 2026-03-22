@@ -29,7 +29,9 @@ class LoggingConfigurator(abc.ABC):  # pylint: disable=too-few-public-methods
     def configure_logging(
         self, app_config: flask.config.Config, debug_mode: bool
     ) -> None:
-        pass
+        # Provide a permissive baseline for custom configurators that call
+        # `super()`, and then attach their own handlers/levels.
+        logging.getLogger().setLevel(logging.NOTSET)
 
 
 class DefaultLoggingConfigurator(  # pylint: disable=too-few-public-methods

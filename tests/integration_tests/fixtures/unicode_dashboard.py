@@ -34,15 +34,26 @@ from tests.integration_tests.test_app import app
 UNICODE_TBL_NAME = "unicode_test"
 
 
+def _sqlite_safe_chunksize(df: pd.DataFrame, default: int = 500) -> int:
+    if len(df.columns) == 0:
+        return default
+    return max(1, min(default, 900 // len(df.columns)))
+
+
 @pytest.fixture(scope="session")
 def load_unicode_data():
     with app.app_context():
         with get_example_database().get_sqla_engine() as engine:
-            _get_dataframe().to_sql(
+            df = _get_dataframe()
+            df.to_sql(
                 UNICODE_TBL_NAME,
                 engine,
                 if_exists="replace",
-                chunksize=500,
+                chunksize=(
+                    _sqlite_safe_chunksize(df)
+                    if engine.dialect.name == "sqlite"
+                    else 500
+                ),
                 dtype={"phrase": String(500)},
                 index=False,
                 method="multi",

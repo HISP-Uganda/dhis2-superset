@@ -50,6 +50,7 @@ class DHIS2InstanceApi(BaseApi):
     """
 
     resource_name = "dhis2/instances"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Instances"
 

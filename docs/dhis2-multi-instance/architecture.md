@@ -91,3 +91,35 @@ Current repository status:
   - a single workflow state tree drives database selection, dependent resets, schedule display, and review summaries
 
 The remaining expansion area is the full generic staged-dataset builder and extraction path for non-DHIS2 sources.
+
+## Staging And Serving Grain
+
+- raw staged analytics rows remain at `source_instance_id + dx_uid + pe + ou + co_uid + aoc_uid`
+- the staging engine conflict key and incremental upsert path now preserve `co_uid` and `aoc_uid`, so distinct category-option or attribute-option combinations are not collapsed during refresh
+- `sv_*` remains the chart-facing serving layer, but ordinary chart queries are now guarded against hierarchy double-counting:
+  - if a chart does not explicitly select an org-unit hierarchy column, query generation defaults to the deepest staged org-unit level
+  - if a chart does not explicitly select a period hierarchy column, query generation defaults to the most granular staged period level
+  - raw `period` filters bypass the default period hierarchy guard
+
+## Dimension Availability
+
+- each `DHIS2DatasetVariable` now persists `dimension_availability_json`
+- that payload is built from staged metadata by following:
+  - data element -> category combo
+  - category combo -> categories
+  - category -> category options
+- default category combos produce no extra analytical dimensions
+- non-default category combos persist:
+  - dimension key and label
+  - whether the dimension is groupable or filter-only
+  - contributing category and category-combo ids
+  - available option ids and labels
+
+## Maintainer Notes
+
+- add or normalize DHIS2 metadata fields in [metadata_staging_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/metadata_staging_service.py)
+- change raw fact grain or upsert behavior in [staging_engine.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/staging_engine.py) and [sync_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/sync_service.py)
+- change serving projection rules in [serving_build_service.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/serving_build_service.py) and [analytical_serving.py](/Users/stephocay/projects/hispuganda/ss_latest/superset/superset/dhis2/analytical_serving.py)
+- debug a missing disaggregation dimension by checking staged category metadata and `dhis2_dataset_variables.dimension_availability_json`
+- debug inaccurate chart totals by checking whether the chart is grouping across multiple staged org-unit or period hierarchy levels
+- debug blank maps by checking staged `geoJSON` snapshots first, then public metadata fallback resolution

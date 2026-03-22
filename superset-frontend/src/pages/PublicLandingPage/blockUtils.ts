@@ -358,7 +358,19 @@ export function createEmptyBlock(blockType = 'paragraph'): PortalPageBlock {
       };
       break;
     case 'dynamic_widget':
-      base.content = { title: t('Dynamic Widget'), body: '' };
+      base.content = {
+        title: t('Dynamic Widget'),
+        subtitle: '',
+        body: '',
+        note: '',
+        emptyMessage: '',
+        datasetFallbackLabel: '',
+        latestPeriodLabel: '',
+        cardEyebrow: '',
+        cardDescription: '',
+        actionLabel: '',
+        slugFallbackLabel: '',
+      };
       base.settings = {
         ...base.settings,
         widgetType: 'indicator_highlights',

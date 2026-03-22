@@ -36,6 +36,7 @@ class DHIS2BoundariesRestApi(BaseApi):
     """REST API for DHIS2 boundary data."""
 
     resource_name = "dhis2_boundaries"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Boundaries"
 

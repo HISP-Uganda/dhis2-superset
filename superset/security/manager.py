@@ -2426,11 +2426,27 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         ):
             # Check if this is for a public dashboard - if so, allow modifications
             is_public_dashboard = False
-            if hasattr(query_context, 'slice_') and query_context.slice_:
-                for dashboard in query_context.slice_.dashboards:
-                    if dashboard.published:
-                        is_public_dashboard = True
-                        break
+            slice_ = getattr(query_context, "slice_", None)
+            dashboards = getattr(slice_, "dashboards", None)
+
+            if dashboards is None and (
+                form_data := getattr(query_context, "form_data", None)
+            ):
+                slice_id = form_data.get("slice_id")
+                if slice_id and (
+                    stored_slice := self.session.query(Slice)
+                    .filter(Slice.id == slice_id)
+                    .one_or_none()
+                ):
+                    dashboards = stored_slice.dashboards
+
+            try:
+                is_public_dashboard = any(
+                    getattr(dashboard, "published", False)
+                    for dashboard in (dashboards or [])
+                )
+            except TypeError:
+                is_public_dashboard = False
 
             if not is_public_dashboard:
                 raise SupersetSecurityException(

@@ -2550,12 +2550,19 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         if getattr(chart, "is_public", False):
             return chart
 
-        if (
-            dashboard is not None
-            and security_manager.is_guest_user()
-            and security_manager.has_guest_access(dashboard)
-        ):
-            return chart
+        if security_manager.is_guest_user():
+            if (
+                dashboard is not None
+                and security_manager.has_guest_access(dashboard)
+            ):
+                return chart
+
+            chart_dashboards = getattr(chart, "dashboards", None) or []
+            if any(
+                security_manager.has_guest_access(existing_dashboard)
+                for existing_dashboard in chart_dashboards
+            ):
+                return chart
 
         return self.response_403()
 

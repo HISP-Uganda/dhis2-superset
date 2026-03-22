@@ -1209,10 +1209,13 @@ def test_cleanup_linked_dhis2_staged_dataset_removes_local_tables_and_metadata(
         "staging_table_name": "ds_4_anc_coverage",
         "generic_dataset_id": 9,
     }
+    duckdb_engine = mocker.MagicMock()
+    mocker.patch(
+        "superset.local_staging.engine_factory.get_active_staging_engine",
+        return_value=duckdb_engine,
+    )
     connection.execute.side_effect = [
         select_result,
-        mocker.MagicMock(),
-        mocker.MagicMock(),
         mocker.MagicMock(),
         mocker.MagicMock(),
     ]
@@ -1221,14 +1224,11 @@ def test_cleanup_linked_dhis2_staged_dataset_removes_local_tables_and_metadata(
 
     executed_sql = [call.args[0].text for call in connection.execute.call_args_list]
     assert any("FROM dhis2_staged_datasets" in sql for sql in executed_sql)
-    assert any(
-        sql.endswith("ds_4_anc_coverage") and sql.startswith("DROP TABLE IF EXISTS ")
-        for sql in executed_sql
-    )
-    assert any(
-        sql.endswith("sv_4_anc_coverage") and sql.startswith("DROP TABLE IF EXISTS ")
-        for sql in executed_sql
-    )
+    duckdb_engine.drop_staging_table.assert_called_once()
+    staging_dataset_ref = duckdb_engine.drop_staging_table.call_args.args[0]
+    assert staging_dataset_ref.id == 4
+    assert staging_dataset_ref.name == "ANC Coverage"
+    assert staging_dataset_ref.staging_table_name == "ds_4_anc_coverage"
     assert any("DELETE FROM staged_datasets" in sql for sql in executed_sql)
     assert any("DELETE FROM dhis2_staged_datasets" in sql for sql in executed_sql)
 

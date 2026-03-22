@@ -59,6 +59,10 @@ describe('isFrontendRoute', () => {
     });
   });
 
+  test('includes the public explore iframe route used by portal chart blocks', () => {
+    expect(isFrontendRoute('/superset/explore/public/')).toBe(true);
+  });
+
   test('returns false if a route does not match', () => {
     expect(isFrontendRoute('/nonexistent/path/')).toBe(false);
   });

@@ -299,13 +299,29 @@ class DashboardDAO(BaseDAO[Dashboard]):
     def copy_dashboard(
         cls, original_dash: Dashboard, data: dict[str, Any]
     ) -> Dashboard:
-        if is_feature_enabled("DASHBOARD_RBAC") and not security_manager.is_owner(
-            original_dash
-        ):
-            raise DashboardForbiddenError()
+        current_user = getattr(g, "user", None)
+        if is_feature_enabled("DASHBOARD_RBAC"):
+            current_user_roles = (
+                security_manager.get_user_roles(current_user) if current_user else []
+            )
+            is_admin = security_manager.auth_role_admin in [
+                role.name for role in current_user_roles
+            ]
+            is_owner = bool(
+                current_user
+                and not current_user.is_anonymous
+                and getattr(current_user, "id", None)
+                in {
+                    owner.id
+                    for owner in getattr(original_dash, "owners", [])
+                    if getattr(owner, "id", None) is not None
+                }
+            )
+            if not (is_admin or is_owner):
+                raise DashboardForbiddenError()
 
         dash = Dashboard()
-        dash.owners = [g.user] if g.user else []
+        dash.owners = [current_user] if current_user else []
         dash.dashboard_title = data["dashboard_title"]
         dash.css = data.get("css")
 
@@ -315,7 +331,7 @@ class DashboardDAO(BaseDAO[Dashboard]):
             # Duplicating slices as well, mapping old ids to new ones
             for slc in original_dash.slices:
                 new_slice = slc.clone()
-                new_slice.owners = [g.user] if g.user else []
+                new_slice.owners = [current_user] if current_user else []
                 db.session.add(new_slice)
                 db.session.flush()
                 new_slice.dashboards.append(dash)

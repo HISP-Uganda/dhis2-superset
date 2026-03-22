@@ -556,6 +556,27 @@ test('renders block-authored pages without relying on legacy sections', async ()
   ).toBeInTheDocument();
 });
 
+test('keeps the page rendering scope below the shared header shell', async () => {
+  fetchMock.get('glob:*/api/v1/public_page/portal*', {
+    result: portalPayload,
+  });
+
+  const { container } = render(<PublicLandingPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(
+    await screen.findByText('Towards malaria elimination in Uganda'),
+  ).toBeInTheDocument();
+  expect(
+    screen
+      .getByText('Uganda Malaria Analytics Portal')
+      .closest('.cms-page-scope-welcome'),
+  ).toBeNull();
+  expect(container.querySelector('.cms-page-scope-welcome')).not.toBeNull();
+});
+
 test('keeps public navigation when a dashboard is opened from the public portal', async () => {
   fetchMock.get('glob:*/api/v1/public_page/portal*', {
     result: dashboardCatalogPayload,
@@ -582,5 +603,141 @@ test('keeps public navigation when a dashboard is opened from the public portal'
   expect(screen.getByLabelText('National Malaria Dashboard')).toHaveAttribute(
     'data-dashboard-uuid',
     'a2efb6e2-6f5f-45f6-8cac-57aef1f9dc31',
+  );
+});
+
+test('uses configurable portal layout copy for shared shell and embedded dashboards', async () => {
+  fetchMock.get('glob:*/api/v1/public_page/portal*', {
+    result: {
+      ...dashboardCatalogPayload,
+      portal_layout: {
+        ...dashboardCatalogPayload.portal_layout,
+        config: {
+          ...dashboardCatalogPayload.portal_layout.config,
+          loginButtonText: 'Portal sign in',
+          footerText: 'Custom public footer',
+          dashboardBadgeLabel: 'Featured public dashboard',
+          dashboardEmbedSubtitle: 'Portal-managed dashboard framing.',
+          dashboardEmbedIntro:
+            'Use this embedded view for guided public reading.',
+          dashboardBackLabel: 'Return to directory',
+          dashboardLoadingLabel: 'Loading public dashboard',
+        },
+      },
+    },
+  });
+  window.history.pushState({}, '', '/superset/public/dashboards/');
+
+  render(<PublicLandingPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(
+    await screen.findByRole('button', { name: 'Portal sign in' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Custom public footer')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByText('National Malaria Dashboard'));
+
+  expect(
+    await screen.findByText('Featured public dashboard'),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText('Portal-managed dashboard framing.'),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText('Use this embedded view for guided public reading.'),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Return to directory' }),
+  ).toBeInTheDocument();
+});
+
+test('uses configurable portal layout empty-state copy', async () => {
+  fetchMock.get('glob:*/api/v1/public_page/portal*', {
+    result: {
+      ...portalPayload,
+      portal_layout: {
+        ...portalPayload.portal_layout,
+        config: {
+          ...portalPayload.portal_layout.config,
+          emptyPageMessage: 'This page is waiting for authored content.',
+        },
+      },
+      current_page: {
+        ...portalPayload.current_page,
+        description: '',
+        blocks: [],
+        sections: [],
+      },
+    },
+  });
+
+  render(<PublicLandingPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(
+    await screen.findByText('This page is waiting for authored content.'),
+  ).toBeInTheDocument();
+});
+
+test('clicking a top-level navigation item still opens its page when it has children', async () => {
+  fetchMock.get('glob:*/api/v1/public_page/portal*', {
+    result: {
+      ...portalPayload,
+      navigation: {
+        header: [
+          {
+            id: 1,
+            slug: 'header',
+            title: 'Header',
+            location: 'header',
+            display_order: 0,
+            settings: {},
+            items: [
+              {
+                id: 11,
+                label: 'Welcome',
+                item_type: 'page',
+                path: '/superset/public/welcome/',
+                page_id: 1,
+              },
+              {
+                id: 13,
+                label: 'Policy',
+                item_type: 'page',
+                path: '/superset/public/about/policy/',
+                page_id: 3,
+                children: [
+                  {
+                    id: 14,
+                    label: 'Guidance',
+                    item_type: 'page',
+                    path: '/superset/public/about/policy/guidance/',
+                    page_id: 4,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        footer: [],
+      },
+    },
+  });
+  window.history.pushState({}, '', '/superset/public/welcome/');
+
+  render(<PublicLandingPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  await userEvent.click(await screen.findByRole('button', { name: 'Policy' }));
+
+  await waitFor(() =>
+    expect(window.location.pathname).toBe('/superset/public/about/policy/'),
   );
 });

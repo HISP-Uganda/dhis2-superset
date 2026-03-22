@@ -30,6 +30,7 @@ class StagedSourceApi(BaseApi):
     """Expose generic staged-source registration and capability metadata."""
 
     resource_name = "staging/sources"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "Staged Sources"
 

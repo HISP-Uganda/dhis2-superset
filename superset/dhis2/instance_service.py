@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 _CONNECTION_TEST_TIMEOUT = 10
 
 
+def _assign_model_attr(instance: Any, attr_name: str, value: Any) -> None:
+    """Assign attributes safely on ORM rows and lightweight test doubles."""
+    if getattr(instance, "_sa_instance_state", None) is None:
+        instance.__dict__[attr_name] = value
+        return
+    setattr(instance, attr_name, value)
+
+
 # ---------------------------------------------------------------------------
 # Read helpers
 # ---------------------------------------------------------------------------
@@ -245,15 +253,15 @@ def create_instance(database_id: int, data: dict[str, Any]) -> DHIS2Instance:
     instance = DHIS2Instance(database_id=database_id)
     for field in _ALLOWED_CREATE_FIELDS:
         if field in data:
-            setattr(instance, field, data[field])
+            _assign_model_attr(instance, field, data[field])
 
     # Apply safe defaults for optional fields not supplied by the caller.
     if instance.auth_type is None:
-        instance.auth_type = "basic"
+        _assign_model_attr(instance, "auth_type", "basic")
     if instance.is_active is None:
-        instance.is_active = True
+        _assign_model_attr(instance, "is_active", True)
     if "display_order" not in data:
-        instance.display_order = 0
+        _assign_model_attr(instance, "display_order", 0)
 
     try:
         db.session.add(instance)
@@ -310,7 +318,7 @@ def update_instance(instance_id: int, data: dict[str, Any]) -> DHIS2Instance:
         # Skip credential fields when the caller passes None (sentinel: leave unchanged).
         if field in ("password", "access_token") and data[field] is None:
             continue
-        setattr(instance, field, data[field])
+        _assign_model_attr(instance, field, data[field])
 
     try:
         _sync_compat_instance(instance)
@@ -449,10 +457,18 @@ def test_instance_connection(instance_id: int) -> dict[str, Any]:
     result = _perform_connection_test(instance.url, instance.get_auth_headers())
 
     try:
-        instance.last_test_status = "success" if result.get("success") else "failed"
-        instance.last_test_message = result.get("message")
-        instance.last_test_response_time_ms = result.get("response_time_ms")
-        instance.last_tested_on = datetime.utcnow()
+        _assign_model_attr(
+            instance,
+            "last_test_status",
+            "success" if result.get("success") else "failed",
+        )
+        _assign_model_attr(instance, "last_test_message", result.get("message"))
+        _assign_model_attr(
+            instance,
+            "last_test_response_time_ms",
+            result.get("response_time_ms"),
+        )
+        _assign_model_attr(instance, "last_tested_on", datetime.utcnow())
         db.session.commit()
     except Exception:  # pylint: disable=broad-except
         db.session.rollback()

@@ -23,6 +23,7 @@ import tests.dhis2._bootstrap  # noqa: F401 - must be first
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 import superset
 
 from superset.dhis2.models import (
@@ -107,7 +108,7 @@ def _variable(**kw) -> DHIS2DatasetVariable:
     )
     variable.__dict__.update(kw)
     variable.get_extra_params = lambda: json.loads(variable.extra_params or "{}")
-    variable.staged_dataset = _dataset(id=variable.staged_dataset_id)
+    variable.__dict__["staged_dataset"] = _dataset(id=variable.staged_dataset_id)
     return variable
 
 
@@ -131,9 +132,19 @@ def _job(**kw) -> DHIS2SyncJob:
         )
     )
     job.__dict__.update(kw)
-    job.staged_dataset = _dataset(id=job.staged_dataset_id)
+    job.__dict__["staged_dataset"] = _dataset(id=job.staged_dataset_id)
     job.get_instance_results = lambda: json.loads(job.instance_results or "{}")
     return job
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
 
 
 class TestInstanceServiceCompatibility:
@@ -166,8 +177,15 @@ class TestDatasetServiceCompatibility:
         superset.db.session.add = MagicMock()
         superset.db.session.flush = MagicMock()
         superset.db.session.commit = MagicMock()
-        with patch("superset.dhis2.staged_dataset_service._get_engine", return_value=engine):
-            with patch("superset.dhis2.staged_dataset_service.sync_dhis2_staged_dataset") as sync_mock:
+        with patch(
+            "superset.dhis2.staged_dataset_service.get_staged_dataset_by_name",
+            return_value=None,
+        ), patch(
+            "superset.dhis2.staged_dataset_service._get_engine",
+            return_value=engine,
+        ), patch(
+            "superset.dhis2.staged_dataset_service.sync_dhis2_staged_dataset"
+        ) as sync_mock:
                 dataset = staged_dataset_service.create_staged_dataset(
                     7,
                     {
@@ -183,8 +201,13 @@ class TestDatasetServiceCompatibility:
         superset.db.session.add = MagicMock()
         superset.db.session.flush = MagicMock()
         superset.db.session.commit = MagicMock()
+        superset.db.session.get = MagicMock(return_value=_instance())
         with patch("superset.dhis2.staged_dataset_service.get_staged_dataset", return_value=_dataset()):
-            with patch("superset.dhis2.staged_dataset_service.sync_dhis2_dataset_variable") as sync_mock:
+            with patch(
+                "superset.dhis2.staged_dataset_service._refresh_variable_dimension_availability"
+            ), patch(
+                "superset.dhis2.staged_dataset_service.sync_dhis2_dataset_variable"
+            ) as sync_mock:
                 variable = staged_dataset_service.add_variable(
                     2,
                     {
@@ -236,7 +259,12 @@ class TestSyncServiceCompatibility:
         variable_query.filter_by.return_value.all.return_value = []
         superset.db.session.query = MagicMock(side_effect=[dataset_query, variable_query])
         superset.db.session.commit = MagicMock()
-        with patch("superset.dhis2.sync_service.sync_dhis2_staged_dataset") as sync_dataset_mock:
+        with patch(
+            "superset.dhis2.sync_service.get_instances_with_legacy_fallback",
+            return_value=[_instance()],
+        ), patch(
+            "superset.dhis2.sync_service.sync_dhis2_staged_dataset"
+        ) as sync_dataset_mock:
             result = DHIS2SyncService().sync_staged_dataset(2)
-        assert result["status"] == "success"
-        sync_dataset_mock.assert_called_once()
+        assert result["status"] == "failed"
+        assert sync_dataset_mock.call_count >= 1

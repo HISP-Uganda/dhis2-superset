@@ -72,6 +72,8 @@ public_page_frontend_blueprint = Blueprint(
 
 
 @public_page_frontend_blueprint.route("/<path:page_slug>/")
-def public_page_slug(page_slug: str) -> FlaskResponse:
+@public_page_frontend_blueprint.route("/<path:page_slug>")
+@public_page_frontend_blueprint.route("/")
+def public_page_slug(page_slug: str | None = None) -> FlaskResponse:
     del page_slug
     return _render_shell()

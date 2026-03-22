@@ -128,6 +128,11 @@ _ANALYTICS_NUMERIC_TYPES = {
 }
 _BACKGROUND_REFRESH_DELAY_SECONDS = 0.25
 _ORG_UNIT_SOURCE_MODE_REPOSITORY = "repository"
+_DEFAULT_CATEGORY_NAMES = {
+    "default",
+    "default category",
+    "default total",
+}
 
 _CELERY_PING_TIMEOUT = 1.0  # seconds to wait for a worker ping
 
@@ -246,7 +251,7 @@ def _snapshot_count_estimate(
             _snapshot_namespace(metadata_type),
             _snapshot_key_parts(instance_id),
         )
-    except RuntimeError:
+    except Exception:  # pylint: disable=broad-except
         # Progress estimation is best-effort; missing app context should not
         # break refresh scheduling or tests that isolate the service logic.
         return None
@@ -2828,6 +2833,27 @@ def get_staged_geo_payload(
                 }
             )
             continue
+        if snapshot_status != "success" and allow_live_fallback:
+            try:
+                raw_collection = _hydrate_geo_snapshots_from_live(
+                    database=database,
+                    context=context,
+                )
+                snapshot = _build_snapshot_payload(
+                    context=context,
+                    metadata_type=GEOJSON_METADATA_TYPE,
+                    status="success",
+                    result_payload=raw_collection,
+                )
+                snapshot_status = "success"
+                loaded_via_live_fallback = True
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Failed live boundary rehydrate for database id=%s instance=%s",
+                    database.id,
+                    context.instance_id,
+                    exc_info=True,
+                )
         if snapshot_status != "success":
             # Schedule async background refresh and return pending immediately.
             # Do NOT call _hydrate_geo_snapshots_from_live synchronously — it
@@ -2863,18 +2889,35 @@ def get_staged_geo_payload(
         if not isinstance(raw_collection, dict):
             raw_collection = {"type": "FeatureCollection", "features": []}
         if not _geojson_feature_collection_supports_levels(raw_collection, levels):
-            # Snapshot exists but doesn't cover the requested levels — schedule
-            # an async refresh and serve what we have rather than blocking on a
-            # live DHIS2 fetch.
-            if context.instance_id is not None:
-                refresh_instance_ids.append(context.instance_id)
-            logger.info(
-                "Boundary snapshot for database id=%s instance=%s does not cover "
-                "requested levels %s; serving existing snapshot and queuing refresh.",
-                database.id,
-                context.instance_id,
-                levels,
-            )
+            if allow_live_fallback:
+                try:
+                    raw_collection = _hydrate_geo_snapshots_from_live(
+                        database=database,
+                        context=context,
+                    )
+                    loaded_via_live_fallback = True
+                except Exception:  # pylint: disable=broad-except
+                    logger.warning(
+                        "Failed live boundary rehydrate for incomplete snapshot "
+                        "database id=%s instance=%s",
+                        database.id,
+                        context.instance_id,
+                        exc_info=True,
+                    )
+            if not loaded_via_live_fallback:
+                # Snapshot exists but doesn't cover the requested levels —
+                # schedule an async refresh and serve what we have rather than
+                # blocking on a live DHIS2 fetch unless the caller explicitly
+                # opted into live fallback.
+                if context.instance_id is not None:
+                    refresh_instance_ids.append(context.instance_id)
+                logger.info(
+                    "Boundary snapshot for database id=%s instance=%s does not cover "
+                    "requested levels %s; serving existing snapshot and queuing refresh.",
+                    database.id,
+                    context.instance_id,
+                    levels,
+                )
         filtered_collection = _filter_geojson_feature_collection(
             raw_collection,
             levels=levels,
@@ -3310,3 +3353,157 @@ def get_category_option_combos_for_element(
             )
 
     return combos
+
+
+def _build_dimension_key(label: str | None, fallback: str) -> str:
+    key = re.sub(r"[^a-zA-Z0-9]+", "_", str(label or "").strip()).strip("_").lower()
+    if not key:
+        key = re.sub(r"[^a-zA-Z0-9]+", "_", fallback).strip("_").lower()
+    if key and key[0].isdigit():
+        key = f"d_{key}"
+    return key or "dimension"
+
+
+def _is_default_category(category: dict[str, Any]) -> bool:
+    label = str(
+        category.get("displayName")
+        or category.get("name")
+        or ""
+    ).strip().lower()
+    if label in _DEFAULT_CATEGORY_NAMES:
+        return True
+
+    options = category.get("categoryOptions") or []
+    if len(options) > 1:
+        return False
+
+    option = options[0] if options else {}
+    option_label = str(
+        option.get("displayName")
+        or option.get("name")
+        or ""
+    ).strip().lower()
+    return label.startswith("default") or option_label in _DEFAULT_CATEGORY_NAMES
+
+
+def get_dimension_availability_for_variable(
+    instance_id: int,
+    variable_id: str,
+    *,
+    variable_type: str = "dataElement",
+) -> list[dict[str, Any]]:
+    """Return valid category-combo dimensions for a selected DHIS2 variable.
+
+    The returned rows are designed for upstream APIs and UI consumers that need
+    to answer "which dimensions are valid for this data element?" without
+    exposing fake/default disaggregation fields.
+    """
+    from superset.dhis2.models import DHIS2Instance
+
+    normalized_type = str(variable_type or "").strip().lower()
+    if normalized_type not in {"dataelement", "dataelements"}:
+        return []
+
+    instance = db.session.get(DHIS2Instance, instance_id)
+    if instance is None:
+        raise ValueError(f"DHIS2Instance with id={instance_id} not found")
+
+    api_url = f"{instance.url.rstrip('/')}/api/dataElements/{variable_id}.json"
+    params = {
+        "fields": (
+            "id,displayName,name,"
+            "categoryCombo["
+            "id,displayName,name,dataDimensionType,"
+            "categories[id,displayName,name,dataDimensionType,"
+            "categoryOptions[id,displayName,name,code]]"
+            "]"
+        ),
+    }
+    try:
+        response = requests.get(
+            api_url,
+            params=params,
+            headers=instance.get_auth_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            "get_dimension_availability_for_variable: request failed for "
+            "instance=%s variable=%s: %s",
+            instance_id,
+            variable_id,
+            exc,
+        )
+        return []
+
+    category_combo = payload.get("categoryCombo") or {}
+    combo_id = str(category_combo.get("id") or "").strip() or None
+    combo_name = str(
+        category_combo.get("displayName")
+        or category_combo.get("name")
+        or ""
+    ).strip() or None
+    combo_dimension_type = str(
+        category_combo.get("dataDimensionType") or "DISAGGREGATION"
+    ).strip().upper()
+    categories = category_combo.get("categories") or []
+
+    dimensions: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for index, category in enumerate(categories, start=1):
+        if not isinstance(category, dict):
+            continue
+        category_id = str(category.get("id") or "").strip()
+        if not category_id or _is_default_category(category):
+            continue
+
+        label = str(
+            category.get("displayName")
+            or category.get("name")
+            or category_id
+        ).strip()
+        key = _build_dimension_key(label, category_id)
+        if key in seen_keys:
+            key = _build_dimension_key(label, f"{category_id}_{index}")
+        seen_keys.add(key)
+
+        data_dimension_type = str(
+            category.get("dataDimensionType") or combo_dimension_type
+        ).strip().upper()
+        is_groupable = data_dimension_type != "ATTRIBUTE"
+        options: list[dict[str, Any]] = []
+        for option in category.get("categoryOptions") or []:
+            option_id = str(option.get("id") or "").strip()
+            if not option_id:
+                continue
+            options.append(
+                {
+                    "id": option_id,
+                    "displayName": option.get("displayName")
+                    or option.get("name")
+                    or option_id,
+                    "name": option.get("name"),
+                    "code": option.get("code"),
+                }
+            )
+
+        dimensions.append(
+            {
+                "dimension_key": key,
+                "dimension_label": label,
+                "dimension_scope": "groupby" if is_groupable else "filter_only",
+                "is_groupable": is_groupable,
+                "is_filterable": True,
+                "category_id": category_id,
+                "category_name": label,
+                "category_combo_id": combo_id,
+                "category_combo_name": combo_name,
+                "data_dimension_type": data_dimension_type,
+                "display_order": index,
+                "options": options,
+            }
+        )
+
+    return dimensions

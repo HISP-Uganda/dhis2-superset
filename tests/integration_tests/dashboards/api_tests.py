@@ -311,8 +311,8 @@ class TestDashboardApi(ApiOwnersTestCaseMixin, InsertChartMixin, SupersetTestCas
         actual_dataset_ids = {dataset["id"] for dataset in result}
         assert actual_dataset_ids == expected_dataset_ids
         for dataset in result:
-            for excluded_key in ["database", "owners"]:
-                assert excluded_key not in dataset
+            assert "owners" not in dataset
+            assert dataset["database"]["parameters"] == {}
 
     @pytest.mark.usefixtures("load_world_bank_dashboard_with_slices")
     @patch("superset.utils.log.logger")
@@ -549,6 +549,7 @@ class TestDashboardApi(ApiOwnersTestCaseMixin, InsertChartMixin, SupersetTestCas
                 "slug": "slug1",
                 "tags": [],
                 "thumbnail_url": dashboard.thumbnail_url,
+                "display_order": None,
                 "is_managed_externally": False,
                 "theme": None,
             }

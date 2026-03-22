@@ -82,6 +82,7 @@ class DHIS2JobsApi(BaseApi):
     """REST API for unified DHIS2 job management (sync + metadata)."""
 
     resource_name = "dhis2/jobs"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Jobs"
 
@@ -96,11 +97,37 @@ class DHIS2JobsApi(BaseApi):
     def list_jobs(self) -> Response:
         """Return a time-ordered list of sync and/or metadata jobs for a database.
 
-        Query params
-        ------------
-        database_id : int  (required)
-        limit       : int  (default 50)
-        type        : str  ``"sync"`` | ``"metadata"`` | ``"both"`` (default ``"both"``)
+        ---
+        get:
+          summary: List DHIS2 sync and metadata jobs for a database
+          parameters:
+            - in: query
+              name: database_id
+              required: true
+              schema:
+                type: integer
+              description: Database identifier
+            - in: query
+              name: limit
+              required: false
+              schema:
+                type: integer
+                default: 50
+                maximum: 200
+              description: Maximum number of jobs to return
+            - in: query
+              name: type
+              required: false
+              schema:
+                type: string
+                enum: [sync, metadata, both]
+                default: both
+              description: Filter by job type
+          responses:
+            200:
+              description: Combined job list
+            400:
+              description: Missing database identifier
         """
         database_id = request.args.get("database_id", type=int)
         if not database_id:
@@ -176,9 +203,29 @@ class DHIS2JobsApi(BaseApi):
         attempts are included.  Failed attempts followed by successful
         sub-batches reflect the automatic retry / batch-split logic.
 
-        Query params
-        ------------
-        limit : int  (default 500, max 2000)
+        ---
+        get:
+          summary: Get per-batch analytics request logs for a sync job
+          parameters:
+            - in: path
+              name: job_id
+              required: true
+              schema:
+                type: integer
+              description: Sync job identifier
+            - in: query
+              name: limit
+              required: false
+              schema:
+                type: integer
+                default: 500
+                maximum: 2000
+              description: Maximum number of request log rows to return
+          responses:
+            200:
+              description: Request log rows for the sync job
+            404:
+              description: Sync job not found
         """
         from superset.dhis2.models import DHIS2SyncJobRequest  # avoid circular
 

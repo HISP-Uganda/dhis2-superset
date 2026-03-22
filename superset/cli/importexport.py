@@ -33,6 +33,10 @@ from superset.utils.core import override_user
 logger = logging.getLogger(__name__)
 
 
+def _log_cli_exception(message: str) -> None:
+    logging.getLogger().exception(message)
+
+
 @click.command()
 @with_appcontext
 @click.argument("directory")
@@ -86,7 +90,7 @@ def export_dashboards(dashboard_file: Optional[str] = None) -> None:
                 with bundle.open(f"{root}/{file_name}", "w") as fp:
                     fp.write(file_content().encode())
     except Exception:  # pylint: disable=broad-except
-        logger.exception(
+        _log_cli_exception(
             "There was an error when exporting the dashboards, please check "
             "the exception traceback in the log"
         )
@@ -119,7 +123,7 @@ def export_datasources(datasource_file: Optional[str] = None) -> None:
                 with bundle.open(f"{root}/{file_name}", "w") as fp:
                     fp.write(file_content().encode())
     except Exception:  # pylint: disable=broad-except
-        logger.exception(
+        _log_cli_exception(
             "There was an error when exporting the datasets, please check "
             "the exception traceback in the log"
         )
@@ -157,7 +161,7 @@ def import_dashboards(path: str, username: Optional[str]) -> None:
     try:
         ImportDashboardsCommand(contents, overwrite=True).run()
     except Exception:  # pylint: disable=broad-except
-        logger.exception(
+        _log_cli_exception(
             "There was an error when importing the dashboards(s), please check "
             "the exception traceback in the log"
         )
@@ -194,7 +198,7 @@ def import_datasources(path: str, username: Optional[str] = "admin") -> None:
         try:
             ImportDatasetsCommand(contents, overwrite=True).run()
         except Exception:  # pylint: disable=broad-except
-            logger.exception(
+            _log_cli_exception(
                 "There was an error when importing the dataset(s), please check the "
                 "exception traceback in the log"
             )
@@ -327,7 +331,7 @@ def legacy_import_dashboards(path: str, recursive: bool, username: str) -> None:
     try:
         ImportDashboardsCommand(contents).run()
     except Exception:  # pylint: disable=broad-except
-        logger.exception("Error when importing dashboard")
+        _log_cli_exception("Error when importing dashboard")
         sys.exit(1)
 
 
@@ -383,7 +387,7 @@ def legacy_import_datasources(path: str, sync: str, recursive: bool) -> None:
             contents, sync_columns=sync_columns, sync_metrics=sync_metrics
         ).run()
     except Exception:  # pylint: disable=broad-except
-        logger.exception("Error when importing dataset")
+        _log_cli_exception("Error when importing dataset")
         sys.exit(1)
 
 

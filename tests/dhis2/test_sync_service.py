@@ -35,6 +35,18 @@ from flask import Flask
 from superset.dhis2.models import DHIS2Instance, DHIS2StagedDataset, DHIS2DatasetVariable, DHIS2SyncJob  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    import superset
+
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
+
+
 def _make_instance(**kw) -> DHIS2Instance:
     i = DHIS2Instance.__new__(DHIS2Instance)
     i.__dict__.update(dict(

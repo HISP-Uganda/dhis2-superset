@@ -48,6 +48,14 @@ def _slugify(value: str | None) -> str | None:
     return slug or None
 
 
+def _assign_model_attr(instance: Any, attr_name: str, value: Any) -> None:
+    """Assign ORM attributes safely on real rows and lightweight test doubles."""
+    if getattr(instance, "_sa_instance_state", None) is None:
+        instance.__dict__[attr_name] = value
+        return
+    setattr(instance, attr_name, value)
+
+
 class StagedSource(Model):
     """Generic source registry used by staged datasets."""
 
@@ -374,17 +382,17 @@ class StagedDataset(Model):
         return _json_loads(self.config_json)
 
     def sync_slug(self) -> None:
-        self.slug = _slugify(self.name) or f"dataset-{self.id or 'new'}"
+        _assign_model_attr(self, "slug", _slugify(self.name) or f"dataset-{self.id or 'new'}")
 
     def mark_sync(self, status: str, timestamp: datetime | None = None) -> None:
         when = timestamp or datetime.utcnow()
-        self.last_sync_status = status
+        _assign_model_attr(self, "last_sync_status", status)
         if status == "success":
-            self.last_successful_sync_at = when
+            _assign_model_attr(self, "last_successful_sync_at", when)
         elif status == "partial":
-            self.last_partial_sync_at = when
+            _assign_model_attr(self, "last_partial_sync_at", when)
         elif status == "failed":
-            self.last_failed_sync_at = when
+            _assign_model_attr(self, "last_failed_sync_at", when)
 
     def to_json(self) -> dict[str, Any]:
         return {

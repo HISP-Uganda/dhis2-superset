@@ -31,6 +31,7 @@ from superset.commands.database.exceptions import (
     DatabaseNotFoundError,
     DatabaseUpdateFailedError,
     MissingOAuth2TokenError,
+    UserNotFoundInSessionError,
 )
 from superset.commands.database.ssh_tunnel.create import CreateSSHTunnelCommand
 from superset.commands.database.ssh_tunnel.delete import DeleteSSHTunnelCommand
@@ -130,7 +131,11 @@ class UpdateDatabaseCommand(BaseCommand):
                     db_connection=database,
                     ssh_tunnel=ssh_tunnel,
                 ).run()
-            except (OAuth2RedirectError, MissingOAuth2TokenError):
+            except (
+                OAuth2RedirectError,
+                MissingOAuth2TokenError,
+                UserNotFoundInSessionError,
+            ):
                 pass
 
         self._schedule_dhis2_metadata_refresh(database)

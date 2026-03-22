@@ -21,6 +21,7 @@ from marshmallow import ValidationError
 import superset.public_page.api as public_page_api
 from superset.extensions import db
 from superset.models.dashboard import Dashboard
+from superset.models.embedded_dashboard import EmbeddedDashboard
 from superset.models.slice import Slice
 from superset.public_page.api import (
     DEFAULT_WELCOME_PAGE_CTA_TARGET,
@@ -33,6 +34,7 @@ from superset.public_page.api import (
 from superset.public_page.block_manager import DEFAULT_WELCOME_PAGE_SEED_VERSION
 from superset.public_page.models import (
     MediaAsset,
+    NavigationMenu,
     NavigationItem,
     Page,
     PageBlock,
@@ -96,12 +98,48 @@ def test_serialize_dashboard_includes_public_embed_uuid(app_context: None) -> No
         slug="national-malaria-dashboard",
         uuid=uuid4(),
     )
+    embedded = EmbeddedDashboard(uuid=uuid4(), dashboard=dashboard)
+    dashboard.embedded = [embedded]
 
     serialized = api._serialize_dashboard(dashboard)
 
     assert serialized["id"] == 9
     assert serialized["slug"] == "national-malaria-dashboard"
-    assert serialized["uuid"] == str(dashboard.uuid)
+    assert serialized["uuid"] == str(embedded.uuid)
+
+
+def test_list_public_dashboards_only_returns_published_embeddable_dashboards(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    published_embedded = Dashboard(
+        dashboard_title="Published embedded dashboard",
+        slug="published-embedded-dashboard",
+        published=True,
+        display_order=1,
+    )
+    published_embedded.embedded = [EmbeddedDashboard(uuid=uuid4())]
+    published_only = Dashboard(
+        dashboard_title="Published only dashboard",
+        slug="published-only-dashboard",
+        published=True,
+        display_order=2,
+    )
+    draft_embedded = Dashboard(
+        dashboard_title="Draft embedded dashboard",
+        slug="draft-embedded-dashboard",
+        published=False,
+        display_order=3,
+    )
+    draft_embedded.embedded = [EmbeddedDashboard(uuid=uuid4())]
+    db.session.add_all([published_embedded, published_only, draft_embedded])
+    db.session.flush()
+
+    dashboards = api._list_public_dashboards()
+
+    assert [dashboard.slug for dashboard in dashboards] == [
+        "published-embedded-dashboard"
+    ]
 
 
 def test_resolve_page_rendering_falls_back_to_active_defaults(
@@ -640,6 +678,104 @@ def test_published_public_page_publish_promotes_referenced_serving_charts(
     assert private_chart.is_public is True
 
 
+def test_upsert_page_demotes_previous_active_landing_page(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    existing_home = Page(
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+        display_order=0,
+    )
+    db.session.add(existing_home)
+    db.session.flush()
+
+    monkeypatch.setattr(public_page_api, "_can_embed_charts", lambda: False)
+    monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_validate_template_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_validate_style_bundle_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_parent_page_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(api, "_validate_asset_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_validate_block_references", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_upsert_blocks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_clear_legacy_sections", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_snapshot_page_revision", lambda *_args, **_kwargs: None)
+
+    page = api._upsert_page(
+        {
+            "title": "Insights",
+            "slug": "insights",
+            "visibility": "public",
+            "is_published": True,
+            "is_homepage": True,
+            "status": "published",
+            "settings": {},
+            "blocks": [],
+            "sections": [],
+        }
+    )
+
+    db.session.refresh(existing_home)
+
+    assert page.is_homepage is True
+    assert existing_home.is_homepage is False
+
+
+def test_upsert_page_clears_landing_page_flag_for_non_active_pages(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(public_page_api, "_can_embed_charts", lambda: False)
+    monkeypatch.setattr(api, "_validate_theme_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_validate_template_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        api,
+        "_validate_style_bundle_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_validate_parent_page_reference",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(api, "_validate_asset_reference", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_validate_block_references", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_upsert_blocks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_clear_legacy_sections", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_snapshot_page_revision", lambda *_args, **_kwargs: None)
+
+    page = api._upsert_page(
+        {
+            "title": "Draft landing candidate",
+            "slug": "draft-landing-candidate",
+            "visibility": "public",
+            "is_published": False,
+            "is_homepage": True,
+            "status": "draft",
+            "settings": {},
+            "blocks": [],
+            "sections": [],
+        }
+    )
+
+    assert page.is_homepage is False
+    assert page.status == "draft"
+
+
 def test_page_breadcrumbs_include_parent_hierarchy(app_context: None) -> None:
     api = PublicPageRestApi()
     about = Page(
@@ -740,6 +876,344 @@ def test_serialize_navigation_item_uses_canonical_path_for_homepage(
     assert serialized["path"] == "/superset/public/welcome/"
 
 
+def test_serialize_navigation_expands_page_collection_into_page_hierarchy(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    homepage = Page(
+        id=1,
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+        display_order=0,
+    )
+    dashboards_page = Page(
+        id=2,
+        slug="dashboards",
+        title="Dashboards",
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+        display_order=1,
+    )
+    about_page = Page(
+        id=3,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+        display_order=2,
+    )
+    team_page = Page(
+        id=4,
+        slug="team",
+        title="Team",
+        parent_page=about_page,
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+        display_order=0,
+    )
+    reports_page = Page(
+        id=5,
+        slug="reports",
+        title="Reports",
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+        display_order=3,
+    )
+    header_menu = NavigationMenu(
+        id=1,
+        slug="public-header",
+        title="Header",
+        location="header",
+        visibility="public",
+        display_order=0,
+        is_enabled=True,
+    )
+    NavigationItem(
+        id=11,
+        menu=header_menu,
+        label="Home",
+        item_type="page",
+        page=homepage,
+        visibility="public",
+        display_order=0,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=12,
+        menu=header_menu,
+        label="Dashboards",
+        item_type="page",
+        page=dashboards_page,
+        visibility="public",
+        display_order=1,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=13,
+        menu=header_menu,
+        label="Pages",
+        item_type="page_collection",
+        visibility="public",
+        display_order=2,
+        is_visible=True,
+    )
+
+    serialized = api._serialize_navigation(
+        [header_menu],
+        [homepage, dashboards_page, about_page, team_page, reports_page],
+        [],
+        public_context=True,
+    )
+
+    items = serialized["header"][0]["items"]
+    assert [item["label"] for item in items] == [
+        "Home",
+        "Dashboards",
+        "About",
+        "Reports",
+    ]
+    assert items[2]["path"] == "/superset/public/about/"
+    assert items[2]["children"] == [
+        {
+            "id": "page-4",
+            "label": "Team",
+            "path": "/superset/public/about/team/",
+            "item_type": "page",
+            "page_id": 4,
+            "description": None,
+            "children": [],
+        }
+    ]
+
+
+def test_serialize_navigation_page_collection_skips_explicit_page_items(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    homepage = Page(
+        id=1,
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+    )
+    dashboards_page = Page(
+        id=2,
+        slug="dashboards",
+        title="Dashboards",
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+    )
+    about_page = Page(
+        id=3,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        is_homepage=False,
+        status="published",
+    )
+    header_menu = NavigationMenu(
+        id=1,
+        slug="public-header",
+        title="Header",
+        location="header",
+        visibility="public",
+        display_order=0,
+        is_enabled=True,
+    )
+    NavigationItem(
+        id=11,
+        menu=header_menu,
+        label="Home",
+        item_type="page",
+        page=homepage,
+        visibility="public",
+        display_order=0,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=12,
+        menu=header_menu,
+        label="Dashboards",
+        item_type="page",
+        page=dashboards_page,
+        visibility="public",
+        display_order=1,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=13,
+        menu=header_menu,
+        label="About",
+        item_type="page",
+        page=about_page,
+        visibility="public",
+        display_order=2,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=14,
+        menu=header_menu,
+        label="Pages",
+        item_type="page_collection",
+        visibility="public",
+        display_order=3,
+        is_visible=True,
+    )
+
+    serialized = api._serialize_navigation(
+        [header_menu],
+        [homepage, dashboards_page, about_page],
+        [],
+        public_context=True,
+    )
+
+    assert [item["label"] for item in serialized["header"][0]["items"]] == [
+        "Home",
+        "Dashboards",
+        "About",
+    ]
+
+
+def test_serialize_navigation_promotes_top_level_page_types(
+    app_context: None,
+) -> None:
+    api = PublicPageRestApi()
+    homepage = Page(
+        id=1,
+        slug="welcome",
+        title="Welcome",
+        visibility="public",
+        is_published=True,
+        is_homepage=True,
+        status="published",
+        display_order=0,
+    )
+    dashboards_page = Page(
+        id=2,
+        slug="dashboards",
+        title="Dashboards",
+        visibility="public",
+        is_published=True,
+        status="published",
+        display_order=1,
+    )
+    about_page = Page(
+        id=3,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        status="published",
+        page_type="content",
+        display_order=3,
+    )
+    faq_page = Page(
+        id=4,
+        slug="faq",
+        title="FAQ",
+        parent_page=about_page,
+        visibility="public",
+        is_published=True,
+        status="published",
+        page_type="faq",
+        display_order=2,
+    )
+    guidance_page = Page(
+        id=5,
+        slug="guidance",
+        title="Guidance",
+        parent_page=faq_page,
+        visibility="public",
+        is_published=True,
+        status="published",
+        page_type="content",
+        display_order=0,
+    )
+    header_menu = NavigationMenu(
+        id=1,
+        slug="public-header",
+        title="Header",
+        location="header",
+        visibility="public",
+        display_order=0,
+        is_enabled=True,
+    )
+    NavigationItem(
+        id=11,
+        menu=header_menu,
+        label="Home",
+        item_type="page",
+        page=homepage,
+        visibility="public",
+        display_order=0,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=12,
+        menu=header_menu,
+        label="Dashboards",
+        item_type="page",
+        page=dashboards_page,
+        visibility="public",
+        display_order=1,
+        is_visible=True,
+    )
+    NavigationItem(
+        id=13,
+        menu=header_menu,
+        label="Pages",
+        item_type="page_collection",
+        visibility="public",
+        display_order=2,
+        is_visible=True,
+    )
+
+    serialized = api._serialize_navigation(
+        [header_menu],
+        [homepage, dashboards_page, about_page, faq_page, guidance_page],
+        [],
+        public_context=True,
+    )
+
+    items = serialized["header"][0]["items"]
+    assert [item["label"] for item in items] == [
+        "Home",
+        "Dashboards",
+        "FAQ",
+        "About",
+    ]
+    assert items[2]["path"] == "/superset/public/about/faq/"
+    assert items[2]["children"] == [
+        {
+            "id": "page-5",
+            "label": "Guidance",
+            "path": "/superset/public/about/faq/guidance/",
+            "item_type": "page",
+            "page_id": 5,
+            "description": None,
+            "children": [],
+        }
+    ]
+
+
 def test_ensure_homepage_exists_promotes_first_public_page(
     app_context: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -786,6 +1260,54 @@ def test_ensure_homepage_exists_promotes_first_public_page(
     assert target_page is first_page
     assert first_page.is_homepage is True
     assert second_page.is_homepage is False
+
+
+def test_ensure_homepage_exists_collapses_multiple_active_homepages(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    first_page = Page(
+        id=11,
+        slug="insights",
+        title="Insights",
+        visibility="public",
+        is_published=True,
+        status="published",
+        is_homepage=True,
+        display_order=1,
+    )
+    second_page = Page(
+        id=12,
+        slug="about",
+        title="About",
+        visibility="public",
+        is_published=True,
+        status="published",
+        is_homepage=True,
+        display_order=0,
+    )
+    pages = [first_page, second_page]
+
+    class QueryStub:
+        def filter(self, *args, **kwargs):
+            del args, kwargs
+            return self
+
+        def update(self, values, synchronize_session=False):
+            del synchronize_session
+            for page in pages:
+                page.is_homepage = values.get("is_homepage", page.is_homepage)
+
+    monkeypatch.setattr(api, "_list_pages", lambda admin=False: pages)
+    monkeypatch.setattr(db.session, "query", lambda model: QueryStub())
+    monkeypatch.setattr(db.session, "flush", lambda: None)
+
+    target_page = api._ensure_homepage_exists()
+
+    assert target_page is second_page
+    assert second_page.is_homepage is True
+    assert first_page.is_homepage is False
 
 
 def test_serialize_media_asset_exposes_download_url(app_context: None) -> None:
@@ -1074,3 +1596,182 @@ def test_seed_default_portal_preserves_custom_welcome_page(
     assert len(root_blocks) == 1
     assert root_blocks[0].block_type == "paragraph"
     assert root_blocks[0].get_content()["body"] == "Custom public welcome copy."
+
+
+def test_seed_default_portal_restores_default_landing_and_about_pages(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(api, "_get_or_create_layout_config", lambda: None)
+    monkeypatch.setattr(api, "_list_public_serving_charts", lambda: [])
+    monkeypatch.setattr(api, "_list_public_dashboards", lambda: [])
+
+    welcome_page = db.session.query(Page).filter(Page.slug == "welcome").one_or_none()
+    if welcome_page is None:
+        welcome_page = Page(slug="welcome", title="Welcome")
+        db.session.add(welcome_page)
+    welcome_page.visibility = "public"
+    welcome_page.status = "draft"
+    welcome_page.is_published = False
+    welcome_page.is_homepage = False
+    welcome_page.display_order = 0
+    welcome_page.subtitle = None
+    welcome_page.description = None
+    welcome_page.excerpt = None
+    welcome_page.navigation_label = None
+    welcome_page.seo_title = None
+    welcome_page.seo_description = None
+    welcome_page.og_image_url = None
+    welcome_page.featured_image_url = None
+    welcome_page.archived_on = None
+    welcome_page.set_settings({})
+    for block in list(welcome_page.blocks):
+        db.session.delete(block)
+    for section in list(welcome_page.sections):
+        db.session.delete(section)
+
+    dashboards_page = (
+        db.session.query(Page).filter(Page.slug == "dashboards").one_or_none()
+    )
+    if dashboards_page is None:
+        dashboards_page = Page(slug="dashboards", title="Dashboards")
+        db.session.add(dashboards_page)
+    dashboards_page.visibility = "public"
+    dashboards_page.status = "published"
+    dashboards_page.is_published = True
+    dashboards_page.is_homepage = True
+    dashboards_page.display_order = 1
+    dashboards_page.subtitle = None
+    dashboards_page.description = None
+    dashboards_page.excerpt = None
+    dashboards_page.navigation_label = None
+    dashboards_page.seo_title = None
+    dashboards_page.seo_description = None
+    dashboards_page.og_image_url = None
+    dashboards_page.featured_image_url = None
+    dashboards_page.archived_on = None
+    dashboards_page.set_settings({})
+    for block in list(dashboards_page.blocks):
+        db.session.delete(block)
+    for section in list(dashboards_page.sections):
+        db.session.delete(section)
+
+    about_page = db.session.query(Page).filter(Page.slug == "about").one_or_none()
+    if about_page is None:
+        about_page = Page(slug="about", title="About")
+        db.session.add(about_page)
+    about_page.visibility = "public"
+    about_page.status = "draft"
+    about_page.is_published = False
+    about_page.is_homepage = False
+    about_page.display_order = 2
+    about_page.subtitle = None
+    about_page.description = None
+    about_page.excerpt = None
+    about_page.navigation_label = None
+    about_page.seo_title = None
+    about_page.seo_description = None
+    about_page.og_image_url = None
+    about_page.featured_image_url = None
+    about_page.archived_on = None
+    about_page.set_settings({})
+    for block in list(about_page.blocks):
+        db.session.delete(block)
+    for section in list(about_page.sections):
+        db.session.delete(section)
+
+    db.session.flush()
+
+    api._seed_default_portal()
+
+    refreshed_welcome = db.session.query(Page).filter(Page.slug == "welcome").one()
+    refreshed_dashboards = db.session.query(Page).filter(Page.slug == "dashboards").one()
+    refreshed_about = db.session.query(Page).filter(Page.slug == "about").one()
+    header_menu = (
+        db.session.query(NavigationMenu)
+        .filter(NavigationMenu.slug == "public-header")
+        .one()
+    )
+    welcome_item = next(
+        item
+        for item in header_menu.items
+        if item.parent_id is None and item.page == refreshed_welcome
+    )
+
+    assert refreshed_welcome.status == "published"
+    assert refreshed_welcome.is_published is True
+    assert refreshed_welcome.is_homepage is True
+    assert refreshed_about.status == "published"
+    assert refreshed_about.is_published is True
+    assert refreshed_dashboards.is_homepage is False
+    assert welcome_item.label == "Home"
+
+
+def test_seed_default_portal_preserves_unpublished_authored_system_pages(
+    app_context: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = PublicPageRestApi()
+    monkeypatch.setattr(api, "_get_or_create_layout_config", lambda: None)
+    monkeypatch.setattr(api, "_list_public_serving_charts", lambda: [])
+    monkeypatch.setattr(api, "_list_public_dashboards", lambda: [])
+
+    welcome_page = db.session.query(Page).filter(Page.slug == "welcome").one_or_none()
+    if welcome_page is None:
+        welcome_page = Page(slug="welcome", title="Welcome")
+        db.session.add(welcome_page)
+    welcome_page.visibility = "public"
+    welcome_page.status = "draft"
+    welcome_page.is_published = False
+    welcome_page.is_homepage = False
+    welcome_page.display_order = 0
+    welcome_page.subtitle = "Custom hidden landing page"
+    welcome_page.description = "Do not republish this page automatically."
+    welcome_page.archived_on = None
+    welcome_page.set_settings({"defaultWelcomeSeedVersion": 99})
+
+    dashboards_page = (
+        db.session.query(Page).filter(Page.slug == "dashboards").one_or_none()
+    )
+    if dashboards_page is None:
+        dashboards_page = Page(slug="dashboards", title="Dashboards")
+        db.session.add(dashboards_page)
+    dashboards_page.visibility = "public"
+    dashboards_page.status = "draft"
+    dashboards_page.is_published = False
+    dashboards_page.is_homepage = False
+    dashboards_page.display_order = 1
+    dashboards_page.subtitle = "Custom hidden dashboards page"
+    dashboards_page.description = "Keep this unpublished until review is complete."
+    dashboards_page.archived_on = None
+    dashboards_page.set_settings({"menuMode": "manual"})
+
+    about_page = db.session.query(Page).filter(Page.slug == "about").one_or_none()
+    if about_page is None:
+        about_page = Page(slug="about", title="About")
+        db.session.add(about_page)
+    about_page.visibility = "public"
+    about_page.status = "draft"
+    about_page.is_published = False
+    about_page.is_homepage = False
+    about_page.display_order = 2
+    about_page.subtitle = "Custom hidden about page"
+    about_page.description = "Remain unpublished."
+    about_page.archived_on = None
+    about_page.set_settings({"audience": "internal"})
+
+    db.session.flush()
+
+    api._seed_default_portal()
+
+    refreshed_welcome = db.session.query(Page).filter(Page.slug == "welcome").one()
+    refreshed_dashboards = db.session.query(Page).filter(Page.slug == "dashboards").one()
+    refreshed_about = db.session.query(Page).filter(Page.slug == "about").one()
+
+    assert refreshed_welcome.is_published is False
+    assert refreshed_welcome.status == "draft"
+    assert refreshed_dashboards.is_published is False
+    assert refreshed_dashboards.status == "draft"
+    assert refreshed_about.is_published is False
+    assert refreshed_about.status == "draft"

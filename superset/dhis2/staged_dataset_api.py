@@ -177,6 +177,7 @@ class DHIS2StagedDatasetApi(BaseApi):
     """
 
     resource_name = "dhis2/staged-datasets"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Staged Datasets"
 
@@ -1570,27 +1571,28 @@ class DHIS2StagedDatasetApi(BaseApi):
     def variable_category_option_combos(self, pk: int, variable_id: str) -> Response:
         """Return available category option combos for a variable from DHIS2 metadata.
 
-        Query params
-        ------------
-        instance_id : int  (required — which DHIS2 instance to query)
-
         ---
         get:
           summary: Category option combos for a DHIS2 variable
           parameters:
             - in: path
               name: pk
+              required: true
               schema:
                 type: integer
+              description: Staged dataset identifier
             - in: path
               name: variable_id
+              required: true
               schema:
                 type: string
+              description: Variable identifier to inspect
             - in: query
               name: instance_id
               schema:
                 type: integer
               required: true
+              description: DHIS2 instance identifier to query
           responses:
             200:
               description: List of category option combos

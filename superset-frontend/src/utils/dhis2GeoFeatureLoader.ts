@@ -185,7 +185,20 @@ function shouldTryPublicChartFallback(
     return false;
   }
   const status = Number((error as any)?.status);
-  return [400, 401, 403, 404].includes(status);
+  const message = String(
+    (error as any)?.message ||
+      (error as any)?.error ||
+      (error as any)?.response?.statusText ||
+      '',
+  ).toLowerCase();
+  return (
+    [400, 401, 403, 404].includes(status) ||
+    !Number.isFinite(status) ||
+    message.includes('missing authorization') ||
+    message.includes('unexpected token') ||
+    message.includes('<!doctype') ||
+    message.includes('<html')
+  );
 }
 
 function buildMetadataSearchParams(

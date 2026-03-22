@@ -18,15 +18,17 @@
  */
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors */
 
-import { CSSProperties, useRef, useState } from 'react';
+import { CSSProperties, useMemo, useRef, useState } from 'react';
 import { SafeMarkdown } from '@superset-ui/core/components';
 import { sanitizeHtml, styled, t } from '@superset-ui/core';
-import { Button, Empty, Tag } from 'antd';
+import { Button, Dropdown, Empty, Tag } from 'antd';
+import type { MenuProps } from 'antd';
 import RichTextComposer from 'src/pages/CMSAdminPage/RichTextComposer';
 import PublicChartContainer, { isMapLikeViz } from './PublicChartContainer';
 import PublicDashboardEmbed from './PublicDashboardEmbed';
 import { cloneBlockTree, isContainerBlock } from './blockUtils';
 import type {
+  PortalBlockDefinition,
   PortalChartSummary,
   PortalDashboardSummary,
   PortalHighlight,
@@ -97,10 +99,17 @@ const BlockGrid = styled.div`
 `;
 
 const BlockGridCell = styled.div<{ $span?: number; $minHeight?: number }>`
+  display: flex;
+  align-items: stretch;
   min-width: 0;
   grid-column: span ${({ $span = 12 }) => Math.min(Math.max($span, 1), 12)};
   ${({ $minHeight }) =>
     $minHeight ? `min-height: ${Math.max($minHeight, 0)}px;` : ''}
+
+  & > * {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
 
   @media (max-width: 960px) {
     grid-column: span 1;
@@ -109,6 +118,13 @@ const BlockGridCell = styled.div<{ $span?: number; $minHeight?: number }>`
 
 const EditorSelectable = styled.div<{ $selected?: boolean }>`
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  width: 100%;
+  min-height: 100%;
+  height: 100%;
+  box-sizing: border-box;
   min-width: 0;
   border: 1px solid
     ${({ $selected }) =>
@@ -145,6 +161,17 @@ const EditorSelectable = styled.div<{ $selected?: boolean }>`
   }
 `;
 
+const EditorCanvasBody = styled.div`
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+
+  & > * {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+`;
+
 const EditorSelectableHeader = styled.div`
   display: flex;
   align-items: center;
@@ -171,6 +198,8 @@ const EditorInlineActions = styled.div<{ $visible?: boolean }>`
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   opacity: ${({ $visible }) => ($visible ? 1 : 0)};
   pointer-events: ${({ $visible }) => ($visible ? 'auto' : 'none')};
   transform: ${({ $visible }) =>
@@ -199,7 +228,84 @@ const EditorInlineActionButton = styled.button<{ $accent?: boolean }>`
   }
 `;
 
+const EditorEmptyState = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px dashed rgba(15, 118, 110, 0.28);
+  background: rgba(248, 250, 252, 0.94);
+`;
+
+const EditorEmptyStateCopy = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+`;
+
+const EditorEmptyStateTitle = styled.div`
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--portal-muted-strong);
+`;
+
+const EditorEmptyStateDescription = styled.div`
+  font-size: 12px;
+  color: var(--portal-muted);
+  max-width: 560px;
+`;
+
 type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
+function formatBlockTypeCategory(category?: string | null) {
+  return String(category || t('Content'))
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map(token => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+function buildEditorInsertMenuItems(
+  blockTypes: PortalBlockDefinition[],
+): MenuProps['items'] {
+  if (!blockTypes.length) {
+    return [];
+  }
+  const grouped = blockTypes.reduce<Record<string, PortalBlockDefinition[]>>(
+    (accumulator, blockType) => {
+      const category = blockType.category || 'content';
+      accumulator[category] = [...(accumulator[category] || []), blockType];
+      return accumulator;
+    },
+    {},
+  );
+  const orderedCategories = Object.keys(grouped).sort((left, right) =>
+    formatBlockTypeCategory(left).localeCompare(formatBlockTypeCategory(right)),
+  );
+  return orderedCategories.map(category => ({
+    type: 'group' as const,
+    key: `group-${category}`,
+    label: formatBlockTypeCategory(category),
+    children: grouped[category]
+      .slice()
+      .sort((left, right) => left.label.localeCompare(right.label))
+      .map(blockType => ({
+        key: blockType.type,
+        label: (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontWeight: 700 }}>{blockType.label}</span>
+            <span style={{ fontSize: 12, color: '#64748b' }}>
+              {blockType.description || blockType.type}
+            </span>
+          </div>
+        ),
+      })),
+  }));
+}
 
 function resizeCursor(direction: ResizeDirection) {
   switch (direction) {
@@ -347,6 +453,75 @@ const SurfaceCard = styled.div`
   border-radius: var(--portal-radius-lg, 0);
   background: var(--portal-surface);
   border: 1px solid var(--portal-border);
+`;
+
+const DashboardDirectoryGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+`;
+
+const DashboardDirectoryCard = styled(SurfaceCard)`
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 220px;
+  cursor: pointer;
+  border-color: var(--portal-border-strong);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.98) 0%,
+      rgba(241, 245, 249, 0.94) 100%
+    ),
+    var(--portal-surface);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: rgba(15, 118, 110, 0.26);
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.1);
+    transform: translateY(-2px);
+  }
+`;
+
+const DashboardDirectoryTop = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+const DashboardDirectoryEyebrow = styled.span`
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--portal-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+`;
+
+const DashboardDirectoryDescription = styled.p`
+  margin: 0;
+  color: var(--portal-muted-strong);
+  font-size: 14px;
+  line-height: 1.7;
+`;
+
+const DashboardDirectoryFooter = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 `;
 
 const CardTitle = styled.h3`
@@ -590,6 +765,14 @@ function blockClassName(block: PortalPageBlock) {
     .join(' ');
 }
 
+function positiveNumberOrUndefined(value: any) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.round(parsed);
+}
+
 function lookupChart(
   block: PortalPageBlock,
   charts: PortalChartSummary[],
@@ -668,10 +851,24 @@ function findMenu(
   );
 }
 
-function renderHighlights(highlights: PortalHighlight[], limit?: number) {
+function renderHighlights(
+  highlights: PortalHighlight[],
+  limit?: number,
+  labels?: {
+    emptyMessage?: string;
+    datasetFallbackLabel?: string;
+    latestPeriodLabel?: string;
+  },
+) {
   const visible = highlights.slice(0, limit || highlights.length);
   if (!visible.length) {
-    return <Empty description={t('No highlights are available yet.')} />;
+    return (
+      <Empty
+        description={
+          labels?.emptyMessage || t('No highlights are available yet.')
+        }
+      />
+    );
   }
   return (
     <MetricsGrid>
@@ -682,8 +879,14 @@ function renderHighlights(highlights: PortalHighlight[], limit?: number) {
           <MetricValue>{highlight.value}</MetricValue>
           <MetricLabel>{highlight.indicator_name}</MetricLabel>
           <MetricMeta>
-            <Tag>{highlight.dataset_name || t('Dataset')}</Tag>
-            <Tag>{highlight.period || t('Latest')}</Tag>
+            <Tag>
+              {highlight.dataset_name ||
+                labels?.datasetFallbackLabel ||
+                t('Dataset')}
+            </Tag>
+            <Tag>
+              {highlight.period || labels?.latestPeriodLabel || t('Latest')}
+            </Tag>
           </MetricMeta>
         </MetricCard>
       ))}
@@ -866,6 +1069,8 @@ type RenderBlockTreeProps = {
   blocks: PortalPageBlock[];
   charts: PortalChartSummary[];
   dashboards: PortalDashboardSummary[];
+  editorBlockTypes?: PortalBlockDefinition[];
+  chartEmbedAccess?: 'public' | 'authenticated';
   mediaAssets?: PortalMediaAsset[];
   page?: PortalPage | null;
   navigation?: {
@@ -891,16 +1096,24 @@ type RenderBlockTreeProps = {
     block: PortalPageBlock,
     mode: 'after' | 'child',
   ) => void;
+  onInsertBlockTypeFromCanvas?: (
+    block: PortalPageBlock,
+    mode: 'after' | 'child',
+    blockType: string,
+  ) => void;
   onInsertGridTemplateFromCanvas?: (
     block: PortalPageBlock,
     columnCount: number,
   ) => void;
+  onDeleteBlockFromCanvas?: (block: PortalPageBlock) => void;
 };
 
 export function RenderBlockTree({
   blocks,
   charts,
   dashboards,
+  editorBlockTypes = [],
+  chartEmbedAccess = 'public',
   mediaAssets = [],
   page = null,
   navigation = { header: [], footer: [] },
@@ -913,7 +1126,9 @@ export function RenderBlockTree({
   onResizeBlock,
   onInlineRichTextChange,
   onInsertBlockFromCanvas,
+  onInsertBlockTypeFromCanvas,
   onInsertGridTemplateFromCanvas,
+  onDeleteBlockFromCanvas,
 }: RenderBlockTreeProps) {
   const [resizePreview, setResizePreview] = useState<{
     blockId: string;
@@ -921,6 +1136,13 @@ export function RenderBlockTree({
     minHeight: number;
   } | null>(null);
   const suppressSelectionRef = useRef(false);
+  const editorInsertMenuItems = useMemo(
+    () => buildEditorInsertMenuItems(editorBlockTypes),
+    [editorBlockTypes],
+  );
+  const hasEditorInsertMenu = Boolean(
+    editorInsertMenuItems && editorInsertMenuItems.length,
+  );
 
   function scheduleSelectionRelease() {
     if (typeof window === 'undefined') {
@@ -964,14 +1186,58 @@ export function RenderBlockTree({
     return Math.round(configured);
   }
 
+  function blockFrameHeight(block: PortalPageBlock, fallback: number) {
+    return Math.max(
+      fallback,
+      positiveNumberOrUndefined(block.settings?.height) || 0,
+      blockMinHeight(block) || 0,
+    );
+  }
+
+  function blockRowMinHeight(block: PortalPageBlock) {
+    return (
+      positiveNumberOrUndefined(block.settings?.rowMinHeight) ||
+      blockMinHeight(block)
+    );
+  }
+
   function renderChildrenGrid(
     childBlocks: PortalPageBlock[],
     fallbackSpan = 12,
+    parentBlock?: PortalPageBlock,
   ) {
     const visibleBlocks = (childBlocks || []).filter(
       child => child.status !== 'hidden',
     );
     if (!visibleBlocks.length) {
+      if (mode === 'editor' && parentBlock) {
+        const label =
+          parentBlock.metadata?.label || parentBlock.block_type || t('Block');
+        return (
+          <EditorEmptyState>
+            <EditorEmptyStateCopy>
+              <EditorEmptyStateTitle>
+                {t('This block is empty.')}
+              </EditorEmptyStateTitle>
+              <EditorEmptyStateDescription>
+                {t(
+                  'Add text, media, charts, dashboards, or a grid layout inside %s.',
+                  label,
+                )}
+              </EditorEmptyStateDescription>
+            </EditorEmptyStateCopy>
+            <EditorInlineActions $visible>
+              {renderInsertControl(blockId(parentBlock), parentBlock, 'child', {
+                label: t('+ Add Content'),
+                ariaLabel: t('Add content inside %s', label),
+                accent: true,
+              })}
+              {renderGridTemplateControls(parentBlock, label)}
+              {renderDeleteControl(parentBlock, label)}
+            </EditorInlineActions>
+          </EditorEmptyState>
+        );
+      }
       return null;
     }
     return (
@@ -1030,6 +1296,127 @@ export function RenderBlockTree({
       );
     }
     return fallback || null;
+  }
+
+  function stopCanvasAction(
+    event:
+      | {
+          preventDefault?: () => void;
+          stopPropagation?: () => void;
+        }
+      | undefined,
+  ) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+  }
+
+  function renderInsertControl(
+    key: string,
+    block: PortalPageBlock,
+    mode: 'after' | 'child',
+    options?: {
+      label?: string;
+      ariaLabel?: string;
+      accent?: boolean;
+    },
+  ) {
+    const buttonLabel =
+      options?.label ||
+      (mode === 'child' ? t('+ Add Content') : t('+ Add After'));
+    const ariaLabel =
+      options?.ariaLabel ||
+      (mode === 'child'
+        ? t('Add content inside %s', block.metadata?.label || block.block_type)
+        : t('Add content after %s', block.metadata?.label || block.block_type));
+    if (hasEditorInsertMenu && onInsertBlockTypeFromCanvas) {
+      return (
+        <Dropdown
+          key={`${key}-insert`}
+          trigger={['click']}
+          placement="bottomRight"
+          menu={{
+            items: editorInsertMenuItems,
+            onClick: ({ key: blockType, domEvent }) => {
+              stopCanvasAction(domEvent);
+              onInsertBlockTypeFromCanvas(block, mode, String(blockType || ''));
+            },
+          }}
+        >
+          <EditorInlineActionButton
+            type="button"
+            $accent={options?.accent}
+            aria-label={ariaLabel}
+            onClick={event => stopCanvasAction(event)}
+          >
+            {buttonLabel}
+          </EditorInlineActionButton>
+        </Dropdown>
+      );
+    }
+    if (!onInsertBlockFromCanvas) {
+      return null;
+    }
+    return (
+      <EditorInlineActionButton
+        key={`${key}-insert`}
+        type="button"
+        $accent={options?.accent}
+        aria-label={ariaLabel}
+        onClick={event => {
+          stopCanvasAction(event);
+          onInsertBlockFromCanvas(block, mode);
+        }}
+      >
+        {buttonLabel}
+      </EditorInlineActionButton>
+    );
+  }
+
+  function renderGridTemplateControls(
+    block: PortalPageBlock,
+    label: string,
+  ): JSX.Element[] | null {
+    if (
+      !isContainerBlock(block.block_type) ||
+      !onInsertGridTemplateFromCanvas
+    ) {
+      return null;
+    }
+    return [1, 2, 3, 4].map(columnCount => (
+      <EditorInlineActionButton
+        key={`${blockId(block)}-grid-${columnCount}`}
+        type="button"
+        aria-label={t('Insert a %s-column row inside %s', columnCount, label)}
+        onClick={event => {
+          stopCanvasAction(event);
+          onInsertGridTemplateFromCanvas(block, columnCount);
+        }}
+      >
+        {t('%s Col', columnCount)}
+      </EditorInlineActionButton>
+    ));
+  }
+
+  function renderDeleteControl(
+    block: PortalPageBlock,
+    label: string,
+  ): JSX.Element | null {
+    if (!onDeleteBlockFromCanvas) {
+      return null;
+    }
+    return (
+      <EditorInlineActionButton
+        key={`${blockId(block)}-delete`}
+        type="button"
+        aria-label={t('Delete %s', label)}
+        onClick={event => {
+          stopCanvasAction(event);
+          onDeleteBlockFromCanvas(block);
+        }}
+      >
+        {t('Delete')}
+      </EditorInlineActionButton>
+    );
   }
 
   function wrapEditorBlock(
@@ -1199,48 +1586,23 @@ export function RenderBlockTree({
             className="cms-editor-inline-actions"
             $visible={selectedBlockUid === currentBlockId}
           >
-            <EditorInlineActionButton
-              type="button"
-              $accent
-              aria-label={
-                isContainer
+            {renderInsertControl(
+              currentBlockId,
+              block,
+              isContainer ? 'child' : 'after',
+              {
+                label: isContainer ? t('+ Add Content') : t('+ Add After'),
+                ariaLabel: isContainer
                   ? t('Add content inside %s', label)
-                  : t('Add after %s', label)
-              }
-              onClick={event => {
-                event.preventDefault();
-                event.stopPropagation();
-                onInsertBlockFromCanvas?.(
-                  block,
-                  isContainer ? 'child' : 'after',
-                );
-              }}
-            >
-              {isContainer ? t('+ Add') : t('+ After')}
-            </EditorInlineActionButton>
-            {isContainer
-              ? [1, 2, 3, 4].map(columnCount => (
-                  <EditorInlineActionButton
-                    key={`${currentBlockId}-grid-${columnCount}`}
-                    type="button"
-                    aria-label={t(
-                      'Insert a %s-column row inside %s',
-                      columnCount,
-                      label,
-                    )}
-                    onClick={event => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onInsertGridTemplateFromCanvas?.(block, columnCount);
-                    }}
-                  >
-                    {t('%s Col', columnCount)}
-                  </EditorInlineActionButton>
-                ))
-              : null}
+                  : t('Add content after %s', label),
+                accent: true,
+              },
+            )}
+            {renderGridTemplateControls(block, label)}
+            {renderDeleteControl(block, label)}
           </EditorInlineActions>
         </EditorSelectableHeader>
-        {rendered}
+        <EditorCanvasBody>{rendered}</EditorCanvasBody>
         <EditorResizeFrame
           className="cms-editor-resize-frame"
           $visible={isResizeVisible}
@@ -1403,7 +1765,7 @@ export function RenderBlockTree({
                 </SectionTitleGroup>
               </SectionHeader>
             )}
-            {renderChildrenGrid(block.children || [], sectionSpan)}
+            {renderChildrenGrid(block.children || [], sectionSpan, block)}
           </Section>
         );
       }
@@ -1469,7 +1831,7 @@ export function RenderBlockTree({
                 </HeroActions>
               ) : null}
             </div>
-            <div>{renderChildrenGrid(block.children || [], 12)}</div>
+            <div>{renderChildrenGrid(block.children || [], 12, block)}</div>
           </Hero>
         );
       case 'group':
@@ -1501,7 +1863,7 @@ export function RenderBlockTree({
                 </SectionTitleGroup>
               </SectionHeader>
             )}
-            {renderChildrenGrid(block.children || [], containerSpan)}
+            {renderChildrenGrid(block.children || [], containerSpan, block)}
           </Section>
         );
       }
@@ -1511,7 +1873,10 @@ export function RenderBlockTree({
           Math.max(block.children.length, 1);
         const columnSpan =
           columnCount > 1 ? Math.max(Math.floor(12 / columnCount), 1) : 12;
-        const rowMinHeight = Number(block.settings?.rowMinHeight) || undefined;
+        const rowMinHeight = blockRowMinHeight(block);
+        const visibleChildren = (block.children || []).filter(
+          child => child.status !== 'hidden',
+        );
         return (
           <BlockGrid
             key={block.uid || block.id}
@@ -1522,26 +1887,32 @@ export function RenderBlockTree({
               gap: block.settings?.gap || style?.gap,
             }}
           >
-            {(block.children || []).map(child => {
-              const renderedChild = renderBlock(child);
-              if (!renderedChild) {
-                return null;
-              }
-              const childNode =
-                mode === 'editor' && renderedChild.type !== EditorSelectable
-                  ? wrapEditorBlock(child, renderedChild)
-                  : renderedChild;
-              return (
-                <BlockGridCell
-                  key={`cell-${child.uid || child.id}`}
-                  data-block-cell="true"
-                  $span={blockSpan(child, columnSpan)}
-                  $minHeight={blockMinHeight(child) || rowMinHeight}
-                >
-                  {childNode}
-                </BlockGridCell>
-              );
-            })}
+            {visibleChildren.length ? (
+              visibleChildren.map(child => {
+                const renderedChild = renderBlock(child);
+                if (!renderedChild) {
+                  return null;
+                }
+                const childNode =
+                  mode === 'editor' && renderedChild.type !== EditorSelectable
+                    ? wrapEditorBlock(child, renderedChild)
+                    : renderedChild;
+                return (
+                  <BlockGridCell
+                    key={`cell-${child.uid || child.id}`}
+                    data-block-cell="true"
+                    $span={blockSpan(child, columnSpan)}
+                    $minHeight={blockMinHeight(child) || rowMinHeight}
+                  >
+                    {childNode}
+                  </BlockGridCell>
+                );
+              })
+            ) : (
+              <BlockGridCell data-block-cell="true" $span={12}>
+                {renderChildrenGrid([], 12, block)}
+              </BlockGridCell>
+            )}
           </BlockGrid>
         );
       }
@@ -1566,7 +1937,7 @@ export function RenderBlockTree({
                   : renderRichContent(bodyHtml, body)}
               </CardBody>
             ) : null}
-            {renderChildrenGrid(block.children || [], 12)}
+            {renderChildrenGrid(block.children || [], 12, block)}
             {(block.content?.buttonLabel || buttonLabelHtml) &&
             block.settings?.buttonUrl ? (
               <Button
@@ -1959,7 +2330,7 @@ export function RenderBlockTree({
           <div
             key={block.uid || block.id}
             className={className}
-            style={{ ...style, height: Number(block.settings?.height) || 48 }}
+            style={{ ...style, height: blockFrameHeight(block, 48) }}
           />
         );
       case 'embed':
@@ -1979,7 +2350,7 @@ export function RenderBlockTree({
                 title={title || block.block_type}
                 style={{
                   width: '100%',
-                  height: block.settings?.height || 360,
+                  height: blockFrameHeight(block, 360),
                   border: 0,
                 }}
               />
@@ -2130,10 +2501,11 @@ export function RenderBlockTree({
               <PublicChartContainer
                 title={chart.slice_name}
                 url={chart.url}
-                height={Number(block.settings?.height) || 360}
+                height={blockFrameHeight(block, 360)}
                 surfacePreset={surfacePreset}
                 legendPreset={legendPreset}
                 vizType={chart.viz_type}
+                accessMode={chartEmbedAccess}
               />
             ) : (
               <Empty
@@ -2160,7 +2532,7 @@ export function RenderBlockTree({
                   title={dashboard.dashboard_title}
                   dashboardId={dashboard.id}
                   dashboardUuid={dashboard.uuid}
-                  height={Number(block.settings?.height) || 720}
+                  height={blockFrameHeight(block, 720)}
                   loadingLabel={t('Loading dashboard...')}
                 />
                 {onOpenDashboard ? (
@@ -2191,7 +2563,12 @@ export function RenderBlockTree({
               className={className}
               style={style}
             >
-              {(title || titleHtml || subtitle || subtitleHtml) && (
+              {(title ||
+                titleHtml ||
+                subtitle ||
+                subtitleHtml ||
+                block.content?.note ||
+                contentFieldHtml(block, 'note')) && (
                 <SectionHeader>
                   <SectionTitleGroup>
                     {title || titleHtml ? (
@@ -2205,14 +2582,43 @@ export function RenderBlockTree({
                       </SectionSubtitle>
                     ) : null}
                   </SectionTitleGroup>
-                  <SectionNote>{t('Latest DHIS2 highlights')}</SectionNote>
+                  <SectionNote>
+                    {renderInlineRichContent(
+                      contentFieldHtml(block, 'note'),
+                      block.content?.note || t('Latest DHIS2 highlights'),
+                    )}
+                  </SectionNote>
                 </SectionHeader>
               )}
-              {renderHighlights(highlights, Number(block.settings?.limit) || 6)}
+              {renderHighlights(
+                highlights,
+                Number(block.settings?.limit) || 6,
+                {
+                  emptyMessage: block.content?.emptyMessage,
+                  datasetFallbackLabel: block.content?.datasetFallbackLabel,
+                  latestPeriodLabel: block.content?.latestPeriodLabel,
+                },
+              )}
             </Section>
           );
         }
         if (block.settings?.widgetType === 'dashboard_list') {
+          const dashboardEyebrow =
+            block.content?.cardEyebrow || t('Public Dashboard');
+          const dashboardDescription =
+            block.content?.cardDescription ||
+            t(
+              'Professionally framed for public viewing with embedded access, preserved portal navigation, and reduced chrome.',
+            );
+          const dashboardActionLabel =
+            block.content?.actionLabel || t('Open dashboard');
+          const dashboardSlugFallbackLabel =
+            block.content?.slugFallbackLabel || t('Embedded access ready');
+          const emptyMessage =
+            block.content?.emptyMessage ||
+            t(
+              'No public dashboards are available yet. Publish a dashboard and enable embedding to list it here.',
+            );
           return (
             <Section
               key={block.uid || block.id}
@@ -2235,34 +2641,56 @@ export function RenderBlockTree({
                   </SectionTitleGroup>
                 </SectionHeader>
               )}
-              <Grid $columns={2}>
-                {dashboards.map(dashboard => (
-                  <SurfaceCard
-                    key={dashboard.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onOpenDashboard?.(dashboard)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onOpenDashboard?.(dashboard);
-                      }
-                    }}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <CardTitle>{dashboard.dashboard_title}</CardTitle>
-                    <Button
-                      type="link"
-                      onClick={event => {
-                        event.stopPropagation();
-                        onOpenDashboard?.(dashboard);
+              {dashboards.length ? (
+                <DashboardDirectoryGrid>
+                  {dashboards.map(dashboard => (
+                    <DashboardDirectoryCard
+                      key={dashboard.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onOpenDashboard?.(dashboard)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onOpenDashboard?.(dashboard);
+                        }
                       }}
                     >
-                      {t('Open dashboard')}
-                    </Button>
-                  </SurfaceCard>
-                ))}
-              </Grid>
+                      <DashboardDirectoryTop>
+                        <DashboardDirectoryEyebrow>
+                          {dashboardEyebrow}
+                        </DashboardDirectoryEyebrow>
+                        <CardTitle>{dashboard.dashboard_title}</CardTitle>
+                        <DashboardDirectoryDescription>
+                          {dashboardDescription}
+                        </DashboardDirectoryDescription>
+                      </DashboardDirectoryTop>
+                      <DashboardDirectoryFooter>
+                        {dashboard.slug ? (
+                          <Tag>{dashboard.slug}</Tag>
+                        ) : (
+                          <SectionNote>
+                            {dashboardSlugFallbackLabel}
+                          </SectionNote>
+                        )}
+                        <Button
+                          type="primary"
+                          onClick={event => {
+                            event.stopPropagation();
+                            onOpenDashboard?.(dashboard);
+                          }}
+                        >
+                          {dashboardActionLabel}
+                        </Button>
+                      </DashboardDirectoryFooter>
+                    </DashboardDirectoryCard>
+                  ))}
+                </DashboardDirectoryGrid>
+              ) : (
+                <SurfaceCard>
+                  <Empty description={emptyMessage} />
+                </SurfaceCard>
+              )}
             </Section>
           );
         }

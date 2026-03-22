@@ -42,10 +42,17 @@ from tests.integration_tests.test_app import app
 WB_HEALTH_POPULATION = "wb_health_population"
 
 
+def _sqlite_safe_chunksize(df: DataFrame, default: int = 500) -> int:
+    if len(df.columns) == 0:
+        return default
+    return max(1, min(default, 900 // len(df.columns)))
+
+
 @pytest.fixture(scope="session")
 def load_world_bank_data():
     with app.app_context():
         database = get_example_database()
+        df = _get_dataframe(database)
         dtype = {
             "year": DateTime if database.backend != "presto" else String(255),
             "country_code": String(3),
@@ -53,11 +60,15 @@ def load_world_bank_data():
             "region": String(255),
         }
         with database.get_sqla_engine() as engine:
-            _get_dataframe(database).to_sql(
+            df.to_sql(
                 WB_HEALTH_POPULATION,
                 engine,
                 if_exists="replace",
-                chunksize=500,
+                chunksize=(
+                    _sqlite_safe_chunksize(df)
+                    if engine.dialect.name == "sqlite"
+                    else 500
+                ),
                 dtype=dtype,
                 index=False,
                 method="multi",

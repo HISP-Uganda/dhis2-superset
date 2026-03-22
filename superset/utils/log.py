@@ -29,6 +29,7 @@ from typing import Any, Callable, cast, Literal, TYPE_CHECKING
 from flask import g, has_request_context, request
 from flask_appbuilder.const import API_URI_RIS_KEY
 from sqlalchemy.exc import SQLAlchemyError
+from werkzeug.local import LocalProxy
 
 from superset.extensions import stats_logger_manager
 from superset.utils import json
@@ -196,7 +197,12 @@ class AbstractEventLogger(ABC):
         if user_id is None and has_request_context():
             try:
                 actual_user = g.get("user", None)
-                if actual_user is not None:
+                if isinstance(actual_user, LocalProxy):
+                    actual_user = actual_user._get_current_object()
+                if (
+                    actual_user is not None
+                    and not getattr(actual_user, "is_anonymous", False)
+                ):
                     db.session.add(actual_user)
                     user_id = get_user_id()
             except Exception as ex:

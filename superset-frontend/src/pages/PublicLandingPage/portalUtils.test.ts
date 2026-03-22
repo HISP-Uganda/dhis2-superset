@@ -362,6 +362,54 @@ test('withDefaultWelcomeNavigationItems moves an existing Welcome item ahead of 
   expect(items.filter(item => item.label === 'Welcome')).toHaveLength(1);
 });
 
+test('withDefaultWelcomeNavigationItems injects a Dashboards item when missing', () => {
+  const headerMenus: PortalNavigationMenu[] = [
+    {
+      id: 1,
+      slug: 'header',
+      title: 'Header',
+      location: 'header',
+      display_order: 0,
+      settings: {},
+      items: [],
+    },
+  ];
+  const pages: PortalPageSummary[] = [
+    {
+      id: 4,
+      slug: 'welcome',
+      path: 'welcome',
+      title: 'Welcome',
+      is_published: true,
+      is_homepage: true,
+      display_order: 0,
+      settings: {},
+    },
+    {
+      id: 5,
+      slug: 'dashboards',
+      path: 'dashboards',
+      title: 'Dashboards',
+      is_published: true,
+      is_homepage: false,
+      display_order: 1,
+      settings: {},
+    },
+  ];
+
+  const items = withDefaultWelcomeNavigationItems(headerMenus, pages);
+
+  expect(items.map(item => item.label)).toEqual(['Welcome', 'Dashboards']);
+  expect(items[1]).toEqual(
+    expect.objectContaining({
+      label: 'Dashboards',
+      item_type: 'page',
+      page_id: 5,
+      path: '/superset/public/dashboards/',
+    }),
+  );
+});
+
 test('resolvePortalPagePath keeps the canonical landing page path', () => {
   expect(
     resolvePortalPagePath({

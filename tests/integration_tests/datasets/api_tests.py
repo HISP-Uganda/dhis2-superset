@@ -1225,7 +1225,7 @@ class TestDatasetApi(SupersetTestCase):
 
         data["result"]["metrics"].append(new_metric_data)
 
-        with freeze_time() as frozen:
+        with freeze_time(current_changed_on) as frozen:
             frozen.tick(delta=timedelta(seconds=3))
             rv = self.client.put(
                 uri,

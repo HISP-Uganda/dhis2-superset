@@ -82,6 +82,12 @@ const StyledMenuItemWithIcon = styled.div`
 const StyledAnchor = styled.a`
   padding-right: ${({ theme }) => theme.sizeUnit}px;
   padding-left: ${({ theme }) => theme.sizeUnit}px;
+  color: ${({ theme }) => theme.colorTextLightSolid};
+
+  &:hover,
+  &:focus {
+    color: ${({ theme }) => theme.colorTextLightSolid};
+  }
 `;
 
 const StyledMenuItem = styled.div<{ disabled?: boolean }>`
@@ -669,11 +675,47 @@ const RightMenu = ({
           display: flex;
           flex-direction: row;
           align-items: center;
+          background: transparent;
+          border-bottom: none;
+          color: ${theme.colorTextLightSolid};
 
           /* Remove the underline from menu items */
           .ant-menu-item:after,
           .ant-menu-submenu:after {
             content: none !important;
+          }
+
+          &&& > .ant-menu-item,
+          &&& > .ant-menu-submenu,
+          &&& > .ant-menu-overflow-item {
+            color: ${theme.colorTextLightSolid};
+          }
+
+          &&& > .ant-menu-item .ant-menu-title-content,
+          &&& > .ant-menu-submenu .ant-menu-title-content,
+          &&& > .ant-menu-submenu .ant-menu-submenu-title,
+          &&& .ant-typography,
+          &&& a {
+            color: ${theme.colorTextLightSolid};
+          }
+
+          &&& > .ant-menu-item:hover,
+          &&& > .ant-menu-submenu:hover,
+          &&& > .ant-menu-submenu.ant-menu-submenu-open,
+          &&& > .ant-menu-item:hover .ant-menu-title-content,
+          &&& > .ant-menu-submenu:hover .ant-menu-title-content,
+          &&& > .ant-menu-submenu.ant-menu-submenu-open .ant-menu-title-content,
+          &&& > .ant-menu-item:hover a,
+          &&& > .ant-menu-submenu:hover a,
+          &&& a:hover {
+            color: ${theme.colorTextLightSolid};
+          }
+
+          &&& .ant-menu-item .anticon,
+          &&& .ant-menu-submenu .anticon,
+          &&& .ant-menu-item svg,
+          &&& .ant-menu-submenu svg {
+            color: ${theme.colorTextLightSolid};
           }
 
           .submenu-with-caret {

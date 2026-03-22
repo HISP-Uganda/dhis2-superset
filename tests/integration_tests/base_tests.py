@@ -35,6 +35,7 @@ from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm import Session  # noqa: F401
 from sqlalchemy.sql import func
+from werkzeug.security import generate_password_hash
 
 from superset import db, security_manager
 from superset.connectors.sqla.models import BaseDatasource, SqlaTable
@@ -192,6 +193,7 @@ class SupersetTestCase(TestCase):
                     pvms.extend(role.permissions)
         else:
             temp_user.first_name = temp_user.last_name = username
+            temp_user.password = generate_password_hash(DEFAULT_PASSWORD)
 
         if extra_roles:
             for role in extra_roles:
@@ -199,8 +201,12 @@ class SupersetTestCase(TestCase):
 
         for pvm in extra_pvms or []:
             if isinstance(pvm, (tuple, list)):
-                pvms.append(security_manager.find_permission_view_menu(*pvm))
-            else:
+                resolved_pvm = security_manager.find_permission_view_menu(*pvm)
+                if resolved_pvm is None:
+                    resolved_pvm = security_manager.add_permission_view_menu(*pvm)
+                if resolved_pvm is not None:
+                    pvms.append(resolved_pvm)
+            elif pvm is not None:
                 pvms.append(pvm)
 
         for pvm in pvms_to_remove or []:
@@ -221,7 +227,11 @@ class SupersetTestCase(TestCase):
         previous_g_user = g.user if hasattr(g, "user") else None
         try:
             if login:
+                self.logout()
                 self.login(username=temp_user.username)
+                with self.client.session_transaction() as session:
+                    assert session.get("_user_id") == str(temp_user.id)
+                g.user = temp_user
             else:
                 g.user = temp_user
             yield temp_user

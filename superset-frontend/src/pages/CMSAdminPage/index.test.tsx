@@ -18,7 +18,12 @@
  */
 
 import fetchMock from 'fetch-mock';
-import { render, screen, userEvent } from 'spec/helpers/testing-library';
+import {
+  render,
+  screen,
+  userEvent,
+  waitFor,
+} from 'spec/helpers/testing-library';
 import CMSAdminPage from '.';
 
 jest.mock(
@@ -113,6 +118,20 @@ function buildAdminPayload(isPublished = true) {
         surfaceColor: '#ffffff',
         pageMaxWidth: 1280,
         showThemeToggle: true,
+        lightModeLabel: 'Light mode',
+        darkModeLabel: 'Dark mode',
+        loginButtonText: 'Login',
+        loginButtonUrl: '/login/',
+        footerText: 'Uganda Malaria Analytics Portal · Ministry of Health',
+        emptyPageMessage: 'This page does not have any visible blocks yet.',
+        noPublicPageMessage: 'No public page is available.',
+        dashboardBadgeLabel: 'Public Dashboard',
+        dashboardEmbedSubtitle:
+          'Viewing this dashboard inside the public portal keeps navigation, context, and access controls in one place.',
+        dashboardEmbedIntro:
+          'This embedded view is tuned for public presentation with tighter chrome, balanced spacing, and the portal frame still available around it.',
+        dashboardBackLabel: 'Back to page',
+        dashboardLoadingLabel: 'Loading dashboard...',
       },
     },
     stats: {
@@ -294,6 +313,22 @@ test('renders the authenticated CMS studio shell', async () => {
   expect(screen.getAllByDisplayValue('Welcome').length).toBeGreaterThan(0);
 });
 
+test('shows shared footer editing controls in the page studio inspector', async () => {
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(
+    await screen.findByDisplayValue(
+      'Uganda Malaria Analytics Portal · Ministry of Health',
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: /Save Footer Settings/i }),
+  ).toBeInTheDocument();
+});
+
 test('renders the pages manager with create and filter controls', async () => {
   window.history.pushState({}, '', '/superset/cms/?tab=pages');
 
@@ -370,4 +405,62 @@ test('surfaces backend validation details when page save fails', async () => {
   expect(
     await screen.findByText("{'chart_ref': ['Chart must be marked public']}"),
   ).toBeInTheDocument();
+});
+
+test('saves configurable portal copy from the CMS portal tab', async () => {
+  window.history.pushState({}, '', '/superset/cms/?tab=portal');
+  fetchMock.post('glob:*/api/v1/public_page/admin/layout', {
+    result: {
+      id: 1,
+      scope: 'public_portal',
+      title: 'Public Portal',
+      config: {},
+    },
+  });
+
+  render(<CMSAdminPage />, {
+    useRouter: true,
+    useTheme: true,
+  });
+
+  expect(
+    await screen.findByDisplayValue('Uganda Malaria Analytics Portal'),
+  ).toBeInTheDocument();
+
+  const getFieldInput = (label: string) =>
+    screen
+      .getByText(label)
+      .closest('div')
+      ?.parentElement?.querySelector('input, textarea') as
+      | HTMLInputElement
+      | HTMLTextAreaElement;
+
+  const loginButtonTextInput = getFieldInput('Login Button Text');
+  const footerTextInput = getFieldInput('Footer Text');
+  const dashboardBackLabelInput = getFieldInput('Dashboard Back Label');
+
+  await userEvent.clear(loginButtonTextInput);
+  await userEvent.type(loginButtonTextInput, 'Portal sign in');
+  await userEvent.clear(footerTextInput);
+  await userEvent.type(footerTextInput, 'Custom portal footer');
+  await userEvent.clear(dashboardBackLabelInput);
+  await userEvent.type(dashboardBackLabelInput, 'Return to directory');
+  await userEvent.click(
+    screen.getByRole('button', { name: /Save Portal Settings/i }),
+  );
+
+  await waitFor(() =>
+    expect(fetchMock.called('glob:*/api/v1/public_page/admin/layout')).toBe(
+      true,
+    ),
+  );
+
+  const layoutCall =
+    fetchMock.lastCall('glob:*/api/v1/public_page/admin/layout') || [];
+  const requestOptions = layoutCall[1] as { body?: string } | undefined;
+  const payload = JSON.parse(String(requestOptions?.body || '{}'));
+
+  expect(payload.config.loginButtonText).toBe('Portal sign in');
+  expect(payload.config.footerText).toBe('Custom portal footer');
+  expect(payload.config.dashboardBackLabel).toBe('Return to directory');
 });

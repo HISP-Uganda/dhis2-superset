@@ -24,11 +24,12 @@ import mimetypes
 import os
 import time
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 from uuid import uuid4
 
 from flask import current_app, g, request, Response, send_file
-from flask_appbuilder.api import BaseApi, expose, protect, safe
+from flask_appbuilder.api import BaseApi, expose, safe
 from marshmallow import Schema, ValidationError, fields, validate
 from sqlalchemy import func
 from werkzeug.datastructures import FileStorage
@@ -189,6 +190,25 @@ DEFAULT_PORTAL_LAYOUT_CONFIG: dict[str, Any] = {
     "surfaceColor": "#ffffff",
     "pageMaxWidth": "100%",
     "showThemeToggle": True,
+    "lightModeLabel": "Light mode",
+    "darkModeLabel": "Dark mode",
+    "loginButtonText": "Login",
+    "loginButtonUrl": "/login/",
+    "footerText": "Uganda Malaria Analytics Portal · Ministry of Health",
+    "emptyPageMessage": "This page does not have any visible blocks yet.",
+    "noPublicPageMessage": "No public page is available.",
+    "dashboardBadgeLabel": "Public Dashboard",
+    "dashboardEmbedSubtitle": (
+        "Viewing this dashboard inside the public portal keeps navigation, "
+        "context, and access controls in one place."
+    ),
+    "dashboardEmbedIntro": (
+        "This embedded view is tuned for public presentation with tighter "
+        "chrome, balanced spacing, and the portal frame still available "
+        "around it."
+    ),
+    "dashboardBackLabel": "Back to page",
+    "dashboardLoadingLabel": "Loading dashboard...",
 }
 DEFAULT_WELCOME_PAGE_SUBTITLE = "Trusted public analytics for Uganda malaria surveillance"
 DEFAULT_WELCOME_PAGE_DESCRIPTION = (
@@ -201,6 +221,16 @@ DEFAULT_WELCOME_PAGE_EXCERPT = (
     "evidence summaries."
 )
 DEFAULT_WELCOME_PAGE_CTA_TARGET = "/superset/public/dashboards/"
+TOP_LEVEL_NAVIGATION_PAGE_TYPES = frozenset(
+    {
+        "landing",
+        "dashboard",
+        "documentation",
+        "faq",
+        "policy",
+        "utility",
+    }
+)
 LEGACY_WELCOME_PAGE_SUBTITLE = "Evidence-led public malaria analytics"
 LEGACY_WELCOME_PAGE_DESCRIPTION = (
     "A public analytics portal for Uganda malaria surveillance, programme "
@@ -257,52 +287,88 @@ def _is_authenticated_user() -> bool:
     return bool(user and not getattr(user, "is_anonymous", True))
 
 
+def cms_auth_required(func):
+    @wraps(func)
+    def wrapped(self, *args, **kwargs):
+        if not _is_authenticated_user():
+            return self.response_401()
+        return func(self, *args, **kwargs)
+
+    wrapped._permission_name = getattr(func, "_permission_name", func.__name__)
+    return wrapped
+
+
+def _has_cms_permission(permission_name: str) -> bool:
+    user = getattr(g, "user", None)
+    if not user or getattr(user, "is_anonymous", True):
+        return False
+    user_id = getattr(user, "id", None)
+    if user_id is not None:
+        fresh_user = (
+            db.session.query(security_manager.user_model)
+            .filter_by(id=user_id)
+            .one_or_none()
+        )
+        if fresh_user is not None:
+            user = fresh_user
+    for role in getattr(user, "roles", []) or []:
+        for pvm in getattr(role, "permissions", []) or []:
+            if (
+                getattr(getattr(pvm, "permission", None), "name", None)
+                == permission_name
+                and getattr(getattr(pvm, "view_menu", None), "name", None)
+                == CMS_VIEW_NAME
+            ):
+                return True
+    return False
+
+
 def _can_manage_pages() -> bool:
-    return security_manager.can_access(CMS_PAGE_VIEW_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_PAGE_VIEW_PERMISSION)
 
 
 def _can_create_pages() -> bool:
-    return security_manager.can_access(CMS_PAGE_CREATE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_PAGE_CREATE_PERMISSION)
 
 
 def _can_edit_pages() -> bool:
-    return security_manager.can_access(CMS_PAGE_EDIT_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_PAGE_EDIT_PERMISSION)
 
 
 def _can_delete_pages() -> bool:
-    return security_manager.can_access(CMS_PAGE_DELETE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_PAGE_DELETE_PERMISSION)
 
 
 def _can_publish_pages() -> bool:
-    return security_manager.can_access(CMS_PAGE_PUBLISH_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_PAGE_PUBLISH_PERMISSION)
 
 
 def _can_manage_media() -> bool:
-    return security_manager.can_access(CMS_MEDIA_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_MEDIA_MANAGE_PERMISSION)
 
 
 def _can_manage_menus() -> bool:
-    return security_manager.can_access(CMS_MENU_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_MENU_MANAGE_PERMISSION)
 
 
 def _can_embed_charts() -> bool:
-    return security_manager.can_access(CMS_CHART_EMBED_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_CHART_EMBED_PERMISSION)
 
 
 def _can_manage_layout() -> bool:
-    return security_manager.can_access(CMS_LAYOUT_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_LAYOUT_MANAGE_PERMISSION)
 
 
 def _can_manage_themes() -> bool:
-    return security_manager.can_access(CMS_THEME_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_THEME_MANAGE_PERMISSION)
 
 
 def _can_manage_templates() -> bool:
-    return security_manager.can_access(CMS_TEMPLATE_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_TEMPLATE_MANAGE_PERMISSION)
 
 
 def _can_manage_styles() -> bool:
-    return security_manager.can_access(CMS_STYLE_MANAGE_PERMISSION, CMS_VIEW_NAME)
+    return _has_cms_permission(CMS_STYLE_MANAGE_PERMISSION)
 
 
 def _can_manage_reusable_blocks() -> bool:
@@ -529,7 +595,11 @@ class PublicPageRestApi(BaseApi):
     """API for public page configuration and portal CMS data."""
 
     resource_name = "public_page"
+    csrf_exempt = False
     allow_browser_login = True
+
+    def response_404(self, message: str = "Not found") -> Response:
+        return self.response(404, message=message)
 
     def _get_or_create_layout_config(self) -> PageLayoutConfig:
         layout = (
@@ -1092,9 +1162,12 @@ class PublicPageRestApi(BaseApi):
         }
 
     def _serialize_dashboard(self, dash: Dashboard) -> dict[str, Any]:
+        embedded_uuid = None
+        if getattr(dash, "embedded", None):
+            embedded_uuid = getattr(dash.embedded[0], "uuid", None)
         return {
             "id": dash.id,
-            "uuid": str(dash.uuid) if getattr(dash, "uuid", None) else None,
+            "uuid": str(embedded_uuid) if embedded_uuid else None,
             "dashboard_title": dash.dashboard_title,
             "slug": dash.slug or "",
             "url": f"/superset/dashboard/{dash.slug or dash.id}/",
@@ -1111,7 +1184,7 @@ class PublicPageRestApi(BaseApi):
             "slice_name": chart.slice_name,
             "description": chart.description or "",
             "viz_type": chart.viz_type,
-            "url": f"/superset/explore/?slice_id={chart.id}&standalone=true",
+            "url": f"/superset/explore/public/?slice_id={chart.id}&standalone=true",
             "is_public": bool(getattr(chart, "is_public", False)),
             "uses_serving_dataset": self._chart_uses_serving_tables(chart),
         }
@@ -1322,6 +1395,131 @@ class PublicPageRestApi(BaseApi):
             return "/superset/public/"
         return f"/superset/public/{self._page_path(page)}/"
 
+    def _resolve_homepage_from_pages(self, pages: list[Page]) -> Page | None:
+        if not pages:
+            return None
+        return (
+            next((page for page in pages if page.is_homepage), None)
+            or next(
+                (page for page in pages if (page.slug or "").strip().lower() == "welcome"),
+                None,
+            )
+            or next(
+                (page for page in pages if (page.title or "").strip().lower() == "welcome"),
+                None,
+            )
+            or pages[0]
+        )
+
+    def _resolve_dashboards_page_from_pages(self, pages: list[Page]) -> Page | None:
+        if not pages:
+            return None
+        return (
+            next(
+                (page for page in pages if (page.slug or "").strip().lower() == "dashboards"),
+                None,
+            )
+            or next(
+                (page for page in pages if (page.title or "").strip().lower() == "dashboards"),
+                None,
+            )
+        )
+
+    def _page_type_uses_top_level_navigation(self, page: Page | None) -> bool:
+        if page is None:
+            return False
+        return (
+            (page.page_type or "content").strip().lower()
+            in TOP_LEVEL_NAVIGATION_PAGE_TYPES
+        )
+
+    def _page_has_authored_content(self, page: Page | None) -> bool:
+        if page is None:
+            return False
+        if page.blocks or page.sections:
+            return True
+        if page.get_settings():
+            return True
+        authored_fields = (
+            page.subtitle,
+            page.description,
+            page.excerpt,
+            page.navigation_label,
+            page.seo_title,
+            page.seo_description,
+            page.og_image_url,
+            page.featured_image_url,
+        )
+        return any((value or "").strip() for value in authored_fields)
+
+    def _collect_explicit_navigation_page_ids(
+        self,
+        items: list[NavigationItem],
+    ) -> set[int]:
+        page_ids: set[int] = set()
+        stack = list(items)
+        while stack:
+            item = stack.pop()
+            stack.extend(item.children or [])
+            if item.item_type == "page_collection":
+                continue
+            page_id = item.page_id or getattr(item.page, "id", None)
+            if page_id is not None:
+                page_ids.add(page_id)
+        return page_ids
+
+    def _serialize_page_hierarchy_items(
+        self,
+        pages: list[Page],
+        *,
+        excluded_page_ids: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        excluded = set(excluded_page_ids or set())
+        homepage = self._resolve_homepage_from_pages(pages)
+        dashboards_page = self._resolve_dashboards_page_from_pages(pages)
+        if homepage is not None and homepage.id is not None:
+            excluded.add(homepage.id)
+        if dashboards_page is not None and dashboards_page.id is not None:
+            excluded.add(dashboards_page.id)
+
+        candidate_pages = [
+            page
+            for page in sorted(pages, key=lambda item: (item.display_order, item.id or 0))
+            if page.id is not None and page.id not in excluded
+        ]
+        page_ids = {page.id for page in candidate_pages if page.id is not None}
+        children_by_parent: dict[int, list[Page]] = {}
+        root_pages: list[Page] = []
+
+        for page in candidate_pages:
+            parent_id = page.parent_page_id or getattr(page.parent_page, "id", None)
+            if (
+                not self._page_type_uses_top_level_navigation(page)
+                and parent_id is not None
+                and parent_id in page_ids
+            ):
+                children_by_parent.setdefault(parent_id, []).append(page)
+            else:
+                root_pages.append(page)
+
+        for child_pages in children_by_parent.values():
+            child_pages.sort(key=lambda item: (item.display_order, item.id or 0))
+
+        def serialize_page(page: Page) -> dict[str, Any]:
+            return {
+                "id": f"page-{page.id}",
+                "label": page.navigation_label or page.title,
+                "path": self._public_page_url(page),
+                "item_type": "page",
+                "page_id": page.id,
+                "description": page.subtitle or page.description,
+                "children": [
+                    serialize_page(child) for child in children_by_parent.get(page.id or 0, [])
+                ],
+            }
+
+        return [serialize_page(page) for page in root_pages]
+
     def _page_breadcrumbs(
         self,
         page: Page | None,
@@ -1381,6 +1579,7 @@ class PublicPageRestApi(BaseApi):
         return (
             db.session.query(Dashboard)
             .filter(Dashboard.published == True)
+            .filter(Dashboard.embedded.any())
             .order_by(Dashboard.display_order.asc().nullslast(), Dashboard.id.asc())
             .all()
         )
@@ -1411,34 +1610,51 @@ class PublicPageRestApi(BaseApi):
     ) -> Page | None:
         public_pages = self._list_pages(admin=False)
         if not public_pages:
+            (
+                db.session.query(Page)
+                .filter(Page.is_homepage == True)
+                .update({"is_homepage": False}, synchronize_session=False)
+            )
+            db.session.flush()
             return None
 
-        current_homepage = next(
-            (page for page in public_pages if page.is_homepage),
-            None,
-        )
-        if current_homepage is not None:
-            return current_homepage
-
         preferred_page_id = preferred_page.id if preferred_page is not None else None
-        target_page = next(
-            (
-                page
-                for page in public_pages
-                if page is preferred_page
-                or (preferred_page_id is not None and page.id == preferred_page_id)
-            ),
-            None,
-        )
+        target_page = None
+        if preferred_page_id is not None:
+            target_page = next(
+                (
+                    page
+                    for page in public_pages
+                    if page is preferred_page
+                    or (page.id is not None and page.id == preferred_page_id)
+                ),
+                None,
+            )
+
+        current_homepages = [page for page in public_pages if page.is_homepage]
+        if target_page is None and current_homepages:
+            target_page = sorted(
+                current_homepages,
+                key=lambda page: (page.display_order, page.id or 0),
+            )[0]
+
         if target_page is None:
-            target_page = public_pages[0]
+            target_page = sorted(
+                public_pages,
+                key=lambda page: (page.display_order, page.id or 0),
+            )[0]
 
         (
             db.session.query(Page)
             .filter(Page.is_homepage == True)
             .update({"is_homepage": False}, synchronize_session=False)
         )
-        target_page.is_homepage = True
+        for page in public_pages:
+            page.is_homepage = page is target_page or (
+                page.id is not None
+                and target_page.id is not None
+                and page.id == target_page.id
+            )
         db.session.flush()
         return target_page
 
@@ -2179,6 +2395,7 @@ class PublicPageRestApi(BaseApi):
                 continue
             if public_context and not self._menu_is_publicly_visible(menu.visibility):
                 continue
+            explicit_page_ids = self._collect_explicit_navigation_page_ids(menu.items)
             serialized_menu = {
                 "id": menu.id,
                 "slug": menu.slug,
@@ -2189,23 +2406,30 @@ class PublicPageRestApi(BaseApi):
                 "display_order": menu.display_order,
                 "is_enabled": menu.is_enabled,
                 "settings": menu.get_settings(),
-                "items": [
-                    serialized_item
-                    for item in sorted(
-                        menu.items,
-                        key=lambda nav_item: (nav_item.display_order, nav_item.id or 0),
-                    )
-                    if item.parent_id is None and item.is_visible
-                    and (
-                        serialized_item := self._serialize_navigation_item(
-                            item,
+                "items": [],
+            }
+            for item in sorted(
+                menu.items,
+                key=lambda nav_item: (nav_item.display_order, nav_item.id or 0),
+            ):
+                if item.parent_id is not None or not item.is_visible:
+                    continue
+                if public_context and item.item_type == "page_collection":
+                    serialized_menu["items"].extend(
+                        self._serialize_page_hierarchy_items(
                             pages,
-                            dashboards,
-                            public_context=public_context,
+                            excluded_page_ids=explicit_page_ids,
                         )
                     )
-                ],
-            }
+                    continue
+                serialized_item = self._serialize_navigation_item(
+                    item,
+                    pages,
+                    dashboards,
+                    public_context=public_context,
+                )
+                if serialized_item:
+                    serialized_menu["items"].append(serialized_item)
             payload.setdefault(menu.location, []).append(serialized_menu)
         return payload
 
@@ -3066,13 +3290,7 @@ class PublicPageRestApi(BaseApi):
             if not previous_was_public:
                 page.published_by_fk = page.published_by_fk
 
-        if page.is_homepage and self._page_is_publicly_viewable(page):
-            (
-                db.session.query(Page)
-                .filter(Page.id != page.id, Page.is_homepage == True)
-                .update({"is_homepage": False}, synchronize_session=False)
-            )
-        elif page.is_homepage:
+        if page.is_homepage and not self._page_is_publicly_viewable(page):
             page.is_homepage = False
 
         payload_blocks = self._coerce_page_blocks_payload(payload)
@@ -3584,6 +3802,26 @@ class PublicPageRestApi(BaseApi):
             return self._legacy_default_welcome_blocks_match(page)
         return self._legacy_default_welcome_sections_match(page)
 
+    def _should_restore_default_seed_page(
+        self,
+        page: Page | None,
+        *,
+        slug: str,
+        title: str,
+    ) -> bool:
+        if page is None:
+            return False
+        if page.slug != slug or page.title != title:
+            return False
+        if self._page_has_authored_content(page):
+            return False
+        return (
+            page.visibility != "public"
+            or not page.is_published
+            or page.status != "published"
+            or page.archived_on is not None
+        )
+
     def _seed_default_portal(self) -> None:
         self._get_or_create_layout_config()
 
@@ -3730,6 +3968,35 @@ class PublicPageRestApi(BaseApi):
                 ),
             )
             page_by_slug["welcome"] = welcome_page
+        elif self._should_restore_default_seed_page(
+            welcome_page,
+            slug="welcome",
+            title="Welcome",
+        ):
+            featured_charts = [
+                {
+                    "id": chart.id,
+                    "title": chart.slice_name,
+                    "caption": chart.description or None,
+                }
+                for chart in self._list_public_serving_charts()[:4]
+            ]
+            welcome_page.visibility = "public"
+            welcome_page.status = "published"
+            welcome_page.is_published = True
+            welcome_page.archived_on = None
+            welcome_page.archived_by_fk = None
+            welcome_page.set_settings(
+                self._default_welcome_page_settings(welcome_page.get_settings())
+            )
+            if not welcome_page.blocks and not welcome_page.sections:
+                self._upsert_blocks(
+                    welcome_page,
+                    build_default_welcome_page_blocks(
+                        featured_charts=featured_charts,
+                        has_public_dashboards=bool(self._list_public_dashboards()),
+                    ),
+                )
         elif self._should_refresh_default_welcome_page(welcome_page):
             featured_charts = [
                 {
@@ -3794,6 +4061,18 @@ class PublicPageRestApi(BaseApi):
             )
             component.set_settings({"variant": "cards"})
             db.session.add(component)
+        else:
+            dashboards_page = page_by_slug["dashboards"]
+            if self._should_restore_default_seed_page(
+                dashboards_page,
+                slug="dashboards",
+                title="Dashboards",
+            ):
+                dashboards_page.visibility = "public"
+                dashboards_page.status = "published"
+                dashboards_page.is_published = True
+                dashboards_page.archived_on = None
+                dashboards_page.archived_by_fk = None
 
         if "about" not in page_by_slug:
             about_page = Page(
@@ -3835,6 +4114,18 @@ class PublicPageRestApi(BaseApi):
                     is_visible=True,
                 )
             )
+        else:
+            about_page = page_by_slug["about"]
+            if self._should_restore_default_seed_page(
+                about_page,
+                slug="about",
+                title="About",
+            ):
+                about_page.visibility = "public"
+                about_page.status = "published"
+                about_page.is_published = True
+                about_page.archived_on = None
+                about_page.archived_by_fk = None
 
         for page in db.session.query(Page).all():
             if page.theme is None:
@@ -3858,7 +4149,7 @@ class PublicPageRestApi(BaseApi):
                 [
                     NavigationItem(
                         menu=header_menu,
-                        label="Welcome",
+                        label="Home",
                         item_type="page",
                         page=welcome_page,
                         display_order=0,
@@ -3881,6 +4172,36 @@ class PublicPageRestApi(BaseApi):
                     ),
                 ]
             )
+        else:
+            for item in header_menu.items:
+                if (
+                    item.parent_id is None
+                    and item.page is not None
+                    and item.page.slug == "welcome"
+                    and (item.label or "").strip().lower() in {"welcome", "home"}
+                ):
+                    item.label = "Home"
+
+        public_pages = [
+            page
+            for page in db.session.query(Page)
+            .order_by(Page.display_order.asc(), Page.id.asc())
+            .all()
+            if self._page_is_publicly_viewable(page)
+        ]
+        current_homepage = next((page for page in public_pages if page.is_homepage), None)
+        if (
+            welcome_page is not None
+            and self._page_is_publicly_viewable(welcome_page)
+            and (current_homepage is None or current_homepage.slug == "dashboards")
+        ):
+            for page in public_pages:
+                if page.id != welcome_page.id and page.is_homepage:
+                    page.is_homepage = False
+            welcome_page.is_homepage = True
+            dashboards_page = page_by_slug.get("dashboards")
+            if dashboards_page is not None and dashboards_page.id != welcome_page.id:
+                dashboards_page.is_homepage = False
 
         if not footer_menu.items:
             db.session.add_all(
@@ -4016,7 +4337,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/pages", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_page(self) -> Response:
         """Create or update a public portal page."""
@@ -4068,7 +4389,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/page-layout", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_page_layout(self) -> Response:
         """Persist per-user page layout preferences."""
@@ -4135,16 +4456,16 @@ class PublicPageRestApi(BaseApi):
         """Combined portal payload for navigation, pages, charts, and layout."""
         try:
             page_slug = request.args.get("page") or request.args.get("slug")
-            payload = self._get_portal_payload(page_slug)
-            if page_slug and payload["current_page"] is None:
+            if page_slug and self._find_page(page_slug=page_slug, admin=False) is None:
                 return self.response_404(message="Public page not found")
+            payload = self._get_portal_payload(page_slug)
             return self.response(200, result=payload)
         except Exception as ex:  # pylint: disable=broad-except
             logger.exception("Error fetching public portal payload")
             return self.response_500(message=str(ex))
 
     @expose("/admin/bootstrap", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_bootstrap(self) -> Response:
         """Combined authenticated CMS bootstrap payload."""
@@ -4161,7 +4482,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/assets", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_assets(self) -> Response:
         """List authenticated CMS media/file assets."""
@@ -4182,7 +4503,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/assets", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def create_admin_asset(self) -> Response:
         """Upload a CMS media/file asset."""
@@ -4220,7 +4541,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/assets/<int:asset_id>", methods=("DELETE",))
-    @protect()
+    @cms_auth_required
     @safe
     def archive_admin_asset(self, asset_id: int) -> Response:
         """Archive a CMS asset without deleting the file from disk."""
@@ -4275,7 +4596,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_pages(self) -> Response:
         """List CMS pages or fetch a single page for editing."""
@@ -4311,7 +4632,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_page(self) -> Response:
         """Create or update a CMS page from the authenticated admin studio."""
@@ -4336,7 +4657,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/block-types", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_block_types(self) -> Response:
         """List available block definitions for the CMS editor."""
@@ -4345,7 +4666,7 @@ class PublicPageRestApi(BaseApi):
         return self.response(200, result=list_block_definitions(), count=len(list_block_definitions()))
 
     @expose("/admin/reusable-blocks", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_reusable_blocks(self) -> Response:
         """List reusable synced blocks for the CMS editor."""
@@ -4369,7 +4690,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/reusable-blocks", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_reusable_block(self) -> Response:
         """Create or update a reusable synced block."""
@@ -4399,7 +4720,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/reusable-blocks/<int:reusable_block_id>", methods=("DELETE",))
-    @protect()
+    @cms_auth_required
     @safe
     def delete_admin_reusable_block(self, reusable_block_id: int) -> Response:
         """Delete a reusable synced block."""
@@ -4427,7 +4748,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages/<int:page_id>/duplicate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def duplicate_admin_page(self, page_id: int) -> Response:
         """Duplicate an existing CMS page."""
@@ -4453,7 +4774,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages/<int:page_id>/publish", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def publish_admin_page(self, page_id: int) -> Response:
         """Publish or unpublish an existing CMS page."""
@@ -4493,7 +4814,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages/<int:page_id>/archive", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def archive_admin_page(self, page_id: int) -> Response:
         """Archive a CMS page."""
@@ -4528,7 +4849,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages/<int:page_id>/revisions", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_page_revisions(self, page_id: int) -> Response:
         """Return revision history for a CMS page."""
@@ -4547,14 +4868,14 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/pages/<int:page_id>", methods=("DELETE",))
-    @protect()
+    @cms_auth_required
     @safe
     def delete_admin_page(self, page_id: int) -> Response:
         """Soft-delete a CMS page by archiving it."""
         return self.archive_admin_page(page_id)
 
     @expose("/admin/menus", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_menus(self) -> Response:
         """List CMS menus for the authenticated studio."""
@@ -4578,7 +4899,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/menus", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_menus(self) -> Response:
         """Create or update CMS menus and nested menu items."""
@@ -4609,7 +4930,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/layout", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_layout(self) -> Response:
         """Return the global portal layout config for CMS administration."""
@@ -4630,7 +4951,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/layout", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_layout(self) -> Response:
         """Persist global portal layout config from the CMS admin."""
@@ -4663,7 +4984,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/themes", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_themes(self) -> Response:
         """List CMS themes for authenticated administration."""
@@ -4679,7 +5000,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/themes", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_theme(self) -> Response:
         """Create or update a CMS theme."""
@@ -4702,7 +5023,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/themes/<int:theme_id>/duplicate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def duplicate_admin_theme(self, theme_id: int) -> Response:
         """Duplicate a CMS theme."""
@@ -4724,7 +5045,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/themes/<int:theme_id>/activate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def activate_admin_theme(self, theme_id: int) -> Response:
         """Activate a CMS theme and optionally set it as the default."""
@@ -4755,7 +5076,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/themes/<int:theme_id>/archive", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def archive_admin_theme(self, theme_id: int) -> Response:
         """Archive a CMS theme."""
@@ -4784,7 +5105,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/templates", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_templates(self) -> Response:
         """List CMS templates for authenticated administration."""
@@ -4804,7 +5125,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/templates", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_template(self) -> Response:
         """Create or update a CMS template."""
@@ -4830,7 +5151,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/templates/<int:template_id>/duplicate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def duplicate_admin_template(self, template_id: int) -> Response:
         """Duplicate a CMS template."""
@@ -4855,7 +5176,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/templates/<int:template_id>/activate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def activate_admin_template(self, template_id: int) -> Response:
         """Activate a CMS template and optionally set it as default."""
@@ -4889,7 +5210,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/templates/<int:template_id>/archive", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def archive_admin_template(self, template_id: int) -> Response:
         """Archive a CMS template."""
@@ -4921,7 +5242,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/styles", methods=("GET",))
-    @protect()
+    @cms_auth_required
     @safe
     def get_admin_style_bundles(self) -> Response:
         """List CMS style bundles for authenticated administration."""
@@ -4941,7 +5262,7 @@ class PublicPageRestApi(BaseApi):
         )
 
     @expose("/admin/styles", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def save_admin_style_bundle(self) -> Response:
         """Create or update a CMS style bundle."""
@@ -4967,7 +5288,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/styles/<int:style_bundle_id>/duplicate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def duplicate_admin_style_bundle(self, style_bundle_id: int) -> Response:
         """Duplicate a CMS style bundle."""
@@ -4992,7 +5313,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/styles/<int:style_bundle_id>/activate", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def activate_admin_style_bundle(self, style_bundle_id: int) -> Response:
         """Activate a CMS style bundle."""
@@ -5021,7 +5342,7 @@ class PublicPageRestApi(BaseApi):
             return self.response_500(message=str(ex))
 
     @expose("/admin/styles/<int:style_bundle_id>/archive", methods=("POST",))
-    @protect()
+    @cms_auth_required
     @safe
     def archive_admin_style_bundle(self, style_bundle_id: int) -> Response:
         """Archive a CMS style bundle."""

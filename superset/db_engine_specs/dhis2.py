@@ -212,8 +212,9 @@ class DHIS2EngineSpec(BaseEngineSpec):
     time_groupby_inline = False  # Don't require time grouping
     supports_dynamic_schema = True  # Enable dataset preview and exploration
 
-    # Disable temporal processing - DHIS2 handles time dimensions internally
-    time_grain_expressions = {}  # Empty dict = no automatic time grain conversion
+    # Disable automatic temporal rewriting while still advertising a valid raw-column
+    # grain entry for shared engine-spec invariants.
+    _time_grain_expressions = {None: "{col}"}
 
     # Enable dynamic parameter-based UI (form fields instead of SQLAlchemy URI)
     supports_dynamic_catalog = True  # Show form-based UI for connections

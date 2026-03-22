@@ -48,6 +48,10 @@ import { extendedDayjs } from '@superset-ui/core/utils/dates';
 import { getDHIS2DataCache } from 'src/dhis2/dataCache';
 import { dhis2DataPreloader } from 'src/utils/dhis2DataPreloader';
 
+const isPublicChartExploreView = () =>
+  typeof window !== 'undefined' &&
+  /^\/superset\/explore\/public\/?$/.test(window.location.pathname);
+
 export const CHART_UPDATE_STARTED = 'CHART_UPDATE_STARTED';
 export function chartUpdateStarted(queryController, latestQueryFormData, key) {
   return {
@@ -185,6 +189,71 @@ const isDHIS2Datasource = formData => {
   return false;
 };
 
+async function v1ChartDataRequestUncached(
+  formData,
+  resultFormat,
+  resultType,
+  force,
+  requestParams,
+  setDataMask,
+  ownState,
+  parseMethod,
+) {
+  const payload = await buildV1ChartDataPayload({
+    formData,
+    resultType,
+    resultFormat,
+    force,
+    setDataMask,
+    ownState,
+  });
+
+  // The dashboard id is added to query params for tracking purposes
+  const { slice_id: sliceId } = formData;
+  const dashboardId = requestParams?.dashboard_id;
+
+  if (sliceId !== undefined && isPublicChartExploreView()) {
+    const url = getChartDataUri({
+      path: `/api/v1/chart/${sliceId}/public/data/`,
+      qs: {
+        format: resultFormat,
+        type: resultType,
+        ...(force ? { force } : {}),
+      },
+    }).toString();
+
+    return SupersetClient.get({
+      ...requestParams,
+      url,
+      parseMethod,
+    });
+  }
+
+  const qs = {};
+  if (sliceId !== undefined) qs.form_data = `{"slice_id":${sliceId}}`;
+  if (dashboardId !== undefined) qs.dashboard_id = dashboardId;
+  if (force) qs.force = force;
+
+  const allowDomainSharding =
+    // eslint-disable-next-line camelcase
+    domainShardingEnabled && requestParams?.dashboard_id;
+  const url = getChartDataUri({
+    path: '/api/v1/chart/data',
+    qs,
+    allowDomainSharding,
+  }).toString();
+
+  const querySettings = {
+    ...requestParams,
+    url,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    parseMethod,
+  };
+
+  return SupersetClient.post(querySettings);
+}
+
 const v1ChartDataRequest = async (
   formData,
   resultFormat,
@@ -206,7 +275,6 @@ const v1ChartDataRequest = async (
 
   // The dashboard id is added to query params for tracking purposes
   const { slice_id: sliceId, datasource } = formData;
-  const { dashboard_id: dashboardId } = requestParams;
 
   // Check if this is a DHIS2 datasource for caching
   const isDHIS2 = isDHIS2Datasource(formData);
@@ -218,7 +286,11 @@ const v1ChartDataRequest = async (
     const datasetId = parseInt(dsId, 10);
     if (datasetId) {
       const preloadedData = dhis2DataPreloader.getPreloadedData(datasetId);
-      if (preloadedData && preloadedData.data && preloadedData.data.length > 0) {
+      if (
+        preloadedData &&
+        preloadedData.data &&
+        preloadedData.data.length > 0
+      ) {
         // eslint-disable-next-line no-console
         console.log(
           `[DHIS2 Chart] ✅ Using preloaded data for dataset ${datasetId}: ${preloadedData.data.length} rows`,
@@ -231,7 +303,9 @@ const v1ChartDataRequest = async (
             result: [
               {
                 data: preloadedData.data,
-                colnames: preloadedData.columns?.map(c => c.name || c) || Object.keys(preloadedData.data[0] || {}),
+                colnames:
+                  preloadedData.columns?.map(c => c.name || c) ||
+                  Object.keys(preloadedData.data[0] || {}),
                 coltypes: preloadedData.columns?.map(() => 'STRING') || [],
                 rowcount: preloadedData.data.length,
                 from_cache: true,
@@ -347,57 +421,6 @@ const v1ChartDataRequest = async (
   }
 
   return result;
-};
-
-/**
- * Original v1ChartDataRequest without caching (used for cache misses and background refresh)
- */
-const v1ChartDataRequestUncached = async (
-  formData,
-  resultFormat,
-  resultType,
-  force,
-  requestParams,
-  setDataMask,
-  ownState,
-  parseMethod,
-) => {
-  const payload = await buildV1ChartDataPayload({
-    formData,
-    resultType,
-    resultFormat,
-    force,
-    setDataMask,
-    ownState,
-  });
-
-  // The dashboard id is added to query params for tracking purposes
-  const { slice_id: sliceId } = formData;
-  const { dashboard_id: dashboardId } = requestParams;
-
-  const qs = {};
-  if (sliceId !== undefined) qs.form_data = `{"slice_id":${sliceId}}`;
-  if (dashboardId !== undefined) qs.dashboard_id = dashboardId;
-  if (force) qs.force = force;
-
-  const allowDomainSharding =
-    // eslint-disable-next-line camelcase
-    domainShardingEnabled && requestParams?.dashboard_id;
-  const url = getChartDataUri({
-    path: '/api/v1/chart/data',
-    qs,
-    allowDomainSharding,
-  }).toString();
-
-  const querySettings = {
-    ...requestParams,
-    url,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    parseMethod,
-  };
-
-  return SupersetClient.post(querySettings);
 };
 
 export async function getChartDataRequest({
@@ -621,7 +644,6 @@ export function exploreJSON(
       dispatch(updateDataMask(formData.slice_id, dataMask));
     };
     dispatch(chartUpdateStarted(controller, formData, key));
-
 
     const chartDataRequest = getChartDataRequest({
       setDataMask,

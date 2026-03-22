@@ -29,6 +29,7 @@ from superset.extensions.utils import (
 
 
 class ExtensionsRestApi(BaseApi):
+    csrf_exempt = False
     allow_browser_login = True
     resource_name = "extensions"
 

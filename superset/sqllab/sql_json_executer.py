@@ -183,6 +183,10 @@ class ASynchronousSqlJsonExecutor(SqlJsonExecutorBase):
                     "Unable to forget Celery task as backend"
                     "does not support this operation"
                 )
+            if getattr(self._get_sql_results_task.app.conf, "task_always_eager", False):
+                query = self._query_dao.find_by_id(query_id, skip_base_filter=True)
+                if query is not None:
+                    execution_context.set_query(query)
         except Exception as ex:
             logger.exception("Query %i: %s", query_id, str(ex))
 

@@ -40,6 +40,7 @@ from superset.extensions.local_extensions_watcher import (
     start_local_extensions_watcher_thread,
 )
 from superset.initialization import SupersetAppInitializer
+from superset.openapi import patch_fab_openapi
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ def create_app(
     superset_app_root: Optional[str] = None,
 ) -> Flask:
     app = SupersetApp(__name__)
+    patch_fab_openapi()
 
     try:
         # Allow user to override our config completely

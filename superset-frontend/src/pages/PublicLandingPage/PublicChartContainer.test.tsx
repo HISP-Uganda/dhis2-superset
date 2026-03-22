@@ -27,7 +27,7 @@ test('buildPublicChartEmbedUrl applies horizontal legend overrides for embedded 
   const parsed = new URL(nextUrl, 'http://localhost');
   const formData = JSON.parse(parsed.searchParams.get('form_data') || '{}');
 
-  expect(parsed.pathname).toBe('/superset/explore/');
+  expect(parsed.pathname).toBe('/superset/explore/public/');
   expect(formData.slice_id).toBe(12);
   expect(formData.show_legend).toBe(true);
   expect(formData.legendOrientation).toBe('top');
@@ -45,6 +45,27 @@ test('buildPublicChartEmbedUrl preserves existing form_data and allows hiding le
 
   expect(formData.metric).toBe('value');
   expect(formData.show_legend).toBe(false);
+});
+
+test('buildPublicChartEmbedUrl normalizes public chart routes even without legend overrides', () => {
+  const nextUrl = buildPublicChartEmbedUrl(
+    '/superset/explore/?slice_id=12&standalone=true',
+  );
+  const parsed = new URL(nextUrl, 'http://localhost');
+
+  expect(parsed.pathname).toBe('/superset/explore/public/');
+  expect(parsed.searchParams.get('slice_id')).toBe('12');
+});
+
+test('buildPublicChartEmbedUrl keeps authenticated editor previews on the standard explore route', () => {
+  const nextUrl = buildPublicChartEmbedUrl(
+    '/superset/explore/public/?slice_id=12&standalone=true',
+    { accessMode: 'authenticated' },
+  );
+  const parsed = new URL(nextUrl, 'http://localhost');
+
+  expect(parsed.pathname).toBe('/superset/explore/');
+  expect(parsed.searchParams.get('slice_id')).toBe('12');
 });
 
 test('isMapLikeViz detects map-style charts used by public pages', () => {

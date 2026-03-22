@@ -162,6 +162,31 @@ describe('chart actions', () => {
       expect(json.value.toString()).toEqual(expectedBigNumber);
     });
 
+    test('should use the public chart data endpoint on public explore routes', async () => {
+      window.history.pushState(
+        {},
+        'Public chart',
+        '/superset/explore/public/?slice_id=12&standalone=true',
+      );
+
+      const getSpy = jest
+        .spyOn(SupersetClient, 'get')
+        .mockResolvedValue({ json: { result: [] } });
+
+      await actions.getChartDataRequest({
+        formData: { slice_id: 12 },
+      });
+
+      expect(getSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: `${MOCK_URL}?format=json&type=full`,
+        }),
+      );
+
+      getSpy.mockRestore();
+      window.history.pushState({}, 'Default route', '/');
+    });
+
     test('handleChartDataResponse should return result if GlobalAsyncQueries flag is disabled', async () => {
       const result = await handleChartDataResponse(
         { status: 200 },

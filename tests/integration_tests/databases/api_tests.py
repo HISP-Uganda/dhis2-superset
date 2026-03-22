@@ -1626,6 +1626,8 @@ class TestDatabaseApi(SupersetTestCase):
             "can_write",
             "can_export",
             "can_upload",
+            "can_dataset_sources",
+            "can_dhis2_metadata",
         }
 
     def test_get_invalid_database_table_metadata(self):

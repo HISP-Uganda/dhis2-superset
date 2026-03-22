@@ -47,7 +47,7 @@ export default function PublicChartRenderer({
   // Use Superset's native chart embedding via iframe
   // This approach is simpler and more reliable than using SuperChart directly
   // because it leverages Superset's existing rendering infrastructure
-  const embedUrl = `/superset/explore/?slice_id=${chartId}&standalone=true`;
+  const embedUrl = `/superset/explore/public/?slice_id=${chartId}&standalone=true`;
 
   return (
     <ChartContainer>

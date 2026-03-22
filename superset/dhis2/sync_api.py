@@ -50,6 +50,7 @@ class DHIS2SyncApi(BaseApi):
     """
 
     resource_name = "dhis2/sync"
+    csrf_exempt = False
     allow_browser_login = True
     openapi_spec_tag = "DHIS2 Sync"
 

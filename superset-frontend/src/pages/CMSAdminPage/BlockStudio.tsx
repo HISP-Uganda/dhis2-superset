@@ -344,6 +344,7 @@ type BlockStudioProps = {
   charts: PortalChartSummary[];
   dashboards: PortalDashboardSummary[];
   mediaAssets: PortalMediaAsset[];
+  portalLayout?: Record<string, any>;
   navigationMenus?: {
     header: PortalNavigationMenu[];
     footer: PortalNavigationMenu[];
@@ -359,8 +360,11 @@ type BlockStudioProps = {
   onSelectPage: (pageSlug: string | null) => void;
   onNewPage: () => void;
   onChangeDraftPage: (nextPage: PortalPage) => void;
+  onChangePortalLayout?: (nextLayout: Record<string, any>) => void;
+  onSavePortalLayout?: () => void;
   onSaveDraft?: () => void;
   savingDraft?: boolean;
+  savingPortalLayout?: boolean;
 };
 
 type Selection = { type: 'page' } | { type: 'block'; uid: string };
@@ -938,12 +942,70 @@ function surfacePresetStyles(preset: string) {
   }
 }
 
+const FIXED_HEIGHT_BLOCK_TYPES = new Set([
+  'chart',
+  'dashboard',
+  'embed',
+  'video',
+  'spacer',
+]);
+
+function normalizedBlockDimension(value: any, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.round(parsed);
+}
+
+function blockResizeHeight(block: PortalPageBlock | null, fallback = 0) {
+  if (!block) {
+    return fallback;
+  }
+  if (block.block_type === 'columns') {
+    return normalizedBlockDimension(
+      block.settings?.rowMinHeight ?? block.settings?.minHeight,
+      fallback,
+    );
+  }
+  if (FIXED_HEIGHT_BLOCK_TYPES.has(block.block_type)) {
+    return normalizedBlockDimension(
+      block.settings?.height ?? block.settings?.minHeight,
+      fallback,
+    );
+  }
+  return normalizedBlockDimension(block.settings?.minHeight, fallback);
+}
+
+function buildBlockHeightSettingsPatch(
+  block: PortalPageBlock,
+  nextHeight: number,
+) {
+  const height = Math.max(Math.round(nextHeight || 0), 0);
+  if (block.block_type === 'columns') {
+    return {
+      minHeight: height,
+      rowMinHeight: height,
+    };
+  }
+  if (FIXED_HEIGHT_BLOCK_TYPES.has(block.block_type)) {
+    return {
+      minHeight: height,
+      height,
+    };
+  }
+  return {
+    minHeight: height,
+  };
+}
+
 export default function BlockStudio({
   draftPage,
   pages,
   charts,
   dashboards,
   mediaAssets,
+  portalLayout = {},
   navigationMenus = { header: [], footer: [] },
   styleBundles,
   themes,
@@ -956,8 +1018,11 @@ export default function BlockStudio({
   onSelectPage,
   onNewPage,
   onChangeDraftPage,
+  onChangePortalLayout,
+  onSavePortalLayout,
   onSaveDraft,
   savingDraft = false,
+  savingPortalLayout = false,
 }: BlockStudioProps) {
   const [selection, setSelection] = useState<Selection>({ type: 'page' });
   const [quickInsertType, setQuickInsertType] = useState('paragraph');
@@ -1631,6 +1696,19 @@ export default function BlockStudio({
     setSelection({ type: 'page' });
   }
 
+  function removeBlockFromCanvas(block: PortalPageBlock) {
+    if (isPublishedPage) {
+      return;
+    }
+    const uid = blockKey(block);
+    pushBlocks(removeBlockByUid(blocks, uid));
+    setSelection(current =>
+      current.type === 'block' && current.uid === uid
+        ? { type: 'page' }
+        : current,
+    );
+  }
+
   function duplicateSelectedBlock() {
     if (!selectedBlock || isPublishedPage) {
       return;
@@ -1659,10 +1737,13 @@ export default function BlockStudio({
       });
       return;
     }
-    const currentHeight = Number(selectedBlock.settings?.minHeight) || 0;
-    updateSelectedBlockSettings({
-      minHeight: Math.max(currentHeight + direction * 40, 0),
-    });
+    const currentHeight = blockResizeHeight(selectedBlock);
+    updateSelectedBlockSettings(
+      buildBlockHeightSettingsPatch(
+        selectedBlock,
+        Math.max(currentHeight + direction * 40, 0),
+      ),
+    );
   }
 
   function applySurfacePreset(preset: string) {
@@ -1685,7 +1766,7 @@ export default function BlockStudio({
     pushBlocks(
       updateBlockSettings(blocks, blockKey(block), {
         gridSpan: patch.gridSpan,
-        minHeight: patch.minHeight,
+        ...buildBlockHeightSettingsPatch(block, patch.minHeight),
       }),
     );
   }
@@ -1838,6 +1919,11 @@ export default function BlockStudio({
                 }))}
                 onChange={value => updatePage({ page_type: value })}
               />
+              <TinyMeta>
+                {t(
+                  'Standard pages follow the page hierarchy. Landing, dashboard, documentation, FAQ, policy, and utility pages are promoted to top-level public navigation.',
+                )}
+              </TinyMeta>
             </FieldBlock>
             <FieldBlock>
               <FieldLabel>{t('Subtitle')}</FieldLabel>
@@ -2062,6 +2148,39 @@ export default function BlockStudio({
               onChange={value => updatePageRichText('description', value)}
             />
           </FieldBlock>
+          {onChangePortalLayout ? (
+            <SectionList>
+              <FieldBlock>
+                <FieldLabel>{t('Footer Text')}</FieldLabel>
+                <Input
+                  value={portalLayout.footerText || ''}
+                  onChange={event =>
+                    onChangePortalLayout({
+                      ...portalLayout,
+                      footerText: event.target.value,
+                    })
+                  }
+                />
+                <TinyMeta>
+                  {t(
+                    'This updates the shared public footer shell while you stay in the main page studio.',
+                  )}
+                </TinyMeta>
+              </FieldBlock>
+              {onSavePortalLayout ? (
+                <Space wrap>
+                  <Button
+                    type="default"
+                    icon={<SaveOutlined />}
+                    loading={savingPortalLayout}
+                    onClick={onSavePortalLayout}
+                  >
+                    {t('Save Footer Settings')}
+                  </Button>
+                </Space>
+              ) : null}
+            </SectionList>
+          ) : null}
           <FieldGrid>
             <FieldBlock>
               <FieldLabel>{t('SEO Title')}</FieldLabel>
@@ -2231,11 +2350,14 @@ export default function BlockStudio({
               style={{ width: '100%' }}
               min={0}
               step={40}
-              value={Number(selectedBlock.settings?.minHeight) || 0}
+              value={blockResizeHeight(selectedBlock)}
               onChange={value =>
-                updateSelectedBlockSettings({
-                  minHeight: Math.max(Number(value) || 0, 0),
-                })
+                updateSelectedBlockSettings(
+                  buildBlockHeightSettingsPatch(
+                    selectedBlock,
+                    Math.max(Number(value) || 0, 0),
+                  ),
+                )
               }
             />
           </FieldBlock>
@@ -2598,11 +2720,14 @@ export default function BlockStudio({
                   disabled={isPublishedPage}
                   style={{ width: '100%' }}
                   min={120}
-                  value={Number(selectedBlock.settings?.height) || 360}
+                  value={blockResizeHeight(selectedBlock, 360)}
                   onChange={value =>
-                    updateSelectedBlockSettings({
-                      height: Number(value) || 360,
-                    })
+                    updateSelectedBlockSettings(
+                      buildBlockHeightSettingsPatch(
+                        selectedBlock,
+                        Math.max(Number(value) || 360, 120),
+                      ),
+                    )
                   }
                 />
               </FieldBlock>
@@ -2802,9 +2927,14 @@ export default function BlockStudio({
               <InputNumber
                 disabled={isPublishedPage}
                 style={{ width: '100%' }}
-                value={Number(selectedBlock.settings?.height) || 360}
+                value={blockResizeHeight(selectedBlock, 360)}
                 onChange={value =>
-                  updateSelectedBlockSettings({ height: Number(value) || 360 })
+                  updateSelectedBlockSettings(
+                    buildBlockHeightSettingsPatch(
+                      selectedBlock,
+                      Math.max(Number(value) || 360, 120),
+                    ),
+                  )
                 }
               />
             </FieldBlock>
@@ -2871,9 +3001,14 @@ export default function BlockStudio({
               <InputNumber
                 disabled={isPublishedPage}
                 style={{ width: '100%' }}
-                value={Number(selectedBlock.settings?.height) || 720}
+                value={blockResizeHeight(selectedBlock, 720)}
                 onChange={value =>
-                  updateSelectedBlockSettings({ height: Number(value) || 720 })
+                  updateSelectedBlockSettings(
+                    buildBlockHeightSettingsPatch(
+                      selectedBlock,
+                      Math.max(Number(value) || 720, 240),
+                    ),
+                  )
                 }
               />
             </FieldBlock>
@@ -2912,11 +3047,14 @@ export default function BlockStudio({
                 style={{ width: '100%' }}
                 min={0}
                 step={20}
-                value={Number(selectedBlock.settings?.rowMinHeight) || 240}
+                value={blockResizeHeight(selectedBlock, 240)}
                 onChange={value =>
-                  updateSelectedBlockSettings({
-                    rowMinHeight: Math.max(Number(value) || 0, 0),
-                  })
+                  updateSelectedBlockSettings(
+                    buildBlockHeightSettingsPatch(
+                      selectedBlock,
+                      Math.max(Number(value) || 0, 0),
+                    ),
+                  )
                 }
               />
             </FieldBlock>
@@ -3017,40 +3155,174 @@ export default function BlockStudio({
           </SectionList>
         )}
         {selectedBlock.block_type === 'dynamic_widget' && (
-          <FieldGrid>
+          <SectionList>
             <FieldBlock>
-              <FieldLabel>{t('Widget Type')}</FieldLabel>
-              <Select
-                disabled={isPublishedPage}
-                value={
-                  selectedBlock.settings?.widgetType || 'indicator_highlights'
-                }
+              <FieldLabel>{t('Subtitle')}</FieldLabel>
+              <RichTextComposer
+                readOnly={isPublishedPage}
+                minHeight={120}
+                value={richFieldValue(selectedBlock, 'subtitle')}
                 onChange={value =>
-                  updateSelectedBlockSettings({ widgetType: value })
-                }
-                options={[
-                  {
-                    value: 'indicator_highlights',
-                    label: t('Indicator Highlights'),
-                  },
-                  { value: 'dashboard_list', label: t('Dashboard List') },
-                ]}
-              />
-            </FieldBlock>
-            <FieldBlock>
-              <FieldLabel>{t('Limit')}</FieldLabel>
-              <InputNumber
-                disabled={isPublishedPage}
-                style={{ width: '100%' }}
-                min={1}
-                max={24}
-                value={Number(selectedBlock.settings?.limit) || 6}
-                onChange={value =>
-                  updateSelectedBlockSettings({ limit: Number(value) || 6 })
+                  updateSelectedBlockRichField('subtitle', value)
                 }
               />
             </FieldBlock>
-          </FieldGrid>
+            <FieldGrid>
+              <FieldBlock>
+                <FieldLabel>{t('Widget Type')}</FieldLabel>
+                <Select
+                  disabled={isPublishedPage}
+                  value={
+                    selectedBlock.settings?.widgetType || 'indicator_highlights'
+                  }
+                  onChange={value =>
+                    updateSelectedBlockSettings({ widgetType: value })
+                  }
+                  options={[
+                    {
+                      value: 'indicator_highlights',
+                      label: t('Indicator Highlights'),
+                    },
+                    { value: 'dashboard_list', label: t('Dashboard List') },
+                  ]}
+                />
+              </FieldBlock>
+              <FieldBlock>
+                <FieldLabel>{t('Limit')}</FieldLabel>
+                <InputNumber
+                  disabled={isPublishedPage}
+                  style={{ width: '100%' }}
+                  min={1}
+                  max={24}
+                  value={Number(selectedBlock.settings?.limit) || 6}
+                  onChange={value =>
+                    updateSelectedBlockSettings({ limit: Number(value) || 6 })
+                  }
+                />
+              </FieldBlock>
+            </FieldGrid>
+            {selectedBlock.settings?.widgetType === 'indicator_highlights' && (
+              <>
+                <FieldBlock>
+                  <FieldLabel>{t('Widget Note')}</FieldLabel>
+                  <RichTextComposer
+                    readOnly={isPublishedPage}
+                    minHeight={100}
+                    value={richFieldValue(selectedBlock, 'note')}
+                    onChange={value =>
+                      updateSelectedBlockRichField('note', value)
+                    }
+                  />
+                </FieldBlock>
+                <FieldGrid>
+                  <FieldBlock>
+                    <FieldLabel>{t('Empty Message')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.emptyMessage || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          emptyMessage: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Dataset Label')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.datasetFallbackLabel || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          datasetFallbackLabel: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Latest Period Label')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.latestPeriodLabel || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          latestPeriodLabel: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                </FieldGrid>
+              </>
+            )}
+            {selectedBlock.settings?.widgetType === 'dashboard_list' && (
+              <>
+                <FieldGrid>
+                  <FieldBlock>
+                    <FieldLabel>{t('Card Eyebrow')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.cardEyebrow || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          cardEyebrow: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Action Label')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.actionLabel || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          actionLabel: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                  <FieldBlock>
+                    <FieldLabel>{t('Slug Fallback Label')}</FieldLabel>
+                    <Input
+                      disabled={isPublishedPage}
+                      value={selectedBlock.content?.slugFallbackLabel || ''}
+                      onChange={event =>
+                        updateSelectedBlockContent({
+                          slugFallbackLabel: event.target.value,
+                        })
+                      }
+                    />
+                  </FieldBlock>
+                </FieldGrid>
+                <FieldBlock>
+                  <FieldLabel>{t('Card Description')}</FieldLabel>
+                  <Input.TextArea
+                    disabled={isPublishedPage}
+                    rows={3}
+                    value={selectedBlock.content?.cardDescription || ''}
+                    onChange={event =>
+                      updateSelectedBlockContent({
+                        cardDescription: event.target.value,
+                      })
+                    }
+                  />
+                </FieldBlock>
+                <FieldBlock>
+                  <FieldLabel>{t('Empty Message')}</FieldLabel>
+                  <Input.TextArea
+                    disabled={isPublishedPage}
+                    rows={3}
+                    value={selectedBlock.content?.emptyMessage || ''}
+                    onChange={event =>
+                      updateSelectedBlockContent({
+                        emptyMessage: event.target.value,
+                      })
+                    }
+                  />
+                </FieldBlock>
+              </>
+            )}
+          </SectionList>
         )}
         {selectedBlock.block_type === 'page_title' && (
           <FieldGrid>
@@ -3256,9 +3528,14 @@ export default function BlockStudio({
               disabled={isPublishedPage}
               style={{ width: '100%' }}
               min={8}
-              value={Number(selectedBlock.settings?.height) || 48}
+              value={blockResizeHeight(selectedBlock, 48)}
               onChange={value =>
-                updateSelectedBlockSettings({ height: Number(value) || 48 })
+                updateSelectedBlockSettings(
+                  buildBlockHeightSettingsPatch(
+                    selectedBlock,
+                    Math.max(Number(value) || 48, 8),
+                  ),
+                )
               }
             />
           </FieldBlock>
@@ -3629,6 +3906,12 @@ export default function BlockStudio({
             blocks={slotBlocks}
             charts={charts}
             dashboards={dashboards}
+            editorBlockTypes={
+              showSlotChrome && !isPublishedPage
+                ? insertableBlockTypes
+                : undefined
+            }
+            chartEmbedAccess="authenticated"
             mediaAssets={mediaAssets}
             page={draftPage}
             navigation={navigationMenus}
@@ -3644,14 +3927,25 @@ export default function BlockStudio({
               showSlotChrome ? updateRichTextBlock : undefined
             }
             onInsertBlockFromCanvas={
-              showSlotChrome
+              showSlotChrome && !isPublishedPage
                 ? (block, mode) => addBlockRelativeToBlock(block, mode)
                 : undefined
             }
+            onInsertBlockTypeFromCanvas={
+              showSlotChrome && !isPublishedPage
+                ? (block, mode, blockType) =>
+                    addBlockRelativeToBlock(block, mode, blockType)
+                : undefined
+            }
             onInsertGridTemplateFromCanvas={
-              showSlotChrome
+              showSlotChrome && !isPublishedPage
                 ? (block, columnCount) =>
                     insertGridTemplate(columnCount, block, 'child')
+                : undefined
+            }
+            onDeleteBlockFromCanvas={
+              showSlotChrome && !isPublishedPage
+                ? removeBlockFromCanvas
                 : undefined
             }
           />

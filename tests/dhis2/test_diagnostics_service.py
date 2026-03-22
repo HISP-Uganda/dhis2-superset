@@ -24,6 +24,33 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    import superset
+
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
+
+
+def _metadata_cache_side_effect(
+    payloads: dict[str, dict | None],
+    progress_payload: dict | None = None,
+):
+    def _side_effect(_database_id, namespace, _key_parts):
+        if namespace == "dhis2_progress:metadata_refresh":
+            return progress_payload
+        metadata_type = namespace.split(":", 1)[1]
+        return payloads.get(metadata_type)
+
+    return _side_effect
+
 
 def _dataset(**kw):
     from superset.dhis2.models import DHIS2StagedDataset
@@ -166,6 +193,12 @@ def test_get_federation_health_includes_persisted_instance_test_metadata():
 def test_get_metadata_status_summarizes_snapshot_health(mocker):
     import superset
     from superset.dhis2.diagnostics import DHIS2DiagnosticsService
+    from superset.dhis2.metadata_staging_service import (
+        CATEGORY_METADATA_TYPES,
+        ORG_UNIT_METADATA_TYPES,
+        PROGRAM_METADATA_TYPES,
+        VARIABLE_STATUS_METADATA_TYPES,
+    )
 
     database = SimpleNamespace(
         id=7,
@@ -183,69 +216,137 @@ def test_get_metadata_status_summarizes_snapshot_health(mocker):
     )
     cache_lookup = mocker.patch(
         "superset.dhis2.diagnostics.metadata_cache_service.get_cached_metadata_payload",
-        side_effect=[
+        side_effect=_metadata_cache_side_effect(
             {
-                "status": "success",
-                "count": 12,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 4,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 1,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 250,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 6,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 0,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 3,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 14,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 7,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 11,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 5,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            None,
-        ],
+                "dataElements": {
+                    "status": "success",
+                    "count": 12,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicators": {
+                    "status": "success",
+                    "count": 4,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicatorTypes": {
+                    "status": "success",
+                    "count": 1,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "dataSets": {
+                    "status": "success",
+                    "count": 250,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "programIndicators": {
+                    "status": "success",
+                    "count": 6,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "eventDataItems": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "dataElementGroups": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "dataElementGroupSets": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "indicatorGroups": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "indicatorGroupSets": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "programs": {
+                    "status": "success",
+                    "count": 3,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "programStages": {
+                    "status": "success",
+                    "count": 14,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "trackedEntityTypes": {
+                    "status": "success",
+                    "count": 7,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categories": {
+                    "status": "success",
+                    "count": 11,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categoryCombos": {
+                    "status": "success",
+                    "count": 5,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categoryOptionCombos": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "legendSets": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnits": {
+                    "status": "success",
+                    "count": 14,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitLevels": {
+                    "status": "success",
+                    "count": 7,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitGroups": {
+                    "status": "success",
+                    "count": 11,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitGroupSets": {
+                    "status": "success",
+                    "count": 5,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "geoJSON": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "orgUnitHierarchy": {
+                    "status": "success",
+                    "count": 3,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+            }
+        ),
     )
 
     result = DHIS2DiagnosticsService().get_metadata_status(7)
 
-    assert cache_lookup.call_count == 12
+    assert cache_lookup.call_count == (
+        len(VARIABLE_STATUS_METADATA_TYPES)
+        + len(PROGRAM_METADATA_TYPES)
+        + len(CATEGORY_METADATA_TYPES)
+        + 1
+        + len(ORG_UNIT_METADATA_TYPES)
+        + 1
+    )
     assert result["overall_status"] == "ready"
     assert result["active_instance_count"] == 1
     assert result["variables"]["status"] == "ready"
@@ -278,65 +379,126 @@ def test_get_metadata_status_treats_unsupported_snapshots_as_ready(mocker):
     )
     mocker.patch(
         "superset.dhis2.diagnostics.metadata_cache_service.get_cached_metadata_payload",
-        side_effect=[
+        side_effect=_metadata_cache_side_effect(
             {
-                "status": "success",
-                "count": 12,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 4,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 1,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 6,
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "unsupported",
-                "count": 0,
-                "message": "This DHIS2 instance does not expose event data items.",
-                "cache_refreshed_at": "2026-03-13T10:00:00",
-            },
-            {
-                "status": "success",
-                "count": 5,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 250,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 6,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 3,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 14,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            {
-                "status": "success",
-                "count": 8,
-                "cache_refreshed_at": "2026-03-13T10:01:00",
-            },
-            None,
-        ],
+                "dataElements": {
+                    "status": "success",
+                    "count": 12,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicators": {
+                    "status": "success",
+                    "count": 4,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicatorTypes": {
+                    "status": "success",
+                    "count": 1,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "dataSets": {
+                    "status": "success",
+                    "count": 6,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "programIndicators": {
+                    "status": "unsupported",
+                    "count": 0,
+                    "message": "This DHIS2 instance does not expose event data items.",
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "eventDataItems": {
+                    "status": "success",
+                    "count": 5,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "dataElementGroups": {
+                    "status": "success",
+                    "count": 250,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "dataElementGroupSets": {
+                    "status": "success",
+                    "count": 6,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "indicatorGroups": {
+                    "status": "success",
+                    "count": 3,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "indicatorGroupSets": {
+                    "status": "success",
+                    "count": 14,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "trackedEntityTypes": {
+                    "status": "success",
+                    "count": 8,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "programs": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "programStages": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categories": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categoryCombos": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "categoryOptionCombos": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "legendSets": {
+                    "status": "success",
+                    "count": 5,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnits": {
+                    "status": "success",
+                    "count": 250,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitLevels": {
+                    "status": "success",
+                    "count": 6,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitGroups": {
+                    "status": "success",
+                    "count": 3,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "organisationUnitGroupSets": {
+                    "status": "success",
+                    "count": 14,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "geoJSON": {
+                    "status": "success",
+                    "count": 8,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+                "orgUnitHierarchy": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:01:00",
+                },
+            }
+        ),
     )
 
     result = DHIS2DiagnosticsService().get_metadata_status(7)
@@ -368,19 +530,125 @@ def test_get_metadata_status_includes_refresh_progress(mocker):
     )
     mocker.patch(
         "superset.dhis2.diagnostics.metadata_cache_service.get_cached_metadata_payload",
-        side_effect=[
-            {"status": "success", "count": 10, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 4, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 1, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 6, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 2, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 12, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 15, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 3, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 1, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 2, "cache_refreshed_at": "2026-03-13T10:00:00"},
-            {"status": "success", "count": 5, "cache_refreshed_at": "2026-03-13T10:00:00"},
+        side_effect=_metadata_cache_side_effect(
             {
+                "dataElements": {
+                    "status": "success",
+                    "count": 10,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicators": {
+                    "status": "success",
+                    "count": 4,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicatorTypes": {
+                    "status": "success",
+                    "count": 1,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "dataSets": {
+                    "status": "success",
+                    "count": 6,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "programIndicators": {
+                    "status": "success",
+                    "count": 2,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "eventDataItems": {
+                    "status": "success",
+                    "count": 12,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "dataElementGroups": {
+                    "status": "success",
+                    "count": 15,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "dataElementGroupSets": {
+                    "status": "success",
+                    "count": 3,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicatorGroups": {
+                    "status": "success",
+                    "count": 1,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "indicatorGroupSets": {
+                    "status": "success",
+                    "count": 2,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "trackedEntityTypes": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "programs": {
+                    "status": "success",
+                    "count": 5,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "programStages": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "categories": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "categoryCombos": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "categoryOptionCombos": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "legendSets": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "organisationUnits": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "organisationUnitLevels": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "organisationUnitGroups": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "organisationUnitGroupSets": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "geoJSON": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+                "orgUnitHierarchy": {
+                    "status": "success",
+                    "count": 0,
+                    "cache_refreshed_at": "2026-03-13T10:00:00",
+                },
+            },
+            progress_payload={
                 "status": "running",
                 "overall": {
                     "completed_units": 3,
@@ -428,7 +696,7 @@ def test_get_metadata_status_includes_refresh_progress(mocker):
                     ],
                 },
             },
-        ],
+        ),
     )
 
     result = DHIS2DiagnosticsService().get_metadata_status(7)

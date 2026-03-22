@@ -411,7 +411,19 @@ def default_block_payload(block_type: str) -> dict[str, Any]:
             "height": 720,
         }
     elif definition["type"] == "dynamic_widget":
-        payload["content"] = {"title": "Dynamic Widget", "body": ""}
+        payload["content"] = {
+            "title": "Dynamic Widget",
+            "subtitle": "",
+            "body": "",
+            "note": "",
+            "emptyMessage": "",
+            "datasetFallbackLabel": "",
+            "latestPeriodLabel": "",
+            "cardEyebrow": "",
+            "cardDescription": "",
+            "actionLabel": "",
+            "slugFallbackLabel": "",
+        }
         payload["settings"] = {"widgetType": "indicator_highlights", "limit": 6}
     elif definition["type"] == "page_title":
         payload["settings"] = {"showSubtitle": True, "showExcerpt": False}

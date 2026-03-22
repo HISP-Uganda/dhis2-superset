@@ -47,6 +47,7 @@ def _inst(**kw) -> DHIS2Instance:
     i = DHIS2Instance.__new__(DHIS2Instance)
     i.__dict__.update(dict(
         id=None, database_id=None, name=None, url=None,
+        logical_database_id=None,
         auth_type="basic", username=None, password=None,
         access_token=None, is_active=True, description=None,
         display_order=0,
@@ -63,9 +64,11 @@ def _ds(**kw) -> DHIS2StagedDataset:
     d = DHIS2StagedDataset.__new__(DHIS2StagedDataset)
     d.__dict__.update(dict(
         id=None, database_id=None, name=None, description=None,
+        logical_database_id=None, generic_dataset_id=None,
         staging_table_name=None, schedule_cron=None, schedule_timezone="UTC",
         is_active=True, auto_refresh_enabled=True,
         last_sync_at=None, last_sync_status=None, last_sync_rows=None,
+        serving_superset_dataset_id=None,
         dataset_config=None, created_by_fk=None, changed_by_fk=None,
         created_on=None, changed_on=None,
     ))
@@ -77,11 +80,37 @@ def _job(**kw) -> DHIS2SyncJob:
     j = DHIS2SyncJob.__new__(DHIS2SyncJob)
     j.__dict__.update(dict(
         id=None, staged_dataset_id=None, job_type="manual", status="pending",
+        generic_sync_job_id=None, task_id=None, cancel_requested=False,
         started_at=None, completed_at=None, rows_loaded=None, rows_failed=None,
+        total_units=None, completed_units=None, failed_units=None,
+        percent_complete=None, current_step=None, current_item=None,
+        rows_extracted=None, rows_staged=None, rows_merged=None,
+        error_summary=None,
         error_message=None, instance_results=None, created_on=None, changed_on=None,
     ))
     j.__dict__.update(kw)
     return j
+
+
+def _var(**kw) -> DHIS2DatasetVariable:
+    v = DHIS2DatasetVariable.__new__(DHIS2DatasetVariable)
+    v.__dict__.update(
+        dict(
+            id=None,
+            staged_dataset_id=None,
+            instance_id=None,
+            generic_field_id=None,
+            variable_id=None,
+            variable_type=None,
+            variable_name=None,
+            alias=None,
+            extra_params=None,
+            dimension_availability_json=None,
+            created_on=None,
+        )
+    )
+    v.__dict__.update(kw)
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +246,26 @@ class TestDHIS2StagedDataset:
     def test_repr(self):
         d = _ds(id=3, name="MyDataset", database_id=7)
         assert "DHIS2StagedDataset" in repr(d)
+
+
+class TestDHIS2DatasetVariable:
+
+    def test_get_dimension_availability_empty_when_none(self):
+        assert _var(dimension_availability_json=None).get_dimension_availability() == []
+
+    def test_get_dimension_availability_parses_valid_json(self):
+        dims = [{"dimension_key": "age_group", "dimension_scope": "groupby"}]
+        assert _var(
+            dimension_availability_json=json.dumps(dims)
+        ).get_dimension_availability() == dims
+
+    def test_get_dimension_availability_returns_empty_for_invalid_json(self):
+        assert _var(dimension_availability_json="not-json").get_dimension_availability() == []
+
+    def test_to_json_includes_dimension_availability(self):
+        dims = [{"dimension_key": "sex", "dimension_scope": "filter_only"}]
+        payload = _var(id=7, dimension_availability_json=json.dumps(dims)).to_json()
+        assert payload["dimension_availability"] == dims
 
 
 # ---------------------------------------------------------------------------

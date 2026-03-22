@@ -558,6 +558,7 @@ class DHIS2DatasetVariable(Model):
     # Extra params (JSON blob)
     # ------------------------------------------------------------------
     extra_params = sa.Column(Text, nullable=True)
+    dimension_availability_json = sa.Column(Text, nullable=True)
 
     # ------------------------------------------------------------------
     # Audit timestamp (create-only; updates are rare and not tracked)
@@ -598,6 +599,27 @@ class DHIS2DatasetVariable(Model):
         except (json.JSONDecodeError, TypeError):
             return {}
 
+    def get_dimension_availability(self) -> list[dict[str, Any]]:
+        """Return persisted dimension-availability metadata for this variable."""
+        raw_value = self.__dict__.get("dimension_availability_json")
+        if not raw_value:
+            return []
+        try:
+            parsed = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def set_dimension_availability(
+        self,
+        dimensions: list[dict[str, Any]] | None,
+    ) -> None:
+        """Persist structured dimension-availability metadata for this variable."""
+        if not dimensions:
+            self.dimension_availability_json = None
+            return
+        self.dimension_availability_json = json.dumps(dimensions)
+
     def to_json(self) -> dict[str, Any]:
         """Serialise this variable mapping to a plain dict."""
         return {
@@ -610,6 +632,7 @@ class DHIS2DatasetVariable(Model):
             "variable_name": self.variable_name,
             "alias": self.alias,
             "extra_params": self.get_extra_params(),
+            "dimension_availability": self.get_dimension_availability(),
             "created_on": self.created_on.isoformat() if self.created_on else None,
         }
 

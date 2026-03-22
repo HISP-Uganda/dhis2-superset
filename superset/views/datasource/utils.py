@@ -28,8 +28,6 @@ from superset.daos.datasource import DatasourceDAO
 from superset.utils.core import QueryStatus
 from superset.views.datasource.schemas import SamplesPayloadSchema
 
-logger = logging.getLogger(__name__)
-
 
 def get_limit_clause(page: Optional[int], per_page: Optional[int]) -> dict[str, int]:
     samples_row_limit = app.config.get("SAMPLES_ROW_LIMIT", 1000)
@@ -66,13 +64,13 @@ def replace_verbose_with_column(
     for f in filters:
         col_value = f.get("col")
         if col_value is None:
-            logger.warning("Filter missing 'col' key: %s", f)
+            logging.getLogger().warning("Filter missing 'col' key: %s", f)
             continue
 
         match = None
         for col in columns:
             if not hasattr(col, verbose_attr) or not hasattr(col, column_attr):
-                logger.warning(
+                logging.getLogger().warning(
                     "Column object %s missing expected attributes '%s' or '%s'",
                     col,
                     verbose_attr,

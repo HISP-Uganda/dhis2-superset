@@ -166,6 +166,10 @@ class TestConnectionDatabaseCommand(BaseCommand):
                     level=ErrorLevel.ERROR,
                     extra={"sqlalchemy_uri": database.sqlalchemy_uri},
                 ) from ex
+            except SupersetSecurityException:
+                raise
+            except (NoSuchModuleError, ModuleNotFoundError):
+                raise
             except Exception as ex:  # pylint: disable=broad-except
                 # If the connection failed because OAuth2 is needed, start the flow.
                 if (

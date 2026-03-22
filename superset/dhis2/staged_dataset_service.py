@@ -127,6 +127,34 @@ def _sync_compat_variable(variable: DHIS2DatasetVariable) -> None:
         )
 
 
+def _refresh_variable_dimension_availability(variable: DHIS2DatasetVariable) -> None:
+    variable_type = str(getattr(variable, "variable_type", "") or "").strip().lower()
+    if variable_type not in {"dataelement", "dataelements"}:
+        variable.set_dimension_availability([])
+        return
+
+    from superset.dhis2.metadata_staging_service import (
+        get_dimension_availability_for_variable,
+    )
+
+    try:
+        availability = get_dimension_availability_for_variable(
+            int(variable.instance_id),
+            str(variable.variable_id),
+            variable_type=str(variable.variable_type or ""),
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to derive dimension availability for variable=%s instance=%s",
+            getattr(variable, "variable_id", None),
+            getattr(variable, "instance_id", None),
+            exc_info=True,
+        )
+        availability = []
+
+    variable.set_dimension_availability(availability)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -559,6 +587,7 @@ def add_variable(
         if field == "extra_params":
             value = _coerce_json_field(value, field_name=field)
         setattr(variable, field, value)
+    _refresh_variable_dimension_availability(variable)
 
     try:
         db.session.add(variable)

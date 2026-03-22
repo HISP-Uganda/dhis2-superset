@@ -29,8 +29,21 @@ def test_get_staging_database_defaults_to_main_metadata_database():
 
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:////tmp/superset.db"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    query = MagicMock()
+    query.filter_by.return_value.first.return_value = SimpleNamespace(
+        id=7,
+        database_name="main",
+        name="main",
+    )
 
     with app.app_context(), patch(
+        "superset.dhis2.staging_database_service._get_duckdb_serving_uri",
+        return_value=None,
+    ), patch(
+        "superset.dhis2.staging_database_service.db.session.query",
+        return_value=query,
+    ), patch(
         "superset.dhis2.staging_database_service.get_or_create_db",
         return_value=SimpleNamespace(id=7, database_name="main", name="main"),
     ) as get_or_create_db_mock:
@@ -50,6 +63,7 @@ def test_get_staging_database_applies_custom_serving_database_config():
     app = Flask(__name__)
     app.config.update(
         SQLALCHEMY_DATABASE_URI="sqlite:////tmp/superset.db",
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
         DHIS2_STAGING_DATABASE_URI="duckdb:////tmp/dhis2_staging.duckdb",
         DHIS2_STAGING_DATABASE_NAME="DHIS2 Local Staging",
         DHIS2_STAGING_DATABASE_EXPOSE_IN_SQLLAB=False,
@@ -63,8 +77,13 @@ def test_get_staging_database_applies_custom_serving_database_config():
         allow_cvas=True,
         allow_dml=True,
     )
+    query = MagicMock()
+    query.filter_by.return_value.first.return_value = database
 
     with app.app_context(), patch(
+        "superset.dhis2.staging_database_service.db.session.query",
+        return_value=query,
+    ), patch(
         "superset.dhis2.staging_database_service.get_or_create_db",
         return_value=database,
     ) as get_or_create_db_mock, patch(

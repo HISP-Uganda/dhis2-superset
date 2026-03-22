@@ -28,8 +28,8 @@ from superset.commands.database.exceptions import (
     DatabaseNotFoundError,
     DatabaseSecurityUnsafeError,
     DatabaseTablesUnexpectedError,
+    DatabaseTestConnectionFailedError,
     DatabaseTestConnectionDriverError,  # noqa: F401
-    DatabaseTestConnectionUnexpectedError,
 )
 from superset.commands.database.export import ExportDatabasesCommand
 from superset.commands.database.importers.v1 import ImportDatabasesCommand
@@ -897,7 +897,7 @@ class TestTestConnectionDatabaseCommand(SupersetTestCase):
     def test_connection_db_exception(
         self, mock_g, mock_event_logger, mock_get_sqla_engine
     ):
-        """Test to make sure event_logger is called when an exception is raised"""
+        """Test to make sure engine failures are surfaced as DB engine errors"""
         database = get_example_database()
         mock_g.user = security_manager.find_user("admin")
         mock_get_sqla_engine.side_effect = Exception("An error has occurred!")
@@ -905,11 +905,12 @@ class TestTestConnectionDatabaseCommand(SupersetTestCase):
         json_payload = {"sqlalchemy_uri": db_uri}
         command_without_db_name = TestConnectionDatabaseCommand(json_payload)
 
-        with pytest.raises(DatabaseTestConnectionUnexpectedError) as excinfo:  # noqa: PT012
+        with pytest.raises(DatabaseTestConnectionFailedError) as excinfo:
             command_without_db_name.run()
-            assert str(excinfo.value) == (
-                "Unexpected error occurred, please check your logs for details"
-            )
+        assert (
+            excinfo.value.errors[0].error_type
+            == SupersetErrorType.GENERIC_DB_ENGINE_ERROR
+        )
         mock_event_logger.assert_called()
 
     @patch("superset.models.core.Database._get_sqla_engine")

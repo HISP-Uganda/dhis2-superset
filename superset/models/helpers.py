@@ -25,7 +25,7 @@ import logging
 import re
 import uuid
 from collections.abc import Hashable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import (
     Any,
     Callable,
@@ -1633,7 +1633,12 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
 
         if tf:
             if tf in {"epoch_ms", "epoch_s"}:
-                seconds_since_epoch = int(dttm.timestamp())
+                epoch_dttm = (
+                    dttm.replace(tzinfo=timezone.utc)
+                    if dttm.tzinfo is None
+                    else dttm.astimezone(timezone.utc)
+                )
+                seconds_since_epoch = int(epoch_dttm.timestamp())
                 if tf == "epoch_s":
                     return str(seconds_since_epoch)
                 return str(seconds_since_epoch * 1000)

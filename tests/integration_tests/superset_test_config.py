@@ -17,13 +17,13 @@
 # type: ignore
 import logging
 import math
+import os
 from copy import copy
 from datetime import timedelta
 
 from sqlalchemy.engine import make_url
 
 from superset.config import *  # noqa: F403
-from superset.config import DATA_DIR
 from tests.integration_tests.superset_test_custom_template_processors import (
     CustomPrestoTemplateProcessor,
 )
@@ -36,6 +36,11 @@ logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
 
 SECRET_KEY = "dummy_secret_key_for_test_to_silence_warnings"  # noqa: S105
 AUTH_USER_REGISTRATION_ROLE = "alpha"
+DATA_DIR = os.environ.get(
+    "SUPERSET_TEST_DATA_DIR",
+    os.path.join("/tmp", "superset-tests"),
+)
+os.makedirs(DATA_DIR, exist_ok=True)
 SQLALCHEMY_DATABASE_URI = "sqlite:///" + os.path.join(  # noqa: F405
     DATA_DIR,
     "unittests.integration_tests.db",  # noqa: F405
@@ -46,7 +51,11 @@ SILENCE_FAB = False
 if "SUPERSET__SQLALCHEMY_DATABASE_URI" in os.environ:  # noqa: F405
     SQLALCHEMY_DATABASE_URI = os.environ["SUPERSET__SQLALCHEMY_DATABASE_URI"]  # noqa: F405
 
-SQLALCHEMY_EXAMPLES_URI = SQLALCHEMY_DATABASE_URI
+SQLALCHEMY_EXAMPLES_URI = (
+    "sqlite:///"
+    + os.path.join(DATA_DIR, "unittests.integration_examples.db")
+    + "?check_same_thread=false"
+)
 if "SUPERSET__SQLALCHEMY_EXAMPLES_URI" in os.environ:  # noqa: F405
     SQLALCHEMY_EXAMPLES_URI = os.environ["SUPERSET__SQLALCHEMY_EXAMPLES_URI"]  # noqa: F405
 
@@ -101,10 +110,10 @@ RATELIMIT_ENABLED = False
 
 
 CACHE_CONFIG = {
-    "CACHE_TYPE": "RedisCache",
+    "CACHE_TYPE": "SimpleCache",
+    "CACHE_THRESHOLD": math.inf,
     "CACHE_DEFAULT_TIMEOUT": int(timedelta(minutes=1).total_seconds()),
     "CACHE_KEY_PREFIX": "superset_cache",
-    "CACHE_REDIS_URL": f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CACHE_DB}",
 }
 
 DATA_CACHE_CONFIG = {
@@ -135,10 +144,12 @@ FAB_ADD_SECURITY_API = True
 
 
 class CeleryConfig:
-    broker_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CELERY_DB}"
+    broker_url = "memory://"
     imports = ("superset.sql_lab",)
-    result_backend = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_RESULTS_DB}"
+    result_backend = "cache+memory://"
     concurrency = 1
+    task_always_eager = True
+    task_store_eager_result = True
 
 
 CELERY_CONFIG = CeleryConfig

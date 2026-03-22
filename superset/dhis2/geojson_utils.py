@@ -308,12 +308,14 @@ def build_ou_parameter(level: int | None, parent: str | None) -> str:
     """
     Build organisation unit parameter for DHIS2 geoFeatures API.
 
-    The geoFeatures API expects the ou parameter in format:
+    The geoFeatures API accepts different forms depending on the query style:
     - ou=ou:LEVEL-n: Returns org units at level n
-    - ou=ou:LEVEL-n;UID: Returns org units at level n under the specified UID
-    - ou=ou:UID: Returns specific org unit's boundaries
+    - ou=<UID>: Returns a specific parent org unit boundary
 
-    Note: The 'ou:' prefix is REQUIRED before dimension items.
+    For the boundary endpoint, a parent selection takes precedence over level
+    scoping because callers use the parent branch to fetch the exact selected
+    org unit boundary. Level-only calls still use the explicit ``ou:LEVEL-n``
+    syntax expected by DHIS2.
 
     Args:
         level: Organisation unit level (1-6)
@@ -322,16 +324,10 @@ def build_ou_parameter(level: int | None, parent: str | None) -> str:
     Returns:
         Properly formatted OU parameter string for geoFeatures API
     """
-    if parent and level:
-        # Specific parent with level - get org units at that level under parent
-        # Include the parent boundary as well for context
-        return f"ou:LEVEL-{level};{parent}"
-    elif parent:
-        # Just parent - return that org unit
-        return f"ou:{parent}"
-    elif level:
+    if parent:
+        return parent
+    if level:
         # Level only - return all org units at that level
         return f"ou:LEVEL-{level}"
-    else:
-        # No parameters - return user org units
-        return "ou:USER_ORGUNIT"
+    # No parameters - return user org units
+    return "ou:USER_ORGUNIT"

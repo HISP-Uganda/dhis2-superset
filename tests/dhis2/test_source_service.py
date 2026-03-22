@@ -23,22 +23,18 @@ import tests.dhis2._bootstrap  # noqa: F401 - must be first
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import superset
 
 
 def _database(**kw):
-    from superset.models.core import Database
-
-    database = Database()
-    database.__dict__.update(
-        dict(
-            id=7,
-            database_name="analytics_db",
-            backend="postgresql",
-        )
+    payload = dict(
+        id=7,
+        database_name="analytics_db",
+        backend="postgresql",
     )
-    database.__dict__.update(kw)
-    return database
+    payload.update(kw)
+    return SimpleNamespace(**payload)
 
 
 def _source(**kw):
@@ -56,6 +52,16 @@ def _source(**kw):
         "source_name": payload["source_name"],
     }
     return SimpleNamespace(**payload)
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
 
 
 class TestSourceService:

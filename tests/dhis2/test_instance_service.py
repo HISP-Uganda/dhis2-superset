@@ -46,6 +46,27 @@ def _inst(**kw) -> DHIS2Instance:
     return i
 
 
+@pytest.fixture(autouse=True)
+def _restore_session_methods():
+    import superset
+    import sys
+
+    session = superset.db.session
+    method_names = ("query", "get", "add", "delete", "commit", "flush", "rollback")
+    originals = {name: getattr(session, name) for name in method_names if hasattr(session, name)}
+    core_mod = sys.modules.get("superset.models.core")
+    original_database = (
+        getattr(core_mod, "Database")
+        if core_mod is not None and hasattr(core_mod, "Database")
+        else None
+    )
+    yield
+    for name, value in originals.items():
+        setattr(session, name, value)
+    if core_mod is not None and original_database is not None:
+        core_mod.Database = original_database
+
+
 class TestTestInstanceConnectionWithConfig:
 
     def _svc(self):
@@ -168,19 +189,14 @@ class TestCreateInstance:
         superset.db.session.add = MagicMock()
         superset.db.session.commit = MagicMock()
         with patch("superset.dhis2.instance_service.sync_dhis2_instance"):
-            with patch(
-                "superset.dhis2.instance_service.schedule_database_metadata_refresh"
-            ) as schedule_refresh:
+            with patch("superset.dhis2.instance_service._schedule_metadata_refresh") as schedule_refresh:
                 instance = self._svc().create_instance(
                     database_id=1,
                     data={"name": "x", "url": "http://x.org"},
                 )
 
         assert instance.display_order == 0
-        schedule_refresh.assert_called_once_with(
-            1,
-            reason="configured_connection_changed",
-        )
+        schedule_refresh.assert_called_once_with(1)
 
     def test_delete_instance_schedules_metadata_refresh(self):
         inst = _inst(id=42, database_id=8)
@@ -189,16 +205,11 @@ class TestCreateInstance:
         superset.db.session.get = MagicMock(return_value=inst)
         superset.db.session.delete = MagicMock()
         superset.db.session.commit = MagicMock()
-        with patch(
-            "superset.dhis2.instance_service.schedule_database_metadata_refresh"
-        ) as schedule_refresh:
+        with patch("superset.dhis2.instance_service._schedule_metadata_refresh") as schedule_refresh:
             deleted = self._svc().delete_instance(42)
 
         assert deleted is True
-        schedule_refresh.assert_called_once_with(
-            8,
-            reason="configured_connection_changed",
-        )
+        schedule_refresh.assert_called_once_with(8)
 
 
 class TestUpdateInstance:
@@ -255,15 +266,10 @@ class TestUpdateInstance:
         import superset
         superset.db.session.get = MagicMock(return_value=inst)
         superset.db.session.commit = MagicMock()
-        with patch(
-            "superset.dhis2.instance_service.schedule_database_metadata_refresh"
-        ) as schedule_refresh:
+        with patch("superset.dhis2.instance_service._schedule_metadata_refresh") as schedule_refresh:
             updated = self._svc().update_instance(42, {"description": "after"})
         assert updated.description == "after"
-        schedule_refresh.assert_called_once_with(
-            10,
-            reason="configured_connection_changed",
-        )
+        schedule_refresh.assert_called_once_with(10)
 
 
 class TestMigrateLegacyInstance:
