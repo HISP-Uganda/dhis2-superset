@@ -29,18 +29,22 @@ import {
   getNumberFormatter,
   getTimeFormatter,
   getXAxisLabel,
+  getColumnLabel,
   isDefined,
   isEventAnnotationLayer,
   isFormulaAnnotationLayer,
   isIntervalAnnotationLayer,
   isPhysicalColumn,
   isTimeseriesAnnotationLayer,
+  QueryFormColumn,
   QueryFormData,
   QueryFormMetric,
   TimeseriesChartDataResponseResult,
   TimeseriesDataRecord,
   tooltipHtml,
   ValueFormatter,
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/api/core';
 import { getOriginalSeries } from '@superset-ui/chart-controls';
@@ -100,10 +104,6 @@ import {
   getYAxisFormatter,
 } from '../utils/formatters';
 import { getMetricDisplayName } from '../utils/metricDisplayName';
-import {
-  formatDHIS2Period,
-  getDHIS2PeriodColumnNames,
-} from '../../../../src/utils/dhis2Period';
 
 const getFormatter = (
   customFormatters: Record<string, ValueFormatter>,
@@ -237,7 +237,7 @@ export default function transformProps(
   const displaySeriesNamesB = new Map<string, string>();
   const formatGroupbySeriesName = (
     rawSeriesName: string,
-    currentGroupBy: string[],
+    currentGroupBy: QueryFormColumn[],
     currentLabelMap: Record<string, string[]>,
     labelLookupKey = rawSeriesName,
   ): string => {
@@ -247,15 +247,16 @@ export default function transformProps(
 
     const labelValues = currentLabelMap?.[labelLookupKey];
     const dimensionValues = labelValues?.slice(-currentGroupBy.length);
+    const stringGroupBy = currentGroupBy.map(getColumnLabel);
 
     if (!dimensionValues?.length) {
       return currentGroupBy.length === 1 &&
-        dhis2PeriodColumns.has(currentGroupBy[0] as string)
+        dhis2PeriodColumns.has(stringGroupBy[0])
         ? formatDHIS2Period(rawSeriesName)
         : rawSeriesName;
     }
 
-    const labelDatum = currentGroupBy.reduce<Record<string, string>>(
+    const labelDatum = stringGroupBy.reduce<Record<string, string>>(
       (accumulator, column, index) => ({
         ...accumulator,
         [column]: dimensionValues[index],
@@ -265,7 +266,7 @@ export default function transformProps(
 
     return extractGroupbyLabel({
       datum: labelDatum,
-      groupby: currentGroupBy,
+      groupby: stringGroupBy,
       coltypeMapping,
       timeFormatter: getTimeFormatter(xAxisTimeFormat),
       dhis2PeriodColumns,
@@ -615,13 +616,13 @@ export default function transformProps(
     xAxisDataType === GenericDataType.Temporal
       ? getTooltipTimeFormatter(tooltipTimeFormat)
       : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
-        ? formatDHIS2Period
+        ? (formatDHIS2Period as any)
         : String;
   const xAxisFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getXAxisFormatter(xAxisTimeFormat)
       : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
-        ? formatDHIS2Period
+        ? (formatDHIS2Period as any)
         : String;
 
   const addYAxisTitleOffset = !!(yAxisTitle || yAxisTitleSecondary);
@@ -795,7 +796,7 @@ export default function transformProps(
               focusedRow = rows.length - 1;
             }
           });
-        return tooltipHtml(rows, tooltipFormatter(xValue), focusedRow);
+        return tooltipHtml(rows, (tooltipFormatter as any)(xValue), focusedRow);
       },
     },
     legend: {
@@ -873,7 +874,7 @@ export default function transformProps(
     ),
     onContextMenu,
     onFocusedSeries,
-    xValueFormatter: tooltipFormatter,
+    xValueFormatter: tooltipFormatter as any,
     xAxis: {
       label: xAxisLabel,
       type: xAxisType,

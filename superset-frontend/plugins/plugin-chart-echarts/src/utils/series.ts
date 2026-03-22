@@ -31,6 +31,7 @@ import {
   SupersetTheme,
   TimeFormatter,
   ValueFormatter,
+  formatDHIS2Period,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/api/core';
 import { SortSeriesType, LegendPaddingType } from '@superset-ui/chart-controls';
@@ -38,7 +39,6 @@ import { format } from 'echarts/core';
 import type { LegendComponentOption } from 'echarts/components';
 import type { SeriesOption } from 'echarts';
 import { isEmpty, maxBy, meanBy, minBy, orderBy, sumBy } from 'lodash';
-import { formatDHIS2Period } from '../../../../src/utils/dhis2Period';
 import {
   NULL_STRING,
   StackControlsValue,

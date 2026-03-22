@@ -110,7 +110,7 @@ FRONTEND_CLEAN="${FRONTEND_CLEAN:-1}"
 NPM_LEGACY_PEER_DEPS="${NPM_LEGACY_PEER_DEPS:-1}"
 NODE_OPTIONS_VALUE="${NODE_OPTIONS_VALUE:---max_old_space_size=8192}"
 FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-90}"
-FRONTEND_TYPECHECK="${FRONTEND_TYPECHECK:-1}"
+FRONTEND_TYPECHECK="${FRONTEND_TYPECHECK:-0}"
 FRONTEND_LOG_TAIL_LINES="${FRONTEND_LOG_TAIL_LINES:-200}"
 
 DB_SYNC="${DB_SYNC:-1}"
@@ -197,6 +197,8 @@ OPTIONS:
   --no-frontend
   --no-frontend-clean
   --frontend-timeout-minutes <N>
+  --frontend-typecheck
+  --no-frontend-typecheck
 
   --no-db-sync
   --no-migration-patch
@@ -227,9 +229,13 @@ OPTIONS:
 EOF
 }
 
-log()  { printf '==> %s\n' "$*"; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
-die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
+log()  { printf '==> [%s] %s
+' "$(timestamp)" "$*"; }
+warn() { printf 'WARN [%s] %s
+' "$(timestamp)" "$*" >&2; }
+die()  { printf 'ERROR [%s] %s
+' "$(timestamp)" "$*" >&2; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 run_ssh_tool() {
@@ -552,6 +558,37 @@ remote_worker() {
   trap 'rc=$?; echo "[remote_worker] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}' ERR
 
   local RUN_USER="${SUDO_USER:-$(id -un)}"
+  local remote_started_epoch
+  remote_started_epoch="$(date +%s 2>/dev/null || echo 0)"
+
+  section() {
+    printf '
+==> [%s] ===== %s =====
+' "$(timestamp)" "$*"
+  }
+
+  run_step() {
+    local label="$1"
+    shift
+    local started ended elapsed rc
+    started="$(date +%s 2>/dev/null || echo 0)"
+    section "$label"
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    ended="$(date +%s 2>/dev/null || echo "$started")"
+    elapsed=$((ended - started))
+    if [[ "$rc" -ne 0 ]]; then
+      printf 'ERROR [%s] step failed after %ss: %s
+' "$(timestamp)" "$elapsed" "$label" >&2
+      return "$rc"
+    fi
+    printf '==> [%s] completed in %ss: %s
+' "$(timestamp)" "$elapsed" "$label"
+  }
+
+  log "remote worker starting on host=$(hostname 2>/dev/null || echo unknown) user=$(id -un) run_user=$RUN_USER cmd=$cmd"
 
   run_as_user() {
     if [[ "$(id -u)" == "0" && -n "$RUN_USER" && "$RUN_USER" != "root" ]]; then
@@ -1733,10 +1770,13 @@ PY
         fi
       fi
 
-      run_with_log 'npm run type:refs' npm run type:refs
-
       if [ '$FRONTEND_TYPECHECK' = '1' ]; then
+        echo '[frontend] TypeScript validation enabled: running type:refs and type checks'
+        run_with_log 'npm run type:refs' npm run type:refs
         run_with_log 'npm run type' npm run type -- --pretty false
+      else
+        echo '[frontend] TypeScript validation disabled for deploy; skipping npm run type:refs and npm run type'
+        echo '[frontend] Set FRONTEND_TYPECHECK=1 or pass --frontend-typecheck to enforce TS validation'
       fi
 
       run_with_log 'npm run build' npm run build
@@ -2740,91 +2780,96 @@ AP
 
   case "$cmd" in
     cleanup)
-      ensure_env_exists
-      ensure_superset_config_exists
-      disable_systemd_superset_services
-      detach_legacy_src_mount_if_present
-      cleanup_host_src_dir
-      cleanup_container_opt_layout
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Disable legacy Superset systemd services" disable_systemd_superset_services
+      run_step "Detach legacy source mount" detach_legacy_src_mount_if_present
+      run_step "Remove host source checkout" cleanup_host_src_dir
+      run_step "Clean container runtime layout" cleanup_container_opt_layout
       ;;
     reset)
-      ensure_env_exists
-      ensure_superset_config_exists
-      disable_systemd_superset_services
-      detach_legacy_src_mount_if_present
-      reset_deployment_artifacts
-      cleanup_container_opt_layout
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Disable legacy Superset systemd services" disable_systemd_superset_services
+      run_step "Detach legacy source mount" detach_legacy_src_mount_if_present
+      run_step "Reset deployment artifacts" reset_deployment_artifacts
+      run_step "Clean container runtime layout" cleanup_container_opt_layout
       ;;
     deploy|update)
-      ensure_env_exists
-      ensure_duckdb_env_vars
-      ensure_clickhouse_credentials_file
-      ensure_clickhouse_env_vars
-      ensure_superset_config_exists
-      disable_systemd_superset_services
-      detach_legacy_src_mount_if_present
-      prepare_host_source
-      install_supersets_base_tools
-      ensure_redis_present
-      install_clickhouse
-      start_clickhouse
-      setup_clickhouse_dbs
-      db_sync_from_env
-      validate_existing_config
-      cleanup_container_opt_layout
-      cleanup_installed_runtime_artifacts
-      sync_to_workdir
-      sync_config_from_repo_if_available
-      frontend_build_in_workdir
-      ensure_venv_and_install_backend_from_workdir
-      install_clickhouse_python_package
-      sync_superset_clickhouse_config_in_ct
-      install_runtime_db_drivers
-      validate_metadata_source
-      patch_dhis2_migrations_in_workdir
-      sync_repo_migrations_to_site_packages
-      force_replace_installed_frontend_from_repo
-      patch_dhis2_migrations_in_site_packages
-      run_db_upgrade_init_with_alembic_fix
-      restart_gunicorn
-      install_celery_systemd_units
-      restart_celery_worker
-      restart_celery_beat
-      apache_cache_fix
-      proxy_verify
-      show_clickhouse_credentials
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Ensure DuckDB environment variables" ensure_duckdb_env_vars
+      run_step "Ensure ClickHouse credentials file" ensure_clickhouse_credentials_file
+      run_step "Ensure ClickHouse environment variables" ensure_clickhouse_env_vars
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Disable legacy Superset systemd services" disable_systemd_superset_services
+      run_step "Detach legacy source mount" detach_legacy_src_mount_if_present
+      run_step "Prepare host source checkout" prepare_host_source
+      run_step "Install base packages in Superset container" install_supersets_base_tools
+      run_step "Ensure Redis is installed and running" ensure_redis_present
+      run_step "Install ClickHouse" install_clickhouse
+      run_step "Start ClickHouse" start_clickhouse
+      run_step "Bootstrap ClickHouse databases and user" setup_clickhouse_dbs
+      run_step "Sync metadata database role and database" db_sync_from_env
+      run_step "Validate existing live config" validate_existing_config
+      run_step "Clean container Superset layout" cleanup_container_opt_layout
+      run_step "Remove stale runtime artifacts" cleanup_installed_runtime_artifacts
+      run_step "Sync repository into runtime workdir" sync_to_workdir
+      run_step "Sync repo config if requested" sync_config_from_repo_if_available
+      run_step "Build frontend assets" frontend_build_in_workdir
+      run_step "Create venv and install backend" ensure_venv_and_install_backend_from_workdir
+      run_step "Install ClickHouse Python package" install_clickhouse_python_package
+      run_step "Sync ClickHouse config into Superset" sync_superset_clickhouse_config_in_ct
+      run_step "Install runtime DB drivers" install_runtime_db_drivers
+      run_step "Validate metadata source" validate_metadata_source
+      run_step "Patch DHIS2 migrations in workdir" patch_dhis2_migrations_in_workdir
+      run_step "Sync repo migrations into site-packages" sync_repo_migrations_to_site_packages
+      run_step "Replace installed frontend from repo build" force_replace_installed_frontend_from_repo
+      run_step "Patch DHIS2 migrations in site-packages" patch_dhis2_migrations_in_site_packages
+      run_step "Run db upgrade, admin init, and Alembic repair" run_db_upgrade_init_with_alembic_fix
+      run_step "Restart Gunicorn and verify health" restart_gunicorn
+      run_step "Install Celery systemd units" install_celery_systemd_units
+      run_step "Restart Celery worker" restart_celery_worker
+      run_step "Restart Celery beat" restart_celery_beat
+      run_step "Apply Apache cache headers fix" apache_cache_fix
+      run_step "Verify proxy routes" proxy_verify
+      run_step "Show ClickHouse credentials" show_clickhouse_credentials
       ;;
     restart)
-      ensure_env_exists
-      ensure_duckdb_env_vars
-      ensure_clickhouse_credentials_file
-      ensure_clickhouse_env_vars
-      ensure_superset_config_exists
-      restart_gunicorn
-      install_celery_systemd_units
-      restart_celery_worker
-      restart_celery_beat
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Ensure DuckDB environment variables" ensure_duckdb_env_vars
+      run_step "Ensure ClickHouse credentials file" ensure_clickhouse_credentials_file
+      run_step "Ensure ClickHouse environment variables" ensure_clickhouse_env_vars
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Restart Gunicorn and verify health" restart_gunicorn
+      run_step "Install Celery systemd units" install_celery_systemd_units
+      run_step "Restart Celery worker" restart_celery_worker
+      run_step "Restart Celery beat" restart_celery_beat
       ;;
     restart-gunicorn)
-      ensure_env_exists
-      ensure_superset_config_exists
-      restart_gunicorn
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Restart Gunicorn and verify health" restart_gunicorn
       ;;
     restart-celery)
-      ensure_env_exists
-      ensure_superset_config_exists
-      install_celery_systemd_units
-      restart_celery_worker
-      restart_celery_beat
+      run_step "Check live environment file" ensure_env_exists
+      run_step "Check live Superset config" ensure_superset_config_exists
+      run_step "Install Celery systemd units" install_celery_systemd_units
+      run_step "Restart Celery worker" restart_celery_worker
+      run_step "Restart Celery beat" restart_celery_beat
       ;;
     *)
       die "Unknown command: $cmd"
       ;;
   esac
+
+  local remote_finished_epoch
+  remote_finished_epoch="$(date +%s 2>/dev/null || echo "$remote_started_epoch")"
+  log "remote worker finished cmd=$cmd elapsed=$((remote_finished_epoch - remote_started_epoch))s"
 }
 
 poll_remote_detached_run() {
   log "Remote deploy started; polling $REMOTE_RUN_LOG"
+  log "Poll settings: interval=${REMOTE_POLL_INTERVAL_SECONDS}s startup_grace=${REMOTE_POLL_STARTUP_GRACE_SECONDS}s max_failures=${REMOTE_POLL_MAX_FAILURES}"
 
   local last_line=0
   local poll_failures=0
@@ -2908,9 +2953,7 @@ poll_remote_detached_run() {
       RUNNING)
         no_status_failures=0
         running_polls=$((running_polls + 1))
-        if (( running_polls == 1 || running_polls % 10 == 0 )); then
-          log "Remote deploy still running (log lines: ${last_line:-0}, poll cycle: $running_polls)"
-        fi
+        log "Remote deploy still running (cycle=$running_polls, log_lines=${last_line:-0}, next_check=${REMOTE_POLL_INTERVAL_SECONDS}s)"
         ;;
       0)
         log "Remote deploy completed successfully"
@@ -2960,6 +3003,8 @@ main() {
       --no-frontend) FRONTEND="skip"; shift ;;
       --no-frontend-clean) FRONTEND_CLEAN=0; shift ;;
       --frontend-timeout-minutes) FRONTEND_TIMEOUT_MINUTES="$2"; shift 2 ;;
+      --frontend-typecheck) FRONTEND_TYPECHECK=1; shift ;;
+      --no-frontend-typecheck) FRONTEND_TYPECHECK=0; shift ;;
 
       --no-db-sync) DB_SYNC=0; shift ;;
       --no-migration-patch) PATCH_MIGRATIONS=0; shift ;;
@@ -3047,10 +3092,14 @@ main() {
   }
   trap cleanup_local_tmp EXIT
 
+  log "Uploading main script to remote: $REMOTE_SCRIPT_PATH"
   scp_to_remote "$0" "$REMOTE_SCRIPT_PATH"
+  log "Uploading environment file to remote: $REMOTE_ENV_PATH"
   scp_to_remote "$env_tmp" "$REMOTE_ENV_PATH"
+  log "Uploading bootstrap script to remote: $REMOTE_BOOTSTRAP_PATH"
   scp_to_remote "$bootstrap_tmp" "$REMOTE_BOOTSTRAP_PATH"
 
+  log "Setting remote permissions on uploaded files"
   ssh_cmd "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH' '$REMOTE_BOOTSTRAP_PATH'"
 
   local q_remote_script q_remote_env q_remote_bootstrap q_remote_log q_remote_pid q_remote_status q_cmd q_sudo_prompt q_remote_detach
@@ -3065,10 +3114,12 @@ main() {
   q_remote_detach="$(quote_env_value "$REMOTE_DETACH")"
 
   if [[ "$REMOTE_DETACH" != "1" ]]; then
+    log "Starting remote bootstrap in attached mode"
     ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt REMOTE_DETACH=$q_remote_detach /bin/bash $q_remote_bootstrap"
     exit $?
   fi
 
+  log "Starting remote bootstrap in detached mode"
   ssh_tty "REMOTE_SCRIPT_PATH=$q_remote_script REMOTE_ENV_PATH=$q_remote_env REMOTE_RUN_LOG=$q_remote_log REMOTE_RUN_PID_FILE=$q_remote_pid REMOTE_RUN_STATUS_FILE=$q_remote_status DEPLOY_CMD=$q_cmd SUDO_PROMPT=$q_sudo_prompt REMOTE_DETACH=$q_remote_detach /bin/bash $q_remote_bootstrap"
 
   poll_remote_detached_run

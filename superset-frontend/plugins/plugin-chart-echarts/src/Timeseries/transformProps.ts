@@ -31,15 +31,19 @@ import {
   getNumberFormatter,
   getTimeFormatter,
   getXAxisLabel,
+  getColumnLabel,
   isDefined,
   isEventAnnotationLayer,
   isFormulaAnnotationLayer,
   isIntervalAnnotationLayer,
   isPhysicalColumn,
   isTimeseriesAnnotationLayer,
+  QueryFormColumn,
   t,
   TimeseriesChartDataResponseResult,
   NumberFormats,
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/api/core';
 import {
@@ -111,10 +115,6 @@ import {
   getXAxisFormatter,
   getYAxisFormatter,
 } from '../utils/formatters';
-import {
-  formatDHIS2Period,
-  getDHIS2PeriodColumnNames,
-} from '../../../../src/utils/dhis2Period';
 
 export default function transformProps(
   chartProps: EchartsTimeseriesChartProps,
@@ -241,15 +241,15 @@ export default function transformProps(
 
     const labelValues = labelMap[rawSeriesName];
     const dimensionValues = labelValues?.slice(-groupBy.length);
+    const stringGroupBy = groupBy.map(getColumnLabel);
 
     if (!dimensionValues?.length) {
-      return groupBy.length === 1 &&
-        dhis2PeriodColumns.has(groupBy[0] as string)
+      return groupBy.length === 1 && dhis2PeriodColumns.has(stringGroupBy[0])
         ? formatDHIS2Period(rawSeriesName)
         : rawSeriesName;
     }
 
-    const labelDatum = groupBy.reduce<Record<string, string>>(
+    const labelDatum = stringGroupBy.reduce<Record<string, string>>(
       (accumulator, column, index) => ({
         ...accumulator,
         [column]: dimensionValues[index],
@@ -259,7 +259,7 @@ export default function transformProps(
 
     return extractGroupbyLabel({
       datum: labelDatum,
-      groupby: groupBy,
+      groupby: stringGroupBy,
       coltypeMapping: dataTypes,
       timeFormatter: getTimeFormatter(xAxisTimeFormat),
       dhis2PeriodColumns,
@@ -524,13 +524,13 @@ export default function transformProps(
     xAxisDataType === GenericDataType.Temporal
       ? getTooltipTimeFormatter(tooltipTimeFormat)
       : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
-        ? formatDHIS2Period
+        ? (formatDHIS2Period as any)
         : String;
   const xAxisFormatter =
     xAxisDataType === GenericDataType.Temporal
       ? getXAxisFormatter(xAxisTimeFormat)
       : dhis2PeriodColumns.has(xAxisOrig) || dhis2PeriodColumns.has(xAxisLabel)
-        ? formatDHIS2Period
+        ? (formatDHIS2Period as any)
         : String;
 
   const {
@@ -734,7 +734,7 @@ export default function transformProps(
           }
           rows.push(totalRow);
         }
-        return tooltipHtml(rows, tooltipFormatter(xValue), focusedRow);
+        return tooltipHtml(rows, (tooltipFormatter as any)(xValue), focusedRow);
       },
     },
     legend: {
@@ -811,7 +811,7 @@ export default function transformProps(
     onContextMenu,
     onLegendStateChanged,
     onFocusedSeries,
-    xValueFormatter: tooltipFormatter,
+    xValueFormatter: tooltipFormatter as any,
     xAxis: {
       label: xAxisLabel,
       type: xAxisType,

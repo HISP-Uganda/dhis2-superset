@@ -26,6 +26,7 @@ import {
   ValueFormatter,
   getValueFormatter,
   tooltipHtml,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import type { TreemapSeriesNodeItemOption } from 'echarts/types/src/chart/treemap/TreemapSeries';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -50,7 +51,6 @@ import { OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
 import { treeBuilder, TreeNode } from '../utils/treeBuilder';
-import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function formatLabel({
   params,

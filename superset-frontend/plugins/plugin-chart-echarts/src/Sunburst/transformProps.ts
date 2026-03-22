@@ -29,6 +29,7 @@ import {
   t,
   tooltipHtml,
   ValueFormatter,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import type { EChartsCoreOption } from 'echarts/core';
 import type { CallbackDataParams } from 'echarts/types/src/util/types';
@@ -44,7 +45,6 @@ import {
   SunburstTransformedProps,
 } from './types';
 import { getDefaultTooltip } from '../utils/tooltip';
-import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function getLinearDomain(
   treeData: TreeNode[],

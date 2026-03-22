@@ -22,6 +22,7 @@ import {
   getMetricLabel,
   getNumberFormatter,
   getTimeFormatter,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import type { EChartsCoreOption } from 'echarts/core';
 import type { BoxplotSeriesOption } from 'echarts/charts';
@@ -42,7 +43,6 @@ import { getPadding } from '../Timeseries/transformers';
 import { OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
-import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export default function transformProps(
   chartProps: EchartsBoxPlotChartProps,

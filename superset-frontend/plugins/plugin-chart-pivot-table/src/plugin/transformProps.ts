@@ -25,14 +25,12 @@ import {
   QueryFormData,
   SMART_DATE_ID,
   TimeFormats,
+  formatDHIS2Period,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import { GenericDataType } from '@apache-superset/core/api/core';
 import { getColorFormatters } from '@superset-ui/chart-controls';
 import { DateFormatter } from '../types';
-import {
-  formatDHIS2Period,
-  getDHIS2PeriodColumnNames,
-} from '../../../../src/utils/dhis2Period';
 
 const { DATABASE_DATETIME } = TimeFormats;
 
@@ -134,7 +132,8 @@ export default function transformProps(chartProps: ChartProps<QueryFormData>) {
       ) => {
         let formatter: DateFormatter | undefined;
         if (dhis2PeriodColumns.has(temporalColname)) {
-          formatter = value => formatDHIS2Period(String(value ?? ''));
+          formatter = (value: unknown) =>
+            formatDHIS2Period(String(value ?? ''));
         } else if (dateFormat === SMART_DATE_ID) {
           if (granularity) {
             // time column use formats based on granularity

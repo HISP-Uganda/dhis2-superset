@@ -41,7 +41,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { t, SupersetClient } from '@superset-ui/core';
+import { t, SupersetClient, periodSelectLabel } from '@superset-ui/core';
 import { Select, Button, Spin, Tooltip } from 'antd';
 import { PlusOutlined, CloseOutlined } from '@ant-design/icons';
 import styled from '@emotion/styled';
@@ -49,7 +49,6 @@ import {
   detectDHIS2Kind,
   DHIS2ColumnTag,
 } from '@superset-ui/chart-controls/components/ColumnTypeLabel/DHIS2ColumnTag';
-import { periodSelectLabel } from '../../../../utils/dhis2Period';
 
 // ---------------------------------------------------------------------------
 // Types

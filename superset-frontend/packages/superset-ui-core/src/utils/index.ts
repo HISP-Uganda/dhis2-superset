@@ -35,3 +35,4 @@ export * from './html';
 export * from './tooltip';
 export * from './merge';
 export * from './dhis2Legend';
+export * from './dhis2Period';

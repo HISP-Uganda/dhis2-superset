@@ -25,6 +25,7 @@ import {
   getTimeFormatter,
   NumberFormatter,
   isDefined,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import type { CallbackDataParams } from 'echarts/types/src/util/types';
 import type { RadarSeriesDataItemOption } from 'echarts/types/src/chart/radar/RadarSeries';
@@ -49,7 +50,6 @@ import { defaultGrid } from '../defaults';
 import { Refs } from '../types';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { findGlobalMax, renderNormalizedTooltip } from './utils';
-import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 export function formatLabel({
   params,

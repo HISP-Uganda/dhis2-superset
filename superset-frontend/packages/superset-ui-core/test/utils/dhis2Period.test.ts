@@ -23,7 +23,7 @@ import {
   isDHIS2Period,
   isDHIS2PeriodColumn,
   periodSelectLabel,
-} from './dhis2Period';
+} from '../../src/utils/dhis2Period';
 
 describe('formatDHIS2Period', () => {
   // Daily

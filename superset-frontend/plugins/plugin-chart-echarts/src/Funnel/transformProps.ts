@@ -27,6 +27,7 @@ import {
   tooltipHtml,
   ValueFormatter,
   VizType,
+  getDHIS2PeriodColumnNames,
 } from '@superset-ui/core';
 import type { CallbackDataParams } from 'echarts/types/src/util/types';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -50,7 +51,6 @@ import { defaultGrid } from '../defaults';
 import { DEFAULT_LEGEND_FORM_DATA, OpacityEnum } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import { Refs } from '../types';
-import { getDHIS2PeriodColumnNames } from '../../../../src/utils/dhis2Period';
 
 const percentFormatter = getNumberFormatter(NumberFormats.PERCENT_2_POINT);
 
