@@ -2230,8 +2230,8 @@ def patch_long_constraint_names(text: str) -> str:
             seen[old] = new
 
     for old, new in seen.items():
-        text = text.replace(f'\"{old}\"', f'\"{new}\"')
-        text = text.replace(f"'{old}'", f"'{new}'")
+        text = text.replace('"' + old + '"', '"' + new + '"')
+        text = text.replace("'" + old + "'", "'" + new + "'")
 
     return text
 

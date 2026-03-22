@@ -247,12 +247,24 @@ def run_compatibility_backfill() -> None:
             # yet running when backfill executes during `db upgrade` / `init`.
             # This is expected — log at INFO only and do not count as an error.
             exc_str = str(exc)
-            if "Connection refused" in exc_str or "NewConnectionError" in exc_str or "Max retries exceeded" in exc_str:
+            
+            # Handle both network connectivity errors and partial database migrations
+            # (where the model has columns not yet added to the actual database table).
+            is_unreachable = "Connection refused" in exc_str or "NewConnectionError" in exc_str or "Max retries exceeded" in exc_str
+            is_not_migrated = "UndefinedColumn" in exc_str or "ProgrammingError" in exc_str
+            
+            if is_unreachable or is_not_migrated:
                 skipped += 1
-                logger.info(
-                    "compat_backfill: staging engine not reachable for dataset id=%s — will retry on next startup",
-                    dataset.id,
-                )
+                if is_unreachable:
+                    logger.info(
+                        "compat_backfill: staging engine not reachable for dataset id=%s — will retry on next startup",
+                        dataset.id,
+                    )
+                else:
+                    logger.info(
+                        "compat_backfill: database schema not fully migrated for dataset id=%s — skipping for now",
+                        dataset.id,
+                    )
             else:
                 errors += 1
                 logger.warning(

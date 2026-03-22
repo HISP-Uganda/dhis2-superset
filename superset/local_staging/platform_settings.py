@@ -150,7 +150,13 @@ class LocalStagingSettings(db.Model):  # type: ignore[name-defined]
         import json as _json
         import os as _os
 
-        row = db.session.get(cls, 1)
+        try:
+            row = db.session.get(cls, 1)
+        except Exception:  # pylint: disable=broad-except
+            # Table may not exist yet during initial migration/setup
+            db.session.rollback()
+            row = None
+
         if row is None:
             default_duckdb_path = (
                 _os.environ.get("DHIS2_DUCKDB_PATH") or DEFAULT_DUCKDB_PATH
@@ -162,15 +168,18 @@ class LocalStagingSettings(db.Model):  # type: ignore[name-defined]
                     {"db_path": default_duckdb_path, "memory_limit": "1GB", "threads": 2}
                 ),
             )
-            db.session.add(row)
+            # Try to persist it, but don't crash if it fails (e.g. read-only or table missing)
             try:
+                db.session.add(row)
                 db.session.commit()
             except Exception:  # pylint: disable=broad-except
                 db.session.rollback()
-                # Another worker may have created the row concurrently
-                row = db.session.get(cls, 1) or cls(
-                    id=1, active_engine=ENGINE_DUCKDB
-                )
+                # If we can't save it, just return the in-memory default row.
+                # Another worker might have created it, try one last fetch.
+                try:
+                    row = db.session.get(cls, 1) or row
+                except Exception:  # pylint: disable=broad-except
+                    pass
         return row
 
     @classmethod
@@ -179,9 +188,16 @@ class LocalStagingSettings(db.Model):  # type: ignore[name-defined]
         try:
             row = cls.get()
             return row.active_engine or ENGINE_DUCKDB
-        except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "local_staging_settings table not accessible; defaulting to duckdb",
-                exc_info=True,
-            )
+        except Exception as exc:  # pylint: disable=broad-except
+            exc_str = str(exc)
+            if "UndefinedTable" in exc_str or "ProgrammingError" in exc_str:
+                logger.debug(
+                    "local_staging_settings table not accessible; defaulting to duckdb. Error: %s",
+                    exc_str,
+                )
+            else:
+                logger.warning(
+                    "local_staging_settings table unexpected access error; defaulting to duckdb",
+                    exc_info=True,
+                )
             return ENGINE_DUCKDB
