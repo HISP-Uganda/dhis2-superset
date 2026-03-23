@@ -80,18 +80,18 @@ _SERVING_PREFIX = "sv"
 _CH_STAGING_COLUMNS = [
     ("source_instance_id", "Int32"),
     ("source_instance_name", "LowCardinality(String)"),
-    ("dx_uid", "String"),
-    ("dx_name", "Nullable(String)"),
+    ("dx_uid", "LowCardinality(String) CODEC(ZSTD(3))"),
+    ("dx_name", "String DEFAULT '' CODEC(ZSTD(3))"),
     ("dx_type", "LowCardinality(String)"),
     ("pe", "LowCardinality(String)"),
-    ("ou", "String"),
-    ("ou_name", "Nullable(String)"),
-    ("ou_level", "Nullable(UInt16)"),
-    ("value", "Nullable(String)"),
-    ("value_numeric", "Nullable(Float64)"),
-    ("co_uid", "Nullable(String)"),
-    ("co_name", "Nullable(String)"),
-    ("aoc_uid", "Nullable(String)"),
+    ("ou", "LowCardinality(String) CODEC(ZSTD(3))"),
+    ("ou_name", "String DEFAULT '' CODEC(ZSTD(3))"),
+    ("ou_level", "UInt16"),
+    ("value", "String DEFAULT '' CODEC(ZSTD(3))"),
+    ("value_numeric", "Float64 DEFAULT 0 CODEC(ZSTD(3))"),
+    ("co_uid", "LowCardinality(String) DEFAULT '' CODEC(ZSTD(3))"),
+    ("co_name", "String DEFAULT '' CODEC(ZSTD(3))"),
+    ("aoc_uid", "LowCardinality(String) DEFAULT '' CODEC(ZSTD(3))"),
     ("synced_at", "DateTime DEFAULT now()"),
     ("sync_job_id", "Nullable(Int32)"),
 ]
@@ -261,12 +261,28 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         extra = self._load_column_extra(column)
 
         if extra.get("dhis2_is_ou_level") is True:
-            col_type = "UInt16"
+            return "UInt16"
 
         is_dimension = bool(column.get("is_dimension"))
+        is_indicator = bool(column.get("variable_id"))
+        
+        # Guide: Prefer non-nullable columns unless null is semantically required
+        # Guide: Use LowCardinality for dimensions (usually < 10k unique values per dataset slice)
         if col_type == "String" and is_dimension:
-            return _wrap_low_cardinality_type(col_type, nullable=nullable)
-        return _wrap_nullable_type(col_type) if nullable else col_type
+            # Hierarchy and periods are perfect candidates for LowCardinality
+            return "LowCardinality(String)"
+        
+        # Guide: Float64 should use ZSTD compression
+        suffix = ""
+        if col_type in ("String", "Float64"):
+            suffix = " CODEC(ZSTD(3))"
+
+        # If it's an indicator column, we use non-nullable with 0 default 
+        # to avoid the overhead of null maps during massive aggregations.
+        if is_indicator and not nullable:
+            return f"{col_type} DEFAULT 0{suffix}"
+
+        return (_wrap_nullable_type(col_type) if nullable else col_type) + suffix
 
     def _serving_order_by_sql(
         self,
@@ -367,6 +383,9 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 ),
                 settings={
                     "max_query_size": 104857600,  # 100MB (default is 256KB)
+                    # 4GB default for local macOS (24GB RAM); set to 10GB in production config
+                    "max_memory_usage": int(self._config.get("max_memory_usage", 4294967296)),
+                    "max_bytes_before_external_group_by": int(self._config.get("max_bytes_before_external_group_by", 2147483648)),
                 },
             )
         return self._client
@@ -555,7 +574,13 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 instance_id,
                 instance_name,
                 sync_job_id,
-                *(row.get(col) for col in _ROW_COLS),
+                *(
+                    # ou_level is UInt16 (non-nullable); coerce None → 0
+                    # DHIS2 analytics metadata rarely includes 'level' so the
+                    # parsed value is often None.
+                    (row.get(col) or 0) if col == "ou_level" else row.get(col)
+                    for col in _ROW_COLS
+                ),
             ]
             for row in rows
         ]
@@ -640,6 +665,148 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             parameters={"id": instance_id},
         )
         return -1  # async mutation — count not available
+
+    # ------------------------------------------------------------------
+    # Temp Table Helpers (for SQL-native serving build)
+    # ------------------------------------------------------------------
+
+    def create_temp_table(
+        self,
+        table_name: str,
+        columns_ddl: dict[str, str],
+    ) -> str:
+        """Create a temporary table in the serving database."""
+        self.ensure_schema_exists(None)
+        db = self._serving_database
+        quoted_table = f"`{db}`.`{table_name}`"
+        cols = ", ".join(f"`{k}` {v}" for k, v in columns_ddl.items())
+
+        # Using StripeLog engine for fast, non-merge inserts for temp data.
+        self._cmd(
+            f"CREATE TABLE IF NOT EXISTS {quoted_table} ({cols}) "
+            "ENGINE = StripeLog"
+        )
+        return quoted_table
+
+    def insert_temp_rows(
+        self,
+        table_name: str,
+        rows: list[dict[str, Any]],
+        column_names: list[str],
+    ) -> int:
+        if not rows:
+            return 0
+        db = self._serving_database
+        quoted_table = f"`{db}`.`{table_name}`"
+
+        data = [
+            [row.get(col) for col in column_names]
+            for row in rows
+        ]
+
+        batch_size = 25_000
+        client = self._connect()
+        for i in range(0, len(data), batch_size):
+            client.insert(
+                quoted_table,
+                data[i : i + batch_size],
+                column_names=column_names,
+            )
+        return len(rows)
+
+    def drop_temp_table(self, table_name: str) -> None:
+        db = self._serving_database
+        quoted_table = f"`{db}`.`{table_name}`"
+        self._cmd(f"DROP TABLE IF EXISTS {quoted_table}")
+
+    def execute_serving_build_sql(
+        self,
+        staged_dataset: Any,
+        select_sql: str,
+        columns_config: list[dict[str, Any]],
+    ) -> str:
+        """Build serving table using native SQL execution (INSERT INTO ... SELECT)."""
+        self.ensure_schema_exists(None)
+        serving_db = self._serving_database
+        serving_name = _serving_table_name(staged_dataset)
+        loading_name = f"{serving_name}__build_{int(time.time() * 1000)}"
+        loading_ref = f"`{serving_db}`.`{loading_name}`"
+        self._last_serving_build_name = loading_name
+
+        # 1. Create Loading Table
+        col_ddl_parts: list[str] = []
+        for col in columns_config:
+            col_name = str(col.get("column_name") or "").strip()
+            if not col_name:
+                continue
+            # SQL source might produce nulls, so default to nullable for safety
+            col_type = self._serving_column_type(col, nullable=True)
+            col_ddl_parts.append(f"`{col_name}` {col_type}")
+
+        if not col_ddl_parts:
+            raise ValueError("No columns defined for serving table")
+
+        order_by_sql = self._serving_order_by_sql(columns_config)
+        partition_by_sql = self._serving_partition_by_sql(columns_config)
+
+        # Drop any abandoned loading table from a previous failed run
+        self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
+
+        self._cmd(
+            f"CREATE TABLE {loading_ref} "
+            f"({', '.join(col_ddl_parts)}) "
+            f"ENGINE = MergeTree() "
+            f"PARTITION BY {partition_by_sql} "
+            f"ORDER BY {order_by_sql} "
+            f"SETTINGS allow_nullable_key = 1, index_granularity = 8192"
+        )
+
+        try:
+            # 2. Execute INSERT ... SELECT
+            insert_sql = f"INSERT INTO {loading_ref} {select_sql}"
+            logger.info("ClickHouse: executing serving build SQL: %s", insert_sql)
+            self._cmd(insert_sql)
+
+            row_count = self._table_row_count(loading_ref)
+            logger.info(
+                "ClickHouse: SQL build loaded %d rows into %s; promoting to live",
+                row_count,
+                loading_ref,
+            )
+
+            # 3. Promote
+            self._promote_loading_to_live(serving_db, serving_name, loading_name)
+            return serving_name
+
+        except Exception:
+            try:
+                self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise
+
+    def replace_partition(
+        self,
+        target_table_name: str,
+        source_table_name: str,
+        partition_expr: str,
+    ) -> None:
+        """Atomic partition replacement (source -> target)."""
+        db = self._serving_database
+        target_ref = f"`{db}`.`{target_table_name}`"
+        source_ref = f"`{db}`.`{source_table_name}`"
+        
+        # partition_expr should be the actual value or expression for the partition, 
+        # e.g. "2023" if partitioned by toUInt16OrZero(substring(pe, 1, 4))
+        self._cmd(
+            f"ALTER TABLE {target_ref} REPLACE PARTITION ({partition_expr}) FROM {source_ref}"
+        )
+        logger.info(
+            "ClickHouse: replaced partition (%s) in %s from %s",
+            partition_expr,
+            target_ref,
+            source_ref,
+        )
 
     # ------------------------------------------------------------------
     # Serving table — safe atomic swap via EXCHANGE TABLES
