@@ -78,9 +78,11 @@ _MAX_VARS_PER_REQUEST = 50
 
 # Maximum number of org-unit UIDs to include in a single analytics request.
 # DHIS2 can time out or fail when asked to aggregate data across too many org units
-# at once, even when using POST.  Chunking keeps individual requests manageable.
+# at once, even when using POST.  Some DHIS2 instances also raise a server-side
+# NullPointerException (getOrgUnitCountMap() is null) when the OU list is too large
+# for indicator calculations.  Keep this conservatively small.
 # Override per-dataset via dataset_config["ou_chunk_size"].
-_MAX_OUS_PER_REQUEST = 200
+_MAX_OUS_PER_REQUEST = 50
 
 # Page size for DHIS2 analytics pagination.
 # Override per-dataset via dataset_config["analytics_page_size"].
@@ -97,10 +99,16 @@ _ANALYTICS_PAGE_SIZE_MAX = 10000
 
 # HTTP request timeout for analytics calls: (connect_timeout, read_timeout).
 # A tuple is used so the connect phase fails fast (30 s) and the read phase
-# allows up to 120 s for DHIS2 to begin streaming rows.  A single integer
+# allows up to 300 s for DHIS2 to begin streaming rows.  A single integer
 # would restart on every TCP chunk, making it effectively unbounded for slow
-# servers that trickle data.
-_REQUEST_TIMEOUT = (30, 120)
+# servers that trickle data.  300 s matches the dataValueSets extractor and
+# accommodates slow test/staging DHIS2 instances (e.g. hmis-tests.health.go.ug).
+_REQUEST_TIMEOUT = (30, 300)
+
+# How long to sleep before a simple retry on transient timeout/connection
+# errors.  A brief pause lets an overloaded DHIS2 server recover before we
+# hammer it again.  Applied once before escalating to page-size splitting.
+_TIMEOUT_RETRY_SLEEP_SECONDS = 5
 _ORG_UNIT_SOURCE_MODE_PRIMARY = "primary"
 _ORG_UNIT_SOURCE_MODE_REPOSITORY = "repository"
 _ORG_UNIT_SOURCE_MODE_PER_INSTANCE = "per_instance"
@@ -523,6 +531,33 @@ def _is_retryable_analytics_error(exc: Exception) -> bool:
         return True
     status_code = _analytics_error_status_code(exc)
     return status_code in _RETRYABLE_ANALYTICS_STATUS_CODES
+
+
+def _is_ou_overflow_error(exc: Exception) -> bool:
+    """Return True if the error is the DHIS2 getOrgUnitCountMap NullPointerException.
+
+    This server-side bug is triggered when the analytics engine cannot build
+    the org-unit count map required for indicator calculations.  It manifests
+    as a 500 with a specific message fragment.  The only effective remedy is
+    to reduce the number of org units in the request — reducing page size or
+    splitting the variable batch will NOT help.
+
+    DHIS2 sometimes returns the NPE message in the JSON body; other times it
+    returns a generic "Internal Server Error" HTTP reason phrase.  We check
+    both the formatted exception string and the raw response body so that
+    either representation is caught.
+    """
+    _MARKER = "getOrgUnitCountMap"
+    if _MARKER in str(exc):
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            if _MARKER in (response.text or ""):
+                return True
+        except Exception:  # pylint: disable=broad-except
+            pass
+    return False
 
 
 def get_instances_with_legacy_fallback(
@@ -1122,16 +1157,94 @@ class DHIS2SyncService:
             )
 
             if _is_retryable_analytics_error(exc):
-                if page_size > _MIN_ANALYTICS_PAGE_SIZE:
-                    reduced_page_size = max(_MIN_ANALYTICS_PAGE_SIZE, page_size // 2)
-                    if reduced_page_size < page_size:
-                        logger.warning(
-                            "Sync: retryable analytics failure for instance '%s' batch_size=%d; retrying with page_size=%d",
-                            instance.name,
-                            len(batch),
-                            reduced_page_size,
-                            exc_info=True,
+                # ----------------------------------------------------------
+                # Strategy 0: simple sleep-and-retry for transient network
+                # failures (Timeout, ConnectionError).  A brief pause lets
+                # an overloaded server recover before we escalate to splitting.
+                # Only one extra attempt is made so the total delay is bounded.
+                # ----------------------------------------------------------
+                if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+                    logger.warning(
+                        "Sync: transient network error for instance '%s' "
+                        "(page=%d); sleeping %ds then retrying once",
+                        instance.name,
+                        page - 1,
+                        _TIMEOUT_RETRY_SLEEP_SECONDS,
+                        exc_info=True,
+                    )
+                    time.sleep(_TIMEOUT_RETRY_SLEEP_SECONDS)
+                    try:
+                        return self._fetch_analytics_batch(
+                            instance=instance,
+                            batch=batch,
+                            periods=periods,
+                            org_units=org_units,
+                            variable_map=variable_map,
+                            page_size=page_size,
                         )
+                    except (requests.Timeout, requests.ConnectionError):
+                        # Still timing out — fall through to splitting strategies.
+                        pass
+                    except Exception as retry_exc:  # pylint: disable=broad-except
+                        if not _is_retryable_analytics_error(retry_exc):
+                            raise
+                        # Non-timeout retryable error — fall through.
+
+                # ----------------------------------------------------------
+                # Strategy 1: getOrgUnitCountMap NPE → split OUs immediately.
+                # Reducing page size or variables will NOT help because DHIS2
+                # fails before it starts paginating.
+                # ----------------------------------------------------------
+                if _is_ou_overflow_error(exc) and len(org_units) > 1:
+                    ou_midpoint = max(1, len(org_units) // 2)
+                    logger.warning(
+                        "Sync: getOrgUnitCountMap error for instance '%s'; "
+                        "splitting org-unit chunk from %d to %d+%d",
+                        instance.name,
+                        len(org_units),
+                        ou_midpoint,
+                        len(org_units) - ou_midpoint,
+                        exc_info=True,
+                    )
+                    partial: list[dict[str, Any]] = []
+                    for ou_half in (org_units[:ou_midpoint], org_units[ou_midpoint:]):
+                        try:
+                            partial.extend(self._fetch_analytics_batch(
+                                instance=instance,
+                                batch=batch,
+                                periods=periods,
+                                org_units=ou_half,
+                                variable_map=variable_map,
+                                page_size=page_size,
+                            ))
+                        except Exception as sub_exc:  # pylint: disable=broad-except
+                            if not _is_retryable_analytics_error(sub_exc):
+                                raise
+                            logger.warning(
+                                "Sync: skipping %d org unit(s) for instance '%s' "
+                                "after exhausting retries (persistent 500)",
+                                len(ou_half),
+                                instance.name,
+                            )
+                    return partial
+
+                # ----------------------------------------------------------
+                # Strategy 2: reduce page size (helps with transient 500s and
+                # large result sets, but NOT with OU-count NPEs).
+                # Use try/except so that if the smaller page also fails we
+                # fall through to variable/OU splitting instead of propagating.
+                # ----------------------------------------------------------
+                if page_size > _MIN_ANALYTICS_PAGE_SIZE and not _is_ou_overflow_error(exc):
+                    reduced_page_size = max(_MIN_ANALYTICS_PAGE_SIZE, page_size // 2)
+                    logger.warning(
+                        "Sync: retryable analytics failure for instance '%s' "
+                        "batch_size=%d; retrying with page_size=%d",
+                        instance.name,
+                        len(batch),
+                        reduced_page_size,
+                        exc_info=True,
+                    )
+                    try:
                         return self._fetch_analytics_batch(
                             instance=instance,
                             batch=batch,
@@ -1140,36 +1253,104 @@ class DHIS2SyncService:
                             variable_map=variable_map,
                             page_size=reduced_page_size,
                         )
+                    except Exception as pg_exc:  # pylint: disable=broad-except
+                        if not _is_retryable_analytics_error(pg_exc):
+                            raise
+                        # Page-size reduction didn't help; fall through.
 
+                # ----------------------------------------------------------
+                # Strategy 3: split the variable batch in half.
+                # Each half is fetched independently so that a broken indicator
+                # on the DHIS2 side does not prevent the other variables from
+                # loading.
+                # ----------------------------------------------------------
                 if len(batch) > 1:
                     midpoint = max(1, len(batch) // 2)
-                    left_batch = batch[:midpoint]
-                    right_batch = batch[midpoint:]
                     logger.warning(
-                        "Sync: retryable analytics failure for instance '%s'; splitting variable batch from %d to %d and %d",
+                        "Sync: retryable analytics failure for instance '%s'; "
+                        "splitting variable batch from %d to %d+%d",
                         instance.name,
                         len(batch),
-                        len(left_batch),
-                        len(right_batch),
+                        midpoint,
+                        len(batch) - midpoint,
                         exc_info=True,
                     )
-                    left_rows = self._fetch_analytics_batch(
-                        instance=instance,
-                        batch=left_batch,
-                        periods=periods,
-                        org_units=org_units,
-                        variable_map=variable_map,
-                        page_size=page_size,
+                    partial = []
+                    for sub_batch in (batch[:midpoint], batch[midpoint:]):
+                        try:
+                            partial.extend(self._fetch_analytics_batch(
+                                instance=instance,
+                                batch=sub_batch,
+                                periods=periods,
+                                org_units=org_units,
+                                variable_map=variable_map,
+                                page_size=page_size,
+                            ))
+                        except Exception as sub_exc:  # pylint: disable=broad-except
+                            if not _is_retryable_analytics_error(sub_exc):
+                                raise
+                            logger.warning(
+                                "Sync: skipping %d variable(s) for instance '%s' "
+                                "after exhausting retries (persistent 500)",
+                                len(sub_batch),
+                                instance.name,
+                            )
+                    return partial
+
+                # ----------------------------------------------------------
+                # Strategy 4: variable batch is size 1; split OUs as last
+                # resort.  A generic 500 with no specific DHIS2 message may
+                # still be caused by the OU count.  Each half is fetched
+                # independently so a broken OU/indicator pair does not block
+                # the rest.
+                # ----------------------------------------------------------
+                if len(org_units) > 1:
+                    ou_midpoint = max(1, len(org_units) // 2)
+                    logger.warning(
+                        "Sync: single-variable batch still failing for instance '%s'; "
+                        "splitting org-unit chunk from %d to %d+%d as final fallback",
+                        instance.name,
+                        len(org_units),
+                        ou_midpoint,
+                        len(org_units) - ou_midpoint,
+                        exc_info=True,
                     )
-                    right_rows = self._fetch_analytics_batch(
-                        instance=instance,
-                        batch=right_batch,
-                        periods=periods,
-                        org_units=org_units,
-                        variable_map=variable_map,
-                        page_size=page_size,
-                    )
-                    return [*left_rows, *right_rows]
+                    partial = []
+                    for ou_half in (org_units[:ou_midpoint], org_units[ou_midpoint:]):
+                        try:
+                            partial.extend(self._fetch_analytics_batch(
+                                instance=instance,
+                                batch=batch,
+                                periods=periods,
+                                org_units=ou_half,
+                                variable_map=variable_map,
+                                page_size=page_size,
+                            ))
+                        except Exception as sub_exc:  # pylint: disable=broad-except
+                            if not _is_retryable_analytics_error(sub_exc):
+                                raise
+                            logger.warning(
+                                "Sync: skipping %d org unit(s) for variable '%s' "
+                                "on instance '%s' after exhausting retries",
+                                len(ou_half),
+                                batch[0] if batch else "?",
+                                instance.name,
+                            )
+                    return partial
+
+                # ----------------------------------------------------------
+                # Dead-end: 1 variable + 1 org unit + persistent 500.
+                # This is a broken indicator/OU combination on the DHIS2 side.
+                # Return empty rather than failing the entire sync job.
+                # ----------------------------------------------------------
+                logger.warning(
+                    "Sync: skipping variable '%s' for org unit '%s' on instance '%s' "
+                    "— persistent 500 with no further splits possible",
+                    batch[0] if batch else "?",
+                    org_units[0] if org_units else "?",
+                    instance.name,
+                )
+                return []
 
             raise
 
@@ -1608,6 +1789,53 @@ class DHIS2SyncService:
                     )
                     if incremental_plan.periods_to_fetch:
                         effective_config["periods"] = incremental_plan.periods_to_fetch
+                # --- Incremental per-chunk staging ---
+                # Each OU chunk's rows are staged to ClickHouse as soon as they
+                # arrive so the UI shows a rising row count in real-time.
+                _chunk_first = True  # first chunk triggers replace/prune
+                _rows_staged_for_inst = 0
+
+                def _on_chunk_rows(
+                    chunk_rows: list[dict[str, Any]],
+                    _inst=instance,
+                    _ds=dataset,
+                    _plan=incremental_plan,
+                ) -> None:
+                    nonlocal _chunk_first, _rows_staged_for_inst, _rows_staged, total_rows
+                    _replace = _chunk_first and not _plan.use_incremental
+                    _chunk_first = False
+                    _prune = _plan.periods_to_delete if _replace else []
+                    _count = self._load_rows(
+                        _ds,
+                        _inst,
+                        chunk_rows,
+                        sync_job_id=job_id,
+                        replace_instance_rows=_replace,
+                        periods_to_prune=_prune,
+                    )
+                    _rows_staged_for_inst += _count
+                    _rows_staged += _count
+                    total_rows += _count
+                    self._update_job_progress(
+                        job_id,
+                        current_step=f"staging rows from {_inst.name}",
+                        rows_staged=_rows_staged,
+                    )
+                    # Persist running total to DB so UI polling sees live counts.
+                    if job_id is not None:
+                        _interim = db.session.query(DHIS2SyncJob).get(job_id)
+                        if _interim is not None:
+                            _interim.rows_loaded = total_rows
+                        try:
+                            db.session.commit()
+                        except Exception:  # pylint: disable=broad-except
+                            logger.warning(
+                                "Sync: failed to commit interim row count for job=%s",
+                                job_id,
+                                exc_info=True,
+                            )
+                            db.session.rollback()
+
                 rows: list[dict[str, Any]] = []
                 if not incremental or incremental_plan.periods_to_fetch:
                     rows = self._fetch_from_instance(
@@ -1615,6 +1843,7 @@ class DHIS2SyncService:
                         inst_vars,
                         effective_config,
                         job_id=job_id,
+                        on_chunk_rows=_on_chunk_rows,
                     )
                 _rows_extracted += len(rows)
                 self._update_job_progress(
@@ -1623,18 +1852,25 @@ class DHIS2SyncService:
                     rows_extracted=_rows_extracted,
                 )
 
-                row_count = self._load_rows(
-                    dataset,
-                    instance,
-                    rows,
-                    sync_job_id=job_id,
-                    replace_instance_rows=not incremental_plan.use_incremental,
-                    periods_to_prune=incremental_plan.periods_to_delete,
-                )
+                if not _chunk_first:
+                    # At least one chunk was staged incrementally; _rows_staged
+                    # and total_rows were already updated inside _on_chunk_rows.
+                    row_count = _rows_staged_for_inst
+                else:
+                    # No chunks produced rows (dataset returned nothing).
+                    # Still run _load_rows so replace/prune executes for full syncs.
+                    row_count = self._load_rows(
+                        dataset,
+                        instance,
+                        rows,
+                        sync_job_id=job_id,
+                        replace_instance_rows=not incremental_plan.use_incremental,
+                        periods_to_prune=incremental_plan.periods_to_delete,
+                    )
+                    _rows_staged += row_count
+                    total_rows += row_count
 
                 _completed_units += 1
-                _rows_staged += row_count
-                total_rows += row_count
                 any_success = True
                 instance_results[str(instance_id)] = {
                     "status": "success",
@@ -1650,14 +1886,21 @@ class DHIS2SyncService:
                     instance.name,
                     staged_dataset_id,
                 )
+                # ... (previous code)
                 try:
-                    self._materialize_serving_table(dataset)
+                    self._materialize_serving_table(
+                        dataset,
+                        refresh_scope=incremental_plan.periods_to_fetch
+                        if incremental_plan.use_incremental
+                        else None,
+                    )
                 except Exception:  # pylint: disable=broad-except
                     logger.exception(
                         "Sync: failed to publish partial serving rows for dataset=%d after instance='%s'",
                         staged_dataset_id,
                         instance.name,
                     )
+                # ... (rest of loop)
                 _assign_model_attr(dataset, "last_sync_status", "running")
                 _assign_model_attr(dataset, "last_sync_rows", total_rows)
                 _sync_compat_dataset(dataset)
@@ -1722,6 +1965,10 @@ class DHIS2SyncService:
 
         if any_success:
             try:
+                # Final build ensures all registered specialized marts are current.
+                # If everything was already built incrementally during the loop, 
+                # ensure_serving_table will detect it doesn't need a full rebuild
+                # unless a change was detected.
                 self._materialize_serving_table(dataset)
             except Exception:  # pylint: disable=broad-except
                 logger.exception(
@@ -2034,6 +2281,7 @@ class DHIS2SyncService:
         variables: list[DHIS2DatasetVariable],
         dataset_config: dict[str, Any],
         job_id: int | None = None,
+        on_chunk_rows: Any = None,
     ) -> list[dict[str, Any]]:
         """Fetch analytics data for *variables* from *instance*.
 
@@ -2166,6 +2414,7 @@ class DHIS2SyncService:
         )
 
         for ou_chunk in ou_chunks:
+            chunk_rows: list[dict[str, Any]] = []
             # Split dx_ids into variable batches within each OU chunk.
             for batch_start in range(0, max(1, len(dx_ids)), max_vars_per_request):
                 batch = dx_ids[batch_start : batch_start + max_vars_per_request]
@@ -2180,6 +2429,7 @@ class DHIS2SyncService:
                         variable_map=variable_map,
                         page_size=analytics_page_size,
                     )
+                    chunk_rows.extend(batch_rows)
                     all_rows.extend(batch_rows)
                 finally:
                     # Flush request log immediately after every batch (success
@@ -2204,6 +2454,11 @@ class DHIS2SyncService:
                                 db.session.rollback()
                             except Exception:  # pylint: disable=broad-except
                                 pass
+
+            # After all variable batches for this OU chunk complete, notify
+            # the caller so it can stage rows incrementally (real-time progress).
+            if on_chunk_rows is not None and chunk_rows:
+                on_chunk_rows(chunk_rows)
 
         return all_rows
 
@@ -2654,6 +2909,19 @@ class DHIS2SyncService:
             return 0
 
         staging_engine = _get_sync_staging_engine(dataset.database_id)
+
+        # Auto-create the physical staging table if it doesn't exist yet.
+        # This is a no-op when the table already exists (CREATE IF NOT EXISTS).
+        if hasattr(staging_engine, "create_staging_table"):
+            try:
+                staging_engine.create_staging_table(dataset)
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Sync: could not auto-create staging table for dataset=%d",
+                    _read_model_attr(dataset, "id"),
+                    exc_info=True,
+                )
+
         row_count = 0
         if replace_instance_rows:
             result = staging_engine.replace_rows_for_instance(
@@ -2683,23 +2951,23 @@ class DHIS2SyncService:
                 row_count = row_count.get("inserted", 0)
             else:
                 row_count = int(row_count or 0)
-        record_dhis2_stage_rows(
-            dataset=dataset,
-            instance=instance,
-            rows=rows,
-            sync_job_id=sync_job_id,
-        )
+        if staging_engine.engine_name != "clickhouse":
+            record_dhis2_stage_rows(
+                dataset=dataset,
+                instance=instance,
+                rows=rows,
+                sync_job_id=sync_job_id,
+            )
         return row_count
 
-    def _materialize_serving_table(self, dataset: DHIS2StagedDataset) -> None:
-        staging_engine = _get_sync_staging_engine(dataset.database_id)
-        build_result = build_serving_table(dataset, engine=staging_engine)
-        logger.info(
-            "sync_service: rebuilt serving table for dataset id=%s source_rows=%s target_rows=%s",
-            dataset.id,
-            build_result.diagnostics.get("source_row_count"),
-            build_result.diagnostics.get("live_serving_row_count"),
-        )
+    def _materialize_serving_table(
+        self,
+        dataset: DHIS2StagedDataset,
+        refresh_scope: Iterable[str] | None = None,
+    ) -> None:
+        from superset.dhis2.staged_dataset_service import ensure_serving_table
+
+        ensure_serving_table(dataset.id, refresh_scope=refresh_scope)
 
     # ------------------------------------------------------------------
     # Job management helpers

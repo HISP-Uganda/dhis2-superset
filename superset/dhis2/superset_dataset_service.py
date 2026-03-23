@@ -33,14 +33,19 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_table_ref(table_ref: str) -> tuple[str | None, str]:
-    """Split ``schema.table_name`` or bare ``table_name`` into parts."""
+    """Split ``schema.table_name`` or bare ``table_name`` into parts.
+
+    Strips both double-quote and backtick delimiters so that ClickHouse
+    table refs like ``\`dhis2_serving\`.\`sv_1_foo\``` are parsed cleanly
+    into (``dhis2_serving``, ``sv_1_foo``) without stray backtick characters
+    ending up inside the generated table names.
+    """
     if "." in table_ref:
         schema, table_name = table_ref.split(".", 1)
-        # Strip surrounding quotes
-        schema = schema.strip('"')
-        table_name = table_name.strip('"')
+        schema = schema.strip('"').strip("`")
+        table_name = table_name.strip('"').strip("`")
         return schema, table_name
-    return None, table_ref.strip('"')
+    return None, table_ref.strip('"').strip("`")
 
 
 def register_serving_table_as_superset_dataset(
@@ -120,14 +125,18 @@ def register_serving_table_as_superset_dataset(
     existing = None
     stale_sv_records: list[Any] = []
     if all_candidates:
-        # Prefer the friendly-named record; treat sv_* records as stale
+        # Prefer the record whose table_name matches the current friendly_name.
+        # Each mart (KPI, Map L1, …) and the main dataset share the same
+        # dhis2_staged_dataset_id, so all_candidates may contain several rows.
+        # We must NOT fall back to all_candidates[0] when the name doesn't
+        # match — that would overwrite the main dataset's SQL with a mart
+        # table ref, corrupting the primary virtual dataset.
         for c in all_candidates:
             if c.table_name == friendly_name:
                 existing = c
             elif c.table_name == table_name:
                 stale_sv_records.append(c)
-        if existing is None:
-            existing = all_candidates[0]
+        # No name-based fallback here — proceed to priority-2 / priority-3.
 
     # --- Priority 2: look up by friendly name ---
     if existing is None:
@@ -326,6 +335,64 @@ def _ensure_dhis2_extra(
         changed = True
     if changed:
         sqla_table.extra = json.dumps(extra)
+
+
+def register_specialized_marts_as_superset_datasets(
+    dataset_id: int,
+    dataset_name: str,
+    serving_table_ref: str,
+    serving_columns: list[dict[str, Any]],
+    serving_database_id: int,
+    *,
+    source_database_id: int | None = None,
+    source_instance_ids: list[int] | None = None,
+) -> None:
+    """Register KPI and Map specialized marts if they exist in ClickHouse."""
+    schema, base_table_name = _parse_table_ref(serving_table_ref)
+    
+    # 1. KPI Mart
+    kpi_table_name = f"{base_table_name}_kpi"
+    kpi_ref = f"{schema}.{kpi_table_name}" if schema else kpi_table_name
+    # Filter columns for KPI (only period, instance, indicators, and period hierarchy)
+    kpi_columns = [
+        c for c in serving_columns 
+        if c.get("variable_id") 
+        or c["column_name"] in ("period", "source_instance_name")
+        or "dhis2_is_period_hierarchy" in str(c.get("extra", ""))
+    ]
+    if kpi_columns:
+        register_serving_table_as_superset_dataset(
+            dataset_id=dataset_id,
+            dataset_name=f"[KPI] {dataset_name}",
+            serving_table_ref=kpi_ref,
+            serving_columns=kpi_columns,
+            serving_database_id=serving_database_id,
+            source_database_id=source_database_id,
+            source_instance_ids=source_instance_ids,
+        )
+
+    # 2. Map Marts (L1, L2, L3...)
+    # We can infer levels from columns
+    hierarchy_cols = [c["column_name"] for c in serving_columns if c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))]
+    for i, level_col in enumerate(hierarchy_cols):
+        map_table_name = f"{base_table_name}_map_l{i+1}"
+        map_ref = f"{schema}.{map_table_name}" if schema else map_table_name
+        # Filter columns for Map (only period, instance, indicators, period hierarchy, and THIS level)
+        map_columns = [
+            c for c in serving_columns 
+            if c.get("variable_id") 
+            or c["column_name"] in ("period", "source_instance_name", level_col)
+            or "dhis2_is_period_hierarchy" in str(c.get("extra", ""))
+        ]
+        register_serving_table_as_superset_dataset(
+            dataset_id=dataset_id,
+            dataset_name=f"[Map L{i+1}] {dataset_name}",
+            serving_table_ref=map_ref,
+            serving_columns=map_columns,
+            serving_database_id=serving_database_id,
+            source_database_id=source_database_id,
+            source_instance_ids=source_instance_ids,
+        )
 
 
 def _sync_columns(sqla_table: Any, serving_columns: list[dict[str, Any]]) -> None:
