@@ -958,7 +958,11 @@ def _serving_table_needs_rebuild(
     return True
 
 
-def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
+def ensure_serving_table(
+    dataset_id: int,
+    refresh_scope: Iterable[str] | None = None,
+    force_rebuild: bool = False,
+) -> tuple[str, list[dict[str, Any]]]:
     dataset = get_staged_dataset(dataset_id)
     if dataset is None:
         raise ValueError(f"DHIS2StagedDataset with id={dataset_id} not found")
@@ -968,14 +972,17 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
     # serving_columns tracks the *actual* columns in the physical table.
     # When a rebuild runs, pruned columns replace the full manifest set.
     serving_columns = dataset_columns_payload(manifest["columns"])
-    if _serving_table_needs_rebuild(engine, dataset, manifest):
-        build_result = build_serving_table(dataset, engine=engine)
+    if refresh_scope or force_rebuild or _serving_table_needs_rebuild(engine, dataset, manifest):
+        build_result = build_serving_table(
+            dataset, engine=engine, refresh_scope=refresh_scope
+        )
         serving_columns = build_result.serving_columns
         logger.info(
-            "ensure_serving_table: rebuilt dataset id=%s source_rows=%s target_rows=%s",
+            "ensure_serving_table: rebuilt dataset id=%s source_rows=%s target_rows=%s scope=%s",
             dataset.id,
             build_result.diagnostics.get("source_row_count"),
             build_result.diagnostics.get("live_serving_row_count"),
+            refresh_scope,
         )
     serving_table_ref = engine.get_serving_sql_table_ref(dataset)
 
@@ -983,6 +990,7 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
     try:
         from superset.dhis2.superset_dataset_service import (
             register_serving_table_as_superset_dataset,
+            register_specialized_marts_as_superset_datasets,
         )
         from superset import db as _db
 
@@ -1014,6 +1022,18 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
                 source_database_id=dataset.database_id,
                 source_instance_ids=_instance_ids,
             )
+            
+            # Register specialized marts (KPI, Map)
+            register_specialized_marts_as_superset_datasets(
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                serving_table_ref=serving_table_ref,
+                serving_columns=serving_columns,
+                serving_database_id=serving_db_id,
+                source_database_id=dataset.database_id,
+                source_instance_ids=_instance_ids,
+            )
+
             if dataset.serving_superset_dataset_id != sqla_id:
                 dataset.serving_superset_dataset_id = sqla_id
                 _db.session.commit()
@@ -1025,8 +1045,10 @@ def ensure_serving_table(dataset_id: int) -> tuple[str, list[dict[str, Any]]]:
         # Roll back any partial transaction so the session stays usable for
         # subsequent callers in the same worker thread.
         try:
+            from superset import db as _db
             _db.session.rollback()
         except Exception:  # pylint: disable=broad-except
             pass
 
     return serving_table_ref, serving_columns
+

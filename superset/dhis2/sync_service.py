@@ -2967,7 +2967,10 @@ class DHIS2SyncService:
     ) -> None:
         from superset.dhis2.staged_dataset_service import ensure_serving_table
 
-        ensure_serving_table(dataset.id, refresh_scope=refresh_scope)
+        # force_rebuild=True: after staging new rows the serving table must
+        # always be rebuilt, even when columns haven't changed and the table
+        # already has data from a previous sync run.
+        ensure_serving_table(dataset.id, refresh_scope=refresh_scope, force_rebuild=True)
 
     # ------------------------------------------------------------------
     # Job management helpers

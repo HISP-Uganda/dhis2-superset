@@ -374,7 +374,16 @@ def _generate_serving_sql(
         elif pe_map_table and col_name in pe_cols:
             expr = f"pe_map.`{col_name}`"
         elif col_name == manifest.get("ou_level_column_name"):
-            expr = "s.ou_level"
+            # Derive ou_level as the count of non-null ancestor hierarchy columns.
+            # DHIS2 analytics metadata rarely includes 'level' in metaData.items,
+            # so s.ou_level is usually 0 (ClickHouse UInt16 default).
+            # Non-null hierarchy entries correspond to the ancestors that were
+            # populated, so counting them gives the correct level depth.
+            if ou_map_table and ou_cols:
+                level_exprs = [f"isNotNull(ou_map.`{c}`)" for c in sorted(ou_cols)]
+                expr = f"({' + '.join(level_exprs)})" if level_exprs else "s.ou_level"
+            else:
+                expr = "s.ou_level"
         elif col_name == manifest.get("coc_uid_column_name"):
             expr = "s.co_uid"
         elif col_name == manifest.get("coc_name_column_name"):
@@ -389,12 +398,12 @@ def _generate_serving_sql(
     if pe_map_table:
         joins.append(f"LEFT JOIN {pe_map_table} pe_map ON s.pe = pe_map.pe")
 
-    where_parts = ["isNotNull(s.ou_level)", "s.ou_level > 0"]
+    where_parts = []
     if refresh_scope:
         scope_list = ", ".join(f"'{p}'" for p in refresh_scope)
         where_parts.append(f"s.pe IN ({scope_list})")
 
-    where_clause = f"WHERE {' AND '.join(where_parts)}"
+    where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     sql = f"""
         SELECT
