@@ -1189,6 +1189,7 @@ class SqlaTable(
     normalize_columns = Column(Boolean, default=False)
     always_filter_main_dttm = Column(Boolean, default=False)
     folders = Column(JSON, nullable=True)
+    dataset_role = Column(String(32), default="SERVING_DATASET", nullable=True)
 
     baselink = "tablemodelview"
 
@@ -1211,6 +1212,7 @@ class SqlaTable(
         "normalize_columns",
         "always_filter_main_dttm",
         "folders",
+        "dataset_role",
     ]
     update_from_object_fields = [f for f in export_fields if f != "database_id"]
     export_parent = "database"
@@ -1273,31 +1275,42 @@ class SqlaTable(
             return None
 
         extra = self.extra_dict
-        serving_table_ref = extra.get("dhis2_serving_table_ref")
-        if isinstance(serving_table_ref, str) and serving_table_ref.strip():
-            return serving_table_ref.strip()
-
         staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+        
+        # Detect if this is a specialized mart (KPI, Map) by checking the current SQL suffix
+        suffix = ""
+        sql_ref = _extract_dhis2_staged_local_sql_ref(self.sql)
+        if sql_ref:
+            _, current_table_name = sql_ref
+            if current_table_name.endswith("_kpi"):
+                suffix = "_kpi"
+            elif current_table_name.endswith("_map"):
+                suffix = "_map"
+
         if isinstance(staged_dataset_id, int):
             try:
                 if ensure_exists:
                     from superset.dhis2.staged_dataset_service import ensure_serving_table
 
-                    serving_table_ref, _ = ensure_serving_table(staged_dataset_id)
-                else:
-                    from superset.dhis2.staged_dataset_service import get_staged_dataset
-                    from superset.dhis2.staging_engine import DHIS2StagingEngine
+                    # This ensures both the main table AND all marts exist
+                    base_ref, _ = ensure_serving_table(staged_dataset_id)
+                    if base_ref and suffix:
+                        schema, table = _parse_table_ref(base_ref)
+                        return _format_sql_table_ref(schema, f"{table}{suffix}")
+                    return base_ref
+                
+                from superset.dhis2.staged_dataset_service import get_staged_dataset
+                from superset.dhis2.staging_engine import DHIS2StagingEngine
 
-                    staged_dataset = get_staged_dataset(staged_dataset_id)
-                    if staged_dataset is not None:
-                        serving_table_ref = DHIS2StagingEngine(
-                            staged_dataset.database_id
-                        ).get_serving_sql_table_ref(staged_dataset)
-                    else:
-                        serving_table_ref = None
-
-                if isinstance(serving_table_ref, str) and serving_table_ref.strip():
-                    return serving_table_ref.strip()
+                staged_dataset = get_staged_dataset(staged_dataset_id)
+                if staged_dataset is not None:
+                    base_ref = DHIS2StagingEngine(
+                        staged_dataset.database_id
+                    ).get_serving_sql_table_ref(staged_dataset)
+                    if base_ref and suffix:
+                        schema, table = _parse_table_ref(base_ref)
+                        return _format_sql_table_ref(schema, f"{table}{suffix}")
+                    return base_ref
             except Exception:  # pylint: disable=broad-except
                 logger.warning(
                     "Failed to resolve serving table ref for staged dataset id=%s",
@@ -1305,7 +1318,6 @@ class SqlaTable(
                     exc_info=True,
                 )
 
-        sql_ref = _extract_dhis2_staged_local_sql_ref(self.sql)
         if sql_ref:
             schema_name, table_name = sql_ref
             normalized_table_name = table_name.lower()
@@ -2196,6 +2208,13 @@ class SqlaTable(
 
         :return: Tuple with lists of added, removed and modified column names.
         """
+        # DHIS2: ensure physical tables exist before metadata fetch
+        try:
+            from superset.dhis2.superset_dataset_service import ensure_specialized_marts_for_sqla_table
+            ensure_specialized_marts_for_sqla_table(self)
+        except (ImportError, Exception):
+            pass
+
         new_columns = self.external_metadata()
         metrics = [
             SqlMetric(**metric)

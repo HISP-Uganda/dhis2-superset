@@ -1038,26 +1038,19 @@ def _specialized_marts_need_rebuild(
     if not has_indicators:
         return False
 
-    try:
-        # Rebuild if either mart is missing
-        if not kpi_exists_fn(dataset):
-            return True
+    # Check for KPI mart
+    if not kpi_exists_fn(dataset):
+        return True
 
-        has_hierarchy = any(
-            c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))
-            for c in list(manifest.get("columns") or [])
-        )
-        if has_hierarchy and not map_exists_fn(dataset):
-            return True
+    # Check for Map mart if hierarchy exists
+    has_hierarchy = any(
+        c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))
+        for c in list(manifest.get("columns") or [])
+    )
+    if has_hierarchy and not map_exists_fn(dataset):
+        return True
 
-        return False
-    except Exception:  # pylint: disable=broad-except
-        logger.warning(
-            "_specialized_marts_need_rebuild: could not check mart existence for dataset id=%s",
-            getattr(dataset, "id", None),
-            exc_info=True,
-        )
-        return False
+    return False
 
 
 def ensure_serving_table(
