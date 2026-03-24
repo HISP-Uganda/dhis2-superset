@@ -36,6 +36,7 @@ def _make_dataset():
                 variable_name="ANC 1st Visit",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
             SimpleNamespace(
@@ -45,6 +46,7 @@ def _make_dataset():
                 variable_name="Reporting Rate",
                 alias=None,
                 instance=SimpleNamespace(id=2, name="Non Routine DHIS2"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
         ],
@@ -174,8 +176,9 @@ def test_build_serving_manifest_uses_user_facing_dimensions_and_variables():
         "Period Quarter",
         "ANC 1st Visit",
         "Reporting Rate",
+        "Manifest Build Version",
     ]
-    assert [column["type"] for column in columns[-2:]] == ["FLOAT", "FLOAT"]
+    assert [column["type"] for column in columns[-3:-1]] == ["FLOAT", "FLOAT"]
     assert manifest["dimension_column_names"] == [
         "dhis2_instance",
         "region",
@@ -283,6 +286,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "period_quarter",
         "anc_1st_visit",
         "reporting_rate",
+        "_manifest_build_v3",
     ]
     assert rows == [
         {
@@ -296,6 +300,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
+            "_manifest_build_v3": None,
         },
         {
             "dhis2_instance": "Non Routine DHIS2",
@@ -308,6 +313,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "reporting_rate": 95.3,
             "anc_1st_visit": None,
+            "_manifest_build_v3": None,
         },
     ]
 
@@ -326,6 +332,7 @@ def test_build_serving_manifest_materializes_only_selected_org_unit_levels():
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
         ],
@@ -410,6 +417,7 @@ def test_build_serving_manifest_materializes_only_selected_org_unit_levels():
         "Period Half",
         "Period Quarter",
         "Malaria Cases",
+        "Manifest Build Version",
     ]
 
 
@@ -427,6 +435,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
         ],
@@ -528,6 +537,7 @@ def test_build_serving_manifest_prunes_redundant_selected_descendants_for_level_
         "Period Half",
         "Period Quarter",
         "Malaria Cases",
+        "Manifest Build Version",
     ]
 
 
@@ -545,6 +555,7 @@ def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
         ],
@@ -610,6 +621,7 @@ def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
         "period_year",
         "period_month",
         "malaria_cases",
+        "_manifest_build_v3",
     ]
 
 
@@ -627,6 +639,7 @@ def test_build_serving_manifest_keeps_all_explicit_selected_org_unit_levels():
                 variable_name="Malaria Cases",
                 alias=None,
                 instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
                 get_extra_params=lambda: {},
             ),
         ],
@@ -738,6 +751,7 @@ def test_build_serving_manifest_keeps_all_explicit_selected_org_unit_levels():
         "Period Half",
         "Period Quarter",
         "Malaria Cases",
+        "Manifest Build Version",
     ]
 
 
@@ -922,6 +936,7 @@ def _make_single_instance_dataset(extra_config=None):
         variable_type="dataElement",
         variable_name="Malaria Cases",
         alias=None,
+        staged_dataset_id=None,
         instance=SimpleNamespace(id=1, name="HMIS"),
     )
     if not hasattr(variable, "get_extra_params"):
@@ -1201,3 +1216,32 @@ def test_coc_dimension_columns_have_correct_extra_metadata():
     assert name_col["extra"][_DHIS2_COC_EXTRA_KEY] is True
     assert name_col["is_dimension"] is True
     assert name_col["verbose_name"] == "Disaggregation"
+
+
+def test_build_serving_manifest_flags_indicators():
+    """Variable columns for indicators must have dhis2_is_indicator: True in extra."""
+    from superset.dhis2.analytical_serving import (
+        _DHIS2_INDICATOR_EXTRA_KEY,
+        build_serving_manifest,
+    )
+
+    dataset = _make_dataset()
+    payloads = _metadata_payloads()
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+
+    col_by_name = {c["verbose_name"]: c for c in manifest["columns"]}
+
+    # de_anc is a dataElement
+    anc_col = col_by_name["ANC 1st Visit"]
+    assert _DHIS2_INDICATOR_EXTRA_KEY not in anc_col.get("extra", {})
+
+    # ind_reporting is an indicator
+    rep_col = col_by_name["Reporting Rate"]
+    assert rep_col["extra"][_DHIS2_INDICATOR_EXTRA_KEY] is True

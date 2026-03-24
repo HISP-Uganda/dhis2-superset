@@ -862,6 +862,31 @@ export default function DHIS2LocalData() {
     Number(stagingPreviewDiagnostics?.row_count || 0) > 0 &&
     Number(stagingPreviewDiagnostics?.rows_returned || 0) === 0;
 
+  const [cleaningOrphans, setCleaningOrphans] = useState(false);
+
+  const cleanupOrphanResources = async () => {
+    setCleaningOrphans(true);
+    try {
+      const response = await SupersetClient.post({
+        endpoint: '/api/v1/dhis2/staged-datasets/cleanup-stale-datasets',
+      });
+      const result = response.json?.result;
+      addSuccessToast(
+        t(
+          'Deep cleanup complete. Migrated %s charts, purged %s orphaned Superset datasets and %s orphaned physical tables.',
+          result?.repointed_charts || 0,
+          result?.purged_sqla_datasets || 0,
+          result?.purged_physical_tables || 0,
+        ),
+      );
+      void loadDatasets();
+    } catch (error) {
+      addDangerToast(getErrorMessage(error, t('Failed to perform deep cleanup')));
+    } finally {
+      setCleaningOrphans(false);
+    }
+  };
+
   return (
     <DHIS2PageLayout
       activeTab="local-data"
@@ -869,7 +894,28 @@ export default function DHIS2LocalData() {
       description={t(
         'Select a staged dataset, preview locally served rows, refresh now, clear local cache rows, delete datasets, and open the same query in SQL Lab without leaving the local staging workflow.',
       )}
-      extra={<Button onClick={() => void loadDatasets()}>{t('Reload datasets')}</Button>}
+      extra={
+        <Space>
+          <Popconfirm
+            cancelText={t('Cancel')}
+            okButtonProps={{ loading: cleaningOrphans, danger: true }}
+            okText={t('Yes, cleanup all orphans')}
+            placement="bottomRight"
+            title={t('Perform deep resource cleanup?')}
+            description={t(
+              'This will scan for and remove orphaned virtual datasets and physical tables that no longer have a parent staged dataset definition. This is a non-destructive maintenance action for active datasets.',
+            )}
+            onConfirm={() => void cleanupOrphanResources()}
+          >
+            <Button danger loading={cleaningOrphans}>
+              {t('Cleanup orphans')}
+            </Button>
+          </Popconfirm>
+          <Button onClick={() => void loadDatasets()}>
+            {t('Reload datasets')}
+          </Button>
+        </Space>
+      }
       loadingDatabases={loadingDatabases}
       selectedDatabaseId={selectedDatabaseId}
       title={t('Data Workspace')}

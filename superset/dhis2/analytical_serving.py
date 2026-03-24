@@ -42,10 +42,20 @@ _DHIS2_OU_LEVEL_EXTRA_KEY = "dhis2_ou_level"
 _DHIS2_PERIOD_EXTRA_KEY = "dhis2_is_period"
 _DHIS2_PERIOD_HIERARCHY_EXTRA_KEY = "dhis2_is_period_hierarchy"
 _DHIS2_PERIOD_KEY_EXTRA_KEY = "dhis2_period_key"
+_DHIS2_INDICATOR_EXTRA_KEY = "dhis2_is_indicator"
 _DHIS2_LEGEND_EXTRA_KEY = "dhis2_legend"
 # Category Option Combo dimension columns (opt-in disaggregation-as-dimension)
 _DHIS2_COC_EXTRA_KEY = "dhis2_is_coc"
 _DHIS2_COC_UID_EXTRA_KEY = "dhis2_is_coc_uid"
+_DHIS2_OU_LEVEL_COLUMN_EXTRA_KEY = "dhis2_is_ou_level"
+# Bumped whenever the serving manifest structure or CASE-predicate logic changes.
+# A change here triggers a rebuild of any serving table that was materialized
+# under an older version (detected via the _manifest_build_v{N} sentinel column).
+# v1 → v2: added source_instance_id to CASE predicates
+# v2 → v3: added staged_dataset_id to CASE predicates
+# v3 → v4: added dhis2_is_indicator to column extra
+# v4 → v5: added dhis2_is_ou_level to ou_level column
+_MANIFEST_BUILD_VERSION: int = 5
 _DHIS2_TERMINAL_PERIOD_KEYS = (
     "period_year",
     "period_half",
@@ -561,6 +571,15 @@ def _build_variable_column_extra(
         "dhis2_source_instance_id": getattr(variable, "instance_id", None),
     }
 
+    normalized_type = _normalize_variable_type(variable.variable_type)
+    if normalized_type in {
+        "indicator",
+        "indicators",
+        "programindicator",
+        "programindicators",
+    }:
+        extra[_DHIS2_INDICATOR_EXTRA_KEY] = True
+
     if getattr(variable, "instance", None) is not None:
         instance_name = str(getattr(variable.instance, "name", "") or "").strip()
         if instance_name:
@@ -586,12 +605,13 @@ def _build_variable_column_extra(
 def _load_distinct_cocs_for_variable(
     dataset: DHIS2StagedDataset,
     variable_id: str,
+    instance_id: int | None = None,
 ) -> list[dict[str, str]]:
     """Return distinct ``(co_uid, co_name)`` pairs present in the staging table.
 
-    Queries the staging table for all distinct category option combo UIDs and
-    names for a given ``dx_uid``.  Results are sorted by ``co_name`` so column
-    ordering is deterministic across re-materializations.
+    Scoped to ``instance_id`` when provided so that COC columns from different
+    source instances sharing the same ``dx_uid`` do not bleed into each other.
+    Results are sorted by ``co_name`` so column ordering is deterministic.
 
     Returns a list of ``{"co_uid": str, "co_name": str}`` dicts, excluding rows
     where ``co_uid`` is NULL or empty.
@@ -603,15 +623,26 @@ def _load_distinct_cocs_for_variable(
         return []
 
     full_name = engine.get_superset_sql_table_ref(dataset)
-    sql = (
-        f"SELECT DISTINCT co_uid, co_name "  # noqa: S608
-        f"FROM {full_name} "
-        f"WHERE dx_uid = :dx_uid AND co_uid IS NOT NULL AND co_uid != '' "
-        f"ORDER BY co_name"
-    )
+    if instance_id is not None:
+        sql = (
+            f"SELECT DISTINCT co_uid, co_name "  # noqa: S608
+            f"FROM {full_name} "
+            f"WHERE dx_uid = :dx_uid AND source_instance_id = :instance_id "
+            f"AND co_uid IS NOT NULL AND co_uid != '' "
+            f"ORDER BY co_name"
+        )
+        params: dict[str, Any] = {"dx_uid": variable_id, "instance_id": instance_id}
+    else:
+        sql = (
+            f"SELECT DISTINCT co_uid, co_name "  # noqa: S608
+            f"FROM {full_name} "
+            f"WHERE dx_uid = :dx_uid AND co_uid IS NOT NULL AND co_uid != '' "
+            f"ORDER BY co_name"
+        )
+        params = {"dx_uid": variable_id}
     try:
         with db.engine.connect() as conn:
-            rows = conn.execute(text(sql), {"dx_uid": variable_id})
+            rows = conn.execute(text(sql), params)
             return [
                 {"co_uid": str(row._mapping["co_uid"]), "co_name": str(row._mapping["co_name"] or "")}
                 for row in rows
@@ -771,8 +802,10 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     )
 
     variable_columns: list[dict[str, Any]] = []
-    # New: key is (dx_uid, coc_uid | None) so COC-expanded columns can be looked up.
-    variable_lookup: dict[tuple[str, str | None], dict[str, Any]] = {}
+    # Key is (instance_id, dx_uid, coc_uid | None).
+    # instance_id scoping prevents rows from different source connections that
+    # happen to share the same dx_uid from contaminating each other's columns.
+    variable_lookup: dict[tuple[int | None, str, str | None], dict[str, Any]] = {}
 
     for variable in variables:
         base_label = (
@@ -789,11 +822,15 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         extra_params = variable.get_extra_params()
         disagg_mode: str = extra_params.get("disaggregation") or "total"
         selected_coc_uids: list[str] = extra_params.get("selected_coc_uids") or []
+        inst_id: int | None = variable.instance_id
+        ds_id: int | None = variable.staged_dataset_id
 
         def _make_variable_column(
             col_label: str,
             coc_uid: str | None,
             var_id: str,
+            instance_id: int | None,
+            dataset_id: int | None,
         ) -> dict[str, Any]:
             col_name = _dedupe_identifier(col_label, used_identifiers)
             col: dict[str, Any] = {
@@ -805,6 +842,12 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
                 "is_dimension": False,
                 "variable_id": var_id,
                 "coc_uid": coc_uid,
+                # Fully-qualified source identity used in CASE WHEN predicates.
+                # Both fields are required so rows from a different dataset or a
+                # different DHIS2 instance that share the same dx_uid can never
+                # contaminate this column.
+                "instance_id": instance_id,
+                "staged_dataset_id": dataset_id,
             }
             if column_extra:
                 col["extra"] = column_extra
@@ -812,38 +855,61 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
 
         if disagg_mode == "all":
             # One column per distinct COC in staging + a Total column
-            coc_list = _load_distinct_cocs_for_variable(dataset, variable.variable_id)
+            coc_list = _load_distinct_cocs_for_variable(
+                dataset, variable.variable_id, instance_id=inst_id
+            )
             for coc in coc_list:
                 col_label = f"{base_label} ({coc['co_name']})" if coc["co_name"] else base_label
-                col = _make_variable_column(col_label, coc["co_uid"], variable.variable_id)
+                col = _make_variable_column(col_label, coc["co_uid"], variable.variable_id, inst_id, ds_id)
                 variable_columns.append(col)
                 columns.append(col)
-                variable_lookup[(str(variable.variable_id), coc["co_uid"])] = col
+                variable_lookup[(inst_id, str(variable.variable_id), coc["co_uid"])] = col
             # Always add a Total column (aggregated; no COC filter)
             total_label = f"{base_label} (Total)"
-            total_col = _make_variable_column(total_label, None, variable.variable_id)
+            total_col = _make_variable_column(total_label, None, variable.variable_id, inst_id, ds_id)
             variable_columns.append(total_col)
             columns.append(total_col)
-            variable_lookup[(str(variable.variable_id), None)] = total_col
+            variable_lookup[(inst_id, str(variable.variable_id), None)] = total_col
 
         elif disagg_mode == "selected" and selected_coc_uids:
             # One column per selected COC UID; look up names from staging
-            coc_list = _load_distinct_cocs_for_variable(dataset, variable.variable_id)
+            coc_list = _load_distinct_cocs_for_variable(
+                dataset, variable.variable_id, instance_id=inst_id
+            )
             coc_name_map = {c["co_uid"]: c["co_name"] for c in coc_list}
             for coc_uid in selected_coc_uids:
                 co_name = coc_name_map.get(coc_uid, coc_uid)
                 col_label = f"{base_label} ({co_name})" if co_name else base_label
-                col = _make_variable_column(col_label, coc_uid, variable.variable_id)
+                col = _make_variable_column(col_label, coc_uid, variable.variable_id, inst_id, ds_id)
                 variable_columns.append(col)
                 columns.append(col)
-                variable_lookup[(str(variable.variable_id), coc_uid)] = col
+                variable_lookup[(inst_id, str(variable.variable_id), coc_uid)] = col
 
         else:
             # "total" (default) — one column, no COC filter
-            col = _make_variable_column(base_label, None, variable.variable_id)
+            col = _make_variable_column(base_label, None, variable.variable_id, inst_id, ds_id)
             variable_columns.append(col)
             columns.append(col)
-            variable_lookup[(str(variable.variable_id), None)] = col
+            variable_lookup[(inst_id, str(variable.variable_id), None)] = col
+
+    # Sentinel column: its name encodes the manifest build version so that
+    # _serving_table_needs_rebuild detects a stale serving table whenever
+    # _MANIFEST_BUILD_VERSION is bumped (new variable_id predicate logic, etc.).
+    build_version_col_name = f"_manifest_build_v{_MANIFEST_BUILD_VERSION}"
+    columns.append(
+        {
+            "column_name": build_version_col_name,
+            "verbose_name": "Manifest Build Version",
+            "type": "INTEGER",
+            "sql_type": "INTEGER",
+            "is_dttm": False,
+            "is_dimension": True,
+            "extra": {
+                "dhis2_is_internal": True,
+                "dhis2_manifest_build_version": _MANIFEST_BUILD_VERSION,
+            },
+        }
+    )
 
     return {
         "columns": columns,
@@ -860,6 +926,7 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         "coc_name_column_name": coc_name_column_name,
         "org_unit_hierarchy_diagnostics": org_unit_context.diagnostics,
         "period_hierarchy_diagnostics": period_context.diagnostics,
+        "manifest_build_version": _MANIFEST_BUILD_VERSION,
     }
 
 
@@ -933,9 +1000,24 @@ def materialize_serving_rows(
 
         dx_uid_key = str(raw_row.get("dx_uid") or "")
         co_uid_key = raw_row.get("co_uid") or None
-        # Try exact (dx_uid, co_uid) first; fall back to (dx_uid, None) for total/aggregated rows
-        variable_spec = variable_lookup.get((dx_uid_key, co_uid_key)) or variable_lookup.get(
-            (dx_uid_key, None)
+        # Determine the source instance for this row so we use the correct column.
+        # Without instance scoping, two DHIS2 connections sharing the same dx_uid
+        # would both populate the same serving column, producing incorrect aggregates.
+        row_inst_id: int | None
+        try:
+            row_inst_id = int(raw_row.get("source_instance_id") or 0) or None
+        except (TypeError, ValueError):
+            row_inst_id = None
+
+        # Try exact (inst, dx_uid, co_uid) first; fall back to (inst, dx_uid, None)
+        # for total rows, then retry without instance scoping for manifest built
+        # before instance-scoped keys were introduced.
+        variable_spec = (
+            variable_lookup.get((row_inst_id, dx_uid_key, co_uid_key))
+            or variable_lookup.get((row_inst_id, dx_uid_key, None))
+            # Legacy fallback for manifests built before instance-scoped keys
+            or variable_lookup.get((None, dx_uid_key, co_uid_key))
+            or variable_lookup.get((None, dx_uid_key, None))
         )
         if not variable_spec:
             continue
@@ -1013,27 +1095,43 @@ def prune_empty_hierarchy_columns(
 
 
 def dataset_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "column_name": column["column_name"],
-            "verbose_name": column["verbose_name"],
-            "type": column["type"],
-            "is_dttm": bool(column.get("is_dttm")),
-            "filterable": True,
-            "groupby": True,
-            "is_active": True,
-            **(
-                {
-                    "extra": json.dumps(column["extra"])
-                    if not isinstance(column["extra"], str)
-                    else column["extra"]
-                }
-                if column.get("extra")
-                else {}
-            ),
-        }
-        for column in columns
-    ]
+    payload = []
+    for column in columns:
+        extra = column.get("extra") or {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:  # pylint: disable=broad-except
+                extra = {}
+
+        # Default aggregation: Indicators (rates) use AVG, others use SUM
+        is_indicator = extra.get("dhis2_is_indicator") is True
+        default_agg = "AVG" if is_indicator else "SUM"
+
+        payload.append(
+            {
+                "column_name": column["column_name"],
+                "verbose_name": column["verbose_name"],
+                "type": column["type"],
+                "is_dttm": bool(column.get("is_dttm")),
+                "filterable": True,
+                "groupby": True,
+                "is_active": True,
+                "expression": f"{default_agg}(`{column['column_name']}`)"
+                if column["type"] in ("FLOAT", "INTEGER", "NUMBER")
+                else None,
+                **(
+                    {
+                        "extra": json.dumps(column["extra"])
+                        if not isinstance(column["extra"], str)
+                        else column["extra"]
+                    }
+                    if column.get("extra")
+                    else {}
+                ),
+            }
+        )
+    return payload
 
 
 def _load_column_extra(column: Any) -> dict[str, Any]:

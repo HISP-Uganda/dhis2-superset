@@ -87,6 +87,10 @@ class LocalStagingEngineBase(ABC):
         """Drop the staging table and all associated artefacts."""
 
     @abstractmethod
+    def drop_serving_table(self, staged_dataset: Any) -> None:
+        """Drop the serving table and all associated artefacts."""
+
+    @abstractmethod
     def truncate_staging_table(self, staged_dataset: Any) -> None:
         """Remove all rows from the staging table."""
 
@@ -195,6 +199,7 @@ class LocalStagingEngineBase(ABC):
         order_by: list[str] | None = None,
         limit: int = 1000,
         offset: int = 0,
+        table_name_override: str | None = None,
     ) -> dict[str, Any]:
         """Execute a structured query against the serving table."""
 

@@ -350,49 +350,171 @@ def register_specialized_marts_as_superset_datasets(
     """Register KPI and Map specialized marts if they exist in ClickHouse."""
     schema, base_table_name = _parse_table_ref(serving_table_ref)
     
+    # Identify all hierarchy columns for unified marts
+    hierarchy_columns = [
+        c for c in serving_columns 
+        if not (c.get("extra") and "dhis2_is_internal" in str(c.get("extra")))
+    ]
+
     # 1. KPI Mart
     kpi_table_name = f"{base_table_name}_kpi"
     kpi_ref = f"{schema}.{kpi_table_name}" if schema else kpi_table_name
-    # Filter columns for KPI (only period, instance, indicators, and period hierarchy)
-    kpi_columns = [
-        c for c in serving_columns 
-        if c.get("variable_id") 
-        or c["column_name"] in ("period", "source_instance_name")
-        or "dhis2_is_period_hierarchy" in str(c.get("extra", ""))
-    ]
-    if kpi_columns:
+    
+    if hierarchy_columns:
         register_serving_table_as_superset_dataset(
             dataset_id=dataset_id,
             dataset_name=f"[KPI] {dataset_name}",
             serving_table_ref=kpi_ref,
-            serving_columns=kpi_columns,
+            serving_columns=hierarchy_columns,
             serving_database_id=serving_database_id,
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
         )
 
-    # 2. Map Marts (L1, L2, L3...)
-    # We can infer levels from columns
-    hierarchy_cols = [c["column_name"] for c in serving_columns if c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))]
-    for i, level_col in enumerate(hierarchy_cols):
-        map_table_name = f"{base_table_name}_map_l{i+1}"
-        map_ref = f"{schema}.{map_table_name}" if schema else map_table_name
-        # Filter columns for Map (only period, instance, indicators, period hierarchy, and THIS level)
-        map_columns = [
-            c for c in serving_columns 
-            if c.get("variable_id") 
-            or c["column_name"] in ("period", "source_instance_name", level_col)
-            or "dhis2_is_period_hierarchy" in str(c.get("extra", ""))
-        ]
+    # 2. Unified Map Mart
+    map_table_name = f"{base_table_name}_map"
+    map_ref = f"{schema}.{map_table_name}" if schema else map_table_name
+    
+    if hierarchy_columns:
         register_serving_table_as_superset_dataset(
             dataset_id=dataset_id,
-            dataset_name=f"[Map L{i+1}] {dataset_name}",
+            dataset_name=f"[Map] {dataset_name}",
             serving_table_ref=map_ref,
-            serving_columns=map_columns,
+            serving_columns=hierarchy_columns,
             serving_database_id=serving_database_id,
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
         )
+
+    # 3. Cleanup pass: remove old [Map L*] datasets
+    from superset.connectors.sqla.models import SqlaTable
+    from superset import db
+    
+    # We look for datasets whose table_name starts with "[Map L" 
+    # (Because register_serving_table_as_superset_dataset sets friendly_name as table_name)
+    old_datasets = db.session.query(SqlaTable).filter(
+        (SqlaTable.database_id == serving_database_id) & 
+        (SqlaTable.table_name.like("[Map L%"))
+    ).all()
+    
+    for ds in old_datasets:
+        # Only delete if it belongs to THIS staged dataset (extra match)
+        try:
+            extra = json.loads(ds.extra or "{}")
+            if extra.get("dhis2_staged_dataset_id") == dataset_id:
+                logger.info("Cleaning up deprecated specialized mart dataset: %s (id=%d)", ds.table_name, ds.id)
+                db.session.delete(ds)
+        except Exception:
+            continue
+    db.session.commit()
+
+
+def cleanup_staged_dataset_superset_resources(
+    dataset_id: int,
+    serving_database_id: int | None = None,
+) -> None:
+    """Delete all Superset virtual datasets associated with a staged dataset.
+
+    This includes the main thematic dataset and any specialized marts ([KPI],
+    [Map], etc.) derived from it.
+    """
+    from superset import db
+    from superset.connectors.sqla.models import SqlaTable
+
+    # Find all SqlaTable records that reference this staged dataset id in their 'extra' JSON.
+    # We use a LIKE filter on the 'extra' column to find them efficiently.
+    query = db.session.query(SqlaTable).filter(
+        SqlaTable.extra.like(f'%"dhis2_staged_dataset_id": {dataset_id}%')
+    )
+    if serving_database_id is not None:
+        query = query.filter(SqlaTable.database_id == serving_database_id)
+
+    datasets = query.all()
+    for ds in datasets:
+        logger.info(
+            "cleanup_staged_dataset_superset_resources: deleting associated Superset dataset id=%d ('%s')",
+            ds.id,
+            ds.table_name,
+        )
+        db.session.delete(ds)
+
+    db.session.commit()
+
+
+def repair_dhis2_chart_references() -> dict[str, int]:
+    """Re-point charts from deprecated [Map L*] datasets to the unified [Map] dataset.
+    
+    When marts are consolidated, old level-specific datasets are deleted. 
+    This function ensures existing charts are migrated to the new unified 
+    datasets instead of breaking.
+    """
+    from superset import db
+    from superset.models.slice import Slice
+    from superset.connectors.sqla.models import SqlaTable
+
+    # 1. Map unified datasets by their staged dataset ID
+    unified_map_datasets = {} # staged_id -> SqlaTable.id
+    unified_kpi_datasets = {} # staged_id -> SqlaTable.id
+    
+    all_datasets = db.session.query(SqlaTable).filter(
+        SqlaTable.extra.like('%"dhis2_staged_dataset_id":%')
+    ).all()
+    
+    for ds in all_datasets:
+        try:
+            extra = json.loads(ds.extra or "{}")
+            staged_id = extra.get("dhis2_staged_dataset_id")
+            if not staged_id:
+                continue
+            if ds.table_name.startswith("[Map]"):
+                unified_map_datasets[staged_id] = ds.id
+            elif ds.table_name.startswith("[KPI]"):
+                unified_kpi_datasets[staged_id] = ds.id
+        except Exception:
+            continue
+
+    # 2. Find charts using deprecated datasets
+    # Deprecated datasets often have "[Map L" in their name or "_map_l" in their table_name
+    deprecated_ids = {
+        ds.id for ds in all_datasets 
+        if ds.table_name.startswith("[Map L") or "_map_l" in ds.table_name
+    }
+    
+    if not deprecated_ids:
+        return {"repointed_charts": 0}
+
+    charts = db.session.query(Slice).filter(
+        Slice.datasource_id.in_(deprecated_ids),
+        Slice.datasource_type == "table"
+    ).all()
+    
+    repointed_count = 0
+    for chart in charts:
+        # Find the deprecated dataset to get its staged_id
+        dep_ds = db.session.get(SqlaTable, chart.datasource_id)
+        if not dep_ds:
+            continue
+            
+        try:
+            extra = json.loads(dep_ds.extra or "{}")
+            staged_id = extra.get("dhis2_staged_dataset_id")
+            target_id = unified_map_datasets.get(staged_id)
+            
+            if target_id and target_id != chart.datasource_id:
+                logger.info(
+                    "repair_charts: repointing chart id=%d ('%s') from deprecated ds=%d to unified ds=%d",
+                    chart.id, chart.slice_name, chart.datasource_id, target_id
+                )
+                chart.datasource_id = target_id
+                repointed_count += 1
+        except Exception:
+            continue
+
+    if repointed_count > 0:
+        db.session.commit()
+        logger.info("repair_charts: migrated %d charts to unified marts", repointed_count)
+        
+    return {"repointed_charts": repointed_count}
 
 
 def _sync_columns(sqla_table: Any, serving_columns: list[dict[str, Any]]) -> None:
@@ -439,6 +561,7 @@ def _sync_columns(sqla_table: Any, serving_columns: list[dict[str, Any]]) -> Non
         # etc.) into TableColumn.extra so DHIS2ColumnFilterControl and native
         # filter panels can read them without needing the staging API.
         extra_json = json.dumps(extra_meta) if extra_meta else None
+        expression = col_spec.get("expression") or ""
 
         if col_name in existing_by_name:
             tc = existing_by_name[col_name]
@@ -447,6 +570,7 @@ def _sync_columns(sqla_table: Any, serving_columns: list[dict[str, Any]]) -> Non
             tc.is_dttm = is_dttm
             tc.filterable = True
             tc.groupby = is_dimension
+            tc.expression = expression
             if extra_json is not None:
                 tc.extra = extra_json
         else:
@@ -457,7 +581,7 @@ def _sync_columns(sqla_table: Any, serving_columns: list[dict[str, Any]]) -> Non
                 is_dttm=is_dttm,
                 filterable=True,
                 groupby=is_dimension,
-                expression="",
+                expression=expression,
                 extra=extra_json or "",
             )
             sqla_table.columns.append(tc)

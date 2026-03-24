@@ -162,6 +162,24 @@ describe('DHIS2Map Utils', () => {
         '#de2d26',
       );
     });
+
+    test('includes all legend entries regardless of data', () => {
+      const dataValues = [50]; // Only falls into first bucket (0-100)
+      const entries = buildLegendEntries({
+        schemeName: 'fire',
+        min: 0,
+        max: 500,
+        classes: 2,
+        legendType: 'staged',
+        stagedLegendDefinition: legendDefinition,
+        dataValues,
+      });
+
+      // Should show both entries even though data only matches one
+      expect(entries).toHaveLength(2);
+      expect(entries[0].label).toContain('Normal');
+      expect(entries[1].label).toContain('Alert');
+    });
   });
 
   describe('color scale', () => {
@@ -179,6 +197,32 @@ describe('DHIS2Map Utils', () => {
       expect(collapsedColor).toBe(colorScale(1));
       expect(collapsedColor).not.toBe('#ffffff');
       expect(collapsedColor).not.toBe('rgb(255, 255, 255)');
+    });
+
+    test('overrides stagedLegendDefinition when legendType is equal_interval', () => {
+      const legendDefinition: DHIS2LegendDefinition = {
+        setName: 'Test Legend',
+        items: [
+          { startValue: 0, endValue: 100, color: '#ff0000' },
+          { startValue: 100, endValue: 200, color: '#00ff00' },
+        ],
+      };
+      // When legendType is 'equal_interval', it should ignore the staged legend
+      const colorScale = getColorScale(
+        'fire',
+        0,
+        200,
+        2,
+        false,
+        'sequential',
+        undefined,
+        undefined,
+        legendDefinition,
+        'equal_interval',
+      );
+      // 'fire' 2 classes sequential is typically ['#fed976', '#bd0026']
+      const color = colorScale(50);
+      expect(color).not.toBe('#ff0000');
     });
 
     test('uses data distribution for auto legends when enough values exist', () => {

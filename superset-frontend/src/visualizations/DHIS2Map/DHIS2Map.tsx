@@ -80,6 +80,10 @@ import {
   normalizeOrgUnitMatchKey,
 } from './utils';
 import {
+  syncDHIS2LegendSchemesForDatabase,
+  readCachedLegendSets,
+} from 'src/utils/dhis2LegendColorSchemes';
+import {
   getStagedDatasetIdFromSql,
   hasDHIS2SqlComment,
   hasStagedLocalServingSql,
@@ -576,6 +580,7 @@ function buildAggregatedValueMaps(options: {
   actualOrgUnitColumn?: string;
   actualMetricColumn?: string;
   datasourceColumns?: DHIS2DatasourceColumn[];
+  ouLevelFilter?: number;
 }) {
   const {
     rows,
@@ -585,6 +590,7 @@ function buildAggregatedValueMaps(options: {
     actualOrgUnitColumn,
     actualMetricColumn,
     datasourceColumns = [],
+    ouLevelFilter,
   } = options;
   const metricMapById = new Map<string, number>();
   const metricMapByName = new Map<string, number>();
@@ -621,7 +627,28 @@ function buildAggregatedValueMaps(options: {
     };
   }
 
+  // Find ou_level column for filtering
+  const ouLevelColName =
+    ouLevelFilter !== undefined
+      ? availableColumns.find(col => {
+          const datasourceCol = datasourceColumns.find(
+            c => c.column_name === col,
+          );
+          const extra = parseColumnExtra(datasourceCol?.extra);
+          return extra?.dhis2_is_ou_level === true;
+        })
+      : undefined;
+
   rows.forEach(row => {
+    // If a level filter is requested and the row has a level, skip rows that
+    // don't match the target level. This prevents double-counting across levels.
+    if (ouLevelFilter !== undefined && ouLevelColName) {
+      const rowLevel = Number(row[ouLevelColName]);
+      if (Number.isFinite(rowLevel) && rowLevel !== ouLevelFilter) {
+        return;
+      }
+    }
+
     const orgUnitValue = row[actualOrgUnitCol];
     const metricValue = row[actualMetricCol];
 
@@ -643,6 +670,9 @@ function buildAggregatedValueMaps(options: {
   orgUnitData.forEach((values, id) => {
     let aggregatedValue: number;
     switch (aggregationMethod) {
+      case 'none':
+        aggregatedValue = values[values.length - 1];
+        break;
       case 'sum':
         aggregatedValue = values.reduce((left, right) => left + right, 0);
         break;
@@ -848,21 +878,97 @@ function DHIS2Map({
         : [],
     [sourceInstanceIdsInputKey],
   );
+  // Live legend definition fetched directly from the API when the chart is
+  // rendered in a dashboard (where the control-panel never runs and localStorage
+  // may be empty).  Used as a fallback when stagedLegendDefinition is undefined.
+  const [liveLegendDefinition, setLiveLegendDefinition] = useState<
+    DHIS2LegendDefinition | undefined
+  >(undefined);
+
+  useEffect(() => {
+    if (!databaseId) return;
+    let cancelled = false;
+
+    syncDHIS2LegendSchemesForDatabase(databaseId)
+      .then(() => {
+        if (cancelled) return;
+        const cachedSets = readCachedLegendSets(databaseId);
+        if (!cachedSets.length) return;
+
+        // Prefer the metric column's inline dhis2_legend definition
+        const metricCol = datasourceColumns.find(c => {
+          const colName = String(c.column_name || '').trim();
+          return (
+            colName === metric || sanitizeDHIS2ColumnName(colName) === metric
+          );
+        });
+        let colExtra: Record<string, any> | null = null;
+        if (metricCol?.extra) {
+          try {
+            colExtra =
+              typeof metricCol.extra === 'string'
+                ? JSON.parse(metricCol.extra as string)
+                : (metricCol.extra as Record<string, any>);
+          } catch {
+            colExtra = null;
+          }
+        }
+        const inlineDef = colExtra?.dhis2_legend ?? colExtra?.dhis2Legend;
+        if (
+          inlineDef &&
+          Array.isArray(inlineDef.items) &&
+          inlineDef.items.length > 0
+        ) {
+          setLiveLegendDefinition(inlineDef as DHIS2LegendDefinition);
+          return;
+        }
+
+        // Fall back to first cached legend set that has colour items
+        for (const legendSet of cachedSets) {
+          const def = legendSet.legendDefinition;
+          const rawItems = def?.items;
+          if (!Array.isArray(rawItems) || rawItems.length === 0) continue;
+          const items = rawItems
+            .filter(item => Boolean(item.color))
+            .map(item => ({
+              id: undefined as string | undefined,
+              label: undefined as string | undefined,
+              startValue: item.startValue,
+              endValue: item.endValue,
+              color: String(item.color),
+            }));
+          if (items.length === 0) continue;
+          setLiveLegendDefinition({
+            setName:
+              def?.setName ||
+              (legendSet.displayName as string | undefined) ||
+              (legendSet.name as string | undefined),
+            items,
+          });
+          return;
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [databaseId, metric, datasourceColumns]);
+
   const effectiveStagedLegendDefinition = useMemo(() => {
-    // Use staged DHIS2 legend ranges by default, but leave explicit manual or
-    // non-DHIS2 algorithm choices in control of the chart author.
-    if (!stagedLegendDefinition?.items?.length) {
+    // Use staged DHIS2 legend ranges by default, but leave explicit manual
+    // algorithm choice in control of the chart author.
+    // liveLegendDefinition is a fallback populated via useEffect for dashboard
+    // views where the control-panel never pre-populates localStorage.
+    const resolved = stagedLegendDefinition ?? liveLegendDefinition;
+    if (!resolved?.items?.length) {
       return undefined;
     }
-    if (
-      legendType === 'manual' ||
-      legendType === 'equal_interval' ||
-      legendType === 'quantile'
-    ) {
+    if (legendType === 'manual') {
       return undefined;
     }
-    return stagedLegendDefinition as DHIS2LegendDefinition;
-  }, [legendType, stagedLegendDefinition]);
+    return resolved as DHIS2LegendDefinition;
+  }, [legendType, stagedLegendDefinition, liveLegendDefinition]);
 
   const inferredPrimaryBoundaryLevel = useMemo(
     () =>
@@ -1950,6 +2056,13 @@ function DHIS2Map({
   // Aggregate data by OrgUnit using the selected aggregation method
   // Build maps by both ID and name to support different data formats
   const { dataMap, dataMapByName } = useMemo(() => {
+    // Determine the target OU level from the resolved hierarchy column's metadata
+    const colMeta = datasourceColumns.find(
+      c => c.column_name === resolvedEffectiveOrgUnitColumn,
+    );
+    const colExtra = parseColumnExtra(colMeta?.extra);
+    const targetLevel = colExtra?.dhis2_ou_level;
+
     const aggregatedMaps = buildAggregatedValueMaps({
       rows: filteredData,
       requestedOrgUnitColumn: effectiveOrgUnitDataColumn,
@@ -1958,6 +2071,10 @@ function DHIS2Map({
       actualOrgUnitColumn: resolvedEffectiveOrgUnitColumn,
       actualMetricColumn: resolvedMetricColumn,
       datasourceColumns,
+      ouLevelFilter:
+        targetLevel && Number.isFinite(Number(targetLevel))
+          ? Number(targetLevel)
+          : undefined,
     });
 
     return aggregatedMaps;
@@ -1985,7 +2102,7 @@ function DHIS2Map({
   // Calculate value range from actual data for proper legend scaling
   const valueRange = useMemo(() => {
     const values = Array.from(dataMap.values()).filter(
-      v => Number.isFinite(v) && v > 0,
+      v => typeof v === 'number' && Number.isFinite(v),
     );
 
     // Use manual min/max if provided and legend type is manual

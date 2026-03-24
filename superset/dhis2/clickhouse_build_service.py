@@ -103,12 +103,12 @@ def build_serving_table_clickhouse(
             )
         
         # 4. Specialized Marts (KPI, Map)
-        _build_specialized_marts(dataset, resolved_engine, serving_name, manifest)
+        built_marts = _build_specialized_marts(dataset, resolved_engine, serving_name, manifest)
 
         # 5. Diagnostics
         source_count = resolved_engine._table_row_count(resolved_engine.get_superset_sql_table_ref(dataset))
         serving_count = resolved_engine._table_row_count(resolved_engine.get_serving_sql_table_ref(dataset))
-        
+
         diagnostics = {
             "mode": "clickhouse_native",
             "incremental": bool(refresh_scope),
@@ -119,6 +119,7 @@ def build_serving_table_clickhouse(
             "serving_table_ref": resolved_engine.get_serving_sql_table_ref(dataset),
             "source_row_count": source_count,
             "live_serving_row_count": serving_count,
+            "built_marts": built_marts,
         }
         
         return ServingBuildResult(
@@ -179,64 +180,149 @@ def _execute_incremental_build(
         engine._cmd(f"DROP TABLE IF EXISTS {temp_ref}")
 
 
-def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manifest: dict[str, Any]) -> None:
-    """Create specialized marts (KPI, Map) from the main serving table."""
+def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manifest: dict[str, Any]) -> list[str]:
+    """Create specialized marts (KPI, Map) from the main serving table.
+
+    Returns a list of mart table names that were successfully built.
+    Individual mart failures are logged and skipped so a broken mart never
+    prevents the main serving build from completing.
+    """
     serving_db = engine._serving_database
     source_ref = f"`{serving_db}`.`{serving_name}`"
-    
-    # Identify key column sets from manifest
-    indicator_cols = [f"`{c['column_name']}`" for c in manifest["columns"] if c.get("variable_id")]
-    if not indicator_cols:
-        return
+    built: list[str] = []
+
+    # Identify variable columns and their aggregation requirement
+    var_cols = []
+    for c in manifest["columns"]:
+        if not c.get("variable_id"):
+            continue
+
+        extra = c.get("extra") or {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:  # pylint: disable=broad-except
+                extra = {}
+
+        # Indicators (rates/percentages) must use AVG to avoid inflating values
+        # when aggregating across periods or organization units.
+        is_indicator = extra.get("dhis2_is_indicator") is True
+        agg_func = "avgOrNull" if is_indicator else "sumOrNull"
+        var_cols.append({"name": f"`{c['column_name']}`", "agg": agg_func})
+
+    if not var_cols:
+        return built
 
     period_col = manifest.get("period_column_name")
     instance_col = (manifest.get("dimension_column_names") or [None])[0] if manifest.get("include_instance_name") else None
-    
+
     # Find period hierarchy columns (year, quarter, etc.)
     period_hierarchy_cols = []
     for c in manifest["columns"]:
         extra = c.get("extra") or {}
-        if isinstance(extra, str): 
-            try: extra = json.loads(extra)
-            except: extra = {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:  # pylint: disable=broad-except
+                extra = {}
         if extra.get("dhis2_is_period_hierarchy"):
             period_hierarchy_cols.append(f"`{c['column_name']}`")
 
     common_group_cols = []
-    if instance_col: common_group_cols.append(f"`{instance_col}`")
-    if period_col: common_group_cols.append(f"`{period_col}`")
+    if instance_col:
+        common_group_cols.append(f"`{instance_col}`")
+    if period_col:
+        common_group_cols.append(f"`{period_col}`")
     # Add hierarchy levels to grouping to allow trend analysis at different grains
     common_group_cols.extend(period_hierarchy_cols)
 
-    # 1. KPI Mart
-    if common_group_cols:
+    # Find OU hierarchy columns
+    ou_hierarchy_cols = []
+    for c in manifest["columns"]:
+        extra = c.get("extra") or {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:  # pylint: disable=broad-except
+                extra = {}
+        if extra.get("dhis2_is_ou_hierarchy"):
+            ou_hierarchy_cols.append(f"`{c['column_name']}`")
+
+    # Add OU level column if present in manifest
+    ou_level_col = manifest.get("ou_level_column_name")
+    if ou_level_col:
+        ou_hierarchy_cols.append(f"`{ou_level_col}`")
+
+    # Grouping columns for specialized marts
+    # We MUST have at least one column to group by. 
+    # Prefer instance + period, but fall back to ou_level if needed.
+    group_cols = list(dict.fromkeys(common_group_cols + ou_hierarchy_cols))
+    if not group_cols:
+        if ou_level_col:
+            group_cols = [f"`{ou_level_col}`"]
+        elif instance_col:
+            group_cols = [f"`{instance_col}`"]
+        elif period_col:
+            group_cols = [f"`{period_col}`"]
+
+    # Define optimal ClickHouse primary key / sort order
+    # Leading with instance, period, and level provides best performance for typical filters.
+    # We use instance_col/period_col if they exist in this mart's grouping.
+    pk_cols = []
+    if instance_col and f"`{instance_col}`" in group_cols:
+        pk_cols.append(f"`{instance_col}`")
+    if period_col and f"`{period_col}`" in group_cols:
+        pk_cols.append(f"`{period_col}`")
+    if ou_level_col and f"`{ou_level_col}`" in group_cols:
+        pk_cols.append(f"`{ou_level_col}`")
+    
+    # Add any remaining group cols to the sort order
+    seen_pk = set(pk_cols)
+    for c in group_cols:
+        if c not in seen_pk:
+            pk_cols.append(c)
+
+    # 1. KPI Mart (always build if we have indicators and at least one group col)
+    if var_cols and group_cols:
         kpi_name = f"{serving_name}_kpi"
         kpi_ref = f"`{serving_db}`.`{kpi_name}`"
-        select_exprs = common_group_cols + [f"sumOrNull({c}) AS {c}" for c in indicator_cols]
-        engine._cmd(f"DROP TABLE IF EXISTS {kpi_ref}")
-        engine._cmd(
-            f"CREATE TABLE {kpi_ref} ENGINE = MergeTree() ORDER BY ({', '.join(common_group_cols)}) "
-            f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(common_group_cols)}"
-        )
-        logger.info("ClickHouse: built KPI mart %s", kpi_ref)
+        try:
+            select_exprs = group_cols + [f"{c['agg']}({c['name']}) AS {c['name']}" for c in var_cols]
+            
+            engine._cmd(f"DROP TABLE IF EXISTS {kpi_ref}")
+            engine._cmd(
+                f"CREATE TABLE {kpi_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
+                f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
+            )
+            logger.info("ClickHouse: built KPI mart %s", kpi_ref)
+            built.append(kpi_name)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "ClickHouse: failed to build KPI mart %s — skipping (main serving table unaffected)",
+                kpi_ref,
+            )
 
-    # 2. Map Marts: One per OU level
-    hierarchy_cols = [c["column_name"] for c in manifest["columns"] if c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))]
-    
-    for i, level_col in enumerate(hierarchy_cols):
-        map_name = f"{serving_name}_map_l{i+1}"
+    # 2. Unified Map Mart (always build if we have indicators and at least one group col)
+    if var_cols and group_cols:
+        map_name = f"{serving_name}_map"
         map_ref = f"`{serving_db}`.`{map_name}`"
-        
-        map_group_cols = common_group_cols + [f"`{level_col}`"]
-        select_exprs = map_group_cols + [f"sumOrNull({c}) AS {c}" for c in indicator_cols]
-        
-        engine._cmd(f"DROP TABLE IF EXISTS {map_ref}")
-        engine._cmd(
-            f"CREATE TABLE {map_ref} ENGINE = MergeTree() ORDER BY ({', '.join(map_group_cols)}) "
-            f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} WHERE `{level_col}` IS NOT NULL "
-            f"GROUP BY {', '.join(map_group_cols)}"
-        )
-        logger.info("ClickHouse: built Map mart %s", map_ref)
+        try:
+            select_exprs = group_cols + [f"{c['agg']}({c['name']}) AS {c['name']}" for c in var_cols]
+            
+            engine._cmd(f"DROP TABLE IF EXISTS {map_ref}")
+            engine._cmd(
+                f"CREATE TABLE {map_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
+                f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
+            )
+            logger.info("ClickHouse: built Unified Map mart %s", map_ref)
+            built.append(map_name)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "ClickHouse: failed to build Unified Map mart %s — skipping (main serving table unaffected)",
+                map_ref,
+            )
+
+    return built
 
 
 def _upload_org_unit_map(
@@ -347,25 +433,35 @@ def _generate_serving_sql(
         var_id = col.get("variable_id")
         if var_id:
             coc_uid = col.get("coc_uid")
+            # instance_id scopes the CASE predicate to a single source connection,
+            # preventing rows from different DHIS2 instances that share the same
+            # dx_uid from being summed into the same column.
+            instance_id = col.get("instance_id")
             val_col = "value_numeric" if col_type in ("FLOAT", "DOUBLE", "INTEGER", "BIGINT", "NUMERIC") else "value"
-            
-            preds = [f"dx_uid = '{var_id}'"]
+
+            staged_dataset_id = col.get("staged_dataset_id")
+            preds = [f"s.dx_uid = '{var_id}'"]
+            if staged_dataset_id is not None:
+                preds.append(f"s.staged_dataset_id = {int(staged_dataset_id)}")
+            if instance_id is not None:
+                preds.append(f"s.source_instance_id = {int(instance_id)}")
             if coc_uid:
-                preds.append(f"co_uid = '{coc_uid}'")
+                preds.append(f"s.co_uid = '{coc_uid}'")
             predicate = " AND ".join(preds)
-            
+
             if val_col == "value_numeric":
-                expr = f"sumOrNull(CASE WHEN {predicate} THEN {val_col} ELSE NULL END)"
+                expr = f"sumOrNull(CASE WHEN {predicate} THEN s.{val_col} ELSE NULL END)"
             else:
-                expr = f"max(CASE WHEN {predicate} THEN {val_col} ELSE NULL END)"
-            
+                expr = f"max(CASE WHEN {predicate} THEN s.{val_col} ELSE NULL END)"
+
             select_exprs.append(f"{expr} AS `{col_name}`")
             continue
 
         # 2. Dimension Columns
         expr = "NULL"
         
-        if col_name == manifest.get("dimension_column_names", [])[0] and manifest.get("include_instance_name"):
+        _dim_cols = manifest.get("dimension_column_names") or []
+        if _dim_cols and col_name == _dim_cols[0] and manifest.get("include_instance_name"):
             expr = "s.source_instance_name"
         elif ou_map_table and col_name in ou_cols:
             expr = f"ou_map.`{col_name}`"
@@ -388,7 +484,15 @@ def _generate_serving_sql(
             expr = "s.co_uid"
         elif col_name == manifest.get("coc_name_column_name"):
             expr = "s.co_name"
-        
+        elif isinstance(col.get("extra"), dict) and col["extra"].get("dhis2_manifest_build_version"):
+            # Sentinel column: stores the manifest build version as a constant.
+            # Its column *name* encodes the version so _serving_table_needs_rebuild
+            # detects stale serving tables after a manifest version bump.
+            # Use toUInt8() to avoid ClickHouse treating a bare integer in GROUP BY
+            # as a positional column index.
+            ver = int(col["extra"]["dhis2_manifest_build_version"])
+            expr = f"toUInt8({ver})"
+
         select_exprs.append(f"{expr} AS `{col_name}`")
         group_by_exprs.append(expr)
 

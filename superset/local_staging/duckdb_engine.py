@@ -324,6 +324,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         )
         logger.info("DuckDB: dropped staging table %s", qualified)
 
+    def drop_serving_table(self, staged_dataset: Any) -> None:
+        conn = self._connect()
+        serving_table = _serving_table_name(staged_dataset)
+        conn.execute(
+            f"DROP TABLE IF EXISTS {self.STAGING_SCHEMA}.{serving_table}"
+        )
+        logger.info("DuckDB: dropped serving table %s", serving_table)
+
     def truncate_staging_table(self, staged_dataset: Any) -> None:
         conn = self._connect()
         qualified = (
@@ -816,9 +824,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         metric_alias: str | None = None,
         aggregation_method: str | None = None,
         count_rows: bool = True,
+        table_name_override: str | None = None,
     ) -> dict[str, Any]:
         conn = self._connect_read_only()
-        serving = f"{self.STAGING_SCHEMA}.{_serving_table_name(staged_dataset)}"
+        table = (
+            f"{self.STAGING_SCHEMA}.{table_name_override}"
+            if table_name_override
+            else f"{self.STAGING_SCHEMA}.{_serving_table_name(staged_dataset)}"
+        )
         # Resolve page-based offset
         effective_limit = int(limit or 1000)
         safe_page = max(1, int(page or 1))

@@ -309,6 +309,7 @@ const config: ControlPanelConfig = {
               ),
               default: 'sum',
               choices: [
+                ['none', t('None (as is)')],
                 ['sum', t('Sum')],
                 ['average', t('Average')],
                 ['max', t('Maximum')],

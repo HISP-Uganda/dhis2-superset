@@ -104,6 +104,9 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
     def drop_staging_table(self, staged_dataset: Any) -> None:
         self._inner.drop_staging_table(staged_dataset)
 
+    def drop_serving_table(self, staged_dataset: Any) -> None:
+        self._inner.drop_serving_table(staged_dataset)
+
     def truncate_staging_table(self, staged_dataset: Any) -> None:
         self._inner.truncate_staging_table(staged_dataset)
 
@@ -232,6 +235,7 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
         metric_column: str | None = None,
         metric_alias: str | None = None,
         count_rows: bool = True,
+        table_name_override: str | None = None,
     ) -> dict[str, Any]:
         return self._inner.query_serving_table(
             staged_dataset,
@@ -244,6 +248,7 @@ class SupersetDBStagingEngine(LocalStagingEngineBase):
             metric_column=metric_column,
             metric_alias=metric_alias,
             count_rows=count_rows,
+            table_name_override=table_name_override,
         )
 
     def get_staging_table_stats(self, staged_dataset: Any) -> dict[str, Any]:

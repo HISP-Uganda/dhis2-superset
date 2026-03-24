@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -461,11 +462,12 @@ def delete_staged_dataset(dataset_id: int) -> bool:
     engine = _get_engine(dataset.database_id)
 
     try:
-        # Drop the physical table first; this is auto-committed inside the engine.
+        # Drop physical tables first; these are auto-committed inside the engine.
         engine.drop_staging_table(dataset)
+        engine.drop_serving_table(dataset)
     except Exception:
         logger.exception(
-            "Failed to drop staging table for DHIS2StagedDataset id=%s – "
+            "Failed to drop staging/serving tables for DHIS2StagedDataset id=%s – "
             "proceeding to delete metadata row anyway",
             dataset_id,
         )
@@ -475,6 +477,11 @@ def delete_staged_dataset(dataset_id: int) -> bool:
     try:
         if dataset.generic_dataset is not None:
             db.session.delete(dataset.generic_dataset)
+        
+        # Delete all associated Superset virtual datasets (Thematic, [KPI], [Map])
+        from superset.dhis2.superset_dataset_service import cleanup_staged_dataset_superset_resources
+        cleanup_staged_dataset_superset_resources(dataset_id, dataset.database_id)
+
         db.session.delete(dataset)
         db.session.commit()
         logger.info("Deleted DHIS2StagedDataset id=%s", dataset_id)
@@ -698,6 +705,33 @@ def query_serving_data(
 
     ensure_serving_table(dataset.id)
     engine = _get_engine(dataset.database_id)
+
+    # Mart Routing Logic:
+    # Use specialized marts only when grouping is active and the columns
+    # requested are supported by the mart schema.
+    mart_table_name = None
+    if group_by_columns and hasattr(engine, "named_table_exists_in_serving"):
+        serving_base = engine.get_serving_table_name(dataset)
+        
+        # 1. Map Mart Logic
+        # If we are grouping by exactly one hierarchy level, use the map mart.
+        is_map_query = any(
+            # Look for indicators or explicit map-like grouping
+            aggregation_method in ("sum", "average", "avg", "none")
+            for _ in [1]
+        )
+        if is_map_query:
+            map_name = f"{serving_base}_map"
+            if engine.named_table_exists_in_serving(map_name):
+                mart_table_name = map_name
+
+        # 2. KPI Mart Logic
+        # Fallback to KPI mart for general trend/indicator queries if map mart wasn't picked
+        if not mart_table_name:
+            kpi_name = f"{serving_base}_kpi"
+            if engine.named_table_exists_in_serving(kpi_name):
+                mart_table_name = kpi_name
+
     return engine.query_serving_table(
         dataset,
         selected_columns=selected_columns,
@@ -709,6 +743,7 @@ def query_serving_data(
         metric_alias=metric_alias,
         aggregation_method=aggregation_method,
         count_rows=count_rows,
+        table_name_override=mart_table_name,
     )
 
 
@@ -721,8 +756,29 @@ def get_local_filter_options(
     if dataset is None:
         raise ValueError(f"Dataset with id={dataset_id} not found")
 
-    _serving_table_ref, serving_columns = ensure_serving_table(dataset.id)
     engine = _get_engine(dataset.database_id)
+
+    try:
+        _serving_table_ref, serving_columns = ensure_serving_table(dataset.id)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "get_local_filter_options: serving table build failed for dataset id=%s; "
+            "falling back to manifest columns",
+            dataset_id,
+            exc_info=True,
+        )
+        # Graceful degradation: use manifest columns if rebuild fails so the
+        # filters endpoint still returns a response instead of a 500.
+        from superset.dhis2.analytical_serving import (
+            build_serving_manifest,
+            dataset_columns_payload,
+        )
+        try:
+            manifest = build_serving_manifest(dataset)
+            serving_columns = dataset_columns_payload(manifest["columns"])
+        except Exception:  # pylint: disable=broad-except
+            serving_columns = []
+
     return engine.get_serving_filter_options(
         dataset,
         columns=serving_columns,
@@ -932,8 +988,12 @@ def _serving_table_needs_rebuild(
     # Additive-column tolerance: do not trigger a rebuild when the only
     # missing columns are system columns that are populated on the next
     # explicit sync.  Currently covers:
-    #   * dhis2_is_ou_hierarchy — pruned when all-blank at materialization
-    #   * dhis2_is_ou_level     — new column added in a later code release
+    #   * dhis2_is_ou_hierarchy      — pruned when all-blank at materialization
+    #   * dhis2_is_ou_level          — new column added in a later code release
+    #
+    # NOTE: dhis2_manifest_build_version is intentionally NOT additive — its
+    # absence (or wrong version name) must trigger a full rebuild because the
+    # CASE-predicate logic has changed and existing materialized data is invalid.
     _ADDITIVE_EXTRA_KEYS = {"dhis2_is_ou_hierarchy", "dhis2_is_ou_level"}
     current_set = set(current_columns)
     missing = [c for c in expected_columns if c not in current_set]
@@ -958,6 +1018,48 @@ def _serving_table_needs_rebuild(
     return True
 
 
+def _specialized_marts_need_rebuild(
+    engine: Any,
+    dataset: Any,
+    manifest: dict[str, Any],
+) -> bool:
+    """Return True if any specialized mart (KPI, Map) should exist but is missing.
+
+    Only meaningful for ClickHouse engines (duck-typed via ``kpi_mart_exists``).
+    """
+    kpi_exists_fn = getattr(engine, "kpi_mart_exists", None)
+    map_exists_fn = getattr(engine, "map_mart_exists", None)
+    if kpi_exists_fn is None or map_exists_fn is None:
+        return False
+
+    has_indicators = any(
+        c.get("variable_id") for c in list(manifest.get("columns") or [])
+    )
+    if not has_indicators:
+        return False
+
+    try:
+        # Rebuild if either mart is missing
+        if not kpi_exists_fn(dataset):
+            return True
+
+        has_hierarchy = any(
+            c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))
+            for c in list(manifest.get("columns") or [])
+        )
+        if has_hierarchy and not map_exists_fn(dataset):
+            return True
+
+        return False
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "_specialized_marts_need_rebuild: could not check mart existence for dataset id=%s",
+            getattr(dataset, "id", None),
+            exc_info=True,
+        )
+        return False
+
+
 def ensure_serving_table(
     dataset_id: int,
     refresh_scope: Iterable[str] | None = None,
@@ -972,7 +1074,13 @@ def ensure_serving_table(
     # serving_columns tracks the *actual* columns in the physical table.
     # When a rebuild runs, pruned columns replace the full manifest set.
     serving_columns = dataset_columns_payload(manifest["columns"])
-    if refresh_scope or force_rebuild or _serving_table_needs_rebuild(engine, dataset, manifest):
+    needs_rebuild = (
+        bool(refresh_scope)
+        or force_rebuild
+        or _serving_table_needs_rebuild(engine, dataset, manifest)
+        or _specialized_marts_need_rebuild(engine, dataset, manifest)
+    )
+    if needs_rebuild:
         build_result = build_serving_table(
             dataset, engine=engine, refresh_scope=refresh_scope
         )
@@ -1051,4 +1159,144 @@ def ensure_serving_table(
             pass
 
     return serving_table_ref, serving_columns
+
+
+def cleanup_stale_dhis2_datasets() -> dict[str, int]:
+    """Remove all Superset virtual datasets that reference a missing staged dataset.
+
+    This is a one-time maintenance action to clean up orphans left behind by
+    failed deletions or older versions of the code.
+    """
+    from superset import db
+    from superset.connectors.sqla.models import SqlaTable
+    from superset.dhis2.models import DHIS2StagedDataset
+
+    all_sqla_datasets = db.session.query(SqlaTable).filter(
+        SqlaTable.extra.like('%"dhis2_staged_dataset_id":%')
+    ).all()
+
+    staged_dataset_ids = {id_ for (id_,) in db.session.query(DHIS2StagedDataset.id).all()}
+    
+    deleted_count = 0
+    for ds in all_sqla_datasets:
+        try:
+            extra = json.loads(ds.extra or "{}")
+            staged_id = extra.get("dhis2_staged_dataset_id")
+            if staged_id and staged_id not in staged_dataset_ids:
+                logger.info(
+                    "cleanup_stale_dhis2_datasets: deleting orphaned Superset dataset id=%d ('%s') "
+                    "referencing missing staged dataset id=%s",
+                    ds.id,
+                    ds.table_name,
+                    staged_id,
+                )
+                db.session.delete(ds)
+                deleted_count += 1
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Failed to parse extra for SqlaTable id=%d", ds.id)
+
+    if deleted_count > 0:
+        db.session.commit()
+        logger.info("cleanup_stale_dhis2_datasets: purged %d orphaned datasets", deleted_count)
+    
+    return {"purged_orphans": deleted_count}
+
+
+def full_cleanup_dhis2_resources() -> dict[str, Any]:
+    """Remove all orphaned DHIS2 resources (SqlaTables and physical tables).
+
+    This performs a deep cleanup of:
+    1. Superset virtual datasets (SqlaTable) referencing missing staged datasets.
+    2. Physical tables (sv_*) in staging engines that have no corresponding SqlaTable.
+    """
+    from superset import db
+    from superset.connectors.sqla.models import SqlaTable
+    from superset.dhis2.models import DHIS2StagedDataset, DHIS2Instance
+    from superset.dhis2.superset_dataset_service import repair_dhis2_chart_references
+
+    # 0. Repair chart references first (migrate charts from deprecated [Map L*] to unified [Map])
+    repair_stats = repair_dhis2_chart_references()
+    repointed_count = repair_stats.get("repointed_charts", 0)
+
+    # 1. Cleanup orphaned SqlaTables
+    purge_stats = cleanup_stale_dhis2_datasets()
+    purged_sqla_count = purge_stats.get("purged_orphans", 0)
+
+    # 1b. Aggressively remove [Map L*] datasets — these are now deprecated by the unified mart
+    # Note: DHIS2 virtual datasets use the friendly name as 'table_name'.
+    deprecated_map_datasets = db.session.query(SqlaTable).filter(
+        (SqlaTable.table_name.like("[Map L%"))
+    ).all()
+    for ds in deprecated_map_datasets:
+        logger.info("full_cleanup: removing deprecated level-specific map dataset id=%d ('%s')", ds.id, ds.table_name)
+        db.session.delete(ds)
+        purged_sqla_count += 1
+    db.session.commit()
+
+    # 2. Cleanup physical tables with no SqlaTable reference
+    # We need to check all databases that act as staging storage.
+    all_sqla_tables = db.session.query(SqlaTable.sql).all()
+    # Extract table names from 'SELECT * FROM <ref>' patterns
+    known_table_refs: set[str] = set()
+    for (sql,) in all_sqla_tables:
+        if not sql:
+            continue
+        match = re.search(r"FROM\s+[`\"]?([a-zA-Z0-9._]+)[`\"]?", sql, re.IGNORECASE)
+        if match:
+            known_table_refs.add(match.group(1).lower())
+
+    # Also include the main serving table refs for all active staged datasets
+    all_staged = db.session.query(DHIS2StagedDataset).all()
+    for ds in all_staged:
+        try:
+            eng = _get_engine(ds.database_id)
+            known_table_refs.add(eng.get_serving_table_name(ds).lower())
+            # and marts
+            serving_base = eng.get_serving_table_name(ds)
+            known_table_refs.add(f"{serving_base}_kpi".lower())
+            known_table_refs.add(f"{serving_base}_map".lower())
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    purged_physical_count = 0
+    
+    # Scan all databases configured for staging
+    # Staging engines are keyed by database_id
+    staging_db_ids = {ds.database_id for ds in all_staged}
+    # Also check any DB used by DHIS2 instances
+    staging_db_ids.update({inst.database_id for inst in db.session.query(DHIS2Instance).all()})
+
+    for db_id in staging_db_ids:
+        try:
+            eng = _get_engine(db_id)
+            # This is engine-specific. For ClickHouse/DuckDB we can list tables.
+            if hasattr(eng, "_qry"): # ClickHouse
+                tables_result = eng._qry(
+                    "SELECT name FROM system.tables WHERE database = {db:String} AND name LIKE 'sv_%'",
+                    parameters={"db": eng._serving_database}
+                )
+                for (tbl_name,) in tables_result.result_rows:
+                    if tbl_name.lower() not in known_table_refs:
+                        logger.info("full_cleanup: dropping orphaned ClickHouse table %s.%s", eng._serving_database, tbl_name)
+                        eng._cmd(f"DROP TABLE IF EXISTS `{eng._serving_database}`.`{tbl_name}`")
+                        purged_physical_count += 1
+            
+            elif eng.engine_name == "duckdb":
+                # DuckDB lists tables via PRAGMA or information_schema
+                conn = eng._connect()
+                tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'sv_%'").fetchall()
+                for (tbl_name,) in tables:
+                    if tbl_name.lower() not in known_table_refs:
+                        logger.info("full_cleanup: dropping orphaned DuckDB table %s", tbl_name)
+                        conn.execute(f"DROP TABLE IF EXISTS {tbl_name}")
+                        purged_physical_count += 1
+                eng.close()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("full_cleanup: failed to scan tables for database_id=%s", db_id, exc_info=True)
+
+    return {
+        "repointed_charts": repointed_count,
+        "purged_sqla_datasets": purged_sqla_count,
+        "purged_physical_tables": purged_physical_count,
+    }
 

@@ -87,7 +87,11 @@ from superset.commands.importers.v1.utils import get_contents_from_bundle
 from superset.constants import MODEL_API_RW_METHOD_PERMISSION_MAP, RouteMethod
 from superset.daos.database import DatabaseDAO
 from superset.databases.decorators import check_table_access
-from superset.databases.filters import DatabaseFilter, DatabaseUploadEnabledFilter
+from superset.databases.filters import (
+    DatabaseDHIS2StagingInternalFilter,
+    DatabaseFilter,
+    DatabaseUploadEnabledFilter,
+)
 from superset.databases.schemas import (
     CatalogsResponseSchema,
     database_catalogs_query_schema,
@@ -238,7 +242,10 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     class_permission_name = "Database"
     method_permission_name = MODEL_API_RW_METHOD_PERMISSION_MAP
     allow_browser_login = True
-    base_filters = [["id", DatabaseFilter, lambda: []]]
+    base_filters = [
+        ["id", DatabaseFilter, lambda: []],
+        ["id", DatabaseDHIS2StagingInternalFilter, lambda: []],
+    ]
     show_columns = [
         "id",
         "uuid",

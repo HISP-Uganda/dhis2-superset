@@ -227,43 +227,14 @@ export function resolveQueryMetricColumnName(options: {
     return matchedColumn;
   }
 
-  const firstRow = rows[0] || {};
-  const numericCandidates = availableColumns.filter(columnName => {
-    const normalized = normalizeColumnAlias(columnName);
-    const matchedDatasourceColumn = findDatasourceColumn(
-      datasourceColumns,
-      columnName,
-    );
-    const extra = parseColumnExtra(matchedDatasourceColumn?.extra);
-    const isHierarchyColumn =
-      extra?.dhis2_is_ou_hierarchy === true ||
-      extra?.dhis2IsOuHierarchy === true ||
-      Number.isFinite(
-        Number(extra?.dhis2_ou_level ?? extra?.dhis2OuLevel ?? NaN),
-      );
-    if (
-      /^ou_level_\d+$/i.test(columnName) ||
-      normalized === 'period' ||
-      normalized === 'dhis2_instance' ||
-      isHierarchyColumn
-    ) {
-      return false;
-    }
-    const value = firstRow[columnName];
-    if (typeof value === 'number') {
-      return Number.isFinite(value);
-    }
-    if (typeof value === 'string' && value.trim() !== '') {
-      return Number.isFinite(Number(value));
-    }
-    return false;
+  // Final fallback: check for any column that contains the metric name or vice-versa
+  const partialMatch = availableColumns.find(col => {
+    const colLower = col.toLowerCase();
+    const metricLower = metricBaseColumn.toLowerCase();
+    return colLower.includes(metricLower) || metricLower.includes(colLower);
   });
 
-  if (numericCandidates.length === 1) {
-    return numericCandidates[0];
-  }
-
-  return undefined;
+  return partialMatch;
 }
 
 export function resolveLoaderDimensionColumnName(options: {

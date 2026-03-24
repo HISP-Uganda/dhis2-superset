@@ -500,7 +500,9 @@ export function buildLegendEntries(options: {
   } = options;
 
   if (hasLegendItems(stagedLegendDefinition)) {
-    return normalizeLegendItems(stagedLegendDefinition).map((item, index) => ({
+    const legendItems = normalizeLegendItems(stagedLegendDefinition);
+
+    return legendItems.map((item, index) => ({
       key: item.id || `staged-${index}`,
       color: item.color,
       min: item.startValue ?? undefined,
@@ -566,7 +568,10 @@ export function getColorScale(
     `[getColorScale] schemeName=${schemeName}, schemeType=${schemeType}, classes=${classes}, range=[${min}, ${max}]`,
   );
 
-  if (hasLegendItems(stagedLegendDefinition)) {
+  if (
+    (legendType === 'auto' || legendType === 'staged') &&
+    hasLegendItems(stagedLegendDefinition)
+  ) {
     return (value: number): string =>
       getLegendColorFromDefinition(value, stagedLegendDefinition) ??
       stagedLegendDefinition.items[0].color;

@@ -222,9 +222,13 @@ function resolveMetricLegendDefinition(
     return undefined;
   }
 
-  const matchedColumn = datasourceColumns.find(
-    column => String(column.column_name || '').trim() === metricColumnName,
-  );
+  const matchedColumn = datasourceColumns.find(column => {
+    const colName = String(column.column_name || '').trim();
+    return (
+      colName === metricColumnName ||
+      sanitizeDHIS2ColumnName(colName) === metricColumnName
+    );
+  });
   const extra = parseColumnExtra(matchedColumn?.extra);
   return parseLegendDefinition(extra?.dhis2_legend ?? extra?.dhis2Legend);
 }
@@ -234,7 +238,8 @@ function collectStagedLegendDefinitions(
 ): StagedLegendColumnDefinition[] {
   return datasourceColumns.reduce<StagedLegendColumnDefinition[]>(
     (result, column) => {
-      const columnName = String(column.column_name || '').trim();
+      const colName = String(column.column_name || '').trim();
+      const columnName = sanitizeDHIS2ColumnName(colName);
       if (!columnName) {
         return result;
       }
@@ -355,10 +360,7 @@ function resolveSelectedStagedLegendDefinition(
     }
   }
 
-  return (
-    resolveMetricLegendDefinition(datasourceColumns, metricColumnName) ||
-    availableDefinitions[0]?.definition
-  );
+  return resolveMetricLegendDefinition(datasourceColumns, metricColumnName);
 }
 
 function readCachedOrgUnitLevels(databaseId?: number): StagedOrgUnitLevel[] {
@@ -895,6 +897,22 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     coercePositiveInteger(formDataAny?.dashboard_id) ||
     coercePositiveInteger(formDataAny?.dashboardId);
 
+  const effectiveAggregationMethod = (() => {
+    if (aggregation_method) {
+      return aggregation_method;
+    }
+    const metricCol = datasourceColumns.find(
+      c =>
+        c.column_name === metricColumn ||
+        sanitizeDHIS2ColumnName(c.column_name) === metricColumn,
+    );
+    const extra = parseColumnExtra(metricCol?.extra);
+    if (extra?.dhis2_is_indicator === true) {
+      return 'average';
+    }
+    return 'sum';
+  })();
+
   return {
     width,
     height,
@@ -908,7 +926,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
     metricLabel: metricDisplayLabel || metricColumn,
-    aggregationMethod: aggregation_method || 'sum',
+    aggregationMethod: effectiveAggregationMethod,
     primaryBoundaryLevel,
     boundaryLevels: selectedLevels,
     boundaryLevelLabels,

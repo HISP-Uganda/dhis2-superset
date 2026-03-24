@@ -53,6 +53,7 @@ export interface LevelBorderColor {
 }
 
 export type AggregationMethod =
+  | 'none'
   | 'sum'
   | 'average'
   | 'max'

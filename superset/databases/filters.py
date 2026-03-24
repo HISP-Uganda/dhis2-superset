@@ -105,3 +105,21 @@ class DatabaseUploadEnabledFilter(BaseFilter):  # pylint: disable=too-few-public
                 cast(Database.extra, JSON)["schemas_allowed_for_file_upload"] != [],
             )
         )
+
+
+class DatabaseDHIS2StagingInternalFilter(
+    BaseFilter
+):  # pylint: disable=too-few-public-methods
+    """
+    Custom filter for the GET list that hides internal DHIS2 staging/serving
+    databases from the general UI list.
+    """
+
+    def apply(self, query: Query, value: Any) -> Query:
+        # Hide any database that has "dhis2_staging_internal": true in extra
+        return query.filter(
+            or_(
+                cast(Database.extra, JSON)["dhis2_staging_internal"].is_(None),
+                cast(Database.extra, JSON)["dhis2_staging_internal"] == sa.false(),
+            )
+        )

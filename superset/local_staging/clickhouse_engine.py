@@ -78,6 +78,7 @@ _SERVING_PREFIX = "sv"
 
 # ClickHouse column definitions for the staging table
 _CH_STAGING_COLUMNS = [
+    ("staged_dataset_id", "Int32 DEFAULT 0"),
     ("source_instance_id", "Int32"),
     ("source_instance_name", "LowCardinality(String)"),
     ("dx_uid", "LowCardinality(String) CODEC(ZSTD(3))"),
@@ -480,6 +481,18 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             ORDER BY (source_instance_id, pe, dx_uid, ou)
             SETTINGS index_granularity = 8192
         """)
+        # Migration: add staged_dataset_id to tables created before this column existed.
+        # ADD COLUMN IF NOT EXISTS is idempotent — safe to run on new tables too.
+        try:
+            self._cmd(
+                f"ALTER TABLE `{self._database}`.`{table}` "
+                f"ADD COLUMN IF NOT EXISTS `staged_dataset_id` Int32 DEFAULT 0"
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.debug(
+                "ClickHouse: ADD COLUMN staged_dataset_id skipped for %s.%s (already exists or unsupported)",
+                self._database, table,
+            )
         logger.info("ClickHouse: created staging table %s.%s", self._database, table)
         return table
 
@@ -487,6 +500,17 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         table = _staging_table_name(staged_dataset)
         self._cmd(f"DROP TABLE IF EXISTS `{self._database}`.`{table}`")
         logger.info("ClickHouse: dropped staging table %s.%s", self._database, table)
+
+    def drop_serving_table(self, staged_dataset: Any) -> None:
+        serving_table = _serving_table_name(staged_dataset)
+        self._cmd(f"DROP TABLE IF EXISTS `{self._serving_database}`.`{serving_table}`")
+        self._cmd(f"DROP TABLE IF EXISTS `{self._serving_database}`.`{serving_table}_kpi`")
+        self._cmd(f"DROP TABLE IF EXISTS `{self._serving_database}`.`{serving_table}_map`")
+        logger.info(
+            "ClickHouse: dropped serving table and marts for %s.%s",
+            self._serving_database,
+            serving_table,
+        )
 
     def truncate_staging_table(self, staged_dataset: Any) -> None:
         table = _staging_table_name(staged_dataset)
@@ -509,6 +533,25 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             parameters={"db": self._serving_database, "tbl": table},
         )
         return bool(result.result_rows and result.result_rows[0][0] > 0)
+
+    def named_table_exists_in_serving(self, table_name: str) -> bool:
+        """Return True if *table_name* exists in the serving database."""
+        result = self._qry(
+            "SELECT count() FROM system.tables "
+            "WHERE database = {db:String} AND name = {tbl:String}",
+            parameters={"db": self._serving_database, "tbl": table_name},
+        )
+        return bool(result.result_rows and result.result_rows[0][0] > 0)
+
+    def kpi_mart_exists(self, staged_dataset: Any) -> bool:
+        """Return True if the KPI mart for *staged_dataset* exists."""
+        kpi_name = f"{_serving_table_name(staged_dataset)}_kpi"
+        return self.named_table_exists_in_serving(kpi_name)
+
+    def map_mart_exists(self, staged_dataset: Any) -> bool:
+        """Return True if the unified Map mart for *staged_dataset* exists."""
+        map_name = f"{_serving_table_name(staged_dataset)}_map"
+        return self.named_table_exists_in_serving(map_name)
 
     # ------------------------------------------------------------------
     # Data ingestion
@@ -561,26 +604,42 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         if not rows:
             return 0
         table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
+        # ou_level is excluded: DHIS2 analytics metadata never provides 'level',
+        # so the parsed value is always None.  Omitting the column lets ClickHouse
+        # fill it with its implicit default (0) and avoids the clickhouse-connect
+        # "Error serializing column ou_level into data type UInt16" TypeError that
+        # occurs when None is passed to a non-nullable integer column.
+        #
+        # String columns (co_uid, co_name, aoc_uid, dx_name, ou_name, value,
+        # dx_uid, dx_type, pe, ou) are non-nullable in ClickHouse (DEFAULT '').
+        # clickhouse-connect raises "Invalid None value in non-Nullable column"
+        # when None is passed for these.  Coerce None → '' for all string cols.
+        _STR_COLS = frozenset((
+            "dx_uid", "dx_name", "dx_type", "pe", "ou", "ou_name",
+            "value", "co_uid", "co_name", "aoc_uid",
+        ))
         _ROW_COLS = (
             "dx_uid", "dx_name", "dx_type", "pe", "ou", "ou_name",
-            "ou_level", "value", "value_numeric", "co_uid", "co_name", "aoc_uid",
+            "value", "value_numeric", "co_uid", "co_name", "aoc_uid",
         )
         col_names = [
-            "source_instance_id", "source_instance_name", "sync_job_id",
+            "staged_dataset_id", "source_instance_id", "source_instance_name", "sync_job_id",
             *_ROW_COLS,
         ]
+        dataset_id = int(staged_dataset.id)
+
+        def _coerce(col: str, val: Any) -> Any:
+            if col in _STR_COLS:
+                return val if val is not None else ""
+            return val
+
         data = [
             [
+                dataset_id,
                 instance_id,
                 instance_name,
                 sync_job_id,
-                *(
-                    # ou_level is UInt16 (non-nullable); coerce None → 0
-                    # DHIS2 analytics metadata rarely includes 'level' so the
-                    # parsed value is often None.
-                    (row.get(col) or 0) if col == "ou_level" else row.get(col)
-                    for col in _ROW_COLS
-                ),
+                *(_coerce(col, row.get(col)) for col in _ROW_COLS),
             ]
             for row in rows
         ]
@@ -1139,10 +1198,12 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         metric_alias: str | None = None,
         aggregation_method: str | None = None,
         count_rows: bool = True,
+        table_name_override: str | None = None,
     ) -> dict[str, Any]:
         table = (
-            f"`{self._serving_database}`."
-            f"`{_serving_table_name(staged_dataset)}`"
+            f"`{self._serving_database}`.`{table_name_override}`"
+            if table_name_override
+            else self.get_serving_sql_table_ref(staged_dataset)
         )
         available_columns = self.get_serving_table_columns(staged_dataset)
         available_column_names = set(available_columns)

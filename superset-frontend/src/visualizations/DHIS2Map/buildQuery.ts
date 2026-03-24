@@ -324,7 +324,10 @@ export default function buildQuery(formData: QueryFormData) {
     }
 
     const aggregateFunction = (() => {
-      switch (String(aggregation_method || '').toLowerCase()) {
+      const method = String(aggregation_method || '').toLowerCase();
+      switch (method) {
+        case 'none':
+          return null; // Special case: no aggregate wrapper
         case 'average':
           return 'AVG';
         case 'max':
@@ -341,14 +344,23 @@ export default function buildQuery(formData: QueryFormData) {
       (typeof metric === 'string'
         ? undefined
         : resolveDHIS2MetricLabel(metric as any)) ||
-      (sanitizedMetric ? `${aggregateFunction}(${sanitizedMetric})` : undefined);
+      (sanitizedMetric
+        ? aggregateFunction
+          ? `${aggregateFunction}(${sanitizedMetric})`
+          : sanitizedMetric
+        : undefined);
     const aggregatedMetric =
       sanitizedMetric && !isLatestAggregation
         ? {
             expressionType: 'SQL' as const,
-            sqlExpression: `${aggregateFunction}(${sanitizedMetric})`,
+            sqlExpression: aggregateFunction
+              ? `${aggregateFunction}(${sanitizedMetric})`
+              : sanitizedMetric,
             label:
-              metricLabel || `${aggregateFunction}(${sanitizedMetric})`,
+              metricLabel ||
+              (aggregateFunction
+                ? `${aggregateFunction}(${sanitizedMetric})`
+                : sanitizedMetric),
           }
         : undefined;
 
@@ -385,7 +397,9 @@ export default function buildQuery(formData: QueryFormData) {
       const colMeta = Array.isArray(datasourceAny?.columns)
         ? datasourceAny.columns.find(
             (c: any) =>
-              String(c?.column_name || '').trim() === terminalCol,
+              String(c?.column_name || '').trim() === terminalCol ||
+              sanitizeDHIS2ColumnName(String(c?.column_name || '').trim()) ===
+                terminalCol,
           )
         : null;
       const colExtra = parseColumnExtra(colMeta?.extra);

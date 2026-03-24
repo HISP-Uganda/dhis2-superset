@@ -482,9 +482,9 @@ class DHIS2StagingEngine:
                     ou_level            INTEGER,
                     value               TEXT,
                     value_numeric       DOUBLE PRECISION,
-                    co_uid              TEXT,
+                    co_uid              TEXT NOT NULL DEFAULT '',
                     co_name             TEXT,
-                    aoc_uid             TEXT,
+                    aoc_uid             TEXT NOT NULL DEFAULT '',
                     synced_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     sync_job_id         INTEGER
                 )
@@ -1118,6 +1118,7 @@ class DHIS2StagingEngine:
         metric_alias: str | None = None,
         aggregation_method: str | None = None,
         count_rows: bool = True,
+        table_name_override: str | None = None,
     ) -> dict[str, Any]:
         """Query the analytical serving table.
 
@@ -1128,7 +1129,11 @@ class DHIS2StagingEngine:
             Set this for chart renders where total row count is irrelevant;
             it eliminates a second full-table scan on every load.
         """
-        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        full_name = (
+            self._quote_identifier(table_name_override)
+            if table_name_override
+            else self.get_serving_sql_table_ref(staged_dataset)
+        )
         safe_limit = self._coerce_query_limit(limit)
         safe_page = max(1, int(page or 1))
         if not self.serving_table_exists(staged_dataset):
