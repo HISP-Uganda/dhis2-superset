@@ -250,6 +250,8 @@ interface MapAutoFocusProps {
   enabled: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  legendPosition?: string;
+  reserveLegendSpace?: boolean;
 }
 
 function MapAutoFocus({
@@ -257,6 +259,8 @@ function MapAutoFocus({
   enabled,
   viewportWidth,
   viewportHeight,
+  legendPosition,
+  reserveLegendSpace = false,
 }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
@@ -312,12 +316,13 @@ function MapAutoFocus({
 
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
-          // Use actual Leaflet canvas size; legend is now an overlay so no
-          // extra padding reservation needed for it.
           const fitConfig = getMapFitViewportConfig(
-            size.x || viewportWidth,
-            size.y || viewportHeight,
-            {},
+            Math.max(size.x, viewportWidth),
+            Math.max(size.y, viewportHeight),
+            {
+              legendPosition: legendPosition as any,
+              reserveLegendSpace,
+            },
           );
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
@@ -465,9 +470,15 @@ function BoundaryMask({
 // Component for manual focus button
 interface FocusButtonProps {
   boundaries: BoundaryFeature[];
+  legendPosition?: string;
+  reserveLegendSpace?: boolean;
 }
 
-function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
+function FocusButton({
+  boundaries,
+  legendPosition,
+  reserveLegendSpace = false,
+}: FocusButtonProps): ReactElement | null {
   const map = useMap();
 
   const handleFocus = () => {
@@ -477,7 +488,10 @@ function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
         const bounds = calculateBounds(boundaries);
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
-          const fitConfig = getMapFitViewportConfig(size.x, size.y, {});
+          const fitConfig = getMapFitViewportConfig(size.x, size.y, {
+            legendPosition: legendPosition as any,
+            reserveLegendSpace,
+          });
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
             paddingBottomRight: fitConfig.paddingBottomRight,
@@ -934,32 +948,6 @@ function DHIS2Map({
           inlineDef.items.length > 0
         ) {
           setLiveLegendDefinition(inlineDef as DHIS2LegendDefinition);
-          return;
-        }
-
-        // Fall back to first cached legend set that has colour items
-        for (const legendSet of cachedSets) {
-          const def = legendSet.legendDefinition;
-          const rawItems = def?.items;
-          if (!Array.isArray(rawItems) || rawItems.length === 0) continue;
-          const items = rawItems
-            .filter(item => Boolean(item.color))
-            .map(item => ({
-              id: undefined as string | undefined,
-              label: undefined as string | undefined,
-              startValue: item.startValue,
-              endValue: item.endValue,
-              color: String(item.color),
-            }));
-          if (items.length === 0) continue;
-          setLiveLegendDefinition({
-            setName:
-              def?.setName ||
-              (legendSet.displayName as string | undefined) ||
-              (legendSet.name as string | undefined),
-            items,
-          });
-          return;
         }
       })
       .catch(() => {});
@@ -2907,6 +2895,8 @@ function DHIS2Map({
         enabled={!loading}
         viewportWidth={width}
         viewportHeight={height}
+        legendPosition={legendPosition}
+        reserveLegendSpace={showLegend}
       />
 
       {/* Light basemap focus mask to de-emphasize areas outside boundaries */}
@@ -2918,7 +2908,11 @@ function DHIS2Map({
 
         {/* Manual focus button */}
         {displayBoundaries.length > 0 && baseMapType !== 'none' && (
-          <FocusButton boundaries={displayBoundaries} />
+          <FocusButton
+            boundaries={displayBoundaries}
+            legendPosition={legendPosition}
+            reserveLegendSpace={showLegend}
+          />
         )}
 
         {displayBoundaries.length > 0 && (
