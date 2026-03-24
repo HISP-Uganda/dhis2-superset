@@ -250,8 +250,6 @@ interface MapAutoFocusProps {
   enabled: boolean;
   viewportWidth: number;
   viewportHeight: number;
-  legendPosition?: string;
-  reserveLegendSpace?: boolean;
 }
 
 function MapAutoFocus({
@@ -259,8 +257,6 @@ function MapAutoFocus({
   enabled,
   viewportWidth,
   viewportHeight,
-  legendPosition,
-  reserveLegendSpace = false,
 }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
@@ -316,13 +312,13 @@ function MapAutoFocus({
 
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
+          // Legend is a floating overlay; no padding reservation needed.
+          // Use actual Leaflet canvas size with viewportWidth/Height as fallback
+          // in case the container hasn't rendered to full size yet.
           const fitConfig = getMapFitViewportConfig(
             Math.max(size.x, viewportWidth),
             Math.max(size.y, viewportHeight),
-            {
-              legendPosition: legendPosition as any,
-              reserveLegendSpace,
-            },
+            {},
           );
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
@@ -470,15 +466,9 @@ function BoundaryMask({
 // Component for manual focus button
 interface FocusButtonProps {
   boundaries: BoundaryFeature[];
-  legendPosition?: string;
-  reserveLegendSpace?: boolean;
 }
 
-function FocusButton({
-  boundaries,
-  legendPosition,
-  reserveLegendSpace = false,
-}: FocusButtonProps): ReactElement | null {
+function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
   const map = useMap();
 
   const handleFocus = () => {
@@ -488,10 +478,7 @@ function FocusButton({
         const bounds = calculateBounds(boundaries);
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
-          const fitConfig = getMapFitViewportConfig(size.x, size.y, {
-            legendPosition: legendPosition as any,
-            reserveLegendSpace,
-          });
+          const fitConfig = getMapFitViewportConfig(size.x, size.y, {});
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
             paddingBottomRight: fitConfig.paddingBottomRight,
@@ -2895,8 +2882,6 @@ function DHIS2Map({
         enabled={!loading}
         viewportWidth={width}
         viewportHeight={height}
-        legendPosition={legendPosition}
-        reserveLegendSpace={showLegend}
       />
 
       {/* Light basemap focus mask to de-emphasize areas outside boundaries */}
@@ -2908,11 +2893,7 @@ function DHIS2Map({
 
         {/* Manual focus button */}
         {displayBoundaries.length > 0 && baseMapType !== 'none' && (
-          <FocusButton
-            boundaries={displayBoundaries}
-            legendPosition={legendPosition}
-            reserveLegendSpace={showLegend}
-          />
+          <FocusButton boundaries={displayBoundaries} />
         )}
 
         {displayBoundaries.length > 0 && (
