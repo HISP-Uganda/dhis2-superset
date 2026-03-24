@@ -115,6 +115,7 @@ export type PageHeaderWithActionsProps = {
     text?: string;
     placement?: TooltipPlacement;
   };
+  prefix?: ReactNode;
 };
 
 export const PageHeaderWithActions = ({
@@ -129,11 +130,13 @@ export const PageHeaderWithActions = ({
   menuDropdownProps,
   showMenuDropdown = true,
   tooltipProps,
+  prefix,
 }: PageHeaderWithActionsProps) => {
   const theme = useTheme();
   return (
     <div css={headerStyles} className="header-with-actions">
       <div className="title-panel">
+        {prefix}
         <DynamicEditableTitle {...editableTitleProps} />
         {showTitlePanelItems && (
           <div css={buttonsStyles}>

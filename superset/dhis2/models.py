@@ -145,7 +145,10 @@ class DHIS2Instance(Model):
     database = relationship(
         "Database",
         foreign_keys=[database_id],
-        backref="dhis2_instances",
+        backref=sa.orm.backref(
+            "dhis2_instances",
+            cascade="all, delete-orphan",
+        ),
     )
     logical_database: DHIS2LogicalDatabase = relationship(
         "DHIS2LogicalDatabase",
@@ -382,6 +385,40 @@ class DHIS2StagedDataset(Model):
     include_descendants = sa.Column(
         sa.Boolean, nullable=False, server_default=sa.false()
     )
+    # ------------------------------------------------------------------
+    # Org unit hierarchy configuration (promoted from dataset_config)
+    # Controls how the sync resolves which org units to fetch data for.
+    # ------------------------------------------------------------------
+    # Source mode: how org units are resolved across instances.
+    # "primary"     – resolve from a single designated primary instance only.
+    # "repository"  – resolve from repository-backed metadata (default).
+    # "per_instance"– keep each instance's hierarchy separate.
+    org_unit_source_mode = sa.Column(sa.String(50), nullable=True)
+    # Scope: how far down the hierarchy to expand from selected roots.
+    # "selected"       – only the explicitly selected org units.
+    # "children"       – selected + their direct children.
+    # "grandchildren"  – selected + children + grandchildren.
+    # "all_levels"     – selected + all descendants.
+    org_unit_scope = sa.Column(sa.String(50), nullable=True)
+    # Hierarchy mode for merged/mapped cross-instance datasets.
+    # "primary"       – use primary instance hierarchy.
+    # "per_instance"  – keep per-instance hierarchies separate (default).
+    # "mapped_merged" – use cross-instance canonical mapping layer.
+    org_unit_hierarchy_mode = sa.Column(sa.String(50), nullable=True)
+    # The primary instance used for OU resolution when source_mode="primary".
+    primary_instance_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_instances.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Allowlist of OU hierarchy levels to include (JSON list[int]).
+    # e.g. [1, 2, 3, 4, 5] means only levels 1–5 are ever included.
+    # Null/empty = no restriction (all levels up to max_orgunit_level).
+    allowed_org_unit_levels_json = sa.Column(Text, nullable=True)
+    # When True only leaf-level (facility) org units are included.
+    org_unit_leaf_only = sa.Column(
+        sa.Boolean, nullable=False, server_default=sa.false()
+    )
     refresh_mode = sa.Column(sa.String(50), nullable=True)  # incremental|full|period_window
     id_scheme_input = sa.Column(sa.String(50), nullable=True)   # UID|CODE|NAME
     id_scheme_output = sa.Column(sa.String(50), nullable=True)
@@ -407,7 +444,10 @@ class DHIS2StagedDataset(Model):
     database = relationship(
         "Database",
         foreign_keys=[database_id],
-        backref="dhis2_staged_datasets",
+        backref=sa.orm.backref(
+            "dhis2_staged_datasets",
+            cascade="all, delete-orphan",
+        ),
     )
     logical_database: DHIS2LogicalDatabase = relationship(
         "DHIS2LogicalDatabase",
@@ -432,10 +472,30 @@ class DHIS2StagedDataset(Model):
         passive_deletes=True,
         order_by="desc(DHIS2SyncJob.created_on)",
     )
+    primary_instance: DHIS2Instance = relationship(
+        "DHIS2Instance",
+        foreign_keys=[primary_instance_id],
+    )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def get_allowed_org_unit_levels(self) -> list[int] | None:
+        """Return the allowed org unit levels as a Python list.
+
+        Returns ``None`` if the field is not set or is an empty list (no restriction).
+        """
+        raw_value = getattr(self, "allowed_org_unit_levels_json", None)
+        if not raw_value:
+            return None
+        try:
+            parsed = json.loads(raw_value)
+            if not isinstance(parsed, list) or not parsed:
+                return None
+            return [int(x) for x in parsed if x is not None]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
 
     def get_dataset_config(self) -> dict[str, Any]:
         """Parse and return ``dataset_config`` as a Python dict.
@@ -473,6 +533,13 @@ class DHIS2StagedDataset(Model):
             "last_sync_rows": self.last_sync_rows,
             "serving_superset_dataset_id": self.serving_superset_dataset_id,
             "dataset_config": self.get_dataset_config(),
+            "org_unit_source_mode": self.org_unit_source_mode,
+            "org_unit_scope": self.org_unit_scope,
+            "org_unit_hierarchy_mode": self.org_unit_hierarchy_mode,
+            "primary_instance_id": self.primary_instance_id,
+            "allowed_org_unit_levels": self.get_allowed_org_unit_levels(),
+            "org_unit_leaf_only": self.org_unit_leaf_only,
+            "max_orgunit_level": self.max_orgunit_level,
             "created_by_fk": self.created_by_fk,
             "changed_by_fk": self.changed_by_fk,
             "created_on": self.created_on.isoformat() if self.created_on else None,

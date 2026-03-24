@@ -81,7 +81,31 @@ class UpdateDatasetCommand(UpdateMixin, BaseCommand):
     def run(self) -> Model:
         self.validate()
         assert self._model
-        return DatasetDAO.update(self._model, attributes=self._properties)
+        dataset = DatasetDAO.update(self._model, attributes=self._properties)
+
+        # If it's a staged local dataset, trigger sync immediately
+        try:
+            import json
+            extra = json.loads(dataset.extra or "{}") if isinstance(dataset.extra, str) else (dataset.extra or {})
+            if extra.get("dhis2_staged_local"):
+                staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+                if staged_dataset_id:
+                    from superset.dhis2.sync_service import schedule_staged_dataset_sync
+                    try:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.info(f"[DHIS2] Initiating immediate sync for updated staged dataset id={staged_dataset_id}")
+                        schedule_staged_dataset_sync(
+                            staged_dataset_id,
+                            job_type="scheduled",
+                            prefer_immediate=True,
+                        )
+                    except Exception:
+                        logger.exception(f"[DHIS2] Failed to trigger sync for updated staged dataset id={staged_dataset_id}")
+        except Exception:
+            pass
+
+        return dataset
 
     def validate(self) -> None:
         exceptions: list[ValidationError] = []
@@ -91,6 +115,23 @@ class UpdateDatasetCommand(UpdateMixin, BaseCommand):
         self._model = DatasetDAO.find_by_id(self._model_id)
         if not self._model:
             raise DatasetNotFoundError()
+
+        # Validate dataset role for metadata update
+        if hasattr(self._model, "dataset_role") and self._model.dataset_role:
+            try:
+                from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
+                role = DatasetRole(self._model.dataset_role)
+                if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.METADATA_UPDATE):
+                    # Only allow if the user is an admin, per "admin_all"
+                    from superset.utils.core import get_user_id
+                    from flask import g
+                    is_admin = False
+                    if hasattr(g, "user") and g.user:
+                        is_admin = security_manager.is_admin()
+                    if not is_admin:
+                        exceptions.append(ValidationError("Cannot edit metadata of a non-metadata dataset."))
+            except ValueError:
+                pass
 
         # Check permission to update the dataset
         try:

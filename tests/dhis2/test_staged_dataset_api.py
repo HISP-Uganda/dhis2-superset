@@ -350,7 +350,7 @@ def test_create_dataset_returns_immediately_and_queues_background_sync():
     schedule_mock.assert_called_once_with(
         11,
         job_type="scheduled",
-        prefer_immediate=False,
+        prefer_immediate=True,
     )
     assert response.status_code == 201
     assert response.get_json()["sync_schedule"]["mode"] == "thread"
@@ -419,7 +419,7 @@ def test_update_dataset_returns_immediately_and_queues_background_sync():
     schedule_mock.assert_called_once_with(
         11,
         job_type="scheduled",
-        prefer_immediate=False,
+        prefer_immediate=True,
     )
     assert response.status_code == 200
     assert response.get_json()["sync_schedule"]["mode"] == "thread"

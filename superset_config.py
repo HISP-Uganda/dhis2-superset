@@ -33,8 +33,14 @@ WTF_CSRF_ENABLED = True
 # Add endpoints that need to be exempt from CSRF protection
 WTF_CSRF_EXEMPT_LIST = [
     'superset.views.core.log',
-    'superset.charts.api.data',
-    'superset.charts.api.get',
+    'ChartDataRestApi.data',
+    'ChartDataRestApi.get_data',
+    'ChartDataRestApi.data_from_cache',
+    'DashboardRestApi.get',
+    'DashboardRestApi.get_charts',
+    'DashboardRestApi.get_datasets',
+    'DashboardRestApi.get_tabs',
+    'DatabaseRestApi.dhis2_chart_data',
 ]
 
 # Set this API key to enable Mapbox visualizations

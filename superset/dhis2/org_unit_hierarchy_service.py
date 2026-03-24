@@ -335,6 +335,34 @@ class OrgUnitHierarchyService:
                 resolved[level_number] = f"Level {level_number}"
         return resolved
 
+    @staticmethod
+    def _read_max_orgunit_level(dataset_config: dict[str, Any]) -> int | None:
+        """Return the configured max org unit level, or ``None`` if not set."""
+        raw = dataset_config.get("max_orgunit_level") or dataset_config.get(
+            "org_unit_max_level"
+        )
+        if raw is None:
+            return None
+        try:
+            val = int(raw)
+            return val if val > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _read_allowed_org_unit_levels(
+        dataset_config: dict[str, Any],
+    ) -> frozenset[int] | None:
+        """Return the configured allowed-levels allowlist, or ``None`` if not set."""
+        raw = dataset_config.get("allowed_org_unit_levels")
+        if not isinstance(raw, list) or not raw:
+            return None
+        try:
+            levels = frozenset(int(x) for x in raw if x is not None)
+            return levels if levels else None
+        except (TypeError, ValueError):
+            return None
+
     def _resolve_level_range(
         self,
         dataset_config: dict[str, Any],
@@ -347,6 +375,14 @@ class OrgUnitHierarchyService:
         normalized_scope = str(
             dataset_config.get("org_unit_scope") or "selected"
         ).strip().lower()
+
+        # Read level constraints from dataset_config.  These act as hard caps
+        # that prevent irrelevant generated levels (e.g. 7, 8) from leaking
+        # into the serving table when the hierarchy has more levels than the
+        # dataset actually needs.
+        configured_max_level = self._read_max_orgunit_level(dataset_config)
+        allowed_org_unit_levels = self._read_allowed_org_unit_levels(dataset_config)
+
         resolved_levels: set[int] = set()
         selected_details = self._selected_details(
             dataset_config,
@@ -364,6 +400,12 @@ class OrgUnitHierarchyService:
                     hierarchy_max_level = max(hierarchy_max_level, int(node.get("level") or 0))
                 except (TypeError, ValueError):
                     continue
+
+            # Apply the configured max level cap so we never exceed it even
+            # if the raw DHIS2 hierarchy is deeper.
+            effective_max_level = hierarchy_max_level
+            if configured_max_level is not None:
+                effective_max_level = min(hierarchy_max_level, configured_max_level)
 
             applicable_details = [
                 detail
@@ -387,7 +429,7 @@ class OrgUnitHierarchyService:
                     self._scope_max_level(
                         normalized_scope,
                         selected_level,
-                        hierarchy_max_level,
+                        effective_max_level,
                     )
                     for selected_level in selected_levels
                 )
@@ -397,10 +439,20 @@ class OrgUnitHierarchyService:
                     )
                 continue
 
-            if applicable_details and hierarchy_max_level > 0:
-                resolved_levels.update(range(1, hierarchy_max_level + 1))
+            # No level info from selected details — fall back to the full
+            # effective range, but capped by effective_max_level.
+            # This prevents levels 7/8 from leaking in when the hierarchy is
+            # deeper than the dataset's actual data scope.
+            if applicable_details and effective_max_level > 0:
+                resolved_levels.update(range(1, effective_max_level + 1))
 
-        return sorted(level for level in resolved_levels if level > 0)
+        # Apply the allowed_levels allowlist as a post-filter.  Any level not
+        # in the allowlist is removed from the resolved set.
+        result_levels = sorted(level for level in resolved_levels if level > 0)
+        if allowed_org_unit_levels is not None:
+            result_levels = [lvl for lvl in result_levels if lvl in allowed_org_unit_levels]
+
+        return result_levels
 
     def _build_instance_level_map(
         self,

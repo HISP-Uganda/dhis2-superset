@@ -697,6 +697,11 @@ setup_clickhouse_dbs() {
   _ch_exec "GRANT SELECT ON system.tables  TO ${CLICKHOUSE_USER}"
   _ch_exec "GRANT SELECT ON system.columns TO ${CLICKHOUSE_USER}"
   _ch_exec "GRANT SELECT ON system.parts   TO ${CLICKHOUSE_USER}"
+  # Table engine grants needed for temp-table creation during serving builds.
+  _ch_exec "GRANT TABLE ENGINE ON StripeLog TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT TABLE ENGINE ON Memory    TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT TABLE ENGINE ON Log       TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT TABLE ENGINE ON MergeTree TO ${CLICKHOUSE_USER}"
 
   ok "ClickHouse bootstrap complete"
   info "  Staging DB:  $CLICKHOUSE_STAGING_DATABASE"

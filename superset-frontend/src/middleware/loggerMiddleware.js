@@ -58,6 +58,7 @@ const sendBeacon = events => {
       endpoint,
       postPayload: { events },
       parseMethod: null,
+      ignoreUnauthorized: true,
     });
   }
 };

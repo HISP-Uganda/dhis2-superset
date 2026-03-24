@@ -110,6 +110,7 @@ class ChartRestApi(BaseSupersetModelRestApi):
 
     resource_name = "chart"
     allow_browser_login = True
+    csrf_exempt = True
 
     @before_request(only=["thumbnail", "screenshot", "cache_screenshot"])
     def ensure_thumbnails_enabled(self) -> Optional[Response]:
@@ -268,7 +269,6 @@ class ChartRestApi(BaseSupersetModelRestApi):
     allowed_rel_fields = {"owners", "created_by", "changed_by"}
 
     @expose("/<id_or_uuid>", methods=["GET"])
-    @protect()
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(

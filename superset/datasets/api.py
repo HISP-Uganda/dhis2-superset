@@ -61,7 +61,12 @@ from superset.constants import MODEL_API_RW_METHOD_PERMISSION_MAP, RouteMethod
 from superset.daos.dashboard import DashboardDAO
 from superset.daos.dataset import DatasetDAO
 from superset.databases.filters import DatabaseFilter
-from superset.datasets.filters import DatasetCertifiedFilter, DatasetIsNullOrEmptyFilter
+from superset.datasets.filters import (
+    DatasetCertifiedFilter,
+    DatasetContextFilter,
+    DatasetIsNullOrEmptyFilter,
+    DatasetRoleDefaultFilter,
+)
 from superset.datasets.schemas import (
     DatasetCacheWarmUpRequestSchema,
     DatasetCacheWarmUpResponseSchema,
@@ -99,7 +104,10 @@ logger = logging.getLogger(__name__)
 
 class DatasetRestApi(BaseSupersetModelRestApi):
     datamodel = SQLAInterface(SqlaTable)
-    base_filters = [["id", DatasourceFilter, lambda: []]]
+    base_filters = [
+        ["id", DatasourceFilter, lambda: []],
+        ["dataset_role", DatasetRoleDefaultFilter, lambda: []],
+    ]
 
     resource_name = "dataset"
     allow_browser_login = True
@@ -121,6 +129,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
     list_columns = [
         "id",
         "uuid",
+        "dataset_role",
         "database.id",
         "database.database_name",
         "database.uuid",
@@ -212,6 +221,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
         "url",
         "extra",
         "kind",
+        "dataset_role",
         "created_on",
         "created_on_humanized",
         "created_by.first_name",
@@ -240,7 +250,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
     add_model_schema = DatasetPostSchema()
     edit_model_schema = DatasetPutSchema()
     duplicate_model_schema = DatasetDuplicateSchema()
-    add_columns = ["database", "catalog", "schema", "table_name", "sql", "owners"]
+    add_columns = ["database", "catalog", "schema", "table_name", "sql", "owners", "dataset_role"]
     edit_columns = [
         "table_name",
         "sql",
@@ -261,6 +271,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
         "columns",
         "metrics",
         "extra",
+        "dataset_role",
     ]
     openapi_spec_tag = "Datasets"
 
@@ -277,6 +288,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
     search_filters = {
         "sql": [DatasetIsNullOrEmptyFilter],
         "id": [DatasetCertifiedFilter],
+        "dataset_role": [DatasetContextFilter],
     }
     search_columns = [
         "id",
@@ -290,6 +302,7 @@ class DatasetRestApi(BaseSupersetModelRestApi):
         "created_by",
         "changed_by",
         "uuid",
+        "dataset_role",
     ]
     allowed_rel_fields = {"database", "owners", "created_by", "changed_by"}
     allowed_distinct_fields = {"catalog", "schema"}

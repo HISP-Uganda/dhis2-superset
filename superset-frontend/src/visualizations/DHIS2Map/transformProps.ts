@@ -904,7 +904,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     const metricCol = datasourceColumns.find(
       c =>
         c.column_name === metricColumn ||
-        sanitizeDHIS2ColumnName(c.column_name) === metricColumn,
+        (c.column_name && sanitizeDHIS2ColumnName(c.column_name) === metricColumn),
     );
     const extra = parseColumnExtra(metricCol?.extra);
     if (extra?.dhis2_is_indicator === true) {

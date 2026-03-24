@@ -112,21 +112,36 @@ const dashboardDirectoryBlocks = [
 ];
 
 jest.mock(
-  './PublicDashboardEmbed',
+  'src/dashboard/containers/DashboardPage',
   () =>
-    function MockPublicDashboardEmbed(props: {
-      title: string;
-      dashboardId: number | string;
-      dashboardUuid?: string | null;
+    function MockDashboardPage(props: {
+      idOrSlug: string;
+      isPublicView?: boolean;
+      onBack?: () => void;
+      backLabel?: string;
+      badge?: string;
+      subtitle?: string;
     }) {
       return (
         <div
-          data-testid="public-dashboard-embed"
-          data-dashboard-id={String(props.dashboardId)}
-          data-dashboard-uuid={props.dashboardUuid || ''}
-          aria-label={props.title}
+          data-test="dashboard-page"
+          data-id-or-slug={props.idOrSlug}
+          data-is-public-view={String(props.isPublicView)}
         >
-          {props.title}
+          Dashboard Page: {props.idOrSlug}
+          {props.badge && <div>{props.badge}</div>}
+          {props.subtitle && <div>{props.subtitle}</div>}
+          {props.onBack && (
+            <a
+              href="#"
+              onClick={e => {
+                e.preventDefault();
+                props.onBack?.();
+              }}
+            >
+              {props.backLabel || 'Back to page'}
+            </a>
+          )}
         </div>
       );
     },
@@ -598,11 +613,11 @@ test('keeps public navigation when a dashboard is opened from the public portal'
     'dashboard=national-malaria-dashboard',
   );
   expect(
-    await screen.findByRole('button', { name: 'Back to page' }),
+    await screen.findByRole('link', { name: 'Back to page' }),
   ).toBeInTheDocument();
-  expect(screen.getByLabelText('National Malaria Dashboard')).toHaveAttribute(
-    'data-dashboard-uuid',
-    'a2efb6e2-6f5f-45f6-8cac-57aef1f9dc31',
+  expect(screen.getByTestId('dashboard-page')).toHaveAttribute(
+    'data-id-or-slug',
+    'national-malaria-dashboard',
   );
 });
 
@@ -647,10 +662,7 @@ test('uses configurable portal layout copy for shared shell and embedded dashboa
     screen.getByText('Portal-managed dashboard framing.'),
   ).toBeInTheDocument();
   expect(
-    screen.getByText('Use this embedded view for guided public reading.'),
-  ).toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: 'Return to directory' }),
+    screen.getByRole('link', { name: 'Return to directory' }),
   ).toBeInTheDocument();
 });
 

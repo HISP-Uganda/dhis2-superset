@@ -26,6 +26,7 @@
       if (!window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
         window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
       }
+      window.IS_PUBLIC_PAGE = {{ 'true' if is_public_page else 'false' }};
     </script>
     <title>
       {% block title %}

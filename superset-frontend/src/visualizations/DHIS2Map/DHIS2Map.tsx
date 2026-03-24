@@ -1224,7 +1224,10 @@ function DHIS2Map({
       };
     }
 
-    SupersetClient.get({ endpoint: `/api/v1/dataset/${datasetId}` })
+    SupersetClient.get({
+      endpoint: `/api/v1/dataset/${datasetId}`,
+      ignoreUnauthorized: true,
+    })
       .then(response => {
         if (!mounted) return;
         const ds = response.json?.result || {};
@@ -1321,6 +1324,7 @@ function DHIS2Map({
 
     SupersetClient.get({
       endpoint: protectedEndpoint,
+      ignoreUnauthorized: true,
     })
       .then(response => {
         if (response.json?.result) {

@@ -523,7 +523,7 @@ class DHIS2StagedDatasetApi(BaseApi):
             sync_schedule = schedule_staged_dataset_sync(
                 dataset.id,
                 job_type="scheduled",
-                prefer_immediate=False,
+                prefer_immediate=True,
             )
         except Exception:  # pylint: disable=broad-except
             logger.exception(
@@ -649,7 +649,7 @@ class DHIS2StagedDatasetApi(BaseApi):
             sync_schedule = schedule_staged_dataset_sync(
                 dataset.id,
                 job_type="scheduled",
-                prefer_immediate=False,
+                prefer_immediate=True,
             )
         except Exception:  # pylint: disable=broad-except
             logger.exception(
@@ -1926,4 +1926,28 @@ class DHIS2StagedDatasetApi(BaseApi):
                     + (f" {len(errors)} error(s)." if errors else "")
                 ),
             },
+        )
+
+    @expose("/cleanup-stale-datasets", methods=["POST"])
+    @protect()
+    @safe
+    @permission_name("write")
+    def cleanup_stale_datasets(self) -> Response:
+        """Purge all orphaned DHIS2 resources (virtual datasets and physical tables).
+
+        Handles Superset virtual datasets (SqlaTable) that refer to a
+        DHIS2StagedDataset PK which no longer exists, and physical sv_*
+        tables in staging engines that have no corresponding Superset dataset.
+
+        ---
+        post:
+          summary: Purge all orphaned DHIS2 resources
+          responses:
+            200:
+              description: Cleanup summary
+        """
+        stats = svc.full_cleanup_dhis2_resources()
+        return self.response(
+            200,
+            result=stats,
         )

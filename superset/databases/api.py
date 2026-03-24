@@ -203,6 +203,7 @@ def compress_response_if_supported(response_data: dict) -> Response:
 # pylint: disable=too-many-public-methods
 class DatabaseRestApi(BaseSupersetModelRestApi):
     datamodel = SQLAInterface(Database)
+    csrf_exempt = True
 
     include_route_methods = RouteMethod.REST_MODEL_VIEW_CRUD_SET | {
         RouteMethod.EXPORT,
@@ -2527,7 +2528,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             return self.response_500(message=str(ex))
 
     def _resolve_public_dhis2_chart(self) -> Any | Response:
-        from superset.models.dashboard import Dashboard
+        from superset.models.dashboard import Dashboard, dashboard_slices
         from superset.models.slice import Slice
 
         chart_id = request.args.get("slice_id", type=int) or request.args.get(
@@ -2537,24 +2538,26 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         if not chart_id:
             return self.response_400(message="slice_id is required")
 
+        # Use a direct query to avoid any session filters
         chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
         if chart is None:
             return self.response_404()
 
-        dashboard_id = request.args.get("dashboard_id", type=int)
-        dashboard = None
-        if dashboard_id is not None:
-            dashboard = (
-                db.session.query(Dashboard)
-                .filter(Dashboard.id == dashboard_id)
-                .one_or_none()
-            )
-            if dashboard is None:
-                return self.response_404()
-            if not any(existing_chart.id == chart.id for existing_chart in dashboard.slices):
-                return self.response_403()
-
         if getattr(chart, "is_public", False):
+            return chart
+
+        # Check if the chart belongs to any published dashboard
+        published_dash_count = (
+            db.session.query(Dashboard.id)
+            .join(dashboard_slices, Dashboard.id == dashboard_slices.c.dashboard_id)
+            .filter(
+                dashboard_slices.c.slice_id == chart_id,
+                Dashboard.published.is_(True),
+            )
+            .count()
+        )
+
+        if published_dash_count > 0:
             return chart
 
         if security_manager.is_guest_user():

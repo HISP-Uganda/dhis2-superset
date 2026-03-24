@@ -33,7 +33,22 @@ import {
 } from './types';
 import { DEFAULT_FETCH_RETRY_OPTIONS, DEFAULT_APP_ROOT } from './constants';
 
+declare global {
+  interface Window {
+    IS_PUBLIC_PAGE?: boolean;
+  }
+}
+
+const isPublicPath = (pathname: string) =>
+  window.IS_PUBLIC_PAGE === true ||
+  pathname.includes('/public/') ||
+  pathname.endsWith('/public') ||
+  pathname.includes('/superset/public');
+
 const defaultUnauthorizedHandlerForPrefix = (appRoot: string) => () => {
+  if (isPublicPath(window.location.pathname)) {
+    return;
+  }
   if (!window.location.pathname.startsWith(`${appRoot}/login`)) {
     window.location.href = `${appRoot}/login?next=${window.location.href}`;
   }
@@ -198,7 +213,14 @@ export default class SupersetClientClass {
     ignoreUnauthorized = false,
     ...rest
   }: RequestConfig & { parseMethod?: T }) {
-    await this.ensureAuth();
+    try {
+      await this.ensureAuth();
+    } catch (err) {
+      if (!ignoreUnauthorized && (err as any)?.status === 401) {
+        this.handleUnauthorized();
+      }
+      return Promise.reject(err);
+    }
     return callApiAndParseWithTimeout({
       ...rest,
       credentials: credentials ?? this.credentials,

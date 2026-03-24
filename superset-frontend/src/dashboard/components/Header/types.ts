@@ -67,6 +67,7 @@ export interface HeaderDropdownProps {
   directPathToChild?: string[];
   showReportModal: () => void;
   setCurrentReportDeleting: (alert: AlertObject | null) => void;
+  isPublicView?: boolean;
 }
 
 export interface HeaderProps {

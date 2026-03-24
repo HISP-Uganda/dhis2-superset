@@ -31,6 +31,8 @@ Routes
 from __future__ import annotations
 
 import logging
+import os
+import signal
 
 from flask import request, Response
 from flask_appbuilder import expose
@@ -333,22 +335,54 @@ class DHIS2DiagnosticsApi(BaseApi):
               description: Worker status
         """
         _PING_TIMEOUT = 1.0
+
+        # --- Celery workers ---
         workers_available = False
         worker_count = 0
+        worker_names: list[str] = []
         try:
             from superset.extensions import celery_app
 
-            response = celery_app.control.inspect(timeout=_PING_TIMEOUT).ping()
-            if response:
+            ping_response = celery_app.control.inspect(timeout=_PING_TIMEOUT).ping()
+            if ping_response:
                 workers_available = True
-                worker_count = len(response)
+                worker_count = len(ping_response)
+                worker_names = list(ping_response.keys())
         except Exception:  # pylint: disable=broad-except
             pass
+
+        # --- Celery Beat ---
+        beat_running = False
+        beat_pid: int | None = None
+        # Resolve project root: the PID file is placed by superset-manager.sh
+        # in the repo root (one level above the `superset/` package directory).
+        _this_dir = os.path.dirname(os.path.abspath(__file__))
+        _project_root = os.path.abspath(os.path.join(_this_dir, "..", ".."))
+        _beat_pid_candidates = [
+            os.path.join(_project_root, "celery_beat.pid"),
+            os.path.join(os.getcwd(), "celery_beat.pid"),
+            "/tmp/celery_beat.pid",
+        ]
+        for _pid_path in _beat_pid_candidates:
+            try:
+                with open(_pid_path) as _f:
+                    _pid = int(_f.read().strip())
+                os.kill(_pid, 0)  # signal 0 = check existence only
+                beat_running = True
+                beat_pid = _pid
+                break
+            except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+                continue
+            except Exception:  # pylint: disable=broad-except
+                break
 
         return self.response(
             200,
             result={
                 "workers_available": workers_available,
                 "worker_count": worker_count,
+                "worker_names": worker_names,
+                "beat_running": beat_running,
+                "beat_pid": beat_pid,
             },
         )

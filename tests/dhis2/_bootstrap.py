@@ -195,4 +195,74 @@ def _setup():
         base_views_mod.get_spa_template_context = lambda *args, **kwargs: {}
         sys.modules["superset.views.base"] = base_views_mod
 
+    # --- superset.local_staging stubs ---
+    if "superset.local_staging" not in sys.modules:
+        ls_pkg = types.ModuleType("superset.local_staging")
+        ls_pkg.__path__ = [f"{_SUPERSET_SRC}/local_staging"]
+        ls_pkg.__package__ = "superset.local_staging"
+        sys.modules["superset.local_staging"] = ls_pkg
+
+    if "superset.local_staging.engine_factory" not in sys.modules:
+        ef_mod = types.ModuleType("superset.local_staging.engine_factory")
+        ef_mod.get_active_staging_engine = lambda: None
+        sys.modules["superset.local_staging.engine_factory"] = ef_mod
+
+    if "superset.local_staging.platform_settings" not in sys.modules:
+        ps_mod = types.ModuleType("superset.local_staging.platform_settings")
+        ps_mod.LocalStagingSettings = type("LocalStagingSettings", (), {"get": classmethod(lambda cls: None)})
+        sys.modules["superset.local_staging.platform_settings"] = ps_mod
+
+    # --- superset.staging stubs ---
+    if "superset.staging" not in sys.modules:
+        staging_pkg = types.ModuleType("superset.staging")
+        staging_pkg.__path__ = [f"{_SUPERSET_SRC}/staging"]
+        staging_pkg.__package__ = "superset.staging"
+        sys.modules["superset.staging"] = staging_pkg
+
+    if "superset.staging.compat" not in sys.modules:
+        compat_mod = types.ModuleType("superset.staging.compat")
+        compat_mod.sync_dhis2_staged_dataset = lambda *a, **kw: None
+        compat_mod.sync_dhis2_sync_job = lambda *a, **kw: None
+        compat_mod.sync_dhis2_dataset_variable = lambda *a, **kw: None
+        compat_mod.sync_dhis2_instance = lambda *a, **kw: None
+        compat_mod.ensure_staged_source = lambda *a, **kw: None
+        compat_mod.ensure_dhis2_logical_database = lambda *a, **kw: None
+        sys.modules["superset.staging.compat"] = compat_mod
+
+    if "superset.staging.metadata_cache_service" not in sys.modules:
+        mcs_mod = types.ModuleType("superset.staging.metadata_cache_service")
+        mcs_mod.get_cached_metadata = lambda *a, **kw: None
+        mcs_mod.set_cached_metadata = lambda *a, **kw: None
+        mcs_mod.get_cached_metadata_payload = lambda *a, **kw: None
+        mcs_mod.set_cached_metadata_payload = lambda *a, **kw: None
+        sys.modules["superset.staging.metadata_cache_service"] = mcs_mod
+        sup.staging = staging_pkg = sys.modules["superset.staging"]
+
+    if "superset.staging.storage" not in sys.modules:
+        storage_mod = types.ModuleType("superset.staging.storage")
+        storage_mod.record_dhis2_stage_rows = lambda *a, **kw: None
+        sys.modules["superset.staging.storage"] = storage_mod
+
+    # --- superset.dhis2.staging_engine stub ---
+    if "superset.dhis2.staging_engine" not in sys.modules:
+        se_mod = types.ModuleType("superset.dhis2.staging_engine")
+        se_mod.DHIS2StagingEngine = type("DHIS2StagingEngine", (), {})
+        sys.modules["superset.dhis2.staging_engine"] = se_mod
+
+    # --- superset.dhis2.serving_build_service stub ---
+    if "superset.dhis2.serving_build_service" not in sys.modules:
+        from dataclasses import dataclass as _dataclass
+        sbs_mod = types.ModuleType("superset.dhis2.serving_build_service")
+        sbs_mod.build_serving_table = lambda *a, **kw: None
+
+        @_dataclass(frozen=True)
+        class _ServingBuildResult:
+            serving_table_ref: str = ""
+            serving_columns: list = None  # type: ignore
+            diagnostics: dict = None  # type: ignore
+
+        sbs_mod.ServingBuildResult = _ServingBuildResult
+        sbs_mod.ServingBuildValidationError = type("ServingBuildValidationError", (RuntimeError,), {})
+        sys.modules["superset.dhis2.serving_build_service"] = sbs_mod
+
 _setup()

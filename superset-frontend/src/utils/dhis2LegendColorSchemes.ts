@@ -149,6 +149,11 @@ export function readCachedLegendSets(
  */
 export async function syncDHIS2LegendSchemesForDatabase(
   databaseId: number,
+  options: {
+    isPublicView?: boolean;
+    chartId?: number;
+    dashboardId?: number;
+  } = {},
 ): Promise<void> {
   const lastAt = _lastRegisteredAt[databaseId] ?? 0;
   const now = Date.now();
@@ -165,9 +170,36 @@ export async function syncDHIS2LegendSchemesForDatabase(
 
   try {
     const { SupersetClient } = await import('@superset-ui/core');
-    const response = await SupersetClient.get({
-      endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=legendSets&staged=true`,
-    });
+    const { isPublicView, chartId, dashboardId } = options;
+
+    const protectedEndpoint = `/api/v1/database/${databaseId}/dhis2_metadata/?type=legendSets&staged=true`;
+    const publicEndpoint =
+      chartId != null
+        ? `/api/v1/database/${databaseId}/dhis2_metadata_public/?type=legendSets&staged=true&slice_id=${chartId}${
+            dashboardId ? `&dashboard_id=${dashboardId}` : ''
+          }`
+        : null;
+
+    let response;
+    try {
+      response = await SupersetClient.get({
+        endpoint: protectedEndpoint,
+        ignoreUnauthorized: true,
+      });
+    } catch (error) {
+      const status = Number((error as any)?.status);
+      if (
+        !isPublicView ||
+        !publicEndpoint ||
+        ![400, 401, 403, 404].includes(status)
+      ) {
+        throw error;
+      }
+      response = await SupersetClient.get({
+        endpoint: publicEndpoint,
+      });
+    }
+
     const legendSets = response.json?.result;
     if (!Array.isArray(legendSets)) return;
 

@@ -29,9 +29,21 @@ import {
   getValueFormatter,
   resolveDHIS2LegendDefinition,
   rgbToHex,
-  addAlpha,
   tooltipHtml,
 } from '@superset-ui/core';
+
+const addAlpha = (color: string, opacity: number): string => {
+  if (opacity > 1 || opacity < 0) {
+    return color;
+  }
+  if (!color || !color.startsWith('#')) {
+    return color;
+  }
+  const alpha = `0${Math.round(opacity * 255)
+    .toString(16)
+    .toUpperCase()}`.slice(-2);
+  return `${color}${alpha}`;
+};
 import { GenericDataType } from '@apache-superset/core/api/core';
 import memoizeOne from 'memoize-one';
 import { maxBy, minBy } from 'lodash';

@@ -17,7 +17,20 @@
  * under the License.
  */
 import memoizeOne from 'memoize-one';
-import { addAlpha, DataRecord } from '@superset-ui/core';
+import { DataRecord } from '@superset-ui/core';
+
+const addAlpha = (color: string, opacity: number): string => {
+  if (opacity > 1 || opacity < 0) {
+    return color;
+  }
+  if (!color || !color.startsWith('#')) {
+    return color;
+  }
+  const alpha = `0${Math.round(opacity * 255)
+    .toString(16)
+    .toUpperCase()}`.slice(-2);
+  return `${color}${alpha}`;
+};
 import {
   ColorFormatters,
   Comparator,

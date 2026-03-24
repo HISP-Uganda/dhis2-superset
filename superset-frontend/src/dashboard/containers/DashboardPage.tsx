@@ -74,6 +74,10 @@ const DashboardBuilder = lazy(
 type PageProps = {
   idOrSlug: string;
   isPublicView?: boolean;
+  onBack?: () => void;
+  backLabel?: string;
+  badge?: string;
+  subtitle?: string;
 };
 
 // TODO: move to Dashboard.jsx when it's refactored to functional component
@@ -107,7 +111,14 @@ const selectActiveFilters = createSelector(
   }),
 );
 
-export const DashboardPage: FC<PageProps> = ({ idOrSlug }: PageProps) => {
+export const DashboardPage: FC<PageProps> = ({
+  idOrSlug,
+  isPublicView,
+  onBack,
+  backLabel,
+  badge,
+  subtitle,
+}: PageProps) => {
   const theme = useTheme();
   const dispatch = useDispatch();
   const history = useHistory();
@@ -197,6 +208,7 @@ export const DashboardPage: FC<PageProps> = ({ idOrSlug }: PageProps) => {
             charts,
             activeTabs,
             dataMask,
+            isPublicView,
           }),
         );
       }
@@ -252,7 +264,18 @@ export const DashboardPage: FC<PageProps> = ({ idOrSlug }: PageProps) => {
 
   if (error) throw error; // caught in error boundary
 
-  const DashboardBuilderComponent = useMemo(() => <DashboardBuilder />, []);
+  const DashboardBuilderComponent = useMemo(
+    () => (
+      <DashboardBuilder
+        isPublicView={isPublicView}
+        onBack={onBack}
+        backLabel={backLabel}
+        badge={badge}
+        subtitle={subtitle}
+      />
+    ),
+    [isPublicView, onBack, backLabel, badge, subtitle, dashboardPageId],
+  );
   return (
     <>
       <Global styles={globalStyles} />

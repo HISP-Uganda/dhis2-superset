@@ -193,9 +193,7 @@ export function resolveQueryMetricColumnName(options: {
     metric,
     datasourceColumns = [],
     availableColumns,
-    rows = [],
   } = options;
-
   if (!metric) {
     return undefined;
   }

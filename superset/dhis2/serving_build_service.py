@@ -66,9 +66,20 @@ def build_serving_table(
     dataset: Any,
     *,
     engine: Any | None = None,
+    refresh_scope: Iterable[str] | None = None,
 ) -> ServingBuildResult:
     """Build and validate the canonical ``sv_*`` table for *dataset*."""
     resolved_engine = engine or get_active_staging_engine(dataset.database_id)
+
+    if resolved_engine.engine_name == "clickhouse":
+        from superset.dhis2.clickhouse_build_service import (
+            build_serving_table_clickhouse,
+        )
+
+        return build_serving_table_clickhouse(
+            dataset, engine=resolved_engine, refresh_scope=refresh_scope
+        )
+
     manifest = build_serving_manifest(dataset)
 
     from superset.dhis2.sync_service import _build_ou_filter_for_dataset

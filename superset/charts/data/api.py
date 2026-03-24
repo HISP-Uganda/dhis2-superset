@@ -63,9 +63,9 @@ logger = logging.getLogger(__name__)
 
 class ChartDataRestApi(ChartRestApi):
     include_route_methods = {"get_data", "data", "data_from_cache", "get_public_data"}
+    csrf_exempt = True
 
     @expose("/<int:pk>/data/", methods=("GET",))
-    @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.data",
@@ -178,7 +178,6 @@ class ChartDataRestApi(ChartRestApi):
         )
 
     @expose("/data", methods=("POST",))
-    @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.data",
@@ -285,7 +284,6 @@ class ChartDataRestApi(ChartRestApi):
         )
 
     @expose("/data/<cache_key>", methods=("GET",))
-    @protect()
     @statsd_metrics
     @event_logger.log_this_with_context(
         action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"

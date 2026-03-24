@@ -18,7 +18,14 @@
  */
 /* eslint-disable no-restricted-imports, theme-colors/no-literal-colors, @typescript-eslint/no-use-before-define */
 
-import { CSSProperties, DragEvent, useEffect, useMemo, useState } from 'react';
+import {
+  CSSProperties,
+  DragEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
 import {
   Alert,
@@ -49,7 +56,7 @@ import {
 } from './portalUtils';
 import { ensurePageBlocks } from './blockUtils';
 import { groupBlocksBySlot, RenderBlockTree } from './BlockRenderer';
-import PublicDashboardEmbed from './PublicDashboardEmbed';
+import DashboardPage from 'src/dashboard/containers/DashboardPage';
 import type {
   PortalDashboardSummary,
   PortalNavigationItem,
@@ -68,6 +75,8 @@ const PORTAL_THEME_STORAGE_KEY = 'superset.public.portal.theme';
 
 const PageShell = styled.div`
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   font-family: var(--portal-font-body, inherit);
   background: var(--portal-bg);
   color: var(--portal-text);
@@ -217,6 +226,10 @@ const NavDropdownCaret = styled.span`
 
 const PageContentShell = styled.div`
   width: 100%;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
 `;
 
 const Main = styled.main<{ $maxWidth: string }>`
@@ -226,39 +239,6 @@ const Main = styled.main<{ $maxWidth: string }>`
   padding: 28px 24px 72px;
 `;
 
-const Section = styled.section`
-  margin-top: 28px;
-`;
-
-const SectionHeader = styled.div`
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-`;
-
-const SectionTitleGroup = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-`;
-
-const SectionTitle = styled.h2`
-  margin: 0;
-  font-size: 24px;
-  line-height: 1.1;
-  letter-spacing: -0.04em;
-  color: var(--portal-text);
-`;
-
-const SectionSubtitle = styled.p`
-  margin: 0;
-  color: var(--portal-muted-strong);
-  font-size: 15px;
-  line-height: 1.7;
-`;
 
 const SectionNote = styled.span`
   color: var(--portal-muted);
@@ -290,63 +270,11 @@ const CardBody = styled.div`
   line-height: 1.75;
 `;
 
-const DashboardShowcaseCard = styled(SurfaceCard)`
-  gap: 18px;
-  padding: 26px;
-  background:
-    linear-gradient(
-      135deg,
-      rgba(15, 118, 110, 0.08) 0%,
-      rgba(255, 255, 255, 0.96) 34%,
-      rgba(29, 78, 216, 0.08) 100%
-    ),
-    var(--portal-surface);
-  border-color: var(--portal-border-strong);
-`;
 
-const DashboardMetaRow = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-`;
 
-const DashboardBadge = styled.span`
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(15, 118, 110, 0.1);
-  color: var(--portal-accent);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-`;
+/* ── Dashboard full-view layout (when a dashboard is selected) ── */
 
-const DashboardSlug = styled.span`
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.05);
-  color: var(--portal-muted-strong);
-  font-size: 12px;
-  font-weight: 600;
-`;
-
-const DashboardIntro = styled.p`
-  margin: 0;
-  color: var(--portal-muted-strong);
-  font-size: 15px;
-  line-height: 1.75;
-`;
-
-const DashboardFrameCard = styled(SurfaceCard)`
-  padding: 14px;
-  gap: 12px;
-`;
+/* ── end dashboard view layout ── */
 
 const Footer = styled.footer`
   border-top: 1px solid var(--portal-border);
@@ -601,6 +529,9 @@ function emptyDraftPage(displayOrder: number): PortalPage {
 export default function PublicLandingPage() {
   const history = useHistory();
   const location = useLocation();
+
+  // eslint-disable-next-line no-console
+  console.log('[PublicLandingPage] Mounted. Pathname:', location.pathname);
   const pageSlug = readPageSlug(location.pathname, location.search);
   const selectedDashboardSlug = readDashboardSlug(location.search);
   const shouldOpenStudio = false;
@@ -616,6 +547,20 @@ export default function PublicLandingPage() {
   const [studioLoading, setStudioLoading] = useState(false);
   const [savingPage, setSavingPage] = useState(false);
   const [draftPage, setDraftPage] = useState<PortalPage | null>(null);
+  const [portalHeaderHeight, setPortalHeaderHeight] = useState(0);
+  const stickyHeaderRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const el = stickyHeaderRef.current;
+    if (!el) return undefined;
+    setPortalHeaderHeight(el.getBoundingClientRect().height);
+    if (!('ResizeObserver' in global)) return undefined;
+    const ro = new ResizeObserver(entries => {
+      setPortalHeaderHeight(entries[0]?.contentRect?.height ?? 0);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const currentPage = data?.current_page || null;
   const landingPagePath = resolveLandingPagePath(
@@ -1182,52 +1127,21 @@ export default function PublicLandingPage() {
 
   function renderSelectedDashboardView(dashboard: PortalDashboardSummary) {
     const dashboardBadgeLabel =
-      data?.portal_layout.config.dashboardBadgeLabel || t('Public Dashboard');
+      data?.portal_layout.config.dashboardBadgeLabel || t('Public');
     const dashboardEmbedSubtitle =
-      data?.portal_layout.config.dashboardEmbedSubtitle ||
-      t(
-        'Viewing this dashboard inside the public portal keeps navigation, context, and access controls in one place.',
-      );
-    const dashboardEmbedIntro =
-      data?.portal_layout.config.dashboardEmbedIntro ||
-      t(
-        'This embedded view is tuned for public presentation with tighter chrome, balanced spacing, and the portal frame still available around it.',
-      );
+      data?.portal_layout.config.dashboardEmbedSubtitle || undefined;
     const dashboardBackLabel =
       data?.portal_layout.config.dashboardBackLabel || t('Back to page');
-    const dashboardLoadingLabel =
-      data?.portal_layout.config.dashboardLoadingLabel ||
-      t('Loading dashboard...');
+
     return (
-      <Section>
-        <DashboardShowcaseCard>
-          <DashboardMetaRow>
-            <DashboardBadge>{dashboardBadgeLabel}</DashboardBadge>
-            {dashboard.slug ? (
-              <DashboardSlug>{dashboard.slug}</DashboardSlug>
-            ) : null}
-          </DashboardMetaRow>
-          <SectionHeader style={{ marginBottom: 0 }}>
-            <SectionTitleGroup>
-              <SectionTitle>{dashboard.dashboard_title}</SectionTitle>
-              <SectionSubtitle>{dashboardEmbedSubtitle}</SectionSubtitle>
-            </SectionTitleGroup>
-            <Button onClick={clearSelectedDashboard}>
-              {dashboardBackLabel}
-            </Button>
-          </SectionHeader>
-          <DashboardIntro>{dashboardEmbedIntro}</DashboardIntro>
-        </DashboardShowcaseCard>
-        <DashboardFrameCard>
-          <PublicDashboardEmbed
-            title={dashboard.dashboard_title}
-            dashboardId={dashboard.id}
-            dashboardUuid={dashboard.uuid}
-            height={860}
-            loadingLabel={dashboardLoadingLabel}
-          />
-        </DashboardFrameCard>
-      </Section>
+      <DashboardPage
+        idOrSlug={dashboard.slug || String(dashboard.id)}
+        isPublicView
+        onBack={clearSelectedDashboard}
+        backLabel={dashboardBackLabel}
+        badge={dashboardBadgeLabel}
+        subtitle={dashboardEmbedSubtitle}
+      />
     );
   }
 
@@ -1269,6 +1183,7 @@ export default function PublicLandingPage() {
         ? 'rgba(45, 212, 191, 0.18)'
         : 'rgba(15, 118, 110, 0.12)',
     '--portal-nav-active-text': accentColor,
+    '--portal-header-height': `${portalHeaderHeight}px`,
   } as CSSProperties;
   const pageContentStyle = {
     ...(currentPage?.rendering?.css_variables || {}),
@@ -1301,7 +1216,7 @@ export default function PublicLandingPage() {
   return (
     <PageShell style={shellThemeStyle}>
       {contextHolder}
-      <StickyHeader>
+      <StickyHeader ref={stickyHeaderRef}>
         <HeaderInner $maxWidth={shellMaxWidth}>
           <Brand type="button" onClick={openHomepage}>
             {data?.config.navbar.logo.enabled !== false && (
@@ -1406,6 +1321,10 @@ export default function PublicLandingPage() {
         {currentPage?.rendering?.css_text ? (
           <style>{currentPage.rendering.css_text}</style>
         ) : null}
+
+        {currentPage && selectedDashboard ? (
+          renderSelectedDashboardView(selectedDashboard)
+        ) : (
         <Main $maxWidth={contentMaxWidth}>
           {error && (
             <Alert
@@ -1432,9 +1351,7 @@ export default function PublicLandingPage() {
               <Spin size="large" />
             </div>
           ) : currentPage ? (
-            selectedDashboard ? (
-              renderSelectedDashboardView(selectedDashboard)
-            ) : pageBlocks.length ? (
+            pageBlocks.length ? (
               <>
                 <RenderBlockTree
                   blocks={renderedRegions.header}
@@ -1541,6 +1458,7 @@ export default function PublicLandingPage() {
             </SurfaceCard>
           )}
         </Main>
+        )}
       </PageContentShell>
 
       <Footer>

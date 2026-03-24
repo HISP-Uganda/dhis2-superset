@@ -597,8 +597,24 @@ class SupersetModelView(ModelView):
     page_size = 100
     list_widget = SupersetListWidget
 
-    def render_app_template(self) -> FlaskResponse:
+    def render_app_template(self, extra_bootstrap_data: dict[str, Any] | None = None) -> FlaskResponse:
         context = get_spa_template_context()
+        if extra_bootstrap_data:
+            bootstrap_data = json.loads(context["bootstrap_data"])
+            bootstrap_data.update(extra_bootstrap_data)
+            context["bootstrap_data"] = json.dumps(
+                bootstrap_data, default=json.pessimistic_json_iso_dttm_ser
+            )
+        
+        # Check if this is a public portal route
+        is_public = (
+            request.path.startswith("/superset/public/") or 
+            request.path == "/superset/public" or
+            request.path.startswith("/public/") or
+            request.path == "/public"
+        )
+        context["is_public_page"] = is_public
+        
         return self.render_template("superset/spa.html", **context)
 
 

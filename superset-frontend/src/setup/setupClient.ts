@@ -62,6 +62,34 @@ function getDefaultConfiguration(): ClientConfig {
     retryOn: retryConfig.SUPERSET_CLIENT_RETRY_STATUS_CODES || [502, 503, 504],
   };
 
+  const PUBLIC_PORTAL_PATH_PREFIXES = ['/superset/public', '/public'];
+
+  const isPublicPortalPath = (pathname: string) =>
+    PUBLIC_PORTAL_PATH_PREFIXES.some(
+      prefix => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    );
+
+  const unauthorizedHandler = () => {
+    const { pathname, href } = window.location;
+    // Suppress redirect if on a public page or login page
+    if (
+      window.IS_PUBLIC_PAGE === true ||
+      isPublicPortalPath(pathname) ||
+      pathname.includes('/public') ||
+      pathname.includes('/login')
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn('[SupersetClient] 401 Unauthorized suppressed on public page:', pathname);
+      return;
+    }
+    // Default behavior
+    const appRoot = bootstrapData.common.application_root || '';
+    const loginUrl = `${appRoot}/login?next=${href}`;
+    // eslint-disable-next-line no-console
+    console.warn('[SupersetClient] 401 Unauthorized - redirecting to login:', loginUrl);
+    window.location.href = loginUrl;
+  };
+
   return {
     protocol: ['http:', 'https:'].includes(window?.location?.protocol)
       ? (window?.location?.protocol as 'http:' | 'https:')
@@ -69,6 +97,7 @@ function getDefaultConfiguration(): ClientConfig {
     host: window.location?.host || '',
     csrfToken: csrfToken || cookieCSRFToken,
     fetchRetryOptions,
+    unauthorizedHandler,
   };
 }
 

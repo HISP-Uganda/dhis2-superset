@@ -653,7 +653,7 @@ if (isDevMode) {
       writeToDisk: true,
     },
     historyApiFallback: true,
-    hot: 'only',
+    hot: true,
     liveReload: false,
     webSocketServer: 'ws',
     host: devserverHost,
@@ -669,9 +669,8 @@ if (isDevMode) {
         port: devserverPort,
         pathname: '/ws',
       },
-      // Disable overlay completely to prevent ResizeObserver loop errors from showing
-      // These are harmless browser warnings that don't affect functionality
       overlay: false,
+      progress: true,
     },
     static: {
       directory: path.join(process.cwd(), '../static/assets'),

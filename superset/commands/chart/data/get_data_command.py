@@ -65,3 +65,22 @@ class ChartDataCommand(BaseCommand):
 
     def validate(self) -> None:
         self._query_context.raise_for_access()
+
+        datasource = self._query_context.datasource
+        
+        # DHIS2: ensure specialized marts exist if this is a DHIS2-backed dataset
+        try:
+            from superset.dhis2.superset_dataset_service import ensure_specialized_marts_for_sqla_table
+            ensure_specialized_marts_for_sqla_table(datasource)
+        except (ImportError, Exception):
+            pass
+
+        if hasattr(datasource, "dataset_role") and datasource.dataset_role:
+            try:
+                from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
+                from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
+                role = DatasetRole(datasource.dataset_role)
+                if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.ANALYSIS):
+                    raise ChartInvalidDatasetRoleError(role)
+            except ValueError:
+                pass

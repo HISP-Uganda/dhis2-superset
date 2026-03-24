@@ -1,7 +1,7 @@
 # Status Report: DHIS2-to-Superset ClickHouse Pipeline Refactor
 
 ## Current phase
-**Phase 7: Testing and Finalization** (Nearing completion)
+**Phase 8: Cross-Source Isolation Hardening** (Complete)
 
 ## What was completed
 - **ClickHouse-Native Serving Build**: Implemented `clickhouse_build_service.py` using `INSERT INTO ... SELECT` logic, moving all heavy analytical transformations into ClickHouse.
@@ -37,8 +37,32 @@
 - **Unit Tests**: `tests/dhis2/clickhouse_build_service_test.py` passes (SQL generation for both full and incremental builds is correct).
 - **Playwright verified**: Charts return HTTP 200, `available_charts` populated, public portal functional.
 
+## Bug fixes applied (2026-03-23, session 2)
+- **`ou_level` None serialization error**: Removed `ou_level` from `insert_rows` explicit INSERT in `clickhouse_engine.py`. DHIS2 analytics API never populates `level` in metadata, so `ou_level` was always `None`. Omitting it lets ClickHouse fill the `UInt16` column with its implicit default (0), eliminating the "Error serializing column ou_level into data type UInt16" TypeError.
+- **Cross-source metric collision (data bleed)**: Fixed `_generate_serving_sql` in `clickhouse_build_service.py` — CASE WHEN predicates now include `s.source_instance_id = {instance_id}` for each variable column, preventing rows from different DHIS2 instances with the same `dx_uid` from aggregating into the same column.
+- **`instance_id` added to variable column specs**: `analytical_serving.py`'s `_make_variable_column` now stores `instance_id` in the column dict. This enables the SQL generator to emit source-scoped predicates.
+- **`variable_lookup` key upgraded**: Changed from `(dx_uid, coc_uid)` to `(instance_id, dx_uid, coc_uid)`. `materialize_serving_rows` (non-ClickHouse path) updated with same scoping plus legacy fallback.
+- **`_load_distinct_cocs_for_variable` scoped by instance**: Now accepts `instance_id` param and adds `source_instance_id` filter to avoid discovering COCs from the wrong instance.
+- **Manifest build version sentinel**: Added `_MANIFEST_BUILD_VERSION = 2` to `analytical_serving.py`. A `_manifest_build_v2` column is included in every manifest. When `_serving_table_needs_rebuild` compares physical column names to expected names, the absence of this column (in tables built before the fix) forces a rebuild automatically.
+- **Tests added**: `test_generate_serving_sql_cross_instance_isolation`, `test_generate_serving_sql_manifest_build_version_sentinel` in `clickhouse_build_service_test.py`.
+
+## Bug fixes applied (2026-03-24)
+- **KPI mart not rebuilt after ClickHouse wipe**: `_serving_table_needs_rebuild` only checked the main serving table — if it already existed with correct columns, no rebuild was triggered and the KPI mart was never created. Fixed by adding `_specialized_marts_need_rebuild()` which duck-types `kpi_mart_exists` on the engine. When the KPI mart is absent and the manifest has indicator columns, a full rebuild is forced.
+- **`_build_specialized_marts` IndexError**: `manifest.get("dimension_column_names", [])[0]` raised `IndexError` when the list was empty (datasets with no dimension columns). Fixed with safe `_dim_cols[0]` guard.
+- **Fault-tolerant mart building**: Each mart (KPI, per-level map) is now wrapped in its own `try/except`. A failed mart is logged and skipped; it never aborts the main serving build. `ServingBuildResult.diagnostics["built_marts"]` lists which marts were successfully created.
+- **`named_table_exists_in_serving` / `kpi_mart_exists`**: Added to `ClickHouseLocalStagingEngine` for programmatic mart existence checks.
+- **Phase 3 — Immediate sync history visibility**: `sync_staged_dataset` now writes `current_step="initializing — {dataset.name}"` immediately upon entry (before any config loading), then `current_step="preparing — N instance(s), M variable(s)"` once the plan is resolved. Operators see the dataset name within milliseconds of the sync starting.
+
+## Tests added (2026-03-24)
+- `test_specialized_marts_need_rebuild_returns_false_for_non_clickhouse_engine`
+- `test_specialized_marts_need_rebuild_returns_false_when_no_indicators`
+- `test_specialized_marts_need_rebuild_returns_true_when_kpi_missing`
+- `test_specialized_marts_need_rebuild_returns_false_when_kpi_exists`
+- `test_specialized_marts_need_rebuild_swallows_exception`
+- `test_ensure_serving_table_triggers_rebuild_when_kpi_mart_missing`
+
 ## Blocking issues
 None.
 
 ## Next action
-Run a live full sync against a populated DHIS2 instance to confirm ClickHouse serving tables receive data end-to-end.
+Run a live full sync against a populated DHIS2 instance to confirm ClickHouse serving tables receive data end-to-end with correct per-instance aggregation, and verify the KPI mart is now rebuilt automatically after a ClickHouse data wipe.

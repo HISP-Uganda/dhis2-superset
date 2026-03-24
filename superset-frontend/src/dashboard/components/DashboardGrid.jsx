@@ -20,7 +20,20 @@ import { PureComponent, Fragment } from 'react';
 import { withTheme } from '@emotion/react';
 import PropTypes from 'prop-types';
 import classNames from 'classnames';
-import { addAlpha, css, styled, t } from '@superset-ui/core';
+import { css, styled, t } from '@superset-ui/core';
+
+const addAlpha = (color, opacity) => {
+  if (opacity > 1 || opacity < 0) {
+    return color;
+  }
+  if (!color || !color.startsWith('#')) {
+    return color;
+  }
+  const alpha = `0${Math.round(opacity * 255)
+    .toString(16)
+    .toUpperCase()}`.slice(-2);
+  return `${color}${alpha}`;
+};
 import { EmptyState } from '@superset-ui/core/components';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { navigateTo } from 'src/utils/navigationUtils';

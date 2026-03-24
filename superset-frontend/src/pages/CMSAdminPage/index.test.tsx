@@ -27,10 +27,10 @@ import {
 import CMSAdminPage from '.';
 
 jest.mock(
-  'src/pages/PublicLandingPage/PublicDashboardEmbed',
+  'src/dashboard/containers/DashboardPage',
   () =>
-    function MockPublicDashboardEmbed() {
-      return <div data-testid="public-dashboard-embed" />;
+    function MockDashboardPage() {
+      return <div data-test="dashboard-page" />;
     },
 );
 

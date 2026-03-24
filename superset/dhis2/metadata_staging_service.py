@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
@@ -925,12 +926,13 @@ def _fetch_context_geo_features(
     seen_feature_ids: set[str] = set()
 
     for level in requested_levels:
-        response = requests.get(
+        response = _get_with_retry(
             f"{context.base_url}/geoFeatures",
             params={"ou": f"ou:LEVEL-{level}"},
             auth=context.auth,
             headers=context.headers,
-            timeout=60,
+            timeout=120,
+            metadata_type="geoFeatures",
         )
         level_features = _parse_geo_features_response(response)
         for feature in level_features:
@@ -954,11 +956,12 @@ def _fetch_context_geojson_feature_collection(
         **context.headers,
         "Accept": "application/json+geojson,application/json",
     }
-    response = requests.get(
+    response = _get_with_retry(
         f"{context.base_url}/organisationUnits.geojson",
         auth=context.auth,
         headers=headers,
-        timeout=60,
+        timeout=180,
+        metadata_type="organisationUnits.geojson",
     )
 
     if response.status_code == 200:
@@ -1391,7 +1394,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                     "groups[id,displayName,name],"
                     "legendSet[id,displayName,name,legends[id,displayName,name,startValue,endValue,color]]"
                 ),
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "indicators":
@@ -1404,7 +1407,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                     "indicatorType[id,displayName,name],groups[id,displayName,name],"
                     "legendSet[id,displayName,name,legends[id,displayName,name,startValue,endValue,color]]"
                 ),
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "indicatorTypes":
@@ -1422,7 +1425,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "dataSets",
             {
                 "fields": "id,displayName,formType,dataSetElements",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "programIndicators":
@@ -1433,7 +1436,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                 "fields": (
                     "id,displayName,name,program[id,displayName,name],analyticsType"
                 ),
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "eventDataItems":
@@ -1448,7 +1451,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                     "aggregationType,groups[id,displayName,name],"
                     "legendSet[id,displayName,name,legends[id,displayName,name,startValue,endValue,color]]]"
                 ),
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "programs":
@@ -1457,7 +1460,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "programs",
             {
                 "fields": "id,displayName,name,programType",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "programStages":
@@ -1466,7 +1469,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "programStages",
             {
                 "fields": "id,displayName,name,program[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "trackedEntityTypes":
@@ -1475,7 +1478,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "trackedEntityTypes",
             {
                 "fields": "id,displayName,name",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type in {"dataElementGroups", "indicatorGroups"}:
@@ -1484,7 +1487,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             metadata_type,
             {
                 "fields": "id,displayName,name,members",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "dataElementGroupSets":
@@ -1493,7 +1496,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "dataElementGroupSets",
             {
                 "fields": "id,displayName,name,dataElementGroups[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "indicatorGroupSets":
@@ -1502,7 +1505,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "indicatorGroupSets",
             {
                 "fields": "id,displayName,name,indicatorGroups[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "organisationUnits":
@@ -1534,7 +1537,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                 # organisationUnits fetch. Including the full nested OU tree here
                 # causes massive payloads and timeouts on large instances.
                 "fields": "id,displayName,name,organisationUnits[id]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "organisationUnitGroupSets":
@@ -1543,7 +1546,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "organisationUnitGroupSets",
             {
                 "fields": "id,displayName,name,organisationUnitGroups[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "categories":
@@ -1552,7 +1555,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "categories",
             {
                 "fields": "id,displayName,name,dataDimensionType,categoryOptions[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "categoryCombos":
@@ -1561,7 +1564,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "categoryCombos",
             {
                 "fields": "id,displayName,name,dataDimensionType,categories[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == "categoryOptionCombos":
@@ -1570,7 +1573,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "categoryOptionCombos",
             {
                 "fields": "id,displayName,name,categoryCombo[id,displayName,name]",
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
     if metadata_type == LEGEND_SET_METADATA_TYPE:
@@ -1582,7 +1585,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
                     "id,displayName,name,"
                     "legends[id,displayName,name,startValue,endValue,color]"
                 ),
-                "paging": "false",
+                "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
 
@@ -1592,8 +1595,99 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
 # Metadata types that can have very large record counts and need longer timeouts.
 _LARGE_METADATA_TYPES = {"organisationUnits", "organisationUnitGroups", "legendSets"}
 # Metadata types fetched page-by-page to avoid single-request timeouts.
-_PAGINATED_METADATA_TYPES = {"organisationUnits"}
+_PAGINATED_METADATA_TYPES = {
+    "organisationUnits",
+    "organisationUnitGroups",
+    "organisationUnitGroupSets",
+    "dataElements",
+    "indicators",
+    "dataElementGroups",
+    "indicatorGroups",
+    "dataElementGroupSets",
+    "indicatorGroupSets",
+    "programIndicators",
+    "eventDataItems",
+    "categories",
+    "categoryCombos",
+    "categoryOptionCombos",
+    "programs",
+    "programStages",
+    "trackedEntityTypes",
+    "dataSets",
+    "legendSets",
+}
 _METADATA_PAGE_SIZE = 1000
+
+
+def _get_with_retry(
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    auth: Any = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = 60,
+    metadata_type: str = "",
+    max_retries: int = 3,
+    retry_delay: int = 5,
+) -> requests.Response:
+    last_exc = None
+
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                logger.info(
+                    "Retrying metadata fetch for %s (attempt %d/%d) after %ds delay...",
+                    metadata_type or url,
+                    attempt + 1,
+                    max_retries,
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
+
+            response = requests.get(
+                url,
+                params=params,
+                auth=auth,
+                headers=headers,
+                timeout=timeout,
+            )
+            
+            # Connection was successful but we might still have a partial read
+            # depending on how requests/urllib3 handles it.
+            # response.content accesses the full body and triggers IncompleteRead if present.
+            _ = response.content
+            
+            return response
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ) as exc:
+            last_exc = exc
+            logger.warning(
+                "Metadata fetch failed for %s (attempt %d/%d): %s",
+                metadata_type or url,
+                attempt + 1,
+                max_retries,
+                str(exc),
+            )
+        except Exception as exc:
+            if "IncompleteRead" in str(exc):
+                last_exc = exc
+                logger.warning(
+                    "Incomplete read during metadata fetch for %s (attempt %d/%d): %s",
+                    metadata_type or url,
+                    attempt + 1,
+                    max_retries,
+                    str(exc),
+                )
+            else:
+                raise
+
+    raise ValueError(
+        f"Failed to fetch metadata for {metadata_type or url} after {max_retries} attempts. "
+        f"Last error: {str(last_exc)}"
+    )
 
 
 def _fetch_one_metadata_page(
@@ -1604,13 +1698,15 @@ def _fetch_one_metadata_page(
     timeout: int,
     metadata_type: str = "",
 ) -> dict[str, Any]:
-    response = requests.get(
+    response = _get_with_retry(
         url,
         params=params,
         auth=context.auth,
         headers=context.headers,
         timeout=timeout,
+        metadata_type=metadata_type,
     )
+    
     if response.status_code == 401:
         raise ValueError(
             "DHIS2 API authentication failed. Please check database credentials."
@@ -1623,6 +1719,7 @@ def _fetch_one_metadata_page(
         raise ValueError(
             f"DHIS2 API error: {response.status_code} {response.text[:200]}"
         )
+    
     return response.json()
 
 
@@ -1656,14 +1753,14 @@ def _fetch_context_metadata_items(
             page_count = pager.get("pageCount") or 1
             if page >= page_count or len(page_items) < _METADATA_PAGE_SIZE or not total:
                 break
-            page += 1
-            logger.debug(
-                "_fetch_context_metadata_items: %s page %d/%d (%d items so far)",
+            logger.info(
+                "Fetched %s page %d/%d (%d items so far)...",
                 metadata_type,
-                page - 1,
+                page,
                 page_count,
                 len(all_items),
             )
+            page += 1
 
         return sorted(
             all_items,
@@ -2360,8 +2457,18 @@ def refresh_database_metadata(
             "instance_name": context.instance_name,
             "metadata": {},
         }
+        logger.info(
+            "Starting metadata refresh for DHIS2 instance='%s' (id=%s)",
+            context.instance_name,
+            context.instance_id,
+        )
         for metadata_type in active_metadata_types:
             try:
+                logger.info(
+                    "Loading metadata type='%s' from instance='%s'...",
+                    metadata_type,
+                    context.instance_name,
+                )
                 if metadata_type == GEOJSON_METADATA_TYPE:
                     org_unit_items = context_results.get("organisationUnits")
                     if not isinstance(org_unit_items, list):
@@ -2424,6 +2531,12 @@ def refresh_database_metadata(
                     metadata_type=metadata_type,
                     count=count,
                     success=True,
+                )
+                logger.info(
+                    "Successfully loaded %d items of type='%s' from instance='%s'",
+                    count,
+                    metadata_type,
+                    context.instance_name,
                 )
             except UnsupportedMetadataError as ex:
                 logger.info(

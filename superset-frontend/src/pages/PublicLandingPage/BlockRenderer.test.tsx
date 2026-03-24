@@ -22,10 +22,14 @@ import { RenderBlockTree } from './BlockRenderer';
 import type { PortalPage, PortalPageBlock } from './types';
 
 jest.mock(
-  './PublicDashboardEmbed',
+  'src/dashboard/containers/DashboardPage',
   () =>
-    function MockPublicDashboardEmbed() {
-      return <div data-testid="public-dashboard-embed" />;
+    function MockDashboardPage(props: any) {
+      return (
+        <div data-test="dashboard-page" data-id-or-slug={props.idOrSlug}>
+          Dashboard: {props.idOrSlug}
+        </div>
+      );
     },
 );
 

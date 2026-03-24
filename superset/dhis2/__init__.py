@@ -31,3 +31,6 @@ from superset.dhis2.models import (  # noqa: F401
     DHIS2SyncJob,
 )
 from superset.dhis2 import instance_service  # noqa: F401
+from superset.dhis2.listeners import setup_listeners
+
+setup_listeners()

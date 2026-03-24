@@ -36,13 +36,24 @@ import {
 
 const { Text } = Typography;
 
+interface ServingColumn {
+  column_name: string;
+  verbose_name?: string | null;
+  type?: string;
+  filterable?: boolean;
+  groupby?: boolean;
+  is_active?: boolean;
+  is_dttm?: boolean;
+  extra?: string | null;
+}
+
 interface DatasetSummary {
   id: number;
   name: string;
   description?: string;
   is_active: boolean;
   serving_table_ref?: string;
-  serving_columns?: string[];
+  serving_columns?: (string | ServingColumn)[];
   serving_superset_dataset_id?: number | null;
   stats?: {
     row_count?: number;
@@ -335,13 +346,16 @@ export default function DHIS2Downloads() {
       render: (_: unknown, record: DatasetSummary) => {
         const cols = record.serving_columns;
         if (!cols?.length) return <Text type="secondary">—</Text>;
+        const colNames = cols.map(c =>
+          typeof c === 'string' ? c : c.column_name,
+        );
         return (
           <Tooltip
             title={
               <ColumnList>
-                {cols.map(c => (
-                  <Tag key={c} style={{ marginBottom: 2 }}>
-                    {c}
+                {colNames.map(name => (
+                  <Tag key={name} style={{ marginBottom: 2 }}>
+                    {name}
                   </Tag>
                 ))}
               </ColumnList>

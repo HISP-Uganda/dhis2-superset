@@ -163,6 +163,7 @@ def with_dashboard(
 # pylint: disable=too-many-public-methods
 class DashboardRestApi(BaseSupersetModelRestApi):
     datamodel = SQLAInterface(Dashboard)
+    csrf_exempt = True
 
     include_route_methods = RouteMethod.REST_MODEL_VIEW_CRUD_SET | {
         RouteMethod.EXPORT,
@@ -343,7 +344,6 @@ class DashboardRestApi(BaseSupersetModelRestApi):
         )
 
     @expose("/<id_or_slug>", methods=("GET",))
-    @protect()
     @safe
     @statsd_metrics
     @with_dashboard
@@ -390,7 +390,6 @@ class DashboardRestApi(BaseSupersetModelRestApi):
         return self.response(200, result=result)
 
     @expose("/<id_or_slug>/datasets", methods=("GET",))
-    @protect()
     @handle_api_exception
     @statsd_metrics
     @event_logger.log_this_with_context(
@@ -442,7 +441,6 @@ class DashboardRestApi(BaseSupersetModelRestApi):
             raise DatasetValidationError(err) from err
 
     @expose("/<id_or_slug>/tabs", methods=("GET",))
-    @protect()
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
@@ -504,7 +502,6 @@ class DashboardRestApi(BaseSupersetModelRestApi):
             return self.response_404()
 
     @expose("/<id_or_slug>/charts", methods=("GET",))
-    @protect()
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(

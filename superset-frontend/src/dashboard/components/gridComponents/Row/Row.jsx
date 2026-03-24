@@ -84,7 +84,7 @@ const GridRow = styled.div`
     position: relative;
     display: flex;
     flex-direction: row;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: flex-start;
     width: 100%;
     height: fit-content;

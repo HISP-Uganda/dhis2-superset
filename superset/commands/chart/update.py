@@ -142,6 +142,17 @@ class UpdateChartCommand(UpdateMixin, BaseCommand):
             try:
                 datasource = get_datasource_by_id(datasource_id, datasource_type)
                 self._properties["datasource_name"] = datasource.name
+
+                # Validate dataset role
+                if hasattr(datasource, "dataset_role") and datasource.dataset_role:
+                    try:
+                        from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
+                        role = DatasetRole(datasource.dataset_role)
+                        if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.CHART):
+                            from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
+                            exceptions.append(ChartInvalidDatasetRoleError(role))
+                    except ValueError:
+                        pass
             except ValidationError as ex:
                 exceptions.append(ex)
 

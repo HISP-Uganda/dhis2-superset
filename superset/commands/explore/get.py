@@ -115,12 +115,32 @@ class GetExploreCommand(BaseCommand, ABC):
                 datasource = DatasourceDAO.get_datasource(
                     cast(str, self._datasource_type), self._datasource_id
                 )
+                if hasattr(datasource, "dataset_role") and datasource.dataset_role:
+                    try:
+                        from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
+                        from superset.explore.exceptions import DatasetAccessDeniedError
+                        role = DatasetRole(datasource.dataset_role)
+                        if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.EXPLORE):
+                            raise DatasetAccessDeniedError(
+                                message="Dataset is not eligible for explore context.",
+                                dataset_id=self._datasource_id,
+                                dataset_type=self._datasource_type,
+                            )
+                    except ValueError:
+                        pass
 
         datasource_name = _("[Missing Dataset]")
 
         if datasource:
             datasource_name = datasource.name
             security_manager.raise_for_access(datasource=datasource)
+            
+            # DHIS2: ensure specialized marts exist if this is a DHIS2-backed dataset
+            try:
+                from superset.dhis2.superset_dataset_service import ensure_specialized_marts_for_sqla_table
+                ensure_specialized_marts_for_sqla_table(datasource)
+            except (ImportError, Exception):
+                pass
 
         viz_type = form_data.get("viz_type")
         if not viz_type and datasource and datasource.default_endpoint:

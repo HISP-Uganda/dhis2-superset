@@ -16,6 +16,7 @@
 # under the License.
 from typing import Any
 
+import sqlalchemy as sa
 from flask import current_app, g
 from flask_babel import lazy_gettext as _
 from sqlalchemy import or_
@@ -116,10 +117,11 @@ class DatabaseDHIS2StagingInternalFilter(
     """
 
     def apply(self, query: Query, value: Any) -> Query:
-        # Hide any database that has "dhis2_staging_internal": true in extra
+        # Hide any database that has "dhis2_staging_internal": true in extra.
+        # We handle cases where the key is missing (None) or false.
         return query.filter(
             or_(
                 cast(Database.extra, JSON)["dhis2_staging_internal"].is_(None),
-                cast(Database.extra, JSON)["dhis2_staging_internal"] == sa.false(),
+                cast(Database.extra, JSON)["dhis2_staging_internal"] != sa.true(),
             )
         )

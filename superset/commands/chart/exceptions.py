@@ -162,3 +162,18 @@ class ChartFaveError(CommandException):
 
 class ChartUnfaveError(CommandException):
     message = _("Error unfaving chart")
+
+
+class ChartInvalidDatasetRoleError(ValidationError):
+    """
+    Marshmallow validation error for invalid dataset role
+    """
+
+    def __init__(self, role: str) -> None:
+        super().__init__(
+            _(
+                "Dataset has role '%(role)s' which is not allowed for charts.",
+                role=role,
+            ),
+            field_name="datasource_id",
+        )

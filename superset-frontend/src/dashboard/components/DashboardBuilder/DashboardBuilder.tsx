@@ -17,17 +17,29 @@
  * under the License.
  */
 /* eslint-env browser */
+import { css } from '@emotion/react';
 import cx from 'classnames';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  addAlpha,
-  css,
   JsonObject,
   styled,
   t,
   useTheme,
   useElementOnScreen,
 } from '@superset-ui/core';
+
+const addAlpha = (color: string, opacity: number): string => {
+  if (opacity > 1 || opacity < 0) {
+    return color;
+  }
+  if (!color || !color.startsWith('#')) {
+    return color;
+  }
+  const alpha = `0${Math.round(opacity * 255)
+    .toString(16)
+    .toUpperCase()}`.slice(-2);
+  return `${color}${alpha}`;
+};
 import { useDispatch, useSelector } from 'react-redux';
 import { EmptyState, Loading } from '@superset-ui/core/components';
 import { ErrorBoundary, BasicErrorAlert } from 'src/components';
@@ -314,6 +326,10 @@ const StyledDashboardContent = styled.div<{
       z-index: 1;
     }
 
+    .resizable-container {
+      max-width: 100% !important;
+    }
+
     .dashboard-component-chart-holder {
       width: 100%;
       height: 100%;
@@ -361,7 +377,21 @@ const ELEMENT_ON_SCREEN_OPTIONS = {
   threshold: [1],
 };
 
-const DashboardBuilder = () => {
+interface DashboardBuilderProps {
+  isPublicView?: boolean;
+  onBack?: () => void;
+  backLabel?: string;
+  badge?: string;
+  subtitle?: string;
+}
+
+const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
+  isPublicView,
+  onBack,
+  backLabel,
+  badge,
+  subtitle,
+}) => {
   const dispatch = useDispatch();
   const uiConfig = useUiConfig();
   const theme = useTheme();
@@ -509,7 +539,15 @@ const DashboardBuilder = () => {
   const renderDraggableContent = useCallback(
     ({ dropIndicatorProps }: { dropIndicatorProps: JsonObject }) => (
       <div>
-        {!hideDashboardHeader && <DashboardHeader />}
+        {!hideDashboardHeader && (
+          <DashboardHeader
+            isPublicView={isPublicView}
+            onBack={onBack}
+            backLabel={backLabel}
+            badge={badge}
+            subtitle={subtitle}
+          />
+        )}
         {showFilterBar &&
           filterBarOrientation === FilterBarOrientation.Horizontal && (
             <FilterBar
@@ -554,6 +592,11 @@ const DashboardBuilder = () => {
       isReport,
       topLevelTabs,
       uiConfig.hideNav,
+      isPublicView,
+      onBack,
+      backLabel,
+      badge,
+      subtitle,
     ],
   );
 

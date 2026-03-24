@@ -64,6 +64,7 @@ export const useHeaderActionsMenu = ({
   dashboardTitle,
   logEvent,
   setCurrentReportDeleting,
+  isPublicView,
 }: HeaderDropdownProps) => {
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
   const history = useHistory();
@@ -192,11 +193,13 @@ export const useHeaderActionsMenu = ({
       });
 
       // Auto-refresh settings (session-only in view mode)
-      menuItems.push({
-        key: MenuKeys.AutorefreshModal,
-        label: t('Set auto-refresh'),
-        disabled: isLoading,
-      });
+      if (!isPublicView) {
+        menuItems.push({
+          key: MenuKeys.AutorefreshModal,
+          label: t('Set auto-refresh'),
+          disabled: isLoading,
+        });
+      }
     }
 
     // Toggle fullscreen
@@ -254,12 +257,12 @@ export const useHeaderActionsMenu = ({
     menuItems.push(downloadMenuItem);
 
     // Share submenu
-    if (userCanShare) {
+    if (userCanShare && !isPublicView) {
       menuItems.push(shareMenuItems);
     }
 
     // Embed dashboard
-    if (!editMode && userCanCurate) {
+    if (!editMode && userCanCurate && !isPublicView) {
       menuItems.push({
         key: MenuKeys.ManageEmbedded,
         label: t('Embed dashboard'),

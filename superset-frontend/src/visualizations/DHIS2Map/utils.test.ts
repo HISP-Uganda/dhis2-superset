@@ -29,7 +29,7 @@ import {
   parseCoordinates,
   resolveStrategicLegendPosition,
 } from './utils';
-import { BoundaryFeature } from './types';
+import { BoundaryFeature, DHIS2LegendDefinition } from './types';
 
 describe('DHIS2Map Utils', () => {
   const buildBoundary = (

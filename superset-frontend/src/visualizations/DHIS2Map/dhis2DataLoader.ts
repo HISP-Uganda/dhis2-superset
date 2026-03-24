@@ -127,6 +127,7 @@ export class DHIS2DataLoader {
       try {
         const response = await SupersetClient.get({
           endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=organisationUnits&search=${id}&staged=true`,
+          ignoreUnauthorized: true,
         });
         const items = response.json?.result || [];
         const item = items.find((i: any) => i.id === id);
@@ -170,6 +171,7 @@ export class DHIS2DataLoader {
             // eslint-disable-next-line no-await-in-loop
             const response = await SupersetClient.get({
               endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=${dxType}&search=${id}&staged=true`,
+              ignoreUnauthorized: true,
             });
             const items = response.json?.result || [];
             const item = items.find((i: any) => i.id === id);

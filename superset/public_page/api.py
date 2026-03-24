@@ -197,16 +197,9 @@ DEFAULT_PORTAL_LAYOUT_CONFIG: dict[str, Any] = {
     "footerText": "Uganda Malaria Analytics Portal · Ministry of Health",
     "emptyPageMessage": "This page does not have any visible blocks yet.",
     "noPublicPageMessage": "No public page is available.",
-    "dashboardBadgeLabel": "Public Dashboard",
-    "dashboardEmbedSubtitle": (
-        "Viewing this dashboard inside the public portal keeps navigation, "
-        "context, and access controls in one place."
-    ),
-    "dashboardEmbedIntro": (
-        "This embedded view is tuned for public presentation with tighter "
-        "chrome, balanced spacing, and the portal frame still available "
-        "around it."
-    ),
+    "dashboardBadgeLabel": "Public",
+    "dashboardEmbedSubtitle": "",
+    "dashboardEmbedIntro": "",
     "dashboardBackLabel": "Back to page",
     "dashboardLoadingLabel": "Loading dashboard...",
 }

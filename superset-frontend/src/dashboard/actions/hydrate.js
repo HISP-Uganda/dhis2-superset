@@ -56,13 +56,13 @@ import { FilterBarOrientation } from '../types';
 export const HYDRATE_DASHBOARD = 'HYDRATE_DASHBOARD';
 
 export const hydrateDashboard =
-  ({ history, dashboard, charts, dataMask, activeTabs }) =>
+  ({ history, dashboard, charts, dataMask, activeTabs, isPublicView }) =>
   (dispatch, getState) => {
     const { user, common, dashboardState } = getState();
     const { metadata, position_data: positionData } = dashboard;
     const regularUrlParams = extractUrlParams('regular');
     const reservedUrlParams = extractUrlParams('reserved');
-    const editMode = reservedUrlParams.edit === 'true';
+    const editMode = isPublicView ? false : reservedUrlParams.edit === 'true';
 
     charts.forEach(chart => {
       // eslint-disable-next-line no-param-reassign
@@ -239,7 +239,7 @@ export const hydrateDashboard =
     metadata.global_chart_configuration = globalChartConfiguration;
 
     const { roles } = user;
-    const canEdit = canUserEditDashboard(dashboard, user);
+    const canEdit = isPublicView ? false : canUserEditDashboard(dashboard, user);
     const crossFiltersEnabled = isCrossFiltersEnabled(
       metadata.cross_filters_enabled,
     );
@@ -257,23 +257,23 @@ export const hydrateDashboard =
           metadata,
           userId: user.userId ? String(user.userId) : null, // legacy, please use state.user instead
           dash_edit_perm: canEdit,
-          dash_save_perm: canUserSaveAsDashboard(dashboard, user),
-          dash_share_perm: findPermission(
+          dash_save_perm: isPublicView ? false : canUserSaveAsDashboard(dashboard, user),
+          dash_share_perm: isPublicView ? false : findPermission(
             'can_share_dashboard',
             'Superset',
             roles,
           ),
-          superset_can_explore: findPermission(
+          superset_can_explore: isPublicView ? false : findPermission(
             'can_explore',
             'Superset',
             roles,
           ),
-          superset_can_share: findPermission(
+          superset_can_share: isPublicView ? false : findPermission(
             'can_share_chart',
             'Superset',
             roles,
           ),
-          superset_can_csv: findPermission('can_csv', 'Superset', roles),
+          superset_can_csv: isPublicView ? false : findPermission('can_csv', 'Superset', roles),
           common: {
             // legacy, please use state.common instead
             conf: common?.conf,
@@ -299,7 +299,7 @@ export const hydrateDashboard =
           css: dashboard.css || '',
           colorNamespace: metadata?.color_namespace || null,
           colorScheme: metadata?.color_scheme || null,
-          editMode: canEdit && editMode,
+          editMode: !isPublicView && canEdit && editMode,
           isPublished: dashboard.published,
           hasUnsavedChanges: false,
           dashboardIsSaving: false,

@@ -234,6 +234,7 @@ async function fetchDHIS2MetadataWithPublicFallback(
     return await SupersetClient.get({
       endpoint: `/api/v1/database/${options.databaseId}/dhis2_metadata/`,
       searchParams,
+      ignoreUnauthorized: true,
     });
   } catch (error) {
     if (!shouldTryPublicChartFallback(error, options.chartId)) {

@@ -27,6 +27,7 @@ from superset import security_manager
 from superset.commands.base import BaseCommand, CreateMixin
 from superset.commands.chart.exceptions import (
     ChartCreateFailedError,
+    ChartInvalidDatasetRoleError,
     ChartInvalidError,
     DashboardsForbiddenError,
     DashboardsNotFoundValidationError,
@@ -34,6 +35,7 @@ from superset.commands.chart.exceptions import (
 from superset.commands.utils import get_datasource_by_id
 from superset.daos.chart import ChartDAO
 from superset.daos.dashboard import DashboardDAO
+from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
 from superset.utils.decorators import on_error, transaction
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,16 @@ class CreateChartCommand(CreateMixin, BaseCommand):
         try:
             datasource = get_datasource_by_id(datasource_id, datasource_type)
             self._properties["datasource_name"] = datasource.name
+
+            # Validate dataset role
+            if hasattr(datasource, "dataset_role") and datasource.dataset_role:
+                try:
+                    role = DatasetRole(datasource.dataset_role)
+                    if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.CHART):
+                        exceptions.append(ChartInvalidDatasetRoleError(role))
+                except ValueError:
+                    pass  # Ignore invalid role strings, handled elsewhere or treated as permissible
+
         except ValidationError as ex:
             exceptions.append(ex)
 

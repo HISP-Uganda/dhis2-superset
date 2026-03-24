@@ -25,7 +25,7 @@ import { Button, Dropdown, Empty, Tag } from 'antd';
 import type { MenuProps } from 'antd';
 import RichTextComposer from 'src/pages/CMSAdminPage/RichTextComposer';
 import PublicChartContainer, { isMapLikeViz } from './PublicChartContainer';
-import PublicDashboardEmbed from './PublicDashboardEmbed';
+import DashboardPage from 'src/dashboard/containers/DashboardPage';
 import { cloneBlockTree, isContainerBlock } from './blockUtils';
 import type {
   PortalBlockDefinition,
@@ -2528,14 +2528,19 @@ export function RenderBlockTree({
             ) : null}
             {dashboard ? (
               <>
-                <PublicDashboardEmbed
-                  title={dashboard.dashboard_title}
-                  dashboardId={dashboard.id}
-                  dashboardUuid={dashboard.uuid}
-                  height={blockFrameHeight(block, 720)}
-                  loadingLabel={t('Loading dashboard...')}
-                />
+                <div
+                  style={{
+                    minHeight: blockFrameHeight(block, 720),
+                    position: 'relative',
+                  }}
+                >
+                  <DashboardPage
+                    idOrSlug={dashboard.slug || String(dashboard.id)}
+                    isPublicView
+                  />
+                </div>
                 {onOpenDashboard ? (
+
                   <Button
                     type="link"
                     style={{ paddingInline: 0 }}

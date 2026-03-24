@@ -17,7 +17,6 @@ set -euo pipefail
 #   - /etc/superset/superset.env
 #   - /opt/superset/config/superset_config.py   (unless forced config sync)
 #   - /opt/superset/backups
-# ==============================================================================
 #
 # Default staging engine: ClickHouse (installed and configured automatically)
 #   - Installs clickhouse-server, creates a dedicated user, and bootstraps DBs
@@ -29,16 +28,75 @@ set -euo pipefail
 #
 # DuckDB support (opt-in):
 #   - Enable with: --duckdb  or  DUCKDB_ENABLED=1
+#
+# ------------------------------------------------------------------------------
+# AUTHENTICATION MODEL
+# ------------------------------------------------------------------------------
+# This script supports a local deploy .env file for remote SSH credentials.
+#
+# Expected optional .env variables:
+#   USER=<remote ssh username>
+#   PASSWORD=<remote ssh password>
+#
+# Important:
+#   - The script reads USER/PASSWORD from the deploy .env ONLY to capture remote
+#     login details.
+#   - It restores the original local shell USER afterwards so local execution
+#     logic keeps using the real initiating user.
+#   - SSH_PASSWORD is then used for:
+#       * initial file uploads (scp)
+#       * launching the remote bootstrap
+#       * all later polling ssh connections
+#
+# If you see:
+#   ssh: connect to host <host> port 22: Connection refused
+#
+# that is NOT an auth failure. It means the remote host is not listening on
+# port 22 at that moment, so authentication has not even started yet.
+#
+# ------------------------------------------------------------------------------
+# DETACHED REMOTE EXECUTION MODEL
+# ------------------------------------------------------------------------------
+# In detached mode:
+#   1) this script uploads itself + env + bootstrap wrapper
+#   2) the bootstrap authenticates sudo remotely
+#   3) the bootstrap re-execs as root
+#   4) root launches a detached runner (prefer systemd-run, fallback nohup/setsid)
+#   5) local side polls the remote log and status file until completion
+#
+# The polling layer is intentionally tolerant of temporary SSH outages because:
+#   - long-running installs may restart services
+#   - the host may be briefly resource-constrained
+#   - sshd may restart or port 22 may be unavailable for a short period
+#
+# Polling therefore distinguishes:
+#   - auth errors            -> fail immediately
+#   - connection refused     -> tolerated for a time window
+#   - timeouts/network reset -> tolerated for a time window
+#   - detached runner exit with no status -> grace window, then fail
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-$SCRIPT_DIR/.env}"
 DEFAULT_TARGET_HOST="${DEFAULT_TARGET_HOST:-209.145.54.74}"
 DEFAULT_TARGET_USER="${DEFAULT_TARGET_USER:-socaya}"
+
+# Capture the initiating local shell user before reading any deploy .env file.
+# This avoids accidentally overwriting local process semantics if the .env uses
+# USER=<remote-ssh-user>.
 ORIGINAL_LOCAL_USER="${USER:-}"
 DEPLOY_ENV_USER=""
 DEPLOY_ENV_PASSWORD=""
 
+# ------------------------------------------------------------------------------
+# Read deploy-time credentials from local .env, then restore the local USER.
+# ------------------------------------------------------------------------------
+# This is deliberate:
+#   - DEPLOY_ENV_USER is used only as a candidate remote SSH user
+#   - PASSWORD is mapped into SSH_PASSWORD later
+#   - local USER is restored so local filesystem/sudo logic keeps behaving as the
+#     initiating user expects
+# ------------------------------------------------------------------------------
 if [[ -f "$DEPLOY_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -56,10 +114,12 @@ TARGET_HOST="${TARGET_HOST:-${HOST:-$DEFAULT_TARGET_HOST}}"
 TARGET_USER="${TARGET_USER:-${SSH_USER:-${DEPLOY_ENV_USER:-$DEFAULT_TARGET_USER}}}"
 SSH_PASSWORD="${SSH_PASSWORD:-${DEPLOY_ENV_PASSWORD:-}}"
 REMOTE_SUDO_PASSWORD="${REMOTE_SUDO_PASSWORD:-${SUDO_PASSWORD:-${SSH_PASSWORD:-}}}"
+
 TARGET="${TARGET:-${TARGET_HOST}}"
 if [[ "$TARGET" != *@* ]]; then
   TARGET="${TARGET_USER}@${TARGET}"
 fi
+
 SSH_PORT="${SSH_PORT:-22}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 
@@ -69,7 +129,7 @@ CT_PROXY="${CT_PROXY:-proxy}"
 DOMAIN="${DOMAIN:-supersets.hispuganda.org}"
 
 REPO_URL="${REPO_URL:-https://github.com/HISP-Uganda/dhis2-superset.git}"
-GIT_REF="${GIT_REF:-main}"
+GIT_REF="${GIT_REF:-martbase}"
 GIT_DEPTH="${GIT_DEPTH:-0}"
 GIT_SUBMODULES="${GIT_SUBMODULES:-0}"
 SOURCE_MODE="${SOURCE_MODE:-git}"   # git | local
@@ -159,13 +219,42 @@ HOST_LOG="${HOST_LOG:-/var/log/supersets-deploy-host.log}"
 REMOTE_SCRIPT_PATH="${REMOTE_SCRIPT_PATH:-/tmp/deploy-supersets.sh}"
 REMOTE_ENV_PATH="${REMOTE_ENV_PATH:-/tmp/deploy-supersets.env}"
 REMOTE_BOOTSTRAP_PATH="${REMOTE_BOOTSTRAP_PATH:-/tmp/deploy-supersets-bootstrap.sh}"
+
 REMOTE_DETACH="${REMOTE_DETACH:-1}"
-REMOTE_POLL_INTERVAL_SECONDS="${REMOTE_POLL_INTERVAL_SECONDS:-2}"
-REMOTE_POLL_MAX_FAILURES="${REMOTE_POLL_MAX_FAILURES:-300}"
-REMOTE_POLL_STARTUP_GRACE_SECONDS="${REMOTE_POLL_STARTUP_GRACE_SECONDS:-5}"
+
+# ------------------------------------------------------------------------------
+# Polling defaults
+# ------------------------------------------------------------------------------
+# Previous 2-second polling created many short SSH sessions and makes transient
+# host unavailability much noisier. These defaults are intentionally gentler.
+# ------------------------------------------------------------------------------
+REMOTE_POLL_INTERVAL_SECONDS="${REMOTE_POLL_INTERVAL_SECONDS:-10}"
+REMOTE_POLL_MAX_FAILURES="${REMOTE_POLL_MAX_FAILURES:-120}"
+REMOTE_POLL_STARTUP_GRACE_SECONDS="${REMOTE_POLL_STARTUP_GRACE_SECONDS:-15}"
+
+# Maximum tolerated wall-clock duration of SSH unavailability during polling.
+# This protects detached deploys that keep running even while sshd or port 22 is
+# temporarily unavailable.
+REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS="${REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS:-900}"
+
+# How many consecutive FAILED_NO_STATUS responses we tolerate before concluding
+# the detached process exited before writing its final status file.
+REMOTE_POLL_NO_STATUS_GRACE_CYCLES="${REMOTE_POLL_NO_STATUS_GRACE_CYCLES:-6}"
+
 REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-/tmp/deploy-supersets-remote.log}"
 REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-/tmp/deploy-supersets-remote.pid}"
 REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-/tmp/deploy-supersets-remote.status}"
+
+# ------------------------------------------------------------------------------
+# Optional SSH connection multiplexing
+# ------------------------------------------------------------------------------
+# This is used only when password auth is NOT in use. With sshpass/askpass each
+# invocation needs a normal fresh auth flow, so multiplexing is skipped.
+# ------------------------------------------------------------------------------
+SSH_CONTROL_MASTER="${SSH_CONTROL_MASTER:-1}"
+SSH_CONTROL_PERSIST="${SSH_CONTROL_PERSIST:-10m}"
+SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-$HOME/.ssh/cm}"
+SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$SSH_CONTROL_DIR/%r@%h:%p}"
 
 usage() {
   cat <<'EOF'
@@ -230,19 +319,29 @@ EOF
 }
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
-log()  { printf '==> [%s] %s
-' "$(timestamp)" "$*"; }
-warn() { printf 'WARN [%s] %s
-' "$(timestamp)" "$*" >&2; }
-die()  { printf 'ERROR [%s] %s
-' "$(timestamp)" "$*" >&2; exit 1; }
+log()  { printf '==> [%s] %s\n' "$(timestamp)" "$*"; }
+warn() { printf 'WARN [%s] %s\n' "$(timestamp)" "$*" >&2; }
+die()  { printf 'ERROR [%s] %s\n' "$(timestamp)" "$*" >&2; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-run_ssh_tool() {
-  local tool="$1"
-  shift
+quote_env_value() { printf '%q' "$1"; }
 
-  local common_opts=(
+remote_sudo_prompt() {
+  printf '[remote sudo on %s] password for %%u: ' "$TARGET"
+}
+
+mkdir -p "$SSH_CONTROL_DIR" 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# Build the common ssh/scp options in one place.
+# ------------------------------------------------------------------------------
+# Notes:
+#   - StrictHostKeyChecking=accept-new keeps first-run behavior practical
+#   - ServerAlive* protects against half-open sessions
+#   - Multiplexing is used only when password auth is not being forced
+# ------------------------------------------------------------------------------
+ssh_common_opts() {
+  local opts=(
     -o BatchMode=no
     -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
     -o ConnectionAttempts=1
@@ -250,6 +349,39 @@ run_ssh_tool() {
     -o ServerAliveCountMax=6
     -o StrictHostKeyChecking=accept-new
   )
+
+  if [[ -z "${SSH_PASSWORD:-}" && "${SSH_CONTROL_MASTER:-1}" == "1" ]]; then
+    opts+=(
+      -o ControlMaster=auto
+      -o "ControlPath=$SSH_CONTROL_PATH"
+      -o "ControlPersist=$SSH_CONTROL_PERSIST"
+    )
+  fi
+
+  printf '%s\n' "${opts[@]}"
+}
+
+# ------------------------------------------------------------------------------
+# Unified SSH/SCP wrapper
+# ------------------------------------------------------------------------------
+# Behavior:
+#   - If SSH_PASSWORD is empty: run ssh/scp normally
+#   - If sshpass exists: use sshpass for non-interactive password auth
+#   - Else: use SSH_ASKPASS in forced mode
+#
+# This means the local .env password is applied to:
+#   - initial uploads
+#   - bootstrap launch
+#   - all later poll connections
+# ------------------------------------------------------------------------------
+run_ssh_tool() {
+  local tool="$1"
+  shift
+
+  local common_opts=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && common_opts+=("$line")
+  done < <(ssh_common_opts)
 
   if [[ -z "${SSH_PASSWORD:-}" ]]; then
     "$tool" "${common_opts[@]}" "$@"
@@ -290,51 +422,39 @@ ssh_cmd() {
 scp_to_remote() {
   local src="$1"
   local dst="$2"
-  if [[ -z "${SSH_PASSWORD:-}" ]]; then
-    scp -o BatchMode=no \
-        -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
-        -o ConnectionAttempts=1 \
-        -o StrictHostKeyChecking=accept-new \
-        -P "$SSH_PORT" "$src" "${TARGET}:$dst"
-    return
-  fi
-
-  if has_cmd sshpass; then
-    SSHPASS="$SSH_PASSWORD" sshpass -e scp \
-      -o BatchMode=no \
-      -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
-      -o ConnectionAttempts=1 \
-      -o StrictHostKeyChecking=accept-new \
-      -P "$SSH_PORT" "$src" "${TARGET}:$dst"
-    return
-  fi
-
-  local askpass
-  askpass="$(mktemp /tmp/deploy-supersets-askpass.XXXXXX)"
-  cat > "$askpass" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "${DEPLOY_SSH_PASSWORD:-}"
-EOF
-  chmod 700 "$askpass"
-
-  DISPLAY="${DISPLAY:-deploy-askpass:0}" \
-  SSH_ASKPASS="$askpass" \
-  SSH_ASKPASS_REQUIRE=force \
-  DEPLOY_SSH_PASSWORD="$SSH_PASSWORD" \
-  scp -o BatchMode=no \
-      -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
-      -o ConnectionAttempts=1 \
-      -o StrictHostKeyChecking=accept-new \
-      -P "$SSH_PORT" "$src" "${TARGET}:$dst" < /dev/null
-  local rc=$?
-  rm -f "$askpass"
-  return $rc
+  run_ssh_tool scp -P "$SSH_PORT" "$src" "${TARGET}:$dst"
 }
 
-quote_env_value() { printf '%q' "$1"; }
+# ------------------------------------------------------------------------------
+# Classify SSH transport failures so polling can distinguish:
+#   - auth problems (fatal)
+#   - host/port/network availability problems (tolerable for a window)
+# ------------------------------------------------------------------------------
+classify_ssh_error() {
+  local text="${1:-}"
 
-remote_sudo_prompt() {
-  printf '[remote sudo on %s] password for %%u: ' "$TARGET"
+  if grep -qi 'connection refused' <<<"$text"; then
+    printf '%s\n' "connection-refused"
+    return
+  fi
+  if grep -qiE 'operation timed out|connection timed out|timed out' <<<"$text"; then
+    printf '%s\n' "timeout"
+    return
+  fi
+  if grep -qiE 'no route to host|network is unreachable|name or service not known|temporary failure in name resolution' <<<"$text"; then
+    printf '%s\n' "network"
+    return
+  fi
+  if grep -qiE 'connection reset by peer|broken pipe|kex_exchange_identification' <<<"$text"; then
+    printf '%s\n' "transport-reset"
+    return
+  fi
+  if grep -qiE 'permission denied|authentication failed|publickey,password|too many authentication failures' <<<"$text"; then
+    printf '%s\n' "auth"
+    return
+  fi
+
+  printf '%s\n' "unknown"
 }
 
 write_remote_bootstrap_file() {
@@ -362,16 +482,28 @@ set +a
 
 write_status() {
   local rc="$1"
-  printf '%s
-' "$rc" > "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
+  printf '%s\n' "$rc" > "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
   chmod 0666 "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
   chown root:root "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
 }
 
+# Emit periodic heartbeat lines so the polling side can see progress even during
+# very long install/build phases with sparse command output.
+heartbeat() {
+  while true; do
+    printf '[runner] heartbeat at %s\n' "$(date -Iseconds)"
+    sleep 30
+  done
+}
+
 rc=0
-trap 'rc=$?; printf "[runner] finished rc=%s at %s\n" "$rc" "$(date -Iseconds)"; write_status "$rc"; exit "$rc"' EXIT
+hb_pid=""
+trap 'rc=$?; if [[ -n "${hb_pid:-}" ]]; then kill "$hb_pid" >/dev/null 2>&1 || true; wait "$hb_pid" >/dev/null 2>&1 || true; fi; printf "[runner] finished rc=%s at %s\n" "$rc" "$(date -Iseconds)"; write_status "$rc"; exit "$rc"' EXIT
 
 printf '[runner] starting deploy at %s cmd=%s\n' "$(date -Iseconds)" "$DEPLOY_CMD"
+heartbeat &
+hb_pid=$!
+
 exec bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
 EORUN
   chmod 700 /tmp/deploy-supersets-detached-runner.sh
@@ -387,42 +519,52 @@ launch_detached_runner() {
   install -m 0666 /dev/null "$REMOTE_RUN_LOG"
   chmod 0666 "$REMOTE_RUN_LOG" 2>/dev/null || true
   chown root:root "$REMOTE_RUN_LOG" 2>/dev/null || true
-  printf '[bootstrap] detached launch requested at %s
-' "$(date -Iseconds)" >> "$REMOTE_RUN_LOG"
-  printf '[bootstrap] pid1=%s deploy_cmd=%s
-' "${pid1:-unknown}" "$DEPLOY_CMD" >> "$REMOTE_RUN_LOG"
+  printf '[bootstrap] detached launch requested at %s\n' "$(date -Iseconds)" >> "$REMOTE_RUN_LOG"
+  printf '[bootstrap] pid1=%s deploy_cmd=%s\n' "${pid1:-unknown}" "$DEPLOY_CMD" >> "$REMOTE_RUN_LOG"
 
   if command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 && [[ "${pid1:-}" == "systemd" ]]; then
     unit="deploy-supersets-$(date +%s)-$$"
-    systemd-run       --quiet       --unit "$unit"       --collect       --remain-after-exit       --same-dir       --property=Type=simple       --property=KillMode=process       --property=StandardOutput=append:$REMOTE_RUN_LOG       --property=StandardError=append:$REMOTE_RUN_LOG       --setenv=REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH"       --setenv=REMOTE_ENV_PATH="$REMOTE_ENV_PATH"       --setenv=REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE"       --setenv=DEPLOY_CMD="$DEPLOY_CMD"       /bin/bash /tmp/deploy-supersets-detached-runner.sh || true
+    systemd-run \
+      --quiet \
+      --unit "$unit" \
+      --collect \
+      --remain-after-exit \
+      --same-dir \
+      --property=Type=simple \
+      --property=KillMode=process \
+      --property=StandardOutput=append:$REMOTE_RUN_LOG \
+      --property=StandardError=append:$REMOTE_RUN_LOG \
+      --setenv=REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+      --setenv=REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+      --setenv=REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
+      --setenv=DEPLOY_CMD="$DEPLOY_CMD" \
+      /bin/bash /tmp/deploy-supersets-detached-runner.sh || true
 
     sleep 1
     pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || true)"
     if [[ -n "${pid:-}" && "$pid" != "0" ]]; then
-      printf '[bootstrap] launched via systemd-run unit=%s pid=%s
-' "$unit" "$pid" >> "$REMOTE_RUN_LOG"
+      printf '[bootstrap] launched via systemd-run unit=%s pid=%s\n' "$unit" "$pid" >> "$REMOTE_RUN_LOG"
     else
-      printf '[bootstrap] systemd-run did not yield a live MainPID; falling back to nohup
-' >> "$REMOTE_RUN_LOG"
+      printf '[bootstrap] systemd-run did not yield a live MainPID; falling back to nohup\n' >> "$REMOTE_RUN_LOG"
     fi
   fi
 
   if [[ -z "${pid:-}" || "$pid" == "0" ]]; then
-    nohup setsid env       REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH"       REMOTE_ENV_PATH="$REMOTE_ENV_PATH"       REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE"       DEPLOY_CMD="$DEPLOY_CMD"       /bin/bash /tmp/deploy-supersets-detached-runner.sh >> "$REMOTE_RUN_LOG" 2>&1 < /dev/null &
+    nohup setsid env \
+      REMOTE_SCRIPT_PATH="$REMOTE_SCRIPT_PATH" \
+      REMOTE_ENV_PATH="$REMOTE_ENV_PATH" \
+      REMOTE_RUN_STATUS_FILE="$REMOTE_RUN_STATUS_FILE" \
+      DEPLOY_CMD="$DEPLOY_CMD" \
+      /bin/bash /tmp/deploy-supersets-detached-runner.sh >> "$REMOTE_RUN_LOG" 2>&1 < /dev/null &
     pid=$!
-    printf '[bootstrap] launched via nohup/setsid pid=%s
-' "$pid" >> "$REMOTE_RUN_LOG"
+    printf '[bootstrap] launched via nohup/setsid pid=%s\n' "$pid" >> "$REMOTE_RUN_LOG"
   fi
 
-  printf '%s
-' "$pid" > "$REMOTE_RUN_PID_FILE"
+  printf '%s\n' "$pid" > "$REMOTE_RUN_PID_FILE"
   chmod 0666 "$REMOTE_RUN_PID_FILE" 2>/dev/null || true
   chown root:root "$REMOTE_RUN_PID_FILE" 2>/dev/null || true
 
-  printf 'REMOTE_PID=%s
-REMOTE_LOG=%s
-REMOTE_STATUS=%s
-' "$pid" "$REMOTE_RUN_LOG" "$REMOTE_RUN_STATUS_FILE"
+  printf 'REMOTE_PID=%s\nREMOTE_LOG=%s\nREMOTE_STATUS=%s\n' "$pid" "$REMOTE_RUN_LOG" "$REMOTE_RUN_STATUS_FILE"
 }
 
 remote_bootstrap_root() {
@@ -531,7 +673,9 @@ write_remote_env_file() {
     HOST_LOG
     REMOTE_BOOTSTRAP_PATH
     REMOTE_DETACH REMOTE_POLL_INTERVAL_SECONDS REMOTE_POLL_MAX_FAILURES
-    REMOTE_POLL_STARTUP_GRACE_SECONDS REMOTE_RUN_LOG REMOTE_RUN_PID_FILE REMOTE_RUN_STATUS_FILE
+    REMOTE_POLL_STARTUP_GRACE_SECONDS REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS
+    REMOTE_POLL_NO_STATUS_GRACE_CYCLES
+    REMOTE_RUN_LOG REMOTE_RUN_PID_FILE REMOTE_RUN_STATUS_FILE
   )
 
   local v
@@ -562,9 +706,7 @@ remote_worker() {
   remote_started_epoch="$(date +%s 2>/dev/null || echo 0)"
 
   section() {
-    printf '
-==> [%s] ===== %s =====
-' "$(timestamp)" "$*"
+    printf '\n==> [%s] ===== %s =====\n' "$(timestamp)" "$*"
   }
 
   run_step() {
@@ -580,12 +722,10 @@ remote_worker() {
     ended="$(date +%s 2>/dev/null || echo "$started")"
     elapsed=$((ended - started))
     if [[ "$rc" -ne 0 ]]; then
-      printf 'ERROR [%s] step failed after %ss: %s
-' "$(timestamp)" "$elapsed" "$label" >&2
+      printf 'ERROR [%s] step failed after %ss: %s\n' "$(timestamp)" "$elapsed" "$label" >&2
       return "$rc"
     fi
-    printf '==> [%s] completed in %ss: %s
-' "$(timestamp)" "$elapsed" "$label"
+    printf '==> [%s] completed in %ss: %s\n' "$(timestamp)" "$elapsed" "$label"
   }
 
   log "remote worker starting on host=$(hostname 2>/dev/null || echo unknown) user=$(id -un) run_user=$RUN_USER cmd=$cmd"
@@ -701,12 +841,7 @@ remote_worker() {
     local ct="$1"
     shift || true
     local payload
-    payload=$'
-set -Eeuo pipefail
-trap '\''rc=$?; echo "[exec_in_ct:'"$ct"'] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}'\'' ERR
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-'"$(declare -f safe_kill_matching_procs apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'
-'"$*"
+    payload=$'\nset -Eeuo pipefail\ntrap '\''rc=$?; echo "[exec_in_ct:'"$ct"'] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}'\'' ERR\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$(declare -f safe_kill_matching_procs apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'\n'"$*"
     lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "$payload"
   }
 
@@ -2221,17 +2356,17 @@ def patch_long_constraint_names(text: str) -> str:
 
     names = set()
     for pat in patterns:
-        for m in re.finditer(pat, text, flags=re.S):
-            names.add(m.group(1))
+      for m in re.finditer(pat, text, flags=re.S):
+        names.add(m.group(1))
 
     for old in sorted(names, key=len, reverse=True):
-        new = shorten_identifier(old)
-        if new != old:
-            seen[old] = new
+      new = shorten_identifier(old)
+      if new != old:
+        seen[old] = new
 
     for old, new in seen.items():
-        text = text.replace('"' + old + '"', '"' + new + '"')
-        text = text.replace("'" + old + "'", "'" + new + "'")
+      text = text.replace('"' + old + '"', '"' + new + '"')
+      text = text.replace("'" + old + "'", "'" + new + "'")
 
     return text
 
@@ -2508,6 +2643,64 @@ SQL"
           ;;
       esac
     done
+  }
+
+  run_dhis2_staging_migrations() {
+    log "[supersets] run DHIS2 compatibility backfill and mart registration"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      $(normalize_secret_env_snippet)
+
+      PYTHONPATH='$WORK_SRC' '$VENV/bin/python' - <<'PYEOF'
+import sys
+sys.path.insert(0, '$WORK_SRC')
+
+from superset import create_app
+app = create_app()
+
+with app.app_context():
+    try:
+        from superset.dhis2.backfill import run_compatibility_backfill
+        run_compatibility_backfill()
+        print('[dhis2-migrate] compatibility backfill complete')
+    except Exception as e:
+        print(f'[dhis2-migrate] WARNING: backfill failed (non-fatal): {e}')
+
+    try:
+        from superset.dhis2.models import DHIS2StagedDataset
+        from superset.dhis2.clickhouse_build_service import ClickHouseBuildService
+        from superset.dhis2.superset_dataset_service import register_specialized_marts_as_superset_datasets
+        from superset.dhis2.models import LocalStagingSettings
+        from sqlalchemy.orm import Session
+        from superset import db
+
+        settings = LocalStagingSettings.get()
+        engine = ClickHouseBuildService(settings)
+
+        session: Session = db.session
+        datasets = session.query(DHIS2StagedDataset).all()
+        rebuilt = 0
+        for dataset in datasets:
+            try:
+                if not engine.serving_table_exists(dataset.serving_table_name):
+                    continue
+                kpi_missing = not engine.kpi_mart_exists(dataset.serving_table_name)
+                map_missing = not engine.map_mart_exists(dataset.serving_table_name)
+                if kpi_missing or map_missing:
+                    print(f'[dhis2-migrate] rebuilding marts for {dataset.name!r} (kpi_missing={kpi_missing}, map_missing={map_missing})')
+                    engine.build_specialized_marts(dataset)
+                    register_specialized_marts_as_superset_datasets(dataset=dataset, engine=engine)
+                    rebuilt += 1
+                else:
+                    register_specialized_marts_as_superset_datasets(dataset=dataset, engine=engine)
+            except Exception as e:
+                print(f'[dhis2-migrate] WARNING: mart rebuild for {dataset.name!r} failed (non-fatal): {e}')
+        print(f'[dhis2-migrate] mart rebuild complete ({rebuilt} rebuilt)')
+    except Exception as e:
+        print(f'[dhis2-migrate] WARNING: mart registration failed (non-fatal): {e}')
+PYEOF
+    "
   }
 
   restart_gunicorn() {
@@ -2826,6 +3019,7 @@ AP
       run_step "Replace installed frontend from repo build" force_replace_installed_frontend_from_repo
       run_step "Patch DHIS2 migrations in site-packages" patch_dhis2_migrations_in_site_packages
       run_step "Run db upgrade, admin init, and Alembic repair" run_db_upgrade_init_with_alembic_fix
+      run_step "Run DHIS2 compatibility backfill and mart registration" run_dhis2_staging_migrations
       run_step "Restart Gunicorn and verify health" restart_gunicorn
       run_step "Install Celery systemd units" install_celery_systemd_units
       run_step "Restart Celery worker" restart_celery_worker
@@ -2867,15 +3061,36 @@ AP
   log "remote worker finished cmd=$cmd elapsed=$((remote_finished_epoch - remote_started_epoch))s"
 }
 
+# ------------------------------------------------------------------------------
+# Poll detached remote execution
+# ------------------------------------------------------------------------------
+# This function intentionally opens a fresh SSH connection on each cycle.
+#
+# Why?
+#   - Detached mode means the actual deploy process is already running remotely
+#   - The local side only needs read access to:
+#       * remote run log
+#       * remote status file
+#       * remote pid file
+#   - Fresh connections make the polling layer independent from the bootstrap TTY
+#
+# Failure semantics:
+#   - auth errors -> fail immediately
+#   - temporary host/port/network errors -> tolerated within outage window
+#   - failed status with explicit rc -> fail immediately
+# ------------------------------------------------------------------------------
 poll_remote_detached_run() {
   log "Remote deploy started; polling $REMOTE_RUN_LOG"
-  log "Poll settings: interval=${REMOTE_POLL_INTERVAL_SECONDS}s startup_grace=${REMOTE_POLL_STARTUP_GRACE_SECONDS}s max_failures=${REMOTE_POLL_MAX_FAILURES}"
+  log "Poll settings: interval=${REMOTE_POLL_INTERVAL_SECONDS}s startup_grace=${REMOTE_POLL_STARTUP_GRACE_SECONDS}s max_failures=${REMOTE_POLL_MAX_FAILURES} ssh_outage_window=${REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS}s"
 
   local last_line=0
   local poll_failures=0
   local no_status_failures=0
   local running_polls=0
-  local reconnect_window_seconds=$((REMOTE_POLL_INTERVAL_SECONDS * REMOTE_POLL_MAX_FAILURES))
+
+  local ssh_outage_started_epoch=0
+  local ssh_outage_type=""
+
   local q_poll_log q_poll_status q_poll_pid
   q_poll_log="$(quote_env_value "$REMOTE_RUN_LOG")"
   q_poll_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
@@ -2884,7 +3099,16 @@ poll_remote_detached_run() {
   sleep "$REMOTE_POLL_STARTUP_GRACE_SECONDS"
 
   while true; do
-    local poll_output poll_rc status_line body rc lines
+    local poll_output=""
+    local poll_rc=0
+    local status_line=""
+    local body=""
+    local rc=""
+    local lines=""
+    local now=""
+    local ssh_class=""
+
+    now="$(date +%s)"
 
     set +e
     poll_output="$(ssh_cmd "bash -lc '
@@ -2919,27 +3143,63 @@ poll_remote_detached_run() {
       else
         printf \"__REMOTE_STATUS__:FAILED_NO_STATUS:%s\n\" \"\$lines\"
       fi
-    '")"
+    '" 2>&1)"
     poll_rc=$?
     set -e
 
     if [[ "$poll_rc" -ne 0 ]]; then
       poll_failures=$((poll_failures + 1))
-      if [[ "$poll_failures" -ge "$REMOTE_POLL_MAX_FAILURES" ]]; then
-        die "Lost connection while polling remote deploy log after $poll_failures attempt(s) (~${reconnect_window_seconds}s window). Inspect $REMOTE_RUN_LOG on the remote host."
+      ssh_class="$(classify_ssh_error "$poll_output")"
+
+      if [[ "$ssh_outage_started_epoch" -eq 0 ]]; then
+        ssh_outage_started_epoch="$now"
+        ssh_outage_type="$ssh_class"
       fi
-      warn "Polling remote deploy log failed (attempt $poll_failures/$REMOTE_POLL_MAX_FAILURES); retrying in ${REMOTE_POLL_INTERVAL_SECONDS}s"
+
+      local outage_age=$((now - ssh_outage_started_epoch))
+
+      case "$ssh_class" in
+        connection-refused)
+          warn "SSH polling failed: port 22 is refusing connections on $TARGET (attempt $poll_failures/$REMOTE_POLL_MAX_FAILURES, outage=${outage_age}s)"
+          ;;
+        timeout|network|transport-reset)
+          warn "SSH polling failed: $ssh_class while contacting $TARGET (attempt $poll_failures/$REMOTE_POLL_MAX_FAILURES, outage=${outage_age}s)"
+          ;;
+        auth)
+          die "SSH polling failed due to authentication error. Output: $poll_output"
+          ;;
+        *)
+          warn "SSH polling failed: $ssh_class (attempt $poll_failures/$REMOTE_POLL_MAX_FAILURES, outage=${outage_age}s). Output: $poll_output"
+          ;;
+      esac
+
+      if [[ "$poll_failures" -ge "$REMOTE_POLL_MAX_FAILURES" ]]; then
+        die "Lost remote polling after $poll_failures failed SSH attempts. Inspect $REMOTE_RUN_LOG on the remote host or via console."
+      fi
+
+      if [[ "$outage_age" -ge "$REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS" ]]; then
+        die "SSH has been unavailable for ${outage_age}s (${ssh_outage_type}). Detached deploy may still be running, but polling access was lost."
+      fi
+
       sleep "$REMOTE_POLL_INTERVAL_SECONDS"
       continue
     fi
 
+    if [[ "$ssh_outage_started_epoch" -ne 0 ]]; then
+      local recovered_after=$((now - ssh_outage_started_epoch))
+      log "SSH polling recovered after ${recovered_after}s outage (${ssh_outage_type})"
+    fi
+
+    ssh_outage_started_epoch=0
+    ssh_outage_type=""
     poll_failures=0
+
     status_line="$(printf '%s\n' "$poll_output" | tail -n 1)"
     body="$(printf '%s\n' "$poll_output" | sed '$d')"
     [[ -n "$body" ]] && printf '%s\n' "$body"
 
     if [[ "${status_line#__REMOTE_STATUS__:}" == "$status_line" ]]; then
-      warn "Unexpected remote poll response; retrying"
+      warn "Unexpected remote poll response; retrying. Raw output: $poll_output"
       sleep "$REMOTE_POLL_INTERVAL_SECONDS"
       continue
     fi
@@ -2961,8 +3221,8 @@ poll_remote_detached_run() {
         ;;
       FAILED_NO_STATUS)
         no_status_failures=$((no_status_failures + 1))
-        if [[ "$no_status_failures" -lt 6 ]]; then
-          warn "Remote deploy exited without status yet; waiting for status write (attempt $no_status_failures)"
+        if [[ "$no_status_failures" -lt "$REMOTE_POLL_NO_STATUS_GRACE_CYCLES" ]]; then
+          warn "Remote deploy process exited without status yet; waiting for status write (attempt $no_status_failures/$REMOTE_POLL_NO_STATUS_GRACE_CYCLES)"
           sleep "$REMOTE_POLL_INTERVAL_SECONDS"
           continue
         fi
@@ -3062,6 +3322,14 @@ main() {
 
   case "$REMOTE_POLL_STARTUP_GRACE_SECONDS" in
     ''|*[!0-9]*) die "REMOTE_POLL_STARTUP_GRACE_SECONDS must be an integer" ;;
+  esac
+
+  case "$REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS" in
+    ''|*[!0-9]*) die "REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS must be an integer" ;;
+  esac
+
+  case "$REMOTE_POLL_NO_STATUS_GRACE_CYCLES" in
+    ''|*[!0-9]*) die "REMOTE_POLL_NO_STATUS_GRACE_CYCLES must be an integer" ;;
   esac
 
   case "$SSH_CONNECT_TIMEOUT" in

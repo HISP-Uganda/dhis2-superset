@@ -117,6 +117,35 @@ class UpdateDashboardCommand(UpdateMixin, BaseCommand):
             self._properties["roles"] = roles
         except ValidationError as ex:
             exceptions.append(ex)
+
+        # Validate dataset roles for native filters
+        json_metadata = self._properties.get("json_metadata")
+        if json_metadata:
+            try:
+                metadata = json.loads(json_metadata)
+                if native_filters := metadata.get("native_filter_configuration"):
+                    dataset_ids = set()
+                    for fltr in native_filters:
+                        for target in fltr.get("targets", []):
+                            if dataset_id := target.get("datasetId"):
+                                dataset_ids.add(dataset_id)
+                    
+                    if dataset_ids:
+                        from superset.daos.dataset import DatasetDAO
+                        from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
+                        from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
+                        datasets = DatasetDAO.find_by_ids(list(dataset_ids))
+                        for ds in datasets:
+                            if hasattr(ds, "dataset_role") and ds.dataset_role:
+                                try:
+                                    role = DatasetRole(ds.dataset_role)
+                                    if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.DASHBOARD):
+                                        exceptions.append(ChartInvalidDatasetRoleError(role))
+                                except ValueError:
+                                    pass
+            except (ValueError, TypeError):
+                pass
+
         if exceptions:
             raise DashboardInvalidError(exceptions=exceptions)
 

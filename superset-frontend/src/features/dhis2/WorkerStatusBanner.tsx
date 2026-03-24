@@ -17,18 +17,28 @@
  * under the License.
  */
 import { useEffect, useState } from 'react';
-import { Alert } from 'antd';
+import { Alert, Badge, Space, Tooltip } from 'antd';
 import { t } from '@superset-ui/core';
 import { SupersetClient } from '@superset-ui/core';
 
 interface WorkerStatus {
   workers_available: boolean;
   worker_count: number;
+  worker_names: string[];
+  beat_running: boolean;
+  beat_pid: number | null;
+}
+
+function workerLabel(names: string[]): string {
+  if (!names.length) return '';
+  // Celery worker names look like: celery@hostname — strip the hostname part for brevity
+  const short = names.map(n => n.split('@')[0] || n);
+  return short.join(', ');
 }
 
 /**
- * Displays a persistent warning banner when no Celery workers are available.
- * Polls every 30 seconds so the banner clears automatically when workers restart.
+ * Shows a live status strip for Celery workers + Celery Beat.
+ * Polls every 30 s. Also displays a warning Alert when workers are offline.
  */
 export default function WorkerStatusBanner() {
   const [status, setStatus] = useState<WorkerStatus | null>(null);
@@ -63,24 +73,78 @@ export default function WorkerStatusBanner() {
     };
   }, []);
 
-  if (!status || status.workers_available || dismissed) {
-    return null;
-  }
+  if (!status) return null;
+
+  const workerOk = status.workers_available;
+  const beatOk = status.beat_running;
+
+  const statusStrip = (
+    <Space size="middle" style={{ marginBottom: workerOk && beatOk ? 0 : 8 }}>
+      <Tooltip
+        title={
+          workerOk
+            ? t('Workers: %s', workerLabel(status.worker_names) || String(status.worker_count))
+            : t('No Celery workers are responding')
+        }
+      >
+        <span>
+          <Badge
+            status={workerOk ? 'success' : 'error'}
+            text={
+              <span style={{ fontSize: 12 }}>
+                {t('Celery workers')}
+                {workerOk ? ` (${status.worker_count})` : ` — ${t('offline')}`}
+              </span>
+            }
+          />
+        </span>
+      </Tooltip>
+
+      <Tooltip
+        title={
+          beatOk
+            ? t('Celery Beat scheduler is running (PID %s)', status.beat_pid ?? '?')
+            : t('Celery Beat is not running — scheduled syncs will not fire')
+        }
+      >
+        <span>
+          <Badge
+            status={beatOk ? 'success' : 'warning'}
+            text={
+              <span style={{ fontSize: 12 }}>
+                {t('Celery Beat')}
+                {beatOk
+                  ? status.beat_pid
+                    ? ` (PID ${status.beat_pid})`
+                    : ''
+                  : ` — ${t('offline')}`}
+              </span>
+            }
+          />
+        </span>
+      </Tooltip>
+    </Space>
+  );
 
   return (
-    <Alert
-      type="warning"
-      showIcon
-      closable
-      onClose={() => setDismissed(true)}
-      style={{ marginBottom: 16 }}
-      message={t('No background job processors running')}
-      description={t(
-        'Celery workers are not available. Dataset syncs and metadata refreshes ' +
-          'will run in-process (thread mode) which may impact server performance. ' +
-          'Scheduled syncs will not fire until workers are restarted. ' +
-          'Run: deploy/deploy-supersets.sh restart-celery',
+    <>
+      {statusStrip}
+      {!workerOk && !dismissed && (
+        <Alert
+          type="warning"
+          showIcon
+          closable
+          onClose={() => setDismissed(true)}
+          style={{ marginTop: 8, marginBottom: 8 }}
+          message={t('No background job processors running')}
+          description={t(
+            'Celery workers are not available. Dataset syncs and metadata refreshes ' +
+              'will run in-process (thread mode) which may impact server performance. ' +
+              'Scheduled syncs will not fire until workers are restarted. ' +
+              'Run: bash superset-manager.sh restart-celery',
+          )}
+        />
       )}
-    />
+    </>
   );
 }

@@ -599,8 +599,7 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
         "period",
         "anc_1st_visit",
     ]
-    build_mock.assert_called_once_with(dataset, engine=engine)
-
+    build_mock.assert_called_once_with(dataset, engine=engine, refresh_scope=None)
 
 def test_add_variable_coerces_instance_id_to_integer():
     import superset
@@ -709,3 +708,140 @@ def test_add_variable_rejects_instance_from_other_database():
                     "variable_type": "dataElement",
                 },
             )
+
+
+# ---------------------------------------------------------------------------
+# _specialized_marts_need_rebuild tests
+# ---------------------------------------------------------------------------
+
+def test_specialized_marts_need_rebuild_returns_false_for_non_clickhouse_engine():
+    from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
+
+    engine = MagicMock(spec=[])  # no kpi_mart_exists attribute
+    dataset = _dataset()
+    manifest = {"columns": [{"column_name": "malaria_cases", "variable_id": "abc123"}]}
+
+    result = _specialized_marts_need_rebuild(engine, dataset, manifest)
+
+    assert result is False
+
+
+def test_specialized_marts_need_rebuild_returns_false_when_no_indicators():
+    from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
+
+    engine = MagicMock()
+    engine.kpi_mart_exists.return_value = False  # would return True if checked
+    dataset = _dataset()
+    manifest = {
+        "columns": [
+            {"column_name": "period"},  # no variable_id
+            {"column_name": "ou_region"},
+        ]
+    }
+
+    result = _specialized_marts_need_rebuild(engine, dataset, manifest)
+
+    assert result is False
+    engine.kpi_mart_exists.assert_not_called()
+
+
+def test_specialized_marts_need_rebuild_returns_true_when_kpi_missing():
+    from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
+
+    engine = MagicMock()
+    engine.kpi_mart_exists.return_value = False
+    dataset = _dataset()
+    manifest = {
+        "columns": [
+            {"column_name": "malaria_cases", "variable_id": "abc123", "instance_id": 1, "staged_dataset_id": 1},
+        ]
+    }
+
+    result = _specialized_marts_need_rebuild(engine, dataset, manifest)
+
+    assert result is True
+    engine.kpi_mart_exists.assert_called_once_with(dataset)
+
+
+def test_specialized_marts_need_rebuild_returns_false_when_kpi_exists():
+    from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
+
+    engine = MagicMock()
+    engine.kpi_mart_exists.return_value = True
+    dataset = _dataset()
+    manifest = {
+        "columns": [
+            {"column_name": "malaria_cases", "variable_id": "abc123", "instance_id": 1, "staged_dataset_id": 1},
+        ]
+    }
+
+    result = _specialized_marts_need_rebuild(engine, dataset, manifest)
+
+    assert result is False
+
+
+def test_specialized_marts_need_rebuild_swallows_exception():
+    from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
+
+    engine = MagicMock()
+    engine.kpi_mart_exists.side_effect = RuntimeError("ClickHouse down")
+    dataset = _dataset()
+    manifest = {
+        "columns": [{"column_name": "malaria_cases", "variable_id": "abc123"}]
+    }
+
+    # Should not raise — returns False on error
+    result = _specialized_marts_need_rebuild(engine, dataset, manifest)
+
+    assert result is False
+
+
+def test_ensure_serving_table_triggers_rebuild_when_kpi_mart_missing():
+    """ensure_serving_table calls build_serving_table when KPI mart is absent."""
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(database_id=10)
+    engine = MagicMock()
+    engine.serving_table_exists.return_value = True
+    # Columns match manifest — main table does NOT need rebuild
+    engine.get_serving_table_columns.return_value = ["period", "malaria_cases"]
+    engine.get_staging_table_stats.return_value = {"total_rows": 5}
+    engine.query_serving_table.return_value = {"total_rows": 5}
+    # KPI mart is missing
+    engine.kpi_mart_exists.return_value = False
+
+    manifest = {
+        "columns": [
+            {"column_name": "period"},
+            {
+                "column_name": "malaria_cases",
+                "variable_id": "abc123",
+                "instance_id": 1,
+                "staged_dataset_id": 1,
+            },
+        ],
+        "dimension_column_names": [],
+    }
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=engine,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.build_serving_manifest",
+        return_value=manifest,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.build_serving_table",
+        return_value=SimpleNamespace(
+            serving_columns=[{"column_name": "period"}, {"column_name": "malaria_cases"}],
+            diagnostics={"source_row_count": 5, "live_serving_row_count": 5},
+        ),
+    ) as build_mock, patch(
+        "superset.dhis2.staged_dataset_service.dataset_columns_payload",
+        return_value=[{"column_name": "period"}, {"column_name": "malaria_cases"}],
+    ):
+        svc.ensure_serving_table(dataset.id)
+
+    build_mock.assert_called_once_with(dataset, engine=engine, refresh_scope=None)

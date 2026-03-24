@@ -18,7 +18,20 @@
  */
 import { ReactNode, CSSProperties, PureComponent } from 'react';
 import cx from 'classnames';
-import { addAlpha, css, styled } from '@superset-ui/core';
+import { css, styled } from '@superset-ui/core';
+
+const addAlpha = (color: string, opacity: number): string => {
+  if (opacity > 1 || opacity < 0) {
+    return color;
+  }
+  if (!color || !color.startsWith('#')) {
+    return color;
+  }
+  const alpha = `0${Math.round(opacity * 255)
+    .toString(16)
+    .toUpperCase()}`.slice(-2);
+  return `${color}${alpha}`;
+};
 
 type ShouldFocusContainer = HTMLDivElement & {
   contains: (event_target: EventTarget & HTMLElement) => Boolean;

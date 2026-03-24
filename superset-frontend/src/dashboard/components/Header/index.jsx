@@ -17,18 +17,17 @@
  * under the License.
  */
 /* eslint-env browser */
+import PropTypes from 'prop-types';
+import { Global, css } from '@emotion/react';
 import { extendedDayjs } from '@superset-ui/core/utils/dates';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Fragment } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react';
 import {
   styled,
-  css,
   isFeatureEnabled,
   FeatureFlag,
   t,
   getExtensionsRegistry,
 } from '@superset-ui/core';
-import { Global } from '@emotion/react';
 import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import { bindActionCreators } from 'redux';
 import {
@@ -102,6 +101,19 @@ const extensionsRegistry = getExtensionsRegistry();
 
 const headerContainerStyle = theme => css`
   border-bottom: 1px solid ${theme.colorBorder};
+
+  .header-with-actions {
+    height: ${theme.sizeUnit * 10}px;
+    padding: 0 ${theme.sizeUnit * 2}px;
+  }
+
+  .title-panel {
+    margin-right: ${theme.sizeUnit * 2}px;
+  }
+
+  .header-with-actions .title-panel > div {
+    padding-left: ${theme.sizeUnit}px;
+  }
 `;
 
 const editButtonStyle = theme => css`
@@ -165,7 +177,7 @@ const discardChanges = () => {
   window.location.assign(url);
 };
 
-const Header = () => {
+const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
   const dispatch = useDispatch();
   const [didNotifyMaxUndoHistoryToast, setDidNotifyMaxUndoHistoryToast] =
     useState(false);
@@ -566,13 +578,13 @@ const Header = () => {
   const editableTitleProps = useMemo(
     () => ({
       title: dashboardTitle,
-      canEdit: userCanEdit && editMode,
+      canEdit: !isPublicView && userCanEdit && editMode,
       onSave: handleChangeText,
       placeholder: t('Add the name of the dashboard'),
       label: t('Dashboard title'),
       showTooltip: false,
     }),
-    [dashboardTitle, editMode, handleChangeText, userCanEdit],
+    [dashboardTitle, editMode, handleChangeText, userCanEdit, isPublicView],
   );
 
   const certifiedBadgeProps = useMemo(
@@ -603,6 +615,46 @@ const Header = () => {
     () => {
       const items = [];
 
+      if (isPublicView) {
+        if (badge) {
+          items.push(
+            <span
+              key="public-badge"
+              css={theme => css`
+                display: inline-flex;
+                align-items: center;
+                padding: 4px 8px;
+                border-radius: 999px;
+                background: rgba(15, 118, 110, 0.1);
+                color: var(--portal-accent, ${theme.colorPrimary});
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                margin-left: 4px;
+              `}
+            >
+              {badge}
+            </span>
+          );
+        }
+        if (subtitle) {
+          items.push(
+            <span
+              key="public-subtitle"
+              css={theme => css`
+                margin-left: 12px;
+                font-size: 14px;
+                color: ${theme.colorTextSecondary};
+              `}
+            >
+              {subtitle}
+            </span>
+          );
+        }
+        return items;
+      }
+
       if (!editMode) {
         items.push(
           <PublishedStatus
@@ -632,11 +684,46 @@ const Header = () => {
       isPublished,
       userCanEdit,
       userCanSaveAs,
+      isPublicView,
+      badge,
+      subtitle,
     ],
   );
 
   const rightPanelAdditionalItems = useMemo(
-    () => (
+    () => {
+      if (isPublicView) {
+        return (
+          <div className="button-container">
+            {onBack && (
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onBack();
+                }}
+                css={theme => css`
+                  color: var(--portal-muted-strong, ${theme.colorTextSecondary});
+                  font-weight: 600;
+                  font-size: 14px;
+                  text-decoration: none;
+                  margin-right: 16px;
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 6px;
+                  &:hover {
+                    color: var(--portal-text, ${theme.colorText});
+                  }
+                `}
+              >
+                <Icons.LeftOutlined iconSize="s" />
+                {backLabel || t('Back')}
+              </a>
+            )}
+          </div>
+        );
+      }
+      return (
       <div className="button-container">
         {userCanSaveAs && (
           <div className="button-container" data-test="dashboard-edit-actions">
@@ -737,7 +824,8 @@ const Header = () => {
           </div>
         )}
       </div>
-    ),
+      );
+    },
     [
       NavExtension,
       boundActionCreators.onRedo,
@@ -755,6 +843,9 @@ const Header = () => {
       undoLength,
       userCanEdit,
       userCanSaveAs,
+      isPublicView,
+      onBack,
+      backLabel,
     ],
   );
 
@@ -811,8 +902,8 @@ const Header = () => {
           open: isDropdownVisible,
           onOpenChange: setIsDropdownVisible,
         }}
-        additionalActionsMenu={menu}
-        showFaveStar={user?.userId && dashboardInfo?.id}
+        additionalActionsMenu={isPublicView ? null : menu}
+        showFaveStar={!isPublicView && user?.userId && dashboardInfo?.id}
         showTitlePanelItems
       />
       {showingPropertiesModal && (
@@ -898,6 +989,22 @@ const Header = () => {
       />
     </div>
   );
+};
+
+Header.propTypes = {
+  isPublicView: PropTypes.bool,
+  onBack: PropTypes.func,
+  backLabel: PropTypes.string,
+  badge: PropTypes.string,
+  subtitle: PropTypes.string,
+};
+
+Header.defaultProps = {
+  isPublicView: false,
+  onBack: undefined,
+  backLabel: undefined,
+  badge: undefined,
+  subtitle: undefined,
 };
 
 export default Header;

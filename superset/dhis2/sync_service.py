@@ -734,7 +734,25 @@ def _expand_org_units_for_scope(
     instance: DHIS2Instance,
     allowed_units: list[str],
     scope: str,
+    max_level: int | None = None,
+    allowed_levels: frozenset[int] | None = None,
 ) -> list[str]:
+    """Expand *allowed_units* according to *scope*, with optional level constraints.
+
+    Args:
+        instance: Source DHIS2 instance (used to load hierarchy snapshot).
+        allowed_units: Seed org unit UIDs (the explicitly selected roots).
+        scope: One of ``"selected"``, ``"children"``, ``"grandchildren"``,
+            ``"all_levels"``.
+        max_level: If set, descendant nodes at levels above this value are
+            excluded.  Prevents irrelevant generated levels (e.g. 7, 8) from
+            leaking into the fetch plan.
+        allowed_levels: If set, only nodes whose level is in this set are kept.
+            Acts as a strict allowlist on top of ``max_level``.
+
+    Returns:
+        Ordered list of org unit UIDs, seeds first then expansions.
+    """
     if scope == _ORG_UNIT_SCOPE_SELECTED or not allowed_units:
         return allowed_units
 
@@ -787,6 +805,18 @@ def _expand_org_units_for_scope(
                 continue
             if max_depth is not None and descendant_depth > max_depth:
                 continue
+
+            # Apply max_level constraint: skip nodes at levels above the cap.
+            if max_level is not None and node_level is not None and node_level > max_level:
+                continue
+            # Apply allowed_levels allowlist: skip nodes not in the set.
+            if (
+                allowed_levels is not None
+                and node_level is not None
+                and node_level not in allowed_levels
+            ):
+                continue
+
             expanded.add(node_id)
 
     ordered_units = [unit for unit in allowed_units if unit in expanded]
@@ -1004,6 +1034,11 @@ class DHIS2SyncService:
         # Flushed to the DB (via _flush_request_logs_to_session) after each
         # instance completes so that UI polling sees live progress.
         self._request_log_collector: list[dict[str, Any]] = []
+        # Tracks analytics request slices that were exhaustively retried and
+        # split but still could not be fetched (persistent DHIS2-side errors).
+        # Populated by _fetch_analytics_batch; consumed by _fetch_from_instance
+        # to surface bad-slice counts in instance_results.
+        self._skipped_slices: list[dict[str, Any]] = []
         # Monotonically increasing counter to assign request_seq values
         # across multiple flush calls within one sync run.
         self._request_seq_offset: int = 0
@@ -1341,15 +1376,26 @@ class DHIS2SyncService:
                 # ----------------------------------------------------------
                 # Dead-end: 1 variable + 1 org unit + persistent 500.
                 # This is a broken indicator/OU combination on the DHIS2 side.
-                # Return empty rather than failing the entire sync job.
+                # Record the bad slice and return empty so other slices keep
+                # loading — do not fail the whole sync job for one bad cell.
                 # ----------------------------------------------------------
+                _bad_var = batch[0] if batch else "?"
+                _bad_ou = org_units[0] if org_units else "?"
                 logger.warning(
                     "Sync: skipping variable '%s' for org unit '%s' on instance '%s' "
                     "— persistent 500 with no further splits possible",
-                    batch[0] if batch else "?",
-                    org_units[0] if org_units else "?",
+                    _bad_var,
+                    _bad_ou,
                     instance.name,
                 )
+                self._skipped_slices.append({
+                    "instance_id": instance.id,
+                    "instance_name": instance.name,
+                    "variable": _bad_var,
+                    "org_unit": _bad_ou,
+                    "periods": list(periods),
+                    "reason": "persistent_500",
+                })
                 return []
 
             raise
@@ -1658,9 +1704,53 @@ class DHIS2SyncService:
         _assign_model_attr(dataset, "last_sync_status", "running")
         _assign_model_attr(dataset, "last_sync_rows", 0)
         _sync_compat_dataset(dataset)
+        # Write the very first visible status so operators see the sync has
+        # begun before any configuration loading or network activity.
+        self._update_job_progress(
+            job_id,
+            current_step=f"initializing — {dataset.name}",
+            total_units=0,
+            completed_units=0,
+            failed_units=0,
+            rows_extracted=0,
+            rows_staged=0,
+            rows_merged=0,
+        )
         db.session.commit()
 
         dataset_config = dataset.get_dataset_config()
+
+        # ------------------------------------------------------------------
+        # Merge promoted model columns into dataset_config so that fields
+        # configured via the Dataset Management UI are visible to all internal
+        # helpers that read from the config dict (e.g. _resolve_org_units_for_instance,
+        # _resolve_level_range in OrgUnitHierarchyService).
+        # Model columns take precedence over JSON-blob values when both are set.
+        # ------------------------------------------------------------------
+        _model_max_level = _read_model_attr(dataset, "max_orgunit_level")
+        if _model_max_level is not None:
+            dataset_config["max_orgunit_level"] = _model_max_level
+
+        _model_allowed_levels_json = _read_model_attr(dataset, "allowed_org_unit_levels_json")
+        if _model_allowed_levels_json and "allowed_org_unit_levels" not in dataset_config:
+            try:
+                _parsed_levels = json.loads(_model_allowed_levels_json)
+                if isinstance(_parsed_levels, list):
+                    dataset_config["allowed_org_unit_levels"] = _parsed_levels
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        _model_ou_source_mode = _read_model_attr(dataset, "org_unit_source_mode")
+        if _model_ou_source_mode and "org_unit_source_mode" not in dataset_config:
+            dataset_config["org_unit_source_mode"] = _model_ou_source_mode
+
+        _model_ou_scope = _read_model_attr(dataset, "org_unit_scope")
+        if _model_ou_scope and "org_unit_scope" not in dataset_config:
+            dataset_config["org_unit_scope"] = _model_ou_scope
+
+        _model_primary_inst_id = _read_model_attr(dataset, "primary_instance_id")
+        if _model_primary_inst_id is not None and "primary_instance_id" not in dataset_config:
+            dataset_config["primary_instance_id"] = _model_primary_inst_id
 
         # ------------------------------------------------------------------
         # Source-mode dispatch — delegate non-analytics paths early
@@ -1683,6 +1773,22 @@ class DHIS2SyncService:
             )
             return self._merge_mode_results(r1, r2)
         # Default analytics path continues below unchanged.
+
+        # Log the effective org unit hierarchy config so operators can verify
+        # the correct settings are in effect without reading application logs.
+        _eff_max_level = dataset_config.get("max_orgunit_level")
+        _eff_allowed = dataset_config.get("allowed_org_unit_levels")
+        _eff_scope = dataset_config.get("org_unit_scope", "selected")
+        _eff_source = dataset_config.get("org_unit_source_mode", "repository")
+        logger.info(
+            "Sync: dataset=%d ou_source_mode=%s ou_scope=%s max_orgunit_level=%s "
+            "allowed_org_unit_levels=%s",
+            staged_dataset_id,
+            _eff_source,
+            _eff_scope,
+            _eff_max_level,
+            _eff_allowed,
+        )
 
         variables: list[DHIS2DatasetVariable] = (
             db.session.query(DHIS2DatasetVariable)
@@ -1709,9 +1815,12 @@ class DHIS2SyncService:
                 message,
             )
 
+        _total_var_count = sum(len(v) for v in instance_vars.values())
         self._update_job_progress(
             job_id,
-            current_step="preparing",
+            current_step=(
+                f"preparing — {len(instance_vars)} instance(s), {_total_var_count} variable(s)"
+            ),
             total_units=len(instance_vars),
             completed_units=0,
             failed_units=0,
@@ -1872,19 +1981,38 @@ class DHIS2SyncService:
 
                 _completed_units += 1
                 any_success = True
+                # Collect any bad slices that were isolated and skipped for
+                # this instance during the fetch, then reset the accumulator.
+                _inst_skipped = [
+                    s for s in self._skipped_slices
+                    if s.get("instance_id") == instance_id
+                ]
+                _skipped_count = len(_inst_skipped)
+                # Remove reported slices so they don't re-appear in later instances.
+                self._skipped_slices = [
+                    s for s in self._skipped_slices
+                    if s.get("instance_id") != instance_id
+                ]
+                _inst_status = "partial" if _skipped_count > 0 else "success"
+                if _skipped_count > 0:
+                    any_failure = True  # partial outcome
                 instance_results[str(instance_id)] = {
-                    "status": "success",
+                    "status": _inst_status,
                     "rows": row_count,
                     "error": None,
                     "sync_mode": (
                         "incremental" if incremental_plan.use_incremental else "full"
                     ),
+                    "skipped_slices": _skipped_count,
+                    "skipped_slice_details": _inst_skipped[:20],  # cap to 20 for DB
                 }
                 logger.info(
-                    "Sync: loaded %d rows from instance '%s' into dataset=%d",
+                    "Sync: loaded %d rows from instance '%s' into dataset=%d"
+                    " (skipped_slices=%d)",
                     row_count,
                     instance.name,
                     staged_dataset_id,
+                    _skipped_count,
                 )
                 # ... (previous code)
                 try:
@@ -2463,6 +2591,40 @@ class DHIS2SyncService:
         return all_rows
 
     @staticmethod
+    def _resolve_level_constraints(
+        dataset_config: dict[str, Any],
+    ) -> tuple[int | None, frozenset[int] | None]:
+        """Read max_level and allowed_levels constraints from *dataset_config*.
+
+        Returns:
+            ``(max_level, allowed_levels)`` where either may be ``None`` when
+            the corresponding constraint is not configured.
+        """
+        max_level: int | None = None
+        _ml = dataset_config.get("max_orgunit_level") or dataset_config.get(
+            "org_unit_max_level"
+        )
+        if _ml is not None:
+            try:
+                _val = int(_ml)
+                if _val > 0:
+                    max_level = _val
+            except (TypeError, ValueError):
+                pass
+
+        allowed_levels: frozenset[int] | None = None
+        _al = dataset_config.get("allowed_org_unit_levels")
+        if isinstance(_al, list) and _al:
+            try:
+                _set = frozenset(int(x) for x in _al if x is not None)
+                if _set:
+                    allowed_levels = _set
+            except (TypeError, ValueError):
+                pass
+
+        return max_level, allowed_levels
+
+    @staticmethod
     def _resolve_org_units_for_instance(
         instance: DHIS2Instance,
         dataset_config: dict[str, Any],
@@ -2484,6 +2646,12 @@ class DHIS2SyncService:
         selected_details = dataset_config.get("org_unit_details", []) or []
         if not isinstance(selected_details, list):
             return list(dict.fromkeys(org_units_cfg))
+
+        # Read level constraints.  These filter descendants that would otherwise
+        # expand into irrelevant generated levels (e.g. 7, 8).
+        max_level, allowed_levels = DHIS2SyncService._resolve_level_constraints(
+            dataset_config
+        )
 
         user_scope_units = [
             unit
@@ -2531,6 +2699,8 @@ class DHIS2SyncService:
                 instance=instance,
                 allowed_units=primary_units,
                 scope=org_unit_scope,
+                max_level=max_level,
+                allowed_levels=allowed_levels,
             )
             return list(dict.fromkeys([*user_scope_units, *scoped_units]))
 
@@ -2599,6 +2769,8 @@ class DHIS2SyncService:
             instance=instance,
             allowed_units=allowed_units,
             scope=org_unit_scope,
+            max_level=max_level,
+            allowed_levels=allowed_levels,
         )
         return list(dict.fromkeys([*user_scope_units, *scoped_units]))
 
@@ -2847,11 +3019,11 @@ class DHIS2SyncService:
                 except (ValueError, TypeError):
                     pass
 
-            co_uid = _get(co_col) or coc_uid_from_dx
+            co_uid = _get(co_col) or coc_uid_from_dx or ""
             co_meta = meta_items.get(co_uid or "", {})
             co_name = co_meta.get("name")
 
-            aoc_uid = _get(aoc_col)
+            aoc_uid = _get(aoc_col) or ""
 
             result.append(
                 {

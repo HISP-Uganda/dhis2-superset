@@ -177,7 +177,13 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
     fetchData,
     toggleBulkSelect,
     refreshData,
-  } = useListViewResource<Dataset>('dataset', t('dataset'), addDangerToast);
+  } = useListViewResource<Dataset>(
+    'dataset',
+    t('dataset'),
+    addDangerToast,
+    true,
+    [],
+  );
 
   const [datasetCurrentlyDeleting, setDatasetCurrentlyDeleting] = useState<
     | (Dataset & {
