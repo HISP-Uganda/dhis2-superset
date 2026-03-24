@@ -206,8 +206,16 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
 
         # Indicators (rates/percentages) must use AVG to avoid inflating values
         # when aggregating across periods or organization units.
+        # String/text type data elements cannot use sum — use max instead.
         is_indicator = extra.get("dhis2_is_indicator") is True
-        agg_func = "avgOrNull" if is_indicator else "sumOrNull"
+        col_type = str(c.get("type") or "").upper()
+        is_string = col_type in ("STRING", "TEXT", "VARCHAR")
+        if is_indicator:
+            agg_func = "avgOrNull"
+        elif is_string:
+            agg_func = "max"
+        else:
+            agg_func = "sumOrNull"
         var_cols.append({"name": f"`{c['column_name']}`", "agg": agg_func})
 
     if not var_cols:
@@ -282,8 +290,8 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
         if c not in seen_pk:
             pk_cols.append(c)
 
-    # 1. KPI Mart (always build if we have indicators and at least one group col)
-    if var_cols and group_cols:
+    # 1. KPI Mart (always build if we have group cols)
+    if group_cols:
         kpi_name = f"{serving_name}_kpi"
         kpi_ref = f"`{serving_db}`.`{kpi_name}`"
         try:
@@ -292,6 +300,7 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
             engine._cmd(f"DROP TABLE IF EXISTS {kpi_ref}")
             engine._cmd(
                 f"CREATE TABLE {kpi_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
+                f"SETTINGS allow_nullable_key = 1 "
                 f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
             )
             logger.info("ClickHouse: built KPI mart %s", kpi_ref)
@@ -302,8 +311,8 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
                 kpi_ref,
             )
 
-    # 2. Unified Map Mart (always build if we have indicators and at least one group col)
-    if var_cols and group_cols:
+    # 2. Unified Map Mart (build if we have hierarchy columns and group cols)
+    if ou_hierarchy_cols and group_cols:
         map_name = f"{serving_name}_map"
         map_ref = f"`{serving_db}`.`{map_name}`"
         try:
@@ -312,6 +321,7 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
             engine._cmd(f"DROP TABLE IF EXISTS {map_ref}")
             engine._cmd(
                 f"CREATE TABLE {map_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
+                f"SETTINGS allow_nullable_key = 1 "
                 f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
             )
             logger.info("ClickHouse: built Unified Map mart %s", map_ref)

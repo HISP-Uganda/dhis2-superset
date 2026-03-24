@@ -105,8 +105,23 @@ import {
   resolveQueryDimensionColumnName,
   resolveQueryMetricColumnName,
 } from './loaderColumns';
+import { sanitizeDHIS2ColumnName } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
 
 /* eslint-disable theme-colors/no-literal-colors */
+
+function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
+  if (!extra) return undefined;
+  if (typeof extra === 'string') {
+    try {
+      return JSON.parse(extra);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof extra === 'object') return extra as Record<string, any>;
+  return undefined;
+}
+
 // Use hardcoded values for map styling to avoid theme context issues
 // These are legitimate map styling values, not UI theming
 const MapWrapper = styled.div`
@@ -848,7 +863,6 @@ function DHIS2Map({
   onDrillDown,
   setDataMask,
   activeFilters = [],
-  nativeFilters = {},
   datasetSql = '',
   isDHIS2Dataset = false,
   datasetId,
@@ -1927,26 +1941,15 @@ function DHIS2Map({
         );
       }
 
-      if (nativeFilters && Object.keys(nativeFilters).length > 0) {
-        result = result.filter(row =>
-          Object.entries(nativeFilters).every(([filterId, filterValue]) => {
-            if (!filterValue) {
-              return true;
-            }
-
-            const filterVal = Array.isArray(filterValue)
-              ? filterValue
-              : [filterValue];
-            const rowValue = getRowColumnValue(row, filterId, 'dimension');
-
-            return filterVal.includes(rowValue) || !filterVal.length;
-          }),
-        );
-      }
+      // nativeFilters (filterState) is intentionally NOT applied client-side:
+      // dashboard native filters and cross-chart filters are applied server-side
+      // via extraFormData.filters → combinedFilters in buildQuery.ts.
+      // filterState keys are metadata fields ("value", "label"), not column names,
+      // so any attempt to use them as column identifiers incorrectly filters all rows.
 
       return result;
     },
-    [activeFilters, getRowColumnValue, nativeFilters],
+    [activeFilters, getRowColumnValue],
   );
 
   const matchesFeatureOrgUnit = useCallback(

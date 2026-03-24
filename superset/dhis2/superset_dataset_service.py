@@ -290,6 +290,42 @@ def register_serving_table_as_superset_dataset(
     return sqla_table.id
 
 
+def ensure_specialized_marts_for_sqla_table(sqla_table: Any) -> None:
+    """Guarantee that the DHIS2 physical table referenced by *sqla_table* exists.
+
+    If the dataset is DHIS2-backed, this calls ensure_serving_table() which
+    materializes the main serving table AND all specialized marts (KPI, Map).
+    """
+    try:
+        raw = getattr(sqla_table, "extra", None) or "{}"
+        extra: dict = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        staged_id = extra.get("dhis2_staged_dataset_id")
+        if staged_id and isinstance(staged_id, int):
+            from flask import current_app
+            from superset.app import create_app
+            from superset.dhis2.staged_dataset_service import ensure_serving_table
+            
+            # Ensure we have an app context for DB operations
+            ctx = None
+            if not current_app:
+                app = create_app()
+                ctx = app.app_context()
+                ctx.push()
+            
+            try:
+                # This triggers a build if tables are missing or stale
+                ensure_serving_table(staged_id)
+            finally:
+                if ctx:
+                    ctx.pop()
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "ensure_specialized_marts_for_sqla_table: failed for SqlaTable id=%s",
+            getattr(sqla_table, "id", None),
+            exc_info=True,
+        )
+
+
 def _ensure_dhis2_extra(
     sqla_table: Any,
     dataset_id: int,
@@ -337,6 +373,38 @@ def _ensure_dhis2_extra(
         sqla_table.extra = json.dumps(extra)
 
 
+def _cleanup_orphaned_mart_dataset(
+    dataset_id: int, serving_database_id: int, table_ref: str
+) -> None:
+    """Delete Superset SqlaTable for a mart whose ClickHouse backing table no longer exists."""
+    from superset.connectors.sqla.models import SqlaTable
+    from superset import db
+
+    _, table_name = _parse_table_ref(table_ref)
+    existing = (
+        db.session.query(SqlaTable)
+        .filter(
+            SqlaTable.database_id == serving_database_id,
+            SqlaTable.table_name == table_name,
+        )
+        .first()
+    )
+    if existing is None:
+        return
+    try:
+        extra = json.loads(existing.extra or "{}")
+    except Exception:  # pylint: disable=broad-except
+        extra = {}
+    if extra.get("dhis2_staged_dataset_id") == dataset_id:
+        logger.info(
+            "Removing orphaned mart Superset dataset %s (id=%d) — ClickHouse table absent",
+            table_name,
+            existing.id,
+        )
+        db.session.delete(existing)
+        db.session.commit()
+
+
 def register_specialized_marts_as_superset_datasets(
     dataset_id: int,
     dataset_name: str,
@@ -346,21 +414,35 @@ def register_specialized_marts_as_superset_datasets(
     *,
     source_database_id: int | None = None,
     source_instance_ids: list[int] | None = None,
+    engine: Any = None,
+    dataset: Any = None,
 ) -> None:
-    """Register KPI and Map specialized marts if they exist in ClickHouse."""
+    """Register KPI and Map specialized marts only if their ClickHouse tables exist."""
     schema, base_table_name = _parse_table_ref(serving_table_ref)
-    
+
     # Identify all hierarchy columns for unified marts
     hierarchy_columns = [
-        c for c in serving_columns 
+        c for c in serving_columns
         if not (c.get("extra") and "dhis2_is_internal" in str(c.get("extra")))
     ]
+
+    # Helper: check ClickHouse existence via engine when available, else allow registration.
+    def _mart_exists(check_fn_name: str) -> bool:
+        if engine is None or dataset is None:
+            return True  # no engine to verify — optimistic
+        check_fn = getattr(engine, check_fn_name, None)
+        if check_fn is None:
+            return True
+        try:
+            return bool(check_fn(dataset))
+        except Exception:  # pylint: disable=broad-except
+            return False
 
     # 1. KPI Mart
     kpi_table_name = f"{base_table_name}_kpi"
     kpi_ref = f"{schema}.{kpi_table_name}" if schema else kpi_table_name
-    
-    if hierarchy_columns:
+
+    if hierarchy_columns and _mart_exists("kpi_mart_exists"):
         register_serving_table_as_superset_dataset(
             dataset_id=dataset_id,
             dataset_name=f"[KPI] {dataset_name}",
@@ -370,12 +452,18 @@ def register_specialized_marts_as_superset_datasets(
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
         )
+    elif hierarchy_columns:
+        logger.info(
+            "Skipping KPI mart Superset registration for dataset id=%s — ClickHouse table %s does not exist",
+            dataset_id, kpi_ref,
+        )
+        _cleanup_orphaned_mart_dataset(dataset_id, serving_database_id, kpi_ref)
 
     # 2. Unified Map Mart
     map_table_name = f"{base_table_name}_map"
     map_ref = f"{schema}.{map_table_name}" if schema else map_table_name
-    
-    if hierarchy_columns:
+
+    if hierarchy_columns and _mart_exists("map_mart_exists"):
         register_serving_table_as_superset_dataset(
             dataset_id=dataset_id,
             dataset_name=f"[Map] {dataset_name}",
@@ -385,6 +473,12 @@ def register_specialized_marts_as_superset_datasets(
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
         )
+    elif hierarchy_columns:
+        logger.info(
+            "Skipping Map mart Superset registration for dataset id=%s — ClickHouse table %s does not exist",
+            dataset_id, map_ref,
+        )
+        _cleanup_orphaned_mart_dataset(dataset_id, serving_database_id, map_ref)
 
     # 3. Cleanup pass: remove old [Map L*] datasets
     from superset.connectors.sqla.models import SqlaTable

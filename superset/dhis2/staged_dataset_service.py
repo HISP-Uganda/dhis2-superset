@@ -1035,19 +1035,19 @@ def _specialized_marts_need_rebuild(
     has_indicators = any(
         c.get("variable_id") for c in list(manifest.get("columns") or [])
     )
-    if not has_indicators:
-        return False
-
-    # Check for KPI mart
-    if not kpi_exists_fn(dataset):
+    
+    # Check for KPI mart - only required if we have indicators
+    if has_indicators and not kpi_exists_fn(dataset):
+        logger.info("Specialized Marts: KPI mart missing for dataset id=%s", dataset.id)
         return True
 
-    # Check for Map mart if hierarchy exists
+    # Check for Map mart - required if hierarchy exists (even if no indicators)
     has_hierarchy = any(
         c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))
         for c in list(manifest.get("columns") or [])
     )
     if has_hierarchy and not map_exists_fn(dataset):
+        logger.info("Specialized Marts: Map mart missing for dataset id=%s", dataset.id)
         return True
 
     return False
@@ -1067,13 +1067,22 @@ def ensure_serving_table(
     # serving_columns tracks the *actual* columns in the physical table.
     # When a rebuild runs, pruned columns replace the full manifest set.
     serving_columns = dataset_columns_payload(manifest["columns"])
+    
+    table_needs_rebuild = _serving_table_needs_rebuild(engine, dataset, manifest)
+    marts_need_rebuild = _specialized_marts_need_rebuild(engine, dataset, manifest)
+    
     needs_rebuild = (
         bool(refresh_scope)
         or force_rebuild
-        or _serving_table_needs_rebuild(engine, dataset, manifest)
-        or _specialized_marts_need_rebuild(engine, dataset, manifest)
+        or table_needs_rebuild
+        or marts_need_rebuild
     )
+    
     if needs_rebuild:
+        logger.info(
+            "ensure_serving_table: triggering rebuild for dataset id=%s (force=%s table_stale=%s marts_stale=%s scope=%s)",
+            dataset.id, force_rebuild, table_needs_rebuild, marts_need_rebuild, refresh_scope
+        )
         build_result = build_serving_table(
             dataset, engine=engine, refresh_scope=refresh_scope
         )
@@ -1124,7 +1133,7 @@ def ensure_serving_table(
                 source_instance_ids=_instance_ids,
             )
             
-            # Register specialized marts (KPI, Map)
+            # Register specialized marts (KPI, Map) — only if ClickHouse tables exist
             register_specialized_marts_as_superset_datasets(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
@@ -1133,6 +1142,8 @@ def ensure_serving_table(
                 serving_database_id=serving_db_id,
                 source_database_id=dataset.database_id,
                 source_instance_ids=_instance_ids,
+                engine=engine,
+                dataset=dataset,
             )
 
             if dataset.serving_superset_dataset_id != sqla_id:
