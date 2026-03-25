@@ -182,6 +182,7 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
     server_cert = Column(encrypted_field_factory.create(Text), nullable=True)
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
+    is_dhis2_staging_internal = Column(Boolean, nullable=False, default=False)
 
     export_fields = [
         "database_name",
@@ -195,6 +196,7 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         "allow_file_upload",
         "extra",
         "impersonate_user",
+        "is_dhis2_staging_internal",
     ]
     extra_import_fields = [
         "password",

@@ -127,6 +127,9 @@ def get_staging_database(always_create: bool = True):
         if extra.get("dhis2_staging_internal") is not True:
             extra["dhis2_staging_internal"] = True
             changed = True
+        if database.is_dhis2_staging_internal is not True:
+            database.is_dhis2_staging_internal = True
+            changed = True
         if extra.get("is_dataset_source") is not False:
             extra["is_dataset_source"] = False
             changed = True

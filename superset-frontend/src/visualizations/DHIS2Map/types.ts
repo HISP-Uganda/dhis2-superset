@@ -182,6 +182,8 @@ export interface DHIS2MapProps {
   compassVisible?: boolean;
   compassPosition?: MapCornerPosition;
   compassStyle?: CompassStyle;
+  ouHierarchyColumns?: string[];
+  periodColumns?: string[];
 }
 
 export interface ThematicLayerConfig {

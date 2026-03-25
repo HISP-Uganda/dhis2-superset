@@ -1297,16 +1297,16 @@ export default function PublicLandingPage() {
             )}
             {data?.config.navbar.loginButton.enabled !== false && (
               <Button
-                type={data?.config.navbar.loginButton.type || 'primary'}
+                type={data?.config.navbar.loginButton?.type || 'primary'}
                 onClick={() =>
                   navigateToPath(
                     data?.portal_layout.config.loginButtonUrl ||
-                      data?.config.navbar.loginButton.url,
+                      data?.config.navbar.loginButton?.url,
                   )
                 }
               >
                 {data?.portal_layout.config.loginButtonText ||
-                  data?.config.navbar.loginButton.text ||
+                  data?.config.navbar.loginButton?.text ||
                   t('Sign in')}
               </Button>
             )}

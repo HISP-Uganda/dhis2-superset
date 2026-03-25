@@ -117,11 +117,5 @@ class DatabaseDHIS2StagingInternalFilter(
     """
 
     def apply(self, query: Query, value: Any) -> Query:
-        # Hide any database that has "dhis2_staging_internal": true in extra.
-        # We handle cases where the key is missing (None) or false.
-        return query.filter(
-            or_(
-                cast(Database.extra, JSON)["dhis2_staging_internal"].is_(None),
-                cast(Database.extra, JSON)["dhis2_staging_internal"] != sa.true(),
-            )
-        )
+        # Hide any database that has is_dhis2_staging_internal set to True.
+        return query.filter(Database.is_dhis2_staging_internal == False)

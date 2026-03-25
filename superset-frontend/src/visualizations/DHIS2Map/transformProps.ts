@@ -390,6 +390,14 @@ function readCachedOrgUnitLevels(databaseId?: number): StagedOrgUnitLevel[] {
   }
 }
 
+function isPeriodColumn(col: DatasourceColumn): boolean {
+  const extra = parseColumnExtra(col.extra);
+  return (
+    (extra as any)?.dhis2_is_period === true ||
+    (extra as any)?.dhis2IsPeriod === true
+  );
+}
+
 function mergeBoundaryLevels(
   primaryBoundaryLevel: number | undefined,
   configuredLevels: number[],
@@ -508,6 +516,24 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   const datasourceColumns = Array.isArray(datasourceAny?.columns)
     ? (datasourceAny.columns as DatasourceColumn[])
     : [];
+
+  const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
+
+  const ouHierarchyColumns = datasourceColumns
+    .filter(c => {
+      const extra = parseColumnExtra(c.extra);
+      return (
+        (extra?.dhis2_ou_level !== undefined || extra?.dhis2OuLevel !== undefined) &&
+        c.column_name &&
+        allColumns.includes(c.column_name)
+      );
+    })
+    .map(c => c.column_name as string);
+
+  const periodColumns = datasourceColumns
+    .filter(c => isPeriodColumn(c) && c.column_name && allColumns.includes(c.column_name))
+    .map(c => c.column_name as string);
+
   const extraRaw = datasourceAny?.extra;
   let extraParsed: any;
   try {
@@ -658,7 +684,6 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   // Backend returns WIDE/PIVOTED format with hierarchy levels as columns
   // Detect hierarchy level columns dynamically from first row
   let hierarchyLevelColumn = '';
-  const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
 
   // Look for hierarchy level columns
   // Priority 1: Use org_unit_column if explicitly set (try both original and sanitized)
@@ -672,14 +697,13 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   }
 
   // Priority 2: Use staged hierarchy metadata carried on the dataset columns.
-  let levelColumns: string[] = [];
   if (!hierarchyLevelColumn) {
-    levelColumns = datasourceHierarchyLevels
+    const levelColumnsFound = datasourceHierarchyLevels
       .map(level => level.columnName)
       .filter((columnName): columnName is string => Boolean(columnName))
       .filter(columnName => allColumns.includes(columnName));
 
-    if (levelColumns.length > 0) {
+    if (levelColumnsFound.length > 0) {
       const preferredHierarchyLevel =
         datasourceHierarchyLevels.find(
           level =>
@@ -987,5 +1011,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     boundaryLoadMethod: formData.boundary_load_method || 'geoJSON',
     chartId,
     dashboardId,
+    ouHierarchyColumns,
+    periodColumns,
   };
 }

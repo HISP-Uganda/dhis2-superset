@@ -1663,6 +1663,9 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             if current_extra.get("dhis2_staging_internal") is not True:
                 current_extra["dhis2_staging_internal"] = True
                 needs_flag_patch = True
+            if existing.is_dhis2_staging_internal is not True:
+                existing.is_dhis2_staging_internal = True
+                needs_flag_patch = True
             if current_extra.get("is_dataset_source") is not False:
                 current_extra["is_dataset_source"] = False
                 needs_flag_patch = True
@@ -1679,6 +1682,7 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             database_name="DHIS2 Staging (DuckDB)",
             sqlalchemy_uri=uri,
             extra=extra_json,
+            is_dhis2_staging_internal=True,
             # Internal-only: not visible in SQL Lab or the database list.
             # The DHIS2 integration accesses this database directly via the
             # DuckDB Python library; regular users should not interact with it.

@@ -2528,6 +2528,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             return self.response_500(message=str(ex))
 
     def _resolve_public_dhis2_chart(self) -> Any | Response:
+        from sqlalchemy import and_, exists
         from superset.models.dashboard import Dashboard, dashboard_slices
         from superset.models.slice import Slice
 
@@ -2547,25 +2548,52 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             return chart
 
         # Check if the chart belongs to any published dashboard
-        published_dash_count = (
-            db.session.query(Dashboard.id)
-            .join(dashboard_slices, Dashboard.id == dashboard_slices.c.dashboard_id)
-            .filter(
-                dashboard_slices.c.slice_id == chart_id,
-                Dashboard.published.is_(True),
+        from sqlalchemy import and_, exists
+        is_in_published_dash = db.session.query(
+            exists().where(
+                and_(
+                    dashboard_slices.c.slice_id == chart_id,
+                    dashboard_slices.c.dashboard_id == Dashboard.id,
+                    Dashboard.published == True,
+                )
             )
-            .count()
-        )
+        ).scalar()
 
-        if published_dash_count > 0:
+        if is_in_published_dash:
             return chart
 
-        if security_manager.is_guest_user():
-            if (
-                dashboard is not None
-                and security_manager.has_guest_access(dashboard)
-            ):
+        # Fallback to check preloaded dashboards if any
+        if any(getattr(d, "published", False) for d in chart.dashboards):
+            return chart
+
+        # Also check if it's explicitly allowed via dashboard_id in the request
+        dashboard_id = request.args.get("dashboard_id", type=int)
+        if dashboard_id:
+            dashboard = (
+                db.session.query(Dashboard)
+                .filter(Dashboard.id == dashboard_id)
+                .one_or_none()
+            )
+            # If the dashboard is published OR it's a public portal dashboard, allow access
+            if dashboard and (dashboard.published or "/superset/public/" in (request.referrer or "")):
                 return chart
+
+        # Special case for DHIS2 Map: if it's a DHIS2 Map and we're in a public context,
+        # be more permissive as these often need boundaries to even show anything.
+        if chart.viz_type == "dhis2_map":
+            # If we're on a public landing page or similar, allow it
+            if "/superset/public/" in (request.referrer or ""):
+                return chart
+
+        if security_manager.is_guest_user():
+            if dashboard_id:
+                dashboard = (
+                    db.session.query(Dashboard)
+                    .filter(Dashboard.id == dashboard_id)
+                    .one_or_none()
+                )
+                if dashboard and security_manager.has_guest_access(dashboard):
+                    return chart
 
             chart_dashboards = getattr(chart, "dashboards", None) or []
             if any(

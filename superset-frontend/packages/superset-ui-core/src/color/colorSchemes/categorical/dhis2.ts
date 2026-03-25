@@ -17,6 +17,39 @@
  * under the License.
  */
 
-export { default as SequentialCommon } from './common';
-export { default as SequentialD3 } from './d3';
-export { default as SequentialDHIS2 } from './dhis2';
+import CategoricalScheme from '../../CategoricalScheme';
+
+const schemes = [
+  {
+    id: 'dhis2_standard',
+    label: 'DHIS2 Standard',
+    colors: [
+      '#1d5288',
+      '#4ea2d9',
+      '#75b0fb',
+      '#ff9800',
+      '#ffc107',
+      '#4caf50',
+      '#8bc34a',
+      '#f44336',
+      '#e91e63',
+      '#9c27b0',
+    ],
+  },
+  {
+    id: 'dhis2_vibrant_categorical',
+    label: 'DHIS2 Vibrant Categorical',
+    colors: [
+      '#00bcd4',
+      '#009688',
+      '#3f51b5',
+      '#673ab7',
+      '#ff5722',
+      '#795548',
+      '#607d8b',
+      '#333333',
+    ],
+  },
+].map(s => new CategoricalScheme(s));
+
+export default schemes;

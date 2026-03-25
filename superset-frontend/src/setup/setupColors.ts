@@ -25,6 +25,7 @@ import {
   SequentialScheme,
   SequentialSchemeConfig,
   CategoricalAirbnb,
+  CategoricalDHIS2,
   CategoricalD3,
   CategoricalEcharts,
   CategoricalGoogle,
@@ -33,6 +34,7 @@ import {
   CategoricalSuperset,
   SequentialCommon,
   SequentialD3,
+  SequentialDHIS2,
   ColorSchemeRegistry,
   ColorSchemeGroup,
   CategoricalPresetSuperset,
@@ -85,6 +87,7 @@ export default function setupColors(
       ...CategoricalBlueToGreen,
       ...CategoricalRedToYellow,
       ...CategoricalWavesOfBlue,
+      ...CategoricalDHIS2,
       ...extraCategoricalColorSchemes,
     ],
     'supersetColors',
@@ -92,7 +95,12 @@ export default function setupColors(
   registerColorSchemes(
     // @ts-ignore
     getSequentialSchemeRegistry(),
-    [...SequentialCommon, ...SequentialD3, ...extraSequentialColorSchemes],
+    [
+      ...SequentialCommon,
+      ...SequentialD3,
+      ...SequentialDHIS2,
+      ...extraSequentialColorSchemes,
+    ],
     'superset_seq_1',
   );
 }

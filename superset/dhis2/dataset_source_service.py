@@ -61,6 +61,9 @@ def _database_extra(database: Database) -> dict[str, Any]:
 def get_dataset_source_eligibility(database: Database) -> tuple[bool, str]:
     """Return whether a Superset Database should appear in dataset creation."""
 
+    if getattr(database, "is_dhis2_staging_internal", False) is True:
+        return False, "is_dhis2_staging_internal:True"
+
     extra = _database_extra(database)
     explicit_flag = extra.get("is_dataset_source")
     if explicit_flag is True:

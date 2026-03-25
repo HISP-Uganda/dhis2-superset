@@ -28,6 +28,7 @@ import {
 } from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
 import { Spin } from 'antd';
+import { FilterOutlined } from '@ant-design/icons';
 import { MapContainer, GeoJSON, ZoomControl, useMap } from 'react-leaflet';
 // @ts-ignore - react-leaflet types
 import L from 'leaflet';
@@ -62,6 +63,7 @@ import LegendPanel from './components/LegendPanel';
 import MapCompass from './components/MapCompass';
 import DrillControls from './components/DrillControls';
 import DataPreviewPanel from './components/DataPreviewPanel';
+import FiltersPanel from './components/FiltersPanel';
 import {
   BaseMapSelector,
   BaseMapLayer,
@@ -871,6 +873,8 @@ function DHIS2Map({
   dashboardId,
   datasourceColumns = [],
   boundaryLoadMethod = 'geoFeatures',
+  ouHierarchyColumns = [],
+  periodColumns = [],
 }: DHIS2MapProps): ReactElement {
   const metricDisplayName = metricLabel || metric;
   const hasQueryData = data.length > 0;
@@ -1046,6 +1050,8 @@ function DHIS2Map({
   const [dhis2DataLoading, setDhis2DataLoading] = useState(false);
   const [stagedLocalDataLoading, setStagedLocalDataLoading] = useState(false);
   const [showDataPreview, setShowDataPreview] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [localFilters, setLocalFilters] = useState<Record<string, string[]>>({});
   const [interactionEnabled, setInteractionEnabled] = useState(true);
   const [resolvedDatasetSql, setResolvedDatasetSql] = useState(datasetSql);
   const [resolvedIsDHIS2Dataset, setResolvedIsDHIS2Dataset] =
@@ -1761,12 +1767,28 @@ function DHIS2Map({
 
   // Prefer staged-local serving rows for focused child rendering when the
   // saved chart query only returned the placeholder parent-level payload.
-  const effectiveData = useMemo(() => {
+  const unfilteredEffectiveData = useMemo(() => {
     if (shouldUseStagedLocalFocusRows) {
       return stagedLocalData || [];
     }
     return chartData;
   }, [chartData, shouldUseStagedLocalFocusRows, stagedLocalData]);
+
+  const effectiveData = useMemo(() => {
+    const filterEntries = Object.entries(localFilters).filter(
+      ([, values]) => values && values.length > 0,
+    );
+    if (filterEntries.length === 0) {
+      return unfilteredEffectiveData;
+    }
+
+    return unfilteredEffectiveData.filter(row =>
+      filterEntries.every(([col, values]) => {
+        const rowVal = String(row[col] ?? '');
+        return values.includes(rowVal);
+      }),
+    );
+  }, [localFilters, unfilteredEffectiveData]);
 
   const effectiveDataColumns = useMemo(
     () =>
@@ -3109,12 +3131,51 @@ function DHIS2Map({
         </button>
       )}
 
+      {effectiveIsStagedLocalDataset && !loading && (
+        <button
+          onClick={() => setShowFilters(!showFilters)}
+          style={{
+            position: 'absolute',
+            top: '16px',
+            left: dhis2Data && dhis2Data.length > 0 ? '140px' : '16px',
+            background: showFilters ? '#0066cc' : '#ffffff',
+            color: showFilters ? '#ffffff' : '#333333',
+            border: '2px solid #0066cc',
+            padding: '8px 12px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 500,
+            zIndex: 1001,
+            boxShadow: '0 2px 6px rgba(0, 0, 0, 0.15)',
+          }}
+          title="Toggle filters panel"
+        >
+          <FilterOutlined /> {t('Quick Filters')}
+        </button>
+      )}
+
       {showDataPreview && (
         /* @ts-ignore - React 19 compatibility */
         <DataPreviewPanel
           data={dhis2Data}
           loading={dhis2DataLoading}
           onClose={() => setShowDataPreview(false)}
+        />
+      )}
+
+      {showFilters && (
+        <FiltersPanel
+          data={unfilteredEffectiveData}
+          columns={[...(periodColumns || []), ...(ouHierarchyColumns || [])]}
+          filters={localFilters}
+          onChange={(col, values) => {
+            setLocalFilters(prev => ({
+              ...prev,
+              [col]: values,
+            }));
+          }}
+          onClose={() => setShowFilters(false)}
         />
       )}
     </MapWrapper>

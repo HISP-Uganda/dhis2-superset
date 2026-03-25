@@ -58,9 +58,15 @@ const JustifyEnd = styled.div`
 
 // Use theme token names instead of hex values to support theme switching
 const colorSchemeOptions = () => [
-  { value: 'colorSuccessBg', label: t('success') },
-  { value: 'colorWarningBg', label: t('alert') },
-  { value: 'colorErrorBg', label: t('error') },
+  { value: 'colorSuccessBg', label: t('Success (Green)') },
+  { value: 'colorWarningBg', label: t('Warning (Yellow)') },
+  { value: 'colorErrorBg', label: t('Error (Red)') },
+  { value: 'colorPrimaryBg', label: t('Primary (Blue)') },
+  { value: 'colorInfoBg', label: t('Info (Light Blue)') },
+  { value: '#1B4150', label: t('DHIS2 Dark Blue') },
+  { value: '#008000', label: t('DHIS2 Green') },
+  { value: '#ffff00', label: t('DHIS2 Yellow') },
+  { value: '#ff0000', label: t('DHIS2 Red') },
 ];
 
 const operatorOptions = [

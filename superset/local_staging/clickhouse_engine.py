@@ -1781,6 +1781,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             current_extra["dhis2_staging_internal"] = True
             current_extra["is_dataset_source"] = False
             existing.extra = _j.dumps(current_extra)
+            existing.is_dhis2_staging_internal = True
             superset_db.session.commit()
             return existing
 
@@ -1788,6 +1789,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             database_name=db_name_label,
             sqlalchemy_uri=uri,
             extra=extra_json,
+            is_dhis2_staging_internal=True,
             expose_in_sqllab=True,
             allow_run_async=True,
             allow_ctas=False,
