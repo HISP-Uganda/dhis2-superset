@@ -550,6 +550,7 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     # Allow users to export full CSV of table viz type.
     # This could cause the server to run out of memory or compute.
     "ALLOW_FULL_CSV_EXPORT": False,
+    "AI_INSIGHTS": False,
     "ALLOW_ADHOC_SUBQUERY": False,
     "USE_ANALOGOUS_COLORS": False,
     # Apply RLS rules to SQL Lab queries. This requires parsing and manipulating the
@@ -1246,6 +1247,53 @@ SQLLAB_QUERY_COST_ESTIMATE_TIMEOUT = int(timedelta(seconds=10).total_seconds())
 # Timeout duration for SQL Lab fetching query results by the resultsKey.
 # 0 means no timeout.
 SQLLAB_QUERY_RESULT_TIMEOUT = 0
+
+# AI Insights / MART SQL assistant
+# This module is feature-flagged and fully idle unless FEATURE_FLAGS["AI_INSIGHTS"]
+# is enabled. Provider secrets must stay on the server; expose only allowlisted
+# provider/model metadata to the frontend via the AI REST API.
+AI_INSIGHTS_CONFIG: dict[str, Any] = {
+    "enabled": False,
+    "allow_sql_execution": False,
+    "max_context_rows": 20,
+    "max_context_columns": 25,
+    "max_dashboard_charts": 12,
+    "max_follow_up_messages": 6,
+    "max_generated_sql_rows": 200,
+    "request_timeout_seconds": 30,
+    "max_tokens": 1200,
+    "temperature": 0.1,
+    "default_provider": None,
+    "default_model": None,
+    "allowed_roles": [],
+    "mode_roles": {
+        "chart": [],
+        "dashboard": [],
+        "sql": [],
+    },
+    "providers": {
+        # Example:
+        # "openai": {
+        #     "enabled": True,
+        #     "type": "openai_compatible",
+        #     "label": "OpenAI",
+        #     "base_url": "https://api.openai.com/v1",
+        #     "api_key_env": "OPENAI_API_KEY",
+        #     "models": ["gpt-4.1-mini"],
+        #     "default_model": "gpt-4.1-mini",
+        #     "is_local": False,
+        # },
+        # "ollama": {
+        #     "enabled": True,
+        #     "type": "ollama",
+        #     "label": "Ollama",
+        #     "base_url": "http://127.0.0.1:11434",
+        #     "models": ["llama3.1:8b"],
+        #     "default_model": "llama3.1:8b",
+        #     "is_local": True,
+        # },
+    },
+}
 
 # The cost returned by the databases is a relative value; in order to map the cost to
 # a tangible value you need to define a custom formatter that takes into consideration

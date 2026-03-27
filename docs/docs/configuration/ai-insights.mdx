@@ -1,0 +1,242 @@
+# AI Insights for MART-backed Analytics
+
+The AI Insights module adds optional LLM-assisted analysis to Superset charts,
+dashboards, and SQL Lab while keeping the analytical source of truth on the
+configured staging or MART database engine.
+
+The module is idle by default. Nothing runs unless the `AI_INSIGHTS` feature
+flag and `AI_INSIGHTS_CONFIG["enabled"]` are both enabled.
+
+## What it does
+
+When enabled, the module adds three user-facing entry points:
+
+- chart AI insights from Explore and dashboard chart actions
+- dashboard AI insights from a dashboard-level action button
+- a MART SQL assistant in SQL Lab
+
+Each mode is grounded differently:
+
+- chart insights use saved chart metadata plus current chart query samples when
+  available
+- dashboard insights use visible chart metadata, current dashboard filters, and
+  chart result samples when available
+- SQL assistant mode uses MART schema metadata from the selected database and
+  optionally the current SQL editor contents
+
+## MART-first grounding rules
+
+The module is designed for MART-first analytics.
+
+- It builds insight context from Superset chart state, dashboard state, and the
+  selected database's registered MART datasets.
+- It does not require direct DHIS2 API access for insight generation when the
+  MART already provides the analytical data.
+- SQL generation is limited to registered MART tables only.
+- Generated SQL is read-only and must validate as a single `SELECT`.
+
+The current MART detection accepts datasets that:
+
+- carry a dataset role containing `MART` or `SERVING`
+- or use a table name ending in `_mart`
+
+## Architecture
+
+The implementation is split into the following backend modules:
+
+- `superset.ai_insights.config`
+  - merged runtime configuration
+  - feature and role gating
+  - secret resolution from environment variables
+- `superset.ai_insights.providers`
+  - pluggable provider abstraction
+  - OpenAI-compatible HTTP providers
+  - Ollama support
+  - deterministic mock provider for tests
+- `superset.ai_insights.sql`
+  - MART table discovery
+  - schema context building
+  - read-only SQL validation
+  - MART-only table enforcement
+- `superset.ai_insights.service`
+  - chart insights
+  - dashboard insights
+  - MART SQL assistance
+  - optional validated execution
+- `superset.ai_insights.api`
+  - REST endpoints for chart, dashboard, and SQL assistant modes
+
+Frontend integration lives in:
+
+- `src/features/ai/AIInsightPanel.tsx`
+  - shared modal UI
+- `src/features/ai/context.ts`
+  - chart and dashboard context summarization
+- `src/features/ai/DashboardInsightsButton.tsx`
+  - dashboard entry point
+- `src/explore/components/useExploreAdditionalActionsMenu/index.jsx`
+  - Explore chart action entry point
+- `src/dashboard/components/SliceHeaderControls/index.tsx`
+  - dashboard chart action entry point
+- `src/SqlLab/components/SqlEditor/index.tsx`
+  - MART SQL assistant entry point
+
+## Provider model
+
+Providers are configured server-side under `AI_INSIGHTS_CONFIG["providers"]`.
+
+Supported provider types:
+
+- `openai_compatible`
+- `ollama`
+- `mock`
+
+Each provider exposes only safe metadata to the frontend:
+
+- provider id
+- label
+- model list
+- default model
+- whether the provider is local
+
+Raw API keys are never sent to the browser.
+
+### Example
+
+```python
+FEATURE_FLAGS = {
+    **FEATURE_FLAGS,
+    "AI_INSIGHTS": True,
+}
+
+AI_INSIGHTS_CONFIG = {
+    "enabled": True,
+    "allow_sql_execution": False,
+    "default_provider": "openai",
+    "default_model": "gpt-4.1-mini",
+    "allowed_roles": ["Admin", "Alpha", "Gamma"],
+    "mode_roles": {
+        "chart": ["Admin", "Alpha", "Gamma"],
+        "dashboard": ["Admin", "Alpha", "Gamma"],
+        "sql": ["Admin", "Alpha"],
+    },
+    "providers": {
+        "openai": {
+            "enabled": True,
+            "type": "openai_compatible",
+            "label": "OpenAI",
+            "base_url": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
+            "models": ["gpt-4.1-mini", "gpt-4.1"],
+            "default_model": "gpt-4.1-mini",
+            "is_local": False,
+        },
+        "ollama": {
+            "enabled": True,
+            "type": "ollama",
+            "label": "Ollama",
+            "base_url": "http://127.0.0.1:11434",
+            "models": ["llama3.1:8b"],
+            "default_model": "llama3.1:8b",
+            "is_local": True,
+        },
+    },
+}
+```
+
+## Secret handling
+
+Provider secrets stay on the server.
+
+- Use `api_key_env` for environment-based secret lookup.
+- `api_key` is supported but less desirable than environment indirection.
+- The frontend only receives allowlisted provider metadata.
+- Audit logging records provider and model identifiers, never raw secrets.
+
+## SQL safety rules
+
+The SQL assistant is intentionally conservative.
+
+- Only one statement is allowed.
+- The statement must validate as `SELECT`.
+- Mutating SQL is rejected.
+- Parsed table references must map to registered MART tables.
+- A `LIMIT` is enforced when the provider omits one.
+- Execution is optional and disabled by default.
+
+This keeps SQL assistance aligned with MART-backed analytical exploration rather
+than general-purpose database administration.
+
+## Permissions and governance
+
+Access is controlled in two layers:
+
+- the `AI_INSIGHTS` feature flag and `AI_INSIGHTS_CONFIG["enabled"]`
+- optional role allowlists, globally or per mode
+
+When `allowed_roles` and `mode_roles` are empty, any authenticated user who can
+reach the relevant chart, dashboard, or database path can use the AI feature.
+
+Operational logging records:
+
+- mode
+- provider
+- model
+- duration
+- database backend when applicable
+- success or failure status
+
+## Local models and Ollama
+
+Local inference is supported through the `ollama` provider type.
+
+- Set `base_url` to the local runtime, typically `http://127.0.0.1:11434`
+- Provide the approved local model names
+- Mark the provider with `is_local: True`
+
+If the runtime is unavailable, the provider is treated as unavailable and the
+UI will only show the remaining configured providers.
+
+## UI behavior
+
+The module does not block normal chart or dashboard rendering.
+
+- AI UI is modal-based and asynchronous
+- capabilities are loaded on demand
+- chart rendering and dashboard hydration remain unchanged when the feature is
+  not opened
+- SQL generation is separate from SQL Lab execution unless execution is
+  explicitly allowed
+
+The shared AI panel also guards against state updates after unmount so closing
+the modal during a slow provider response does not create React leak warnings.
+
+## Known limitations
+
+- SQL generation quality still depends on the configured model and the quality
+  of MART metadata.
+- MART detection is metadata-driven and table-name-driven; environments with
+  different conventions may need additional dataset-role normalization.
+- The current UI is intentionally conservative and text-first. It does not yet
+  add richer conversation history panes or chart annotation overlays.
+- Provider fallback and advanced rate limiting are not yet implemented.
+
+## Test coverage
+
+Focused tests currently cover:
+
+- provider normalization with the mock provider
+- MART-only SQL validation
+- chart insight service flow
+- SQL assistant service flow with optional execution
+- chart action visibility
+- dashboard action visibility
+- SQL Lab assistant button visibility
+- shared AI panel request and response behavior
+
+Recommended smoke verification after enabling the feature:
+
+1. Open a MART-backed chart in Explore and request a chart summary.
+2. Open a dashboard and request dashboard insights with active filters applied.
+3. Open SQL Lab on the MART database, generate SQL from a natural-language
+   question, inspect it, then optionally run it if execution is enabled.

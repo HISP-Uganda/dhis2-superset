@@ -45,6 +45,11 @@ import setupCodeOverrides from 'src/setup/setupCodeOverrides';
 import type { Action, Middleware, Store } from 'redux';
 import SqlEditor, { Props } from '.';
 
+jest.mock('src/features/ai/AIInsightPanel', () => ({
+  __esModule: true,
+  default: () => <div data-test="mock-ai-insight-panel" />,
+}));
+
 jest.mock(
   'react-virtualized-auto-sizer',
   () =>
@@ -470,5 +475,17 @@ describe('SqlEditor', () => {
       // it will be called from EditorAutoSync
       expect(fetchMock.calls(switchTabApi).length).toBe(0);
     });
+  });
+
+  test('shows the AI SQL button when the AI feature flag is enabled', async () => {
+    mockIsFeatureEnabled.mockImplementation(
+      featureFlag => featureFlag === FeatureFlag.AiInsights,
+    );
+
+    const { findAllByText, unmount } = setup(mockedProps, store);
+
+    expect((await findAllByText('AI SQL')).length).toBeGreaterThan(0);
+
+    unmount();
   });
 });

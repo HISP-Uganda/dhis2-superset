@@ -24,6 +24,10 @@ import { cachedSupersetGet } from 'src/utils/cachedSupersetGet';
 import SliceHeaderControls, { SliceHeaderControlsProps } from '.';
 
 jest.mock('src/utils/cachedSupersetGet');
+jest.mock('src/features/ai/AIInsightPanel', () => ({
+  __esModule: true,
+  default: () => <div data-test="mock-ai-insight-panel" />,
+}));
 
 const mockCachedSupersetGet = cachedSupersetGet as jest.MockedFunction<
   typeof cachedSupersetGet
@@ -176,6 +180,17 @@ test('Should render default props', () => {
     screen.getByRole('button', { name: 'More Options' }),
   ).toBeInTheDocument();
   expect(screen.getByTestId(`slice_${SLICE_ID}-menu`)).toBeInTheDocument();
+});
+
+test('shows AI insights when the feature flag is enabled', () => {
+  (global as any).featureFlags = {
+    [FeatureFlag.AiInsights]: true,
+  };
+
+  renderWrapper();
+  openMenu();
+
+  expect(screen.getByText('AI insights')).toBeInTheDocument();
 });
 
 test('Should "export to CSV"', async () => {

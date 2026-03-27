@@ -58,6 +58,7 @@ import {
   EmptyState,
   Input,
   Modal,
+  ModalTrigger,
   Timer,
 } from '@superset-ui/core/components';
 import useStoredSidebarWidth from 'src/components/ResizableSidebar/useStoredSidebarWidth';
@@ -130,6 +131,7 @@ import KeyboardShortcutButton, {
   KEY_MAP,
   KeyboardShortcut,
 } from '../KeyboardShortcutButton';
+import AIInsightPanel from 'src/features/ai/AIInsightPanel';
 
 const bootstrapData = getBootstrapData();
 const scheduledQueriesConf = bootstrapData?.common?.conf?.SCHEDULED_QUERIES;
@@ -332,6 +334,36 @@ const SqlEditor: FC<Props> = ({
       startQuery();
     }
   };
+
+  const applyGeneratedSql = useCallback(
+    (sql: string) => {
+      currentSQL.current = sql;
+      dispatch(queryEditorSetSql(queryEditor, sql));
+    },
+    [dispatch, queryEditor],
+  );
+
+  const runGeneratedSql = useCallback(
+    (sql: string) => {
+      if (!database) {
+        return;
+      }
+
+      applyGeneratedSql(sql);
+      dispatch(
+        runQueryFromSqlEditor(
+          database,
+          { ...queryEditor, sql },
+          defaultQueryLimit,
+          '',
+          false,
+          CtasEnum.Table,
+        ),
+      );
+      dispatch(setActiveSouthPaneTab('Results'));
+    },
+    [applyGeneratedSql, database, defaultQueryLimit, dispatch, queryEditor],
+  );
 
   useEffect(() => {
     if (autorun) {
@@ -860,6 +892,48 @@ const SqlEditor: FC<Props> = ({
               <span>
                 <ShareSqlLabQuery queryEditorId={queryEditor.id} />
               </span>
+              {isFeatureEnabled(FeatureFlag.AiInsights) && database ? (
+                <span>
+                  <ModalTrigger
+                    triggerNode={
+                      <Button>
+                        {t('AI SQL')}
+                      </Button>
+                    }
+                    modalTitle={t('MART SQL assistant')}
+                    modalBody={
+                      <AIInsightPanel
+                        mode="sql"
+                        context={{
+                          query_editor: {
+                            id: queryEditor.id,
+                            name: queryEditor.name,
+                            schema: queryEditor.schema,
+                          },
+                          latest_query: latestQuery
+                            ? {
+                                id: latestQuery.id,
+                                state: latestQuery.state,
+                                rowcount:
+                                  latestQuery.results?.query?.rows ??
+                                  latestQuery.results?.data?.length ??
+                                  null,
+                              }
+                            : null,
+                        }}
+                        defaultQuestion={t('Generate MART SQL for this analysis question')}
+                        currentSql={queryEditor.sql}
+                        databaseId={database.id}
+                        schema={queryEditor.schema}
+                        onApplySql={applyGeneratedSql}
+                        onRunSql={runGeneratedSql}
+                      />
+                    }
+                    responsive
+                    destroyOnHidden
+                  />
+                </span>
+              ) : null}
               <div>{primaryContributions}</div>
               <Dropdown
                 popupRender={() => renderDropdown()}

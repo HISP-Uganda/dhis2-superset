@@ -63,6 +63,8 @@ import DrillDetailModal from 'src/components/Chart/DrillDetail/DrillDetailModal'
 import { usePermissions } from 'src/hooks/usePermissions';
 import { useDatasetDrillInfo } from 'src/hooks/apiResources/datasets';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
+import AIInsightPanel from 'src/features/ai/AIInsightPanel';
+import { buildChartInsightContext } from 'src/features/ai/context';
 import { useCrossFiltersScopingModal } from '../nativeFilters/FilterBar/CrossFilters/ScopingModal/useCrossFiltersScopingModal';
 import { ViewResultsModalTrigger } from './ViewResultsModalTrigger';
 import { isEmbedded } from 'src/dashboard/util/isEmbedded';
@@ -229,6 +231,9 @@ const SliceHeaderControls = (
       ?.behaviors?.includes(Behavior.InteractiveChart);
   const dashboardUserId = useSelector<RootState, string>(
     ({ dashboardInfo }) => dashboardInfo.userId,
+  );
+  const firstQueryResponse = useSelector(
+    (state: RootState) => state.charts[props.slice.slice_id]?.queriesResponse?.[0],
   );
   const isPublicView = !dashboardUserId || isEmbedded();
   const canExplore = props.supersetCanExplore;
@@ -516,6 +521,37 @@ const SliceHeaderControls = (
               canDownload={!!props.supersetCanCSV}
             />
           }
+        />
+      ),
+    });
+  }
+
+  if (!isPublicView && isFeatureEnabled(FeatureFlag.AiInsights) && canExplore) {
+    const chartInsightContext = buildChartInsightContext({
+      chartId: props.slice.slice_id,
+      sliceName: props.slice.slice_name,
+      vizType: props.slice.viz_type,
+      formData: props.formData,
+      datasource: props.slice.datasource,
+      queryResponse: firstQueryResponse,
+    });
+
+    newMenuItems.push({
+      key: MenuKeys.AiInsights,
+      label: (
+        <ModalTrigger
+          triggerNode={<div data-test="chart-ai-insights-menu-item">{t('AI insights')}</div>}
+          modalTitle={t('Chart AI insights')}
+          modalBody={
+            <AIInsightPanel
+              mode="chart"
+              targetId={props.slice.slice_id}
+              context={chartInsightContext}
+              defaultQuestion={t('Summarize this chart')}
+            />
+          }
+          responsive
+          destroyOnHidden
         />
       ),
     });

@@ -47,6 +47,7 @@ import {
 } from 'src/dashboard/components/nativeFilters/FilterBar/keyValue';
 import DashboardContainer from 'src/dashboard/containers/Dashboard';
 import CrudThemeProvider from 'src/components/CrudThemeProvider';
+import DashboardInsightsButton from 'src/features/ai/DashboardInsightsButton';
 
 import { nanoid } from 'nanoid';
 import { RootState } from '../types';
@@ -296,6 +297,12 @@ export const DashboardPage: FC<PageProps> = ({
               >
                 {DashboardBuilderComponent}
               </DashboardContainer>
+              <DashboardInsightsButton
+                dashboardId={id}
+                dashboardTitle={dashboard_title}
+                charts={charts ?? []}
+                activeFilters={activeFilters}
+              />
             </CrudThemeProvider>
           </DashboardPageIdContext.Provider>
         </>

@@ -53,6 +53,8 @@ import exportPivotExcel from 'src/utils/downloadAsPivotExcel';
 import ViewQueryModal from '../controls/ViewQueryModal';
 import EmbedCodeContent from '../EmbedCodeContent';
 import { useDashboardsMenuItems } from './DashboardsSubMenu';
+import AIInsightPanel from 'src/features/ai/AIInsightPanel';
+import { buildChartInsightContext } from 'src/features/ai/context';
 
 export const SEARCH_THRESHOLD = 10;
 
@@ -74,6 +76,7 @@ const MENU_KEYS = {
   SET_REPORT_ACTIVE: 'set_report_active',
   EDIT_REPORT: 'edit_report',
   DELETE_REPORT: 'delete_report',
+  AI_INSIGHTS: 'ai_insights',
   VIEW_QUERY: 'view_query',
   RUN_IN_SQL_LAB: 'run_in_sql_lab',
   EXPORT_TO_PIVOT_XLSX: 'export_to_pivot_xlsx',
@@ -149,6 +152,18 @@ export const useExploreAdditionalActionsMenu = (
   });
 
   const { datasource } = latestQueryFormData;
+  const chartInsightContext = useMemo(
+    () =>
+      buildChartInsightContext({
+        chartId: slice?.slice_id,
+        sliceName: slice?.slice_name,
+        vizType: latestQueryFormData.viz_type,
+        formData: latestQueryFormData,
+        datasource,
+        queryResponse: chart?.queriesResponse?.[0],
+      }),
+    [chart?.queriesResponse, datasource, latestQueryFormData, slice],
+  );
 
   // Get dashboard menu items using the hook
   const dashboardMenuItems = useDashboardsMenuItems({
@@ -488,6 +503,31 @@ export const useExploreAdditionalActionsMenu = (
       menuItems.push(reportMenuItem);
     }
 
+    if (slice && isFeatureEnabled(FeatureFlag.AiInsights)) {
+      menuItems.push({
+        key: MENU_KEYS.AI_INSIGHTS,
+        label: (
+          <ModalTrigger
+            triggerNode={
+              <div data-test="ai-insights-menu-item">{t('AI insights')}</div>
+            }
+            modalTitle={t('Chart AI insights')}
+            modalBody={
+              <AIInsightPanel
+                mode="chart"
+                targetId={slice.slice_id}
+                context={chartInsightContext}
+                defaultQuestion={t('Summarize this chart')}
+              />
+            }
+            responsive
+            destroyOnHidden
+          />
+        ),
+        onClick: () => setIsDropdownVisible(false),
+      });
+    }
+
     // View query
     menuItems.push({
       key: MENU_KEYS.VIEW_QUERY,
@@ -542,6 +582,7 @@ export const useExploreAdditionalActionsMenu = (
     shareByEmail,
     showDashboardSearch,
     slice,
+    chartInsightContext,
     theme.sizeUnit,
   ]);
 
