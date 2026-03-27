@@ -32,7 +32,7 @@ import {
   usePrevious,
   isMatrixifyEnabled,
 } from '@superset-ui/core';
-import { debounce, isEqual, isObjectLike, omit, pick } from 'lodash';
+import { debounce, isEqual, isObjectLike, pick } from 'lodash';
 import { Resizable } from 're-resizable';
 import { Tooltip } from '@superset-ui/core/components';
 import { usePluginContext } from 'src/components';
@@ -44,7 +44,6 @@ import {
   LocalStorageKeys,
 } from 'src/utils/localStorageHelpers';
 import { RESERVED_CHART_URL_PARAMS, URL_PARAMS } from 'src/constants';
-import { QUERY_MODE_REQUISITES } from 'src/explore/constants';
 import { areObjectsEqual } from 'src/reduxUtils';
 import * as logActions from 'src/logger/actions';
 import {
@@ -61,7 +60,10 @@ import { mergeExtraFormData } from 'src/dashboard/components/nativeFilters/utils
 import { postFormData, putFormData } from 'src/explore/exploreUtils/formData';
 import { datasourcesActions } from 'src/explore/actions/datasourcesActions';
 import { mountExploreUrl } from 'src/explore/exploreUtils';
-import { getFormDataFromControls } from 'src/explore/controlUtils';
+import {
+  getFormDataFromControls,
+  getMergedFormDataWithControls,
+} from 'src/explore/controlUtils';
 import * as exploreActions from 'src/explore/actions/exploreActions';
 import * as saveModalActions from 'src/explore/actions/saveModalActions';
 import { useTabId } from 'src/hooks/useTabId';
@@ -72,6 +74,7 @@ import SaveModal from '../SaveModal';
 import DataSourcePanel from '../DatasourcePanel';
 import ConnectedExploreChartHeader from '../ExploreChartHeader';
 import ExploreContainer from '../ExploreContainer';
+import { getHiddenFieldsToOmit } from './hiddenFields';
 
 const propTypes = {
   ...ExploreChartPanel.propTypes,
@@ -884,11 +887,6 @@ function ExploreViewContainer(props) {
 
 ExploreViewContainer.propTypes = propTypes;
 
-const retainQueryModeRequirements = hiddenFormData =>
-  Object.keys(hiddenFormData ?? {}).filter(
-    key => !QUERY_MODE_REQUISITES.has(key),
-  );
-
 function patchBigNumberTotalFormData(form_data, slice) {
   if (
     form_data.viz_type === 'big_number_total' &&
@@ -913,12 +911,15 @@ function mapStateToProps(state) {
   } = state;
   const { controls, slice, datasource, metadata, hiddenFormData } = explore;
   const hasQueryMode = !!controls?.query_mode?.value;
-  const fieldsToOmit = hasQueryMode
-    ? retainQueryModeRequirements(hiddenFormData)
-    : Object.keys(hiddenFormData ?? {});
+  const fieldsToOmit = getHiddenFieldsToOmit({
+    hiddenFormData,
+    slice,
+    hasQueryMode,
+  });
 
-  const controlsBasedFormData = omit(
-    getFormDataFromControls(controls),
+  const controlsBasedFormData = getMergedFormDataWithControls(
+    controls,
+    explore.form_data,
     fieldsToOmit,
   );
   const isDeckGLChart = explore.form_data?.viz_type === 'deck_multi';

@@ -87,7 +87,7 @@ describe('DataTablesPane', () => {
 
   test('Should copy data table content correctly', async () => {
     fetchMock.post(
-      'glob:*/api/v1/chart/data?form_data=%7B%22slice_id%22%3A456%7D',
+      'glob:*/api/v1/chart/data',
       {
         result: [
           {
@@ -118,7 +118,7 @@ describe('DataTablesPane', () => {
 
   test('Should not allow copy data table content when canDownload=false', async () => {
     fetchMock.post(
-      'glob:*/api/v1/chart/data?form_data=%7B%22slice_id%22%3A456%7D',
+      'glob:*/api/v1/chart/data',
       {
         result: [
           {
@@ -146,7 +146,7 @@ describe('DataTablesPane', () => {
 
   test('Search table', async () => {
     fetchMock.post(
-      'glob:*/api/v1/chart/data?form_data=%7B%22slice_id%22%3A789%7D',
+      'glob:*/api/v1/chart/data',
       {
         result: [
           {

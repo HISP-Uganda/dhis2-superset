@@ -168,7 +168,7 @@ test('creates hydrate action with existing state', () => {
   );
 });
 
-test('uses configured default time range if not set', () => {
+test('uses configured default time range if not set on unsaved charts', () => {
   const dispatch = jest.fn();
   const getState = jest.fn(() => ({
     user: {},
@@ -194,6 +194,7 @@ test('uses configured default time range if not set', () => {
       }),
     }),
   );
+  dispatch.mockClear();
   const withTimeRangeSet = {
     form_data: { time_range: 'Last day' },
     slice: {},
@@ -207,6 +208,40 @@ test('uses configured default time range if not set', () => {
         explore: expect.objectContaining({
           form_data: expect.objectContaining({
             time_range: 'Last day',
+          }),
+        }),
+      }),
+    }),
+  );
+});
+
+test('preserves missing time range when hydrating an existing slice', () => {
+  const dispatch = jest.fn();
+  const getState = jest.fn(() => ({
+    user: {},
+    charts: {},
+    datasources: {},
+    common: {
+      conf: {
+        DEFAULT_TIME_FILTER: 'Last year',
+      },
+    },
+    explore: {},
+  }));
+
+  // @ts-ignore
+  hydrateExplore({
+    form_data: { slice_id: 10, viz_type: VizType.Table },
+    slice: { slice_id: 10, form_data: { slice_id: 10, viz_type: VizType.Table } },
+    dataset: {},
+  })(dispatch, getState);
+
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({
+        explore: expect.objectContaining({
+          form_data: expect.not.objectContaining({
+            time_range: expect.anything(),
           }),
         }),
       }),
@@ -255,6 +290,48 @@ test('extracts currency formats from metrics in dataset', () => {
               count: { symbol: 'GBP', symbolPosition: 'prefix' },
               revenue: { symbol: 'USD', symbolPosition: 'suffix' },
             },
+          }),
+        }),
+      }),
+    }),
+  );
+});
+
+test('preserves saved form data fields that do not have active controls', () => {
+  const dispatch = jest.fn();
+  const getState = jest.fn(() => ({
+    user: {},
+    charts: {},
+    datasources: {},
+    common: {},
+    explore: {},
+  }));
+
+  const savedFormData = {
+    ...exploreInitialData.form_data,
+    time_grain_sqla: 'P1D',
+    x_axis_sort_asc: true,
+  };
+
+  // @ts-ignore
+  hydrateExplore({ ...exploreInitialData, form_data: savedFormData })(
+    dispatch,
+    getState,
+  );
+
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({
+        charts: expect.objectContaining({
+          371: expect.objectContaining({
+            latestQueryFormData: expect.objectContaining({
+              time_grain_sqla: 'P1D',
+              x_axis_sort_asc: true,
+            }),
+            sliceFormData: expect.objectContaining({
+              time_grain_sqla: 'P1D',
+              x_axis_sort_asc: true,
+            }),
           }),
         }),
       }),

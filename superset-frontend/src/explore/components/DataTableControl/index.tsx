@@ -156,8 +156,10 @@ export const useTableColumns = (
   datasourceId?: string,
   isVisible?: boolean,
   moreConfigs?: { [key: string]: Partial<Column> },
-) =>
-  useMemo(() => {
+) => {
+  const theme = useTheme();
+
+  return useMemo(() => {
     if (!colnames || !data?.length) {
       return [];
     }
@@ -196,7 +198,6 @@ export const useTableColumns = (
           return undefined;
         },
         Cell: ({ value, row }: { value: unknown; row: any }) => {
-          const theme = useTheme();
           let displayValue = value;
 
           if (displayValue === undefined && row && row.original) {
@@ -252,4 +253,5 @@ export const useTableColumns = (
         ...moreConfigs?.[sanitizedKey],
       };
     });
-  }, [colnames, data, moreConfigs]);
+  }, [colnames, data, moreConfigs, theme]);
+};

@@ -28,11 +28,27 @@ import { ChartMetadata, ChartPlugin, VizType } from '@superset-ui/core';
 import { ResultsPaneOnDashboard } from '../components';
 import { createResultsPaneOnDashboardProps } from './fixture';
 
+const matchesChartDataRequest =
+  (sliceId: number, force = false) =>
+  (url: string, options: RequestInit = {}) => {
+    const requestUrl = String(url);
+    if (force ? !requestUrl.endsWith('/api/v1/chart/data?force=true') : !requestUrl.endsWith('/api/v1/chart/data')) {
+      return false;
+    }
+
+    if (!options.body || typeof options.body !== 'string') {
+      return false;
+    }
+
+    const payload = JSON.parse(options.body);
+    return payload?.form_data?.slice_id === sliceId;
+  };
+
 // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
 describe('ResultsPaneOnDashboard', () => {
   // render and render errorMessage
   fetchMock.post(
-    'end:/api/v1/chart/data?form_data=%7B%22slice_id%22%3A121%7D',
+    matchesChartDataRequest(121),
     {
       result: [],
     },
@@ -40,7 +56,7 @@ describe('ResultsPaneOnDashboard', () => {
 
   // force query, render and search
   fetchMock.post(
-    'end:/api/v1/chart/data?form_data=%7B%22slice_id%22%3A144%7D&force=true',
+    matchesChartDataRequest(144, true),
     {
       result: [
         {
@@ -59,13 +75,13 @@ describe('ResultsPaneOnDashboard', () => {
 
   // error response
   fetchMock.post(
-    'end:/api/v1/chart/data?form_data=%7B%22slice_id%22%3A169%7D',
+    matchesChartDataRequest(169),
     400,
   );
 
   // multiple results pane
   fetchMock.post(
-    'end:/api/v1/chart/data?form_data=%7B%22slice_id%22%3A196%7D',
+    matchesChartDataRequest(196),
     {
       result: [
         {

@@ -20,12 +20,14 @@ import {
   MouseEvent,
   Key,
   KeyboardEvent,
+  useEffect,
   useState,
   useRef,
   RefObject,
+  useCallback,
 } from 'react';
 
-import { RouteComponentProps, useHistory } from 'react-router-dom';
+import { RouteComponentProps } from 'react-router-dom';
 import { extendedDayjs } from '@superset-ui/core/utils/dates';
 import {
   Behavior,
@@ -41,7 +43,7 @@ import {
   QueryFormData,
 } from '@superset-ui/core';
 import { useSelector } from 'react-redux';
-import { Menu, MenuItem } from '@superset-ui/core/components/Menu';
+import { MenuItem } from '@superset-ui/core/components/Menu';
 import {
   NoAnimationDropdown,
   Tooltip,
@@ -152,17 +154,22 @@ const dropdownIconsStyles = css`
   }
 `;
 
+const EXPLORE_NAVIGATION_DELAY_MS = 150;
+
 const SliceHeaderControls = (
   props: SliceHeaderControlsPropsWithRouter | SliceHeaderControlsProps,
 ) => {
+  const { exploreUrl } = props;
   const [drillModalIsOpen, setDrillModalIsOpen] = useState(false);
   // setting openKeys undefined falls back to uncontrolled behaviour
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
+  const [pendingExploreNavigation, setPendingExploreNavigation] = useState<{
+    openInNewTab: boolean;
+  } | null>(null);
+  const isMountedRef = useRef(true);
   const [openScopingModal, scopingModal] = useCrossFiltersScopingModal(
     props.slice.slice_id,
   );
-  const history = useHistory();
-
   const queryMenuRef: RefObject<any> = useRef(null);
   const resultsMenuRef: RefObject<any> = useRef(null);
 
@@ -170,6 +177,48 @@ const SliceHeaderControls = (
     [],
   );
   const theme = useTheme();
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
+
+  const handleDropdownOpenChange = useCallback((visible: boolean) => {
+    if (isMountedRef.current) {
+      setIsDropdownVisible(visible);
+    }
+  }, []);
+
+  const navigateToExplore = useCallback(
+    (openInNewTab: boolean) => {
+      if (openInNewTab) {
+        window.open(exploreUrl, '_blank', 'noopener');
+      } else {
+        window.location.assign(exploreUrl);
+      }
+    },
+    [exploreUrl],
+  );
+
+  useEffect(() => {
+    if (!pendingExploreNavigation || isDropdownVisible) {
+      return;
+    }
+
+    const timerId = window.setTimeout(() => {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setPendingExploreNavigation(null);
+      navigateToExplore(pendingExploreNavigation.openInNewTab);
+    }, EXPLORE_NAVIGATION_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [isDropdownVisible, navigateToExplore, pendingExploreNavigation]);
 
   const canEditCrossFilters =
     useSelector<RootState, boolean>(
@@ -220,7 +269,6 @@ const SliceHeaderControls = (
         MenuKeys.Share,
       ].includes(key as MenuKeys)
     ) {
-      setIsDropdownVisible(false);
       return;
     }
 
@@ -238,11 +286,11 @@ const SliceHeaderControls = (
         props.logExploreChart?.(props.slice.slice_id);
         if (domEvent.metaKey || domEvent.ctrlKey) {
           domEvent.preventDefault();
-          window.open(props.exploreUrl, '_blank');
-        } else {
-          history.push(props.exploreUrl);
         }
-        break;
+        setPendingExploreNavigation({
+          openInNewTab: Boolean(domEvent.metaKey || domEvent.ctrlKey),
+        });
+        return;
       case MenuKeys.ExportCsv:
         // eslint-disable-next-line no-unused-expressions
         props.exportCSV?.(props.slice.slice_id);
@@ -321,7 +369,6 @@ const SliceHeaderControls = (
       default:
         break;
     }
-    setIsDropdownVisible(false);
   };
 
   const {
@@ -576,20 +623,25 @@ const SliceHeaderControls = (
         />
       )}
       <NoAnimationDropdown
-        popupRender={() => (
-          <Menu
-            onClick={handleMenuClick}
+        menu={{
+          onClick: handleMenuClick,
+          selectable: false,
+          items: newMenuItems,
+        }}
+        popupRender={originNode => (
+          <div
             data-test={`slice_${slice.slice_id}-menu`}
             id={`slice_${slice.slice_id}-menu`}
-            selectable={false}
-            items={newMenuItems}
-          />
+          >
+            {originNode}
+          </div>
         )}
         overlayStyle={dropdownOverlayStyle}
         trigger={['click']}
         placement="bottomRight"
-        open={isDropdownVisible}
-        onOpenChange={visible => setIsDropdownVisible(visible)}
+        destroyOnHidden={false}
+        getPopupContainer={() => document.body}
+        onOpenChange={visible => handleDropdownOpenChange(visible)}
       >
         <Button
           id={`slice_${slice.slice_id}-controls`}

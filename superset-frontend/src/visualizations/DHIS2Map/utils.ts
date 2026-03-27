@@ -1151,12 +1151,6 @@ function fixGeometryType(geometry: {
   }
 
   if (isValidForDetected) {
-    if (detectedType !== type) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `[fixGeometryType] Correcting geometry type: ${type} → ${detectedType} (depth=${nestingDepth})`,
-      );
-    }
     return { type: detectedType, coordinates };
   }
 
@@ -1174,13 +1168,7 @@ function fixGeometryType(geometry: {
 export function filterValidFeatures(
   features: BoundaryFeature[],
 ): BoundaryFeature[] {
-  // eslint-disable-next-line no-console
-  console.log(
-    `[filterValidFeatures] Processing ${features.length} features from API`,
-  );
-
   const validFeatures: BoundaryFeature[] = [];
-  const correctedFeatures: string[] = [];
 
   features.forEach(feature => {
     if (!feature || !feature.geometry) {
@@ -1190,24 +1178,10 @@ export function filterValidFeatures(
     }
 
     const geo = feature.geometry as { type: string; coordinates: unknown };
-    const featureName = feature.properties?.name || feature.id;
-    const nestingDepth = detectCoordinateNestingDepth(geo.coordinates);
-
-    // Log every feature for debugging
-    // eslint-disable-next-line no-console
-    console.debug(
-      `[filterValidFeatures] Feature "${featureName}": declared_type=${geo.type}, nesting_depth=${nestingDepth}`,
-    );
-
     const fixedGeometry = fixGeometryType(geo);
 
     if (fixedGeometry) {
-      // Track if we corrected the geometry type
       if (fixedGeometry.type !== geo.type) {
-        correctedFeatures.push(
-          `${feature.properties?.name || feature.id}: ${geo.type} → ${fixedGeometry.type}`,
-        );
-        // Update the feature's geometry with corrected type
         (feature.geometry as { type: string }).type = fixedGeometry.type;
       }
       validFeatures.push(feature);
@@ -1227,30 +1201,6 @@ export function filterValidFeatures(
       );
     }
   });
-
-  // Log corrected features
-  if (correctedFeatures.length > 0) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[filterValidFeatures] Auto-corrected geometry types for ${correctedFeatures.length} features:`,
-      correctedFeatures,
-    );
-  }
-
-  const invalidCount = features.length - validFeatures.length;
-  if (invalidCount > 0) {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[filterValidFeatures] Filtered out ${invalidCount} features with invalid geometries`,
-    );
-    // Log the names of filtered features
-    const filtered = features.filter(f => !validFeatures.includes(f));
-    const filteredNames = filtered
-      .map(f => f.properties?.name || f.id)
-      .join(', ');
-    // eslint-disable-next-line no-console
-    console.log(`[filterValidFeatures] Filtered features: ${filteredNames}`);
-  }
 
   return validFeatures;
 }

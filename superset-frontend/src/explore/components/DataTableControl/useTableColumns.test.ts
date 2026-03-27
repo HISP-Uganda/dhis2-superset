@@ -19,6 +19,7 @@
 import { GenericDataType } from '@apache-superset/core/api/core';
 import { renderHook } from '@testing-library/react-hooks';
 import { Constants } from '@superset-ui/core/components';
+import { createWrapper } from 'spec/helpers/testing-library';
 import { useTableColumns } from '.';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,7 +34,6 @@ const UNICODE_KEY = '你好. 吃了吗?';
 const NUMTIME_KEY = 'numtime';
 const STRTIME_KEY = 'strtime';
 const NUMTIME_VALUE = 1640995200000;
-const NUMTIME_FORMATTED_VALUE = '2022-01-01 00:00:00';
 const STRTIME_VALUE = '2022-01-01';
 
 const colnames = [
@@ -69,12 +69,14 @@ const expectedDisplayValues = {
   col02: Constants.BOOL_FALSE_DISPLAY,
   [ASCII_KEY]: ASCII_KEY,
   [UNICODE_KEY]: UNICODE_KEY,
-  [NUMTIME_KEY]: NUMTIME_FORMATTED_VALUE,
+  [NUMTIME_KEY]: String(NUMTIME_VALUE),
   [STRTIME_KEY]: STRTIME_VALUE,
 };
 
 test('useTableColumns with no options', () => {
-  const hook = renderHook(() => useTableColumns(colnames, coltypes, data));
+  const hook = renderHook(() => useTableColumns(colnames, coltypes, data), {
+    wrapper: createWrapper({ useTheme: true }),
+  });
   expect(hook.result.current).toMatchInlineSnapshot(`
     [
       {
@@ -93,21 +95,17 @@ test('useTableColumns with no options', () => {
         "Cell": [Function],
         "Header": " !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
         "accessor": [Function],
-        "id": " !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
+        "id": "!"#$%&'*+,_/0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
       },
       {
         "Cell": [Function],
         "Header": "你好. 吃了吗?",
         "accessor": [Function],
-        "id": "你好. 吃了吗?",
+        "id": "你好_吃了吗?",
       },
       {
         "Cell": [Function],
-        "Header": <DataTableTemporalHeaderCell
-          columnName="numtime"
-          isOriginalTimeColumn={false}
-          onTimeColumnChange={[Function]}
-        />,
+        "Header": "numtime",
         "accessor": [Function],
         "id": "numtime",
       },
@@ -119,14 +117,21 @@ test('useTableColumns with no options', () => {
       },
     ]
   `);
-  hook.result.current.forEach((col: JsonObject) => {
-    expect(col.accessor(data[0])).toBe(data[0][col.id]);
+  hook.result.current.forEach((col: JsonObject, index: number) => {
+    const originalKey = colnames[index];
+    expect(col.accessor(data[0])).toBe(data[0][originalKey]);
   });
 
-  hook.result.current.forEach((col: JsonObject) => {
+  hook.result.current.forEach((col: JsonObject, index: number) => {
+    const originalKey = colnames[index];
     data.forEach(row => {
-      expect(col.Cell({ value: row[col.id] })).toBe(
-        expectedDisplayValues[col.id],
+      expect(
+        col.Cell({
+          value: col.accessor(row),
+          row: { original: row },
+        }),
+      ).toBe(
+        expectedDisplayValues[originalKey],
       );
     });
   });
@@ -137,6 +142,9 @@ test('useTableColumns with options', () => {
     useTableColumns(colnames, coltypes, data, undefined, true, {
       col01: { Header: 'Header' },
     }),
+    {
+      wrapper: createWrapper({ useTheme: true }),
+    },
   );
   expect(hook.result.current).toMatchInlineSnapshot(`
     [
@@ -156,21 +164,17 @@ test('useTableColumns with options', () => {
         "Cell": [Function],
         "Header": " !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
         "accessor": [Function],
-        "id": " !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
+        "id": "!"#$%&'*+,_/0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~",
       },
       {
         "Cell": [Function],
         "Header": "你好. 吃了吗?",
         "accessor": [Function],
-        "id": "你好. 吃了吗?",
+        "id": "你好_吃了吗?",
       },
       {
         "Cell": [Function],
-        "Header": <DataTableTemporalHeaderCell
-          columnName="numtime"
-          isOriginalTimeColumn={false}
-          onTimeColumnChange={[Function]}
-        />,
+        "Header": "numtime",
         "accessor": [Function],
         "id": "numtime",
       },
@@ -182,14 +186,21 @@ test('useTableColumns with options', () => {
       },
     ]
   `);
-  hook.result.current.forEach((col: JsonObject) => {
-    expect(col.accessor(data[0])).toBe(data[0][col.id]);
+  hook.result.current.forEach((col: JsonObject, index: number) => {
+    const originalKey = colnames[index];
+    expect(col.accessor(data[0])).toBe(data[0][originalKey]);
   });
 
-  hook.result.current.forEach((col: JsonObject) => {
+  hook.result.current.forEach((col: JsonObject, index: number) => {
+    const originalKey = colnames[index];
     data.forEach(row => {
-      expect(col.Cell({ value: row[col.id] })).toBe(
-        expectedDisplayValues[col.id],
+      expect(
+        col.Cell({
+          value: col.accessor(row),
+          row: { original: row },
+        }),
+      ).toBe(
+        expectedDisplayValues[originalKey],
       );
     });
   });

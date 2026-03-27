@@ -1157,9 +1157,17 @@ def merge_request_params(form_data: dict[str, Any], params: dict[str, Any]) -> N
     :param form_data: object to be updated
     :param params: request parameters received via query string
     """
+    reserved_url_params = {
+        "slice_id",
+        "dashboard_page_id",
+        "form_data_key",
+        "datasource_id",
+        "datasource_type",
+        "dataset_id",
+    }
     url_params = form_data.get("url_params", {})
     for key, value in params.items():
-        if key in ("form_data", "r"):
+        if key in ("form_data", "r") or key in reserved_url_params:
             continue
         url_params[key] = value
     form_data["url_params"] = url_params

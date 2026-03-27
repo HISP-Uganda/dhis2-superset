@@ -114,7 +114,8 @@ export default function chartReducer(
       };
     },
     [actions.DYNAMIC_PLUGIN_CONTROLS_READY](state) {
-      const sliceFormData = getFormDataFromControls(action.controlsState);
+      const sliceFormData =
+        action.formData ?? getFormDataFromControls(action.controlsState);
       return { ...state, sliceFormData };
     },
     [actions.TRIGGER_QUERY](state) {

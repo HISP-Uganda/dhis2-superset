@@ -34,15 +34,16 @@ import { getUrlParam } from 'src/utils/urlUtils';
 import { URL_PARAMS } from 'src/constants';
 import getFormDataWithExtraFilters from 'src/dashboard/util/charts/getFormDataWithExtraFilters';
 import { getAppliedFilterValues } from 'src/dashboard/util/activeDashboardFilters';
-import { getParsedExploreURLParams } from 'src/explore/exploreUtils/getParsedExploreURLParams';
 import { hydrateExplore } from 'src/explore/actions/hydrateExplore';
 import ExploreViewContainer from 'src/explore/components/ExploreViewContainer';
 import { ExploreResponsePayload, SaveActionType } from 'src/explore/types';
 import { fallbackExploreInitialData } from 'src/explore/fixtures';
 import { getItem, LocalStorageKeys } from 'src/utils/localStorageHelpers';
 import { getFormDataWithDashboardContext } from 'src/explore/controlUtils/getFormDataWithDashboardContext';
+import { sanitizeFormDataUrlParams } from 'src/explore/controlUtils';
 import { dhis2DataPreloader } from 'src/utils/dhis2DataPreloader';
 import type Chart from 'src/types/Chart';
+import { getExploreApiParams } from './getExploreApiParams';
 
 const isValidResult = (rv: JsonObject): boolean =>
   rv?.result?.form_data && rv?.result?.dataset;
@@ -86,6 +87,10 @@ const getDashboardPageContext = (pageId?: string | null) => {
 };
 
 const getDashboardContextFormData = () => {
+  if (getUrlParam(URL_PARAMS.sliceId)) {
+    return null;
+  }
+
   const dashboardPageId = getUrlParam(URL_PARAMS.dashboardPageId);
   const dashboardContext = getDashboardPageContext(dashboardPageId);
   if (dashboardContext) {
@@ -136,7 +141,7 @@ export default function ExplorePage() {
 
   useEffect(() => {
     isMounted.current = true;
-    const exploreUrlParams = getParsedExploreURLParams(location);
+    const exploreUrlParams = getExploreApiParams(location);
     const saveAction = getUrlParam(
       URL_PARAMS.saveAction,
     ) as SaveActionType | null;
@@ -145,13 +150,15 @@ export default function ExplorePage() {
     if (!isExploreInitialized.current || !!saveAction) {
       fetchExploreData(exploreUrlParams)
         .then(({ result }) => {
-          const formData = dashboardContextFormData
-            ? getFormDataWithDashboardContext(
-                result.form_data,
-                dashboardContextFormData,
-                saveAction,
-              )
-            : result.form_data;
+          const formData = sanitizeFormDataUrlParams(
+            dashboardContextFormData
+              ? getFormDataWithDashboardContext(
+                  result.form_data,
+                  dashboardContextFormData,
+                  saveAction,
+                )
+              : result.form_data,
+          );
 
           // Preload DHIS2 data in background if this is a DHIS2 dataset
           const { dataset } = result;

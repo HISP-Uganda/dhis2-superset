@@ -134,13 +134,6 @@ class GetExploreCommand(BaseCommand, ABC):
         if datasource:
             datasource_name = datasource.name
             security_manager.raise_for_access(datasource=datasource)
-            
-            # DHIS2: ensure specialized marts exist if this is a DHIS2-backed dataset
-            try:
-                from superset.dhis2.superset_dataset_service import ensure_specialized_marts_for_sqla_table
-                ensure_specialized_marts_for_sqla_table(datasource)
-            except (ImportError, Exception):
-                pass
 
         viz_type = form_data.get("viz_type")
         if not viz_type and datasource and datasource.default_endpoint:

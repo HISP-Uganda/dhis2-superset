@@ -1119,6 +1119,18 @@ def test_merge_request_params_when_url_params_predefined():
     assert url_params["dashboard_ids"] == form_data["url_params"]["dashboard_ids"]
 
 
+def test_merge_request_params_ignores_reserved_chart_params():
+    form_data = {"url_params": {"abc": "123"}}
+    url_params = {
+        "slice_id": "10",
+        "dashboard_page_id": "page-1",
+        "datasource_id": "7",
+        "foo": "bar",
+    }
+    merge_request_params(form_data, url_params)
+    assert form_data["url_params"] == {"abc": "123", "foo": "bar"}
+
+
 def test_parse_js_uri_path_items_eval_undefined():
     assert parse_js_uri_path_item("undefined", eval_undefined=True) is None
     assert parse_js_uri_path_item("null", eval_undefined=True) is None

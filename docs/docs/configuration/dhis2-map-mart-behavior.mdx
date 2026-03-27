@@ -63,6 +63,12 @@ selected org-unit hierarchy column is empty or null even when legacy hierarchy
 metadata is incomplete. That keeps higher-level aggregate rows from polluting
 map joins, groupings, labels, and tooltips.
 
+Chart reads and dashboard-to-Explore opens now stay on the normal saved-chart
+read path. The runtime `Explore` bootstrap and chart-data commands no longer
+attempt MART maintenance work while loading a chart. Saved dashboard charts
+therefore open the exact stored MART query configuration in Explore instead of
+silently mutating filters or stalling on runtime MART repair work.
+
 ## Compatibility Notes
 
 - Legacy charts saved with the old default categorical map palette now fall

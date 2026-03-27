@@ -18,7 +18,8 @@
  */
 /* eslint camelcase: 0 */
 import { getChartControlPanelRegistry, VizType } from '@superset-ui/core';
-import { getAllControlsState, getFormDataFromControls } from './controlUtils';
+import { getAllControlsState } from './controlUtils/getControlState';
+import { getFormDataFromControls } from './controlUtils/getFormDataFromControls';
 import { controls } from './controls';
 
 function handleDeprecatedControls(formData) {

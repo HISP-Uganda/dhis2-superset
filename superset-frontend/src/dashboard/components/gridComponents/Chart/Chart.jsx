@@ -19,13 +19,12 @@
 import cx from 'classnames';
 import { useCallback, useEffect, useRef, useMemo, useState, memo } from 'react';
 import PropTypes from 'prop-types';
-import { styled, t, logging } from '@superset-ui/core';
+import { styled } from '@superset-ui/core';
 import { debounce } from 'lodash';
-import { useHistory } from 'react-router-dom';
 import { bindActionCreators } from 'redux';
 import { useDispatch, useSelector } from 'react-redux';
 
-import { exportChart, mountExploreUrl } from 'src/explore/exploreUtils';
+import { exportChart } from 'src/explore/exploreUtils';
 import ChartContainer from 'src/components/Chart/ChartContainer';
 import {
   LOG_ACTIONS_CHANGE_DASHBOARD_FILTER,
@@ -34,8 +33,6 @@ import {
   LOG_ACTIONS_EXPORT_XLSX_DASHBOARD_CHART,
   LOG_ACTIONS_FORCE_REFRESH_CHART,
 } from 'src/logger/LogUtils';
-import { postFormData } from 'src/explore/exploreUtils/formData';
-import { URL_PARAMS } from 'src/constants';
 import { enforceSharedLabelsColorsArray } from 'src/utils/colorScheme';
 import exportPivotExcel from 'src/utils/downloadAsPivotExcel';
 
@@ -175,7 +172,6 @@ const Chart = props => {
   const [descriptionHeight, setDescriptionHeight] = useState(0);
   const [height, setHeight] = useState(props.height);
   const [width, setWidth] = useState(props.width);
-  const history = useHistory();
   const resize = useCallback(
     debounce(() => {
       const { width, height } = props;
@@ -331,48 +327,6 @@ const Chart = props => {
 
   formData.dashboardId = dashboardInfo.id;
 
-  const onExploreChart = useCallback(
-    async clickEvent => {
-      const isOpenInNewTab =
-        clickEvent.shiftKey || clickEvent.ctrlKey || clickEvent.metaKey;
-      try {
-        const lastTabId = window.localStorage.getItem('last_tab_id');
-        const nextTabId = lastTabId
-          ? String(Number.parseInt(lastTabId, 10) + 1)
-          : undefined;
-        const key = await postFormData(
-          datasource.id,
-          datasource.type,
-          formData,
-          slice.slice_id,
-          nextTabId,
-        );
-        const url = mountExploreUrl(null, {
-          [URL_PARAMS.formDataKey.name]: key,
-          [URL_PARAMS.sliceId.name]: slice.slice_id,
-        });
-        if (isOpenInNewTab) {
-          window.open(url, '_blank', 'noreferrer');
-        } else {
-          history.push(url);
-        }
-      } catch (error) {
-        logging.error(error);
-        boundActionCreators.addDangerToast(
-          t('An error occurred while opening Explore'),
-        );
-      }
-    },
-    [
-      datasource.id,
-      datasource.type,
-      formData,
-      slice.slice_id,
-      boundActionCreators.addDangerToast,
-      history,
-    ],
-  );
-
   const exportTable = useCallback(
     (format, isFullCSV, isPivot = false) => {
       const logAction =
@@ -466,7 +420,6 @@ const Chart = props => {
         annotationQuery={annotationQuery}
         logExploreChart={logExploreChart}
         logEvent={boundActionCreators.logEvent}
-        onExploreChart={onExploreChart}
         exportCSV={exportCSV}
         exportPivotCSV={exportPivotCSV}
         exportXLSX={exportXLSX}

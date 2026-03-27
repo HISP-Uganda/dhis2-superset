@@ -131,7 +131,7 @@ const createProps = (additionalProps = {}) => ({
 });
 
 fetchMock.post(
-  'http://api/v1/chart/data?form_data=%7B%22slice_id%22%3A318%7D',
+  'http://api/v1/chart/data',
   { body: {} },
   {
     sendAsJson: false,

@@ -39,6 +39,7 @@ import {
   UNSAVED_CHART_ID,
 } from 'src/explore/constants';
 import { DashboardStandaloneMode } from 'src/dashboard/util/constants';
+import { sanitizeFormDataUrlParams } from 'src/explore/controlUtils/getFormDataFromControls';
 
 export function getChartKey(explore) {
   const { slice, form_data } = explore;
@@ -224,12 +225,12 @@ export const buildV1ChartDataPayload = async ({
         },
       ]));
   return buildQuery(
-    {
+    sanitizeFormDataUrlParams({
       ...formData,
       force,
       result_format: resultFormat,
       result_type: resultType,
-    },
+    }),
     {
       ownState,
       hooks: {

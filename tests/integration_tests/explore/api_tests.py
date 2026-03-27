@@ -252,5 +252,4 @@ def test_get_url_params(test_client, login_as_admin, chart_id):
 
     assert result["form_data"]["url_params"] == {
         "foo": "bar",
-        "slice_id": str(chart_id),
     }

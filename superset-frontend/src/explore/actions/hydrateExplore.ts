@@ -37,7 +37,7 @@ import {
   VizType,
 } from '@superset-ui/core';
 import {
-  getFormDataFromControls,
+  getMergedFormDataWithControls,
   applyMapStateToPropsToControl,
 } from 'src/explore/controlUtils';
 import { getDatasourceUid } from 'src/utils/getDatasourceUid';
@@ -67,13 +67,14 @@ export const hydrateExplore =
     const dashboardId = getUrlParam(URL_PARAMS.dashboardId);
     const fallbackSlice = sliceId ? sliceEntities?.slices?.[sliceId] : null;
     const initialSlice = slice ?? fallbackSlice;
+    const hasSavedSlice = Boolean(initialSlice?.slice_id);
     const initialFormData = form_data ?? initialSlice?.form_data;
     if (!initialFormData.viz_type) {
       const defaultVizType = common?.conf.DEFAULT_VIZ_TYPE || VizType.Table;
       initialFormData.viz_type =
         getUrlParam(URL_PARAMS.vizType) || defaultVizType;
     }
-    if (!initialFormData.time_range) {
+    if (!initialFormData.time_range && !hasSavedSlice) {
       initialFormData.time_range =
         common?.conf?.DEFAULT_TIME_FILTER || NO_TIME_RANGE;
     }
@@ -177,9 +178,11 @@ export const hydrateExplore =
         exploreState,
       );
     });
-    const sliceFormData = initialSlice
-      ? getFormDataFromControls(initialControls)
-      : null;
+    const mergedInitialFormData = getMergedFormDataWithControls(
+      initialControls,
+      initialFormData,
+    );
+    const sliceFormData = initialSlice ? mergedInitialFormData : null;
 
     const chartKey: number = getChartKey(initialExploreState);
     const chart: ChartState = {
@@ -189,7 +192,7 @@ export const hydrateExplore =
       chartStackTrace: null,
       chartUpdateEndTime: null,
       chartUpdateStartTime: 0,
-      latestQueryFormData: getFormDataFromControls(exploreState.controls),
+      latestQueryFormData: mergedInitialFormData,
       sliceFormData,
       queryController: null,
       queriesResponse: null,

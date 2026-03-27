@@ -58,6 +58,9 @@ jest.mock('src/explore/exploreUtils/getParsedExploreURLParams', () => ({
 describe('ChartPage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (getParsedExploreURLParams as jest.Mock).mockReturnValue(
+      new URLSearchParams(),
+    );
 
     (useUnsavedChangesPrompt as jest.Mock).mockReturnValue({
       showModal: false,

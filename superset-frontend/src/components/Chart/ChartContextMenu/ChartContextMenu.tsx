@@ -21,8 +21,10 @@ import {
   ReactNode,
   RefObject,
   useCallback,
+  useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import ReactDOM from 'react-dom';
@@ -109,6 +111,20 @@ const ChartContextMenu = (
   );
 
   const [visible, setVisible] = useState(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(
+    () => () => {
+      isMountedRef.current = false;
+    },
+    [],
+  );
+
+  const setVisibleSafe = useCallback((nextVisible: boolean) => {
+    if (isMountedRef.current) {
+      setVisible(nextVisible);
+    }
+  }, []);
 
   const isDisplayed = (item: ContextMenuItem) =>
     displayedItems === ContextMenuItem.All ||
@@ -157,9 +173,9 @@ const ChartContextMenu = (
   const [showDrillByModal, setShowDrillByModal] = useState(false);
 
   const closeContextMenu = useCallback(() => {
-    setVisible(false);
+    setVisibleSafe(false);
     onClose();
-  }, [onClose]);
+  }, [onClose, setVisibleSafe]);
 
   const handleDrillBy = useCallback((column: Column) => {
     setDrillByColumn(column);
@@ -412,16 +428,16 @@ const ChartContextMenu = (
               ? menuItems
               : [{ key: 'no-actions', label: t('No actions'), disabled: true }],
           onClick: () => {
-            setVisible(false);
+            setVisibleSafe(false);
             onClose();
           },
         }}
-        dropdownRender={menu => (
+        popupRender={menu => (
           <div data-test="chart-context-menu">{menu}</div>
         )}
         trigger={['click']}
         onOpenChange={value => {
-          setVisible(value);
+          setVisibleSafe(value);
         }}
         open={visible}
       >

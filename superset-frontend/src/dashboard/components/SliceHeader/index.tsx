@@ -41,8 +41,9 @@ import { SliceHeaderControlsProps } from 'src/dashboard/components/SliceHeaderCo
 import FiltersBadge from 'src/dashboard/components/FiltersBadge';
 import GroupByBadge from 'src/dashboard/components/GroupByBadge';
 import { RootState } from 'src/dashboard/types';
-import { DashboardPageIdContext } from 'src/dashboard/containers/DashboardPage';
 import RowCountLabel from 'src/components/RowCountLabel';
+import { URL_PARAMS } from 'src/constants';
+import { DashboardPageIdContext } from 'src/dashboard/containers/DashboardPage';
 
 const extensionsRegistry = getExtensionsRegistry();
 
@@ -176,7 +177,6 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
     const uiConfig = useUiConfig();
     const shouldShowRowLimitWarning =
       !isEmbedded() || uiConfig.showRowLimitWarning;
-    const dashboardPageId = useContext(DashboardPageIdContext);
     const [headerTooltip, setHeaderTooltip] = useState<ReactNode | null>(null);
     const headerRef = useRef<HTMLDivElement>(null);
     // TODO: change to indicator field after it will be implemented
@@ -192,6 +192,7 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
     );
 
     const theme = useTheme();
+    const dashboardPageId = useContext(DashboardPageIdContext);
 
     const rowLimit = Number(formData.row_limit || -1);
     const sqlRowCount = Number(firstQueryResponse?.sql_rowcount || 0);
@@ -209,7 +210,13 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
       }
     }, [sliceName, width, height]);
 
-    const exploreUrl = `/explore/?dashboard_page_id=${dashboardPageId}&slice_id=${slice.slice_id}`;
+    const exploreParams = new URLSearchParams({
+      [URL_PARAMS.sliceId.name]: String(slice.slice_id),
+    });
+    if (dashboardPageId) {
+      exploreParams.set(URL_PARAMS.dashboardPageId.name, dashboardPageId);
+    }
+    const exploreUrl = `/explore/?${exploreParams.toString()}`;
 
     return (
       <ChartHeaderStyles data-test="slice-header" ref={ref}>

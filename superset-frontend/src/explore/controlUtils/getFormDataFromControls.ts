@@ -18,6 +18,32 @@
  */
 import { JsonValue, QueryFormData } from '@superset-ui/core';
 import { ControlStateMapping } from '@superset-ui/chart-controls';
+import { omit } from 'lodash';
+import { RESERVED_CHART_URL_PARAMS } from 'src/constants';
+
+export function sanitizeFormDataUrlParams(
+  formData: QueryFormData = {},
+): QueryFormData {
+  if (!formData.url_params) {
+    return formData;
+  }
+
+  const sanitizedUrlParams = Object.fromEntries(
+    Object.entries(formData.url_params || {}).filter(
+      ([key]) => !RESERVED_CHART_URL_PARAMS.includes(key),
+    ),
+  );
+
+  if (!Object.keys(sanitizedUrlParams).length) {
+    const { url_params, ...sanitizedFormData } = formData;
+    return sanitizedFormData as QueryFormData;
+  }
+
+  return {
+    ...formData,
+    url_params: sanitizedUrlParams,
+  };
+}
 
 export function getFormDataFromControls(
   controlsState: ControlStateMapping,
@@ -27,5 +53,21 @@ export function getFormDataFromControls(
     const control = controlsState[controlName];
     formData[controlName] = control.value;
   });
-  return formData as QueryFormData;
+  return sanitizeFormDataUrlParams(formData as QueryFormData);
+}
+
+export function getMergedFormDataWithControls(
+  controlsState: ControlStateMapping,
+  baseFormData: QueryFormData = {},
+  keysToOmit: string[] = [],
+): QueryFormData {
+  return sanitizeFormDataUrlParams(
+    omit(
+      {
+        ...baseFormData,
+        ...getFormDataFromControls(controlsState),
+      },
+      keysToOmit,
+    ) as QueryFormData,
+  );
 }

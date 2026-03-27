@@ -32,6 +32,8 @@ import {
   getControlState,
   applyMapStateToPropsToControl,
   findControlItem,
+  getMergedFormDataWithControls,
+  sanitizeFormDataUrlParams,
 } from 'src/explore/controlUtils';
 import {
   controlPanelSectionsChartOptions,
@@ -239,6 +241,72 @@ describe('controlUtils', () => {
         'non_existing_key',
       );
       expect(controlItem).toBeNull();
+    });
+  });
+
+  describe('getMergedFormDataWithControls', () => {
+    test('preserves saved form data fields without active controls', () => {
+      const controlsState = {
+        datasource: { value: '1__table' },
+        slice_id: { value: 1 },
+        viz_type: { value: VizType.Table },
+      };
+
+      expect(
+        getMergedFormDataWithControls(controlsState as any, {
+          datasource: '1__table',
+          slice_id: 1,
+          time_grain_sqla: 'P1D',
+          viz_type: VizType.Table,
+          x_axis_sort_asc: true,
+        }),
+      ).toEqual({
+        datasource: '1__table',
+        slice_id: 1,
+        time_grain_sqla: 'P1D',
+        viz_type: VizType.Table,
+        x_axis_sort_asc: true,
+      });
+    });
+
+    test('omits requested hidden form data fields after merging', () => {
+      const controlsState = {
+        datasource: { value: '1__table' },
+        viz_type: { value: VizType.Table },
+      };
+
+      expect(
+        getMergedFormDataWithControls(
+          controlsState as any,
+          {
+            datasource: '1__table',
+            optional_key1: 'value1',
+            viz_type: VizType.Table,
+          },
+          ['optional_key1'],
+        ),
+      ).toEqual({
+        datasource: '1__table',
+        viz_type: VizType.Table,
+      });
+    });
+
+    test('removes reserved chart route params from url_params', () => {
+      expect(
+        sanitizeFormDataUrlParams({
+          slice_id: 10,
+          url_params: {
+            dashboard_page_id: 'page-1',
+            foo: 'bar',
+            slice_id: '10',
+          },
+        }),
+      ).toEqual({
+        slice_id: 10,
+        url_params: {
+          foo: 'bar',
+        },
+      });
     });
   });
 });

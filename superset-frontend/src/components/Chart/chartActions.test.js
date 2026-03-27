@@ -143,6 +143,14 @@ describe('chart actions', () => {
       expect(dispatch.args[0][0].type).toBe(actions.CHART_UPDATE_STARTED);
     });
 
+    test('should not append stale slice-only form_data to chart data POST urls', async () => {
+      await actions.getChartDataRequest({
+        formData: { slice_id: 321, viz_type: 'my_viz' },
+      });
+
+      expect(getChartDataUriStub.lastCall.args[0].qs).toEqual({});
+    });
+
     test('should handle the bigint without regression', async () => {
       getChartDataUriStub.restore();
       const mockBigIntUrl = '/mock/chart/data/bigint';

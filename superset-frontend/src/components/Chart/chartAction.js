@@ -27,6 +27,7 @@ import {
   getClientErrorObject,
 } from '@superset-ui/core';
 import { getControlsState } from 'src/explore/store';
+import { getMergedFormDataWithControls } from 'src/explore/controlUtils';
 import {
   getAnnotationJsonUrl,
   getExploreUrl,
@@ -114,10 +115,15 @@ export const dynamicPluginControlsReady = () => (dispatch, getState) => {
     state.explore,
     state.explore.form_data,
   );
+  const formData = getMergedFormDataWithControls(
+    controlsState,
+    state.explore.form_data,
+  );
   dispatch({
     type: DYNAMIC_PLUGIN_CONTROLS_READY,
     key: controlsState.slice_id.value,
     controlsState,
+    formData,
   });
 };
 
@@ -230,7 +236,6 @@ async function v1ChartDataRequestUncached(
   }
 
   const qs = {};
-  if (sliceId !== undefined) qs.form_data = `{"slice_id":${sliceId}}`;
   if (dashboardId !== undefined) qs.dashboard_id = dashboardId;
   if (force) qs.force = force;
 

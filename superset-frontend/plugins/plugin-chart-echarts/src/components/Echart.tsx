@@ -141,6 +141,8 @@ function Echart(
   }
   const [didMount, setDidMount] = useState(false);
   const chartRef = useRef<EChartsType>();
+  const initAnimationFrameRef = useRef<number>();
+  const isMountedRef = useRef(false);
   const currentSelection = useMemo(
     () => Object.keys(selectedValues) || [],
     [selectedValues],
@@ -167,19 +169,84 @@ function Echart(
   );
 
   useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (initAnimationFrameRef.current) {
+        window.cancelAnimationFrame(initAnimationFrameRef.current);
+        initAnimationFrameRef.current = undefined;
+      }
+      chartRef.current?.dispose();
+      chartRef.current = undefined;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     loadLocale(locale).then(localeObj => {
+      if (cancelled) {
+        return;
+      }
+
       if (localeObj) {
         registerLocale(locale, localeObj);
       }
-      if (!divRef.current) return;
-      if (!chartRef.current) {
-        chartRef.current = init(divRef.current, null, { locale });
-      }
-      // did mount
-      handleSizeChange({ width, height });
-      setDidMount(true);
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [locale]);
+
+  useEffect(() => {
+    const initializeWhenReady = () => {
+      const container = divRef.current;
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      if (!container || width <= 0 || height <= 0) {
+        initAnimationFrameRef.current =
+          window.requestAnimationFrame(initializeWhenReady);
+        return;
+      }
+
+      if (!chartRef.current) {
+        // Superset already measures chart width/height; pass them into ECharts
+        // directly so Explore charts can initialize before the inner div reports
+        // a non-zero clientHeight.
+        chartRef.current = init(container, null, {
+          locale,
+          width,
+          height,
+        });
+      }
+
+      handleSizeChange({ width, height });
+
+      if (isMountedRef.current) {
+        setDidMount(true);
+      }
+
+      initAnimationFrameRef.current = undefined;
+    };
+
+    if (initAnimationFrameRef.current) {
+      window.cancelAnimationFrame(initAnimationFrameRef.current);
+      initAnimationFrameRef.current = undefined;
+    }
+
+    initializeWhenReady();
+
+    return () => {
+      if (initAnimationFrameRef.current) {
+        window.cancelAnimationFrame(initAnimationFrameRef.current);
+        initAnimationFrameRef.current = undefined;
+      }
+    };
+  }, [handleSizeChange, height, locale, width]);
 
   useEffect(() => {
     if (didMount) {
@@ -254,8 +321,6 @@ function Echart(
       chartRef.current?.setOption(themedEchartOptions, true);
     }
   }, [didMount, echartOptions, eventHandlers, zrEventHandlers, theme]);
-
-  useEffect(() => () => chartRef.current?.dispose(), []);
 
   // highlighting
   useEffect(() => {
