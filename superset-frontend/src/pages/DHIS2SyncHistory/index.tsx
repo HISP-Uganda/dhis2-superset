@@ -51,8 +51,9 @@ import {
 } from 'src/features/dhis2/utils';
 
 const { Text } = Typography;
-const POLL_INTERVAL_MS = 15 * 60 * 1000;
-const POLL_INTERVAL_LABEL = '15 min';
+// Poll every 5 s when jobs are active so progress is visible in real time.
+const POLL_INTERVAL_MS = 5 * 1000;
+const POLL_INTERVAL_LABEL = '5 s';
 const ACTIVE_STATUSES = new Set(['running', 'queued', 'pending']);
 const TERMINAL_STATUSES = new Set(['success', 'partial', 'failed', 'cancelled']);
 
@@ -77,8 +78,12 @@ export default function DHIS2SyncHistory() {
   const [requestLogs, setRequestLogs] = useState<
     Record<number, { logs: DHIS2RequestLog[]; summary: DHIS2RequestLogSummary | null; loading: boolean }>
   >({});
+  // Track which job rows are currently expanded so we can auto-refresh their logs
+  // Keys must match the table's rowKey format: `${job_category}-${id}`
+  const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPollingRef = useRef(false);
+  const logPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current !== null) {
@@ -195,8 +200,10 @@ export default function DHIS2SyncHistory() {
     [addSuccessToast, addDangerToast],
   );
 
-  const fetchRequestLogs = useCallback(async (jobId: number) => {
-    setRequestLogs(prev => ({ ...prev, [jobId]: { logs: [], summary: null, loading: true } }));
+  const fetchRequestLogs = useCallback(async (jobId: number, quiet = false) => {
+    if (!quiet) {
+      setRequestLogs(prev => ({ ...prev, [jobId]: { logs: [], summary: null, loading: true } }));
+    }
     try {
       const resp = await SupersetClient.get({
         endpoint: `/api/v1/dhis2/jobs/sync/${jobId}/requests`,
@@ -210,12 +217,39 @@ export default function DHIS2SyncHistory() {
         },
       }));
     } catch {
-      setRequestLogs(prev => ({
-        ...prev,
-        [jobId]: { logs: [], summary: null, loading: false },
-      }));
+      if (!quiet) {
+        setRequestLogs(prev => ({
+          ...prev,
+          [jobId]: { logs: [], summary: null, loading: false },
+        }));
+      }
     }
   }, []);
+
+  // Auto-refresh request logs every 3 s for any expanded job that is still active.
+  useEffect(() => {
+    if (logPollTimerRef.current !== null) {
+      clearInterval(logPollTimerRef.current);
+      logPollTimerRef.current = null;
+    }
+    const activeExpandedIds = expandedRowKeys
+      .map(key => {
+        const m = key.match(/-(\d+)$/);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter((id): id is number => {
+        if (id === null) return false;
+        const job = jobs.find(j => j.id === id);
+        return !!job && ACTIVE_STATUSES.has(job.status);
+      });
+    if (activeExpandedIds.length === 0) return undefined;
+    logPollTimerRef.current = setInterval(() => {
+      activeExpandedIds.forEach(id => void fetchRequestLogs(id, true));
+    }, 3000);
+    return () => {
+      if (logPollTimerRef.current !== null) clearInterval(logPollTimerRef.current);
+    };
+  }, [expandedRowKeys, jobs, fetchRequestLogs]);
 
   const successCount = jobs.filter(j => j.status === 'success').length;
   const failedCount = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
@@ -549,8 +583,13 @@ export default function DHIS2SyncHistory() {
                 },
               ]}
               expandable={{
+                expandedRowKeys,
                 onExpand: (expanded: boolean, job: DHIS2AnyJob) => {
-                  if (expanded && isSyncJob(job) && !requestLogs[job.id]) {
+                  const key = `${job.job_category}-${job.id}`;
+                  setExpandedRowKeys(prev =>
+                    expanded ? [...prev, key] : prev.filter(k => k !== key),
+                  );
+                  if (expanded && isSyncJob(job)) {
                     void fetchRequestLogs(job.id);
                   }
                 },
@@ -847,6 +886,10 @@ export default function DHIS2SyncHistory() {
                                           v === 'success' ? (
                                             <Tag icon={<CheckCircleOutlined />} color="success" style={{ fontSize: 11 }}>
                                               {t('OK')}
+                                            </Tag>
+                                          ) : v === 'running' ? (
+                                            <Tag icon={<SyncOutlined spin />} color="processing" style={{ fontSize: 11 }}>
+                                              {t('Running')}
                                             </Tag>
                                           ) : (
                                             <Tag icon={<CloseCircleOutlined />} color="error" style={{ fontSize: 11 }}>

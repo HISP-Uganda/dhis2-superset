@@ -58,6 +58,7 @@ import ZoomConfigControl from './ZoomConfigControl/ZoomConfigControl';
 import NumberControl from './NumberControl';
 import TimeRangeControl from './TimeRangeControl';
 import ColorBreakpointsControl from './ColorBreakpointsControl';
+import MetricColorControl from './MetricColorControl';
 import MatrixifyDimensionControl from './MatrixifyDimensionControl';
 import DHIS2ColumnFilterControl from './DHIS2ColumnFilterControl';
 
@@ -85,6 +86,7 @@ const controlMap = {
   DndColumnMetricSelect,
   FixedOrMetricControl,
   ColorBreakpointsControl,
+  MetricColorControl,
   HiddenControl,
   LayerConfigsControl,
   MapViewControl,

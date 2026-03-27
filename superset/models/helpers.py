@@ -2087,6 +2087,7 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 selected_hierarchy_candidates.append(normalized_filter_col)
                 selected_period_candidates.append(normalized_filter_col)
         preferred_terminal_hierarchy_column = None
+        normalized_explicit_selected_org_unit_column = None
         explicit_selected_org_unit_column = extras.get(
             "dhis2_selected_org_unit_column"
         )
@@ -2680,19 +2681,43 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                         )
         # Keep only rows at the selected OU level; when no OU hierarchy column is
         # selected, default to the deepest staged OU level to avoid recounting.
+        # Use dhis2_terminal_hierarchy_filtering to allow opting-out of the
+        # "deeper levels must be null" constraint while preserving the "selected
+        # level must be non-null" rule.
+        use_terminal_filtering = extras.get("dhis2_terminal_hierarchy_filtering")
+        if use_terminal_filtering is None:
+            use_terminal_filtering = True
+
         if selected_terminal_hierarchy_column:
             terminal_hierarchy_predicate = build_terminal_hierarchy_sqla_predicate(
                 selected_terminal_hierarchy_column,
                 dhis2_hierarchy_column_names,
+                terminal=use_terminal_filtering,
             )
             if terminal_hierarchy_predicate is not None:
                 where_clause_and.append(terminal_hierarchy_predicate)
+        elif (
+            normalized_explicit_selected_org_unit_column
+            and normalized_explicit_selected_org_unit_column in columns_by_name
+        ):
+            # Legacy MART datasets may still serve the selected OrgUnit column
+            # without complete hierarchy metadata. Maps must still exclude rows
+            # where the selected OU grain is blank, otherwise higher-level
+            # aggregate rows leak into the thematic join and appear as "No data".
+            explicit_ou_predicate = build_terminal_hierarchy_sqla_predicate(
+                normalized_explicit_selected_org_unit_column,
+                [normalized_explicit_selected_org_unit_column],
+                terminal=False,
+            )
+            if explicit_ou_predicate is not None:
+                where_clause_and.append(explicit_ou_predicate)
         # Period hierarchies behave similarly: if no explicit period hierarchy
         # column is selected, prefer the most granular staged period level.
         if selected_terminal_period_column:
             terminal_period_predicate = build_terminal_hierarchy_sqla_predicate(
                 selected_terminal_period_column,
                 dhis2_period_hierarchy_column_names,
+                terminal=use_terminal_filtering,
             )
             if terminal_period_predicate is not None:
                 where_clause_and.append(terminal_period_predicate)

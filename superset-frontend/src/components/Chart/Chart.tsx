@@ -40,6 +40,7 @@ import { isCurrentUserBot } from 'src/utils/isBot';
 import { ChartSource } from 'src/types/ChartSource';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
 import { Dispatch } from 'redux';
+import { colorValueToCss } from 'src/utils/colorValue';
 import ChartRenderer from './ChartRenderer';
 import { ChartErrorMessage } from './ChartErrorMessage';
 import { getChartRequiredFieldsMissingMessage } from '../../utils/getChartRequiredFieldsMissingMessage';
@@ -126,9 +127,14 @@ const defaultProps: Partial<ChartProps> = {
   isInView: true,
 };
 
-const Styles = styled.div<{ height: number; width?: number }>`
+const Styles = styled.div<{
+  height: number;
+  width?: number;
+  $backgroundColor?: string;
+}>`
   min-height: ${p => p.height}px;
   position: relative;
+  background-color: ${({ $backgroundColor }) => $backgroundColor || 'transparent'};
 
   .chart-tooltip {
     opacity: 0.75;
@@ -323,6 +329,16 @@ class Chart extends PureComponent<ChartProps, {}> {
       queriesResponse = [],
       width,
     } = this.props;
+    const chartBackgroundColor = colorValueToCss(
+      (this.props.formData as QueryFormData & {
+        chart_background_color?: unknown;
+        chartBackgroundColor?: unknown;
+      })?.chart_background_color ??
+        (this.props.formData as QueryFormData & {
+          chart_background_color?: unknown;
+          chartBackgroundColor?: unknown;
+        })?.chartBackgroundColor,
+    );
 
     // For staged DHIS2 local datasets the datasource is backed by a local
     // serving database whose name is stored in the extra JSON
@@ -407,6 +423,7 @@ class Chart extends PureComponent<ChartProps, {}> {
           data-test="chart-container"
           height={height}
           width={width}
+          $backgroundColor={chartBackgroundColor}
         >
           {isLoading
             ? this.renderSpinner(databaseName)

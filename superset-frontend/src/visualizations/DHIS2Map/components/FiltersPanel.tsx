@@ -4,23 +4,19 @@ import { Select, Button } from 'antd';
 import { CloseOutlined, FilterOutlined } from '@ant-design/icons';
 
 const PanelWrapper = styled.div`
-  position: absolute;
-  top: 60px;
-  left: 20px;
-  background: white;
-  border: 2px solid rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  width: 300px;
-  max-height: 500px;
+  position: relative;
+  width: 100%;
+  max-height: 260px;
   overflow: auto;
-  z-index: 1001;
+  background: #ffffff;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
   font-size: 12px;
 
   .panel-header {
-    padding: 8px 12px;
-    background: #f5f5f5;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 10px 12px;
+    background: rgba(248, 250, 252, 0.92);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
     font-weight: 600;
     display: flex;
     justify-content: space-between;
@@ -29,9 +25,9 @@ const PanelWrapper = styled.div`
 
   .panel-body {
     padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px 16px;
   }
 
   .filter-group {
@@ -59,6 +55,12 @@ const PanelWrapper = styled.div`
     &:hover {
       color: #000;
     }
+  }
+
+  .panel-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-start;
   }
 `;
 
@@ -123,16 +125,18 @@ export function FiltersPanel({
           </div>
         ))}
         {Object.keys(filters).length > 0 && (
-          <Button
-            size="small"
-            type="link"
-            onClick={() => {
-              columns.forEach(col => onChange(col, []));
-            }}
-            style={{ padding: 0, textAlign: 'left', width: 'fit-content' }}
-          >
-            {t('Clear all filters')}
-          </Button>
+          <div className="panel-actions">
+            <Button
+              size="small"
+              type="link"
+              onClick={() => {
+                columns.forEach(col => onChange(col, []));
+              }}
+              style={{ padding: 0, textAlign: 'left', width: 'fit-content' }}
+            >
+              {t('Clear all filters')}
+            </Button>
+          </div>
         )}
       </div>
     </PanelWrapper>

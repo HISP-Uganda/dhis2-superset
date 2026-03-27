@@ -126,11 +126,11 @@ export function registerLegendSetsAsColorSchemes(
  * controlPanel's async fetch).
  */
 export function readCachedLegendSets(
-  databaseId: number | null | undefined,
+  databaseId: number | string | null | undefined,
 ): StagedLegendSet[] {
   if (!databaseId) return [];
   try {
-    const raw = window.localStorage.getItem(`${LS_CACHE_PREFIX}${databaseId}`);
+    const raw = window.localStorage.getItem(`${LS_CACHE_PREFIX}${Number(databaseId)}`);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as {
       data?: StagedLegendSet[];
@@ -148,34 +148,35 @@ export function readCachedLegendSets(
  * schemes.  Skips if recently registered (< CACHE_TTL_MS).
  */
 export async function syncDHIS2LegendSchemesForDatabase(
-  databaseId: number,
+  databaseId: number | string,
   options: {
     isPublicView?: boolean;
     chartId?: number;
     dashboardId?: number;
   } = {},
 ): Promise<void> {
-  const lastAt = _lastRegisteredAt[databaseId] ?? 0;
+  const dbId = Number(databaseId);
+  const lastAt = _lastRegisteredAt[dbId] ?? 0;
   const now = Date.now();
 
   // Try from localStorage cache first
-  const cached = readCachedLegendSets(databaseId);
+  const cached = readCachedLegendSets(dbId);
   if (cached.length > 0) {
     registerLegendSetsAsColorSchemes(cached);
   }
 
   // Skip network fetch if recently synced
   if (now - lastAt < CACHE_TTL_MS) return;
-  _lastRegisteredAt[databaseId] = now;
+  _lastRegisteredAt[dbId] = now;
 
   try {
     const { SupersetClient } = await import('@superset-ui/core');
     const { isPublicView, chartId, dashboardId } = options;
 
-    const protectedEndpoint = `/api/v1/database/${databaseId}/dhis2_metadata/?type=legendSets&staged=true`;
+    const protectedEndpoint = `/api/v1/database/${dbId}/dhis2_metadata/?type=legendSets&staged=true`;
     const publicEndpoint =
       chartId != null
-        ? `/api/v1/database/${databaseId}/dhis2_metadata_public/?type=legendSets&staged=true&slice_id=${chartId}${
+        ? `/api/v1/database/${dbId}/dhis2_metadata_public/?type=legendSets&staged=true&slice_id=${chartId}${
             dashboardId ? `&dashboard_id=${dashboardId}` : ''
           }`
         : null;
@@ -201,20 +202,25 @@ export async function syncDHIS2LegendSchemesForDatabase(
     }
 
     const legendSets = response.json?.result;
+    const responseStatus = response.json?.status || 'success';
     if (!Array.isArray(legendSets)) return;
 
-    // Persist to localStorage so DHIS2Map and other controls share the cache
-    window.localStorage.setItem(
-      `${LS_CACHE_PREFIX}${databaseId}`,
-      JSON.stringify({
-        data: legendSets,
-        timestamp: now,
-        status: response.json?.status || 'success',
-      }),
-    );
-
-    registerLegendSetsAsColorSchemes(legendSets);
+    // Only persist to localStorage if not pending.
+    // Overwriting with status='pending' and data=[] causes the UI to show 
+    // "No legend sets found" even if valid data was previously cached.
+    if (responseStatus !== 'pending') {
+      window.localStorage.setItem(
+        `${LS_CACHE_PREFIX}${dbId}`,
+        JSON.stringify({
+          data: legendSets,
+          timestamp: now,
+          status: responseStatus,
+        }),
+      );
+      registerLegendSetsAsColorSchemes(legendSets);
+    }
   } catch {
+    _lastRegisteredAt[dbId] = 0; // Allow retry on error
     // Non-fatal — fall back to cached or no DHIS2 legend sets
   }
 }

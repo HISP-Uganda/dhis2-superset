@@ -119,6 +119,13 @@ export interface DHIS2WizardState {
   dataElements: string[];
   periods: string[];
   periodsAutoDetect?: boolean;
+  /** 'relative' = single DHIS2 relative period; 'fixed_range' = start–end date range */
+  defaultPeriodRangeType?: 'relative' | 'fixed_range';
+  /** DHIS2 relative period identifier used as default when auto-detect is on */
+  defaultRelativePeriod?: string;
+  /** ISO date strings for fixed date-range default (inclusive) */
+  defaultPeriodStart?: string | null;
+  defaultPeriodEnd?: string | null;
   orgUnits: string[];
   orgUnitsAutoDetect?: boolean;
   selectedOrgUnitDetails?: Array<{
@@ -136,6 +143,12 @@ export interface DHIS2WizardState {
   }>;
   includeChildren: boolean;
   dataLevelScope?: 'selected' | 'children' | 'grandchildren' | 'all_levels';
+  /**
+   * Lowest hierarchy level to include (1 = national, N = facility).
+   * Extraction stops at this level — org units deeper than this are excluded.
+   * Corresponds to DHIS2StagedDataset.max_orgunit_level on the backend.
+   */
+  maxOrgUnitLevel?: number | null;
   columns: Array<{
     name: string;
     type: string;
@@ -251,7 +264,11 @@ export default function DHIS2DatasetWizard({
     variableMappings: [],
     dataElements: [],
     periods: [],
-    periodsAutoDetect: false,
+    periodsAutoDetect: true,
+    defaultPeriodRangeType: 'relative',
+    defaultRelativePeriod: 'LAST_12_MONTHS',
+    defaultPeriodStart: null,
+    defaultPeriodEnd: null,
     orgUnits: [],
     orgUnitsAutoDetect: false,
     selectedOrgUnitDetails: [],
@@ -392,7 +409,11 @@ export default function DHIS2DatasetWizard({
             dataset_config: {
               configured_connection_ids: wizardState.selectedInstanceIds,
               periods: wizardState.periods,
-              periods_auto_detect: wizardState.periodsAutoDetect ?? false,
+              periods_auto_detect: wizardState.periodsAutoDetect ?? true,
+              default_period_range_type: wizardState.defaultPeriodRangeType ?? 'relative',
+              default_relative_period: wizardState.defaultRelativePeriod ?? 'LAST_12_MONTHS',
+              default_period_start: wizardState.defaultPeriodStart ?? null,
+              default_period_end: wizardState.defaultPeriodEnd ?? null,
               org_units: wizardState.orgUnits,
               org_units_auto_detect: wizardState.orgUnitsAutoDetect ?? false,
               org_unit_details: wizardState.selectedOrgUnitDetails || [],
@@ -411,6 +432,13 @@ export default function DHIS2DatasetWizard({
               include_disaggregation_dimension:
                 wizardState.includeDisaggregationDimension ?? false,
             },
+            // max_orgunit_level is a top-level field on DHIS2StagedDataset
+            // (not nested inside dataset_config). It sets the lowest hierarchy
+            // level to include — OU nodes deeper than this are excluded from
+            // extraction.
+            ...(wizardState.maxOrgUnitLevel != null
+              ? { max_orgunit_level: wizardState.maxOrgUnitLevel }
+              : {}),
             variables:
               variablesPayload.length > 0 ? variablesPayload : undefined,
           };

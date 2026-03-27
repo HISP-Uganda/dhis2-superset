@@ -950,7 +950,7 @@ export function mergeTable(table, query, prepend) {
   return { type: MERGE_TABLE, table, query, prepend };
 }
 
-export function addTable(queryEditor, tableName, catalogName, schemaName) {
+export function addTable(queryEditor, tableName, catalogName, schemaName, tableType, datasetId) {
   return function (dispatch, getState) {
     const { dbId } = getUpToDateQuery(getState(), queryEditor, queryEditor.id);
     const table = {
@@ -959,6 +959,8 @@ export function addTable(queryEditor, tableName, catalogName, schemaName) {
       catalog: catalogName,
       schema: schemaName,
       name: tableName,
+      type: tableType,
+      datasetId,
     };
     dispatch(
       mergeTable({

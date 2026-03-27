@@ -473,6 +473,44 @@ def _expand_relative_period(period: str, today: date) -> list[str] | None:
     return None
 
 
+def _expand_fixed_date_range_to_monthly_periods(
+    start: str | None,
+    end: str | None,
+) -> list[str]:
+    """Convert an ISO start–end date range to DHIS2 monthly period codes (YYYYMM).
+
+    Falls back to ["LAST_12_MONTHS"] when either boundary is missing or invalid.
+    Example: start="2023-01-01", end="2024-06-30" → ["202301", ..., "202406"].
+    """
+    if not start or not end:
+        return ["LAST_12_MONTHS"]
+    try:
+        import re as _re  # noqa: PLC0415
+
+        def _parse(s: str) -> date:
+            # Accept YYYY-MM-DD or YYYY-MM
+            if _re.match(r"^\d{4}-\d{2}$", s):
+                s = s + "-01"
+            return date.fromisoformat(s)
+
+        d = _parse(start)
+        e = _parse(end)
+        if d > e:
+            d, e = e, d
+
+        codes: list[str] = []
+        y, m = d.year, d.month
+        while (y, m) <= (e.year, e.month):
+            codes.append(f"{y}{m:02d}")
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+        return codes if codes else ["LAST_12_MONTHS"]
+    except Exception:  # pylint: disable=broad-except
+        return ["LAST_12_MONTHS"]
+
+
 def _expand_periods_for_incremental_sync(
     periods_cfg: list[str],
     today: date | None = None,
@@ -946,11 +984,23 @@ def _resolve_incremental_period_plan(
     instance: DHIS2Instance,
     dataset_config: dict[str, Any],
 ) -> _IncrementalPeriodPlan:
-    periods_cfg = dataset_config.get("periods", ["LAST_12_MONTHS"])
+    periods_cfg = dataset_config.get("periods", [])
     if isinstance(periods_cfg, str):
         periods_cfg = [periods_cfg]
-    if not isinstance(periods_cfg, list) or not periods_cfg:
-        periods_cfg = ["LAST_12_MONTHS"]
+    if not isinstance(periods_cfg, list):
+        periods_cfg = []
+
+    # When no manual periods are specified (auto-detect or empty), apply the
+    # configured default period range instead of unconditionally using LAST_12_MONTHS.
+    if not periods_cfg:
+        range_type = dataset_config.get("default_period_range_type", "relative")
+        if range_type == "fixed_range":
+            start = dataset_config.get("default_period_start")
+            end = dataset_config.get("default_period_end")
+            periods_cfg = _expand_fixed_date_range_to_monthly_periods(start, end)
+        else:
+            default_rel = dataset_config.get("default_relative_period", "LAST_12_MONTHS")
+            periods_cfg = [default_rel] if default_rel else ["LAST_12_MONTHS"]
 
     expanded_periods, has_relative = _expand_periods_for_incremental_sync(
         [str(period).strip() for period in periods_cfg if str(period).strip()]
@@ -1126,6 +1176,102 @@ class DHIS2SyncService:
 
         self._request_log_collector.clear()
 
+    def _create_running_request_log(
+        self,
+        job_id: int,
+        instance: "DHIS2Instance",
+        batch: list[str],
+        periods: list[str],
+        org_units: list[str],
+        started_at: datetime,
+    ) -> int | None:
+        """Insert a status='running' request log row immediately and return its id.
+
+        Committed right away so the UI shows the in-progress request before the
+        HTTP call returns (which can take up to 300 s).  Returns None if the
+        write fails (non-fatal).
+        """
+        from superset.dhis2.models import DHIS2SyncJobRequest  # avoid circular
+        try:
+            self._request_seq_offset += 1
+            req = DHIS2SyncJobRequest(
+                sync_job_id=job_id,
+                request_seq=self._request_seq_offset,
+                instance_id=instance.id,
+                instance_name=instance.name,
+                ou_count=len(org_units),
+                dx_count=len(batch),
+                periods_json=json.dumps(periods),
+                status="running",
+                pages_fetched=None,
+                rows_returned=None,
+                duration_ms=None,
+                started_at=started_at,
+            )
+            db.session.add(req)
+            db.session.commit()
+            return req.id
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Sync: failed to write running request log", exc_info=True)
+            try:
+                db.session.rollback()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            return None
+
+    def _finalise_request_log(
+        self,
+        record_id: int,
+        *,
+        status: str,
+        pages_fetched: int,
+        rows_returned: int,
+        duration_ms: int,
+        exc: Exception | None = None,
+    ) -> None:
+        """Update an existing 'running' request log row with the final outcome."""
+        from superset.dhis2.models import DHIS2SyncJobRequest  # avoid circular
+
+        http_status: int | None = None
+        dhis2_error_code: str | None = None
+        error_message: str | None = None
+
+        if exc is not None:
+            error_message = str(exc)[:1000]
+            err_response = getattr(exc, "response", None)
+            if err_response is not None:
+                http_status = getattr(err_response, "status_code", None)
+                try:
+                    body = err_response.json()
+                    dhis2_error_code = body.get("errorCode")
+                except Exception:  # pylint: disable=broad-except
+                    pass
+            if isinstance(exc, RuntimeError) and dhis2_error_code is None:
+                import re as _re
+                m = _re.search(r"\(E\d{4}\)", str(exc))
+                if m:
+                    dhis2_error_code = m.group(0)[1:-1]
+
+        try:
+            db.session.query(DHIS2SyncJobRequest).filter_by(id=record_id).update({
+                "status": status,
+                "pages_fetched": pages_fetched,
+                "rows_returned": rows_returned,
+                "duration_ms": duration_ms,
+                "http_status_code": http_status,
+                "dhis2_error_code": dhis2_error_code,
+                "error_message": error_message,
+            })
+            db.session.commit()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Sync: failed to finalise request log id=%s", record_id, exc_info=True
+            )
+            try:
+                db.session.rollback()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
     def _fetch_analytics_batch(
         self,
         *,
@@ -1135,10 +1281,20 @@ class DHIS2SyncService:
         org_units: list[str],
         variable_map: dict[str, DHIS2DatasetVariable],
         page_size: int,
+        job_id: int | None = None,
     ) -> list[dict[str, Any]]:
         batch_started_at = datetime.utcnow()
         batch_start_mono = time.monotonic()
         pages_fetched = 0
+
+        # Write a 'running' row immediately so the UI shows this request
+        # before the HTTP call returns (which can take up to 300 s).
+        running_id: int | None = None
+        if job_id is not None:
+            running_id = self._create_running_request_log(
+                job_id, instance, batch, periods, org_units, batch_started_at
+            )
+
         try:
             page = 1
             all_rows: list[dict[str, Any]] = []
@@ -1167,29 +1323,49 @@ class DHIS2SyncService:
                 page += 1
 
             # Record successful batch
-            self._append_request_log(
-                instance, batch, periods, org_units,
-                status="success",
-                pages_fetched=pages_fetched,
-                rows_returned=len(all_rows),
-                duration_ms=int((time.monotonic() - batch_start_mono) * 1000),
-                started_at=batch_started_at,
-            )
+            duration_ms_ok = int((time.monotonic() - batch_start_mono) * 1000)
+            if running_id is not None:
+                self._finalise_request_log(
+                    running_id,
+                    status="success",
+                    pages_fetched=pages_fetched,
+                    rows_returned=len(all_rows),
+                    duration_ms=duration_ms_ok,
+                )
+            else:
+                self._append_request_log(
+                    instance, batch, periods, org_units,
+                    status="success",
+                    pages_fetched=pages_fetched,
+                    rows_returned=len(all_rows),
+                    duration_ms=duration_ms_ok,
+                    started_at=batch_started_at,
+                )
             return all_rows
         except Exception as exc:  # pylint: disable=broad-except
             duration_ms = int((time.monotonic() - batch_start_mono) * 1000)
 
             # Record this failed attempt immediately, before any retry logic,
             # so we get a full audit trail (failure + subsequent sub-attempts).
-            self._append_request_log(
-                instance, batch, periods, org_units,
-                status="failed",
-                pages_fetched=pages_fetched,
-                rows_returned=0,
-                duration_ms=duration_ms,
-                started_at=batch_started_at,
-                exc=exc,
-            )
+            if running_id is not None:
+                self._finalise_request_log(
+                    running_id,
+                    status="failed",
+                    pages_fetched=pages_fetched,
+                    rows_returned=0,
+                    duration_ms=duration_ms,
+                    exc=exc,
+                )
+            else:
+                self._append_request_log(
+                    instance, batch, periods, org_units,
+                    status="failed",
+                    pages_fetched=pages_fetched,
+                    rows_returned=0,
+                    duration_ms=duration_ms,
+                    started_at=batch_started_at,
+                    exc=exc,
+                )
 
             if _is_retryable_analytics_error(exc):
                 # ----------------------------------------------------------
@@ -1216,6 +1392,7 @@ class DHIS2SyncService:
                             org_units=org_units,
                             variable_map=variable_map,
                             page_size=page_size,
+                            job_id=job_id,
                         )
                     except (requests.Timeout, requests.ConnectionError):
                         # Still timing out — fall through to splitting strategies.
@@ -1251,6 +1428,7 @@ class DHIS2SyncService:
                                 org_units=ou_half,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
                             if not _is_retryable_analytics_error(sub_exc):
@@ -1287,6 +1465,7 @@ class DHIS2SyncService:
                             org_units=org_units,
                             variable_map=variable_map,
                             page_size=reduced_page_size,
+                            job_id=job_id,
                         )
                     except Exception as pg_exc:  # pylint: disable=broad-except
                         if not _is_retryable_analytics_error(pg_exc):
@@ -1320,6 +1499,7 @@ class DHIS2SyncService:
                                 org_units=org_units,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
                             if not _is_retryable_analytics_error(sub_exc):
@@ -1360,6 +1540,7 @@ class DHIS2SyncService:
                                 org_units=ou_half,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
                             if not _is_retryable_analytics_error(sub_exc):
@@ -2556,9 +2737,21 @@ class DHIS2SyncService:
                         org_units=ou_chunk,
                         variable_map=variable_map,
                         page_size=analytics_page_size,
+                        job_id=job_id,
                     )
                     chunk_rows.extend(batch_rows)
                     all_rows.extend(batch_rows)
+                    # Heartbeat: refresh changed_on after every HTTP batch so
+                    # the 30-min stale-reset detector does not kill a
+                    # legitimately-running long fetch that yields no rows yet.
+                    if job_id is not None:
+                        try:
+                            self._update_job_progress(
+                                job_id,
+                                current_step=f"fetching from {instance.name}",
+                            )
+                        except Exception:  # pylint: disable=broad-except
+                            pass
                 finally:
                     # Flush request log immediately after every batch (success
                     # or failure) so the UI shows live progress without waiting

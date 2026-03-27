@@ -27,12 +27,16 @@ export interface Table {
   label: string;
   value: string;
   type: string;
+  sql?: string;
   extra?: {
     certification?: {
       certified_by: string;
       details: string;
     };
     warning_markdown?: string;
+    dhis2_staged_local?: boolean;
+    dhis2StagedLocal?: boolean;
+    dhis2_staged_dataset_id?: number;
   };
 }
 

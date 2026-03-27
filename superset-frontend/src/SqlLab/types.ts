@@ -96,6 +96,8 @@ export interface Table {
   initialized?: boolean;
   inLocalStorage?: boolean;
   persistData?: TableMetaData;
+  type?: string;
+  datasetId?: number;
 }
 
 export type SqlLabRootState = {

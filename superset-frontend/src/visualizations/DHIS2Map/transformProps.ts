@@ -23,6 +23,7 @@ import {
   findMetricColumn,
 } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
 import { resolveDHIS2MetricLabel } from '../../utils/dhis2MetricLabel';
+import { colorValueToCss } from 'src/utils/colorValue';
 import {
   DHIS2LegendDefinition,
   DHIS2MapProps,
@@ -448,6 +449,9 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     formDataAny?.linearColorScheme || formDataAny?.linear_color_scheme;
   const use_linear_color_scheme =
     formDataAny?.useLinearColorScheme ?? formDataAny?.use_linear_color_scheme;
+  const chart_background_color = colorValueToCss(
+    formDataAny?.chartBackgroundColor || formDataAny?.chart_background_color,
+  );
   const opacity = formDataAny?.opacity;
   const stroke_color = formDataAny?.strokeColor || formDataAny?.stroke_color;
   const stroke_width = formDataAny?.strokeWidth ?? formDataAny?.stroke_width;
@@ -519,16 +523,12 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
 
-  const ouHierarchyColumns = datasourceColumns
-    .filter(c => {
-      const extra = parseColumnExtra(c.extra);
-      return (
-        (extra?.dhis2_ou_level !== undefined || extra?.dhis2OuLevel !== undefined) &&
-        c.column_name &&
-        allColumns.includes(c.column_name)
-      );
-    })
-    .map(c => c.column_name as string);
+  const ouHierarchyColumns = getDatasourceBoundaryLevels(datasourceColumns)
+    .map(level => level.columnName)
+    .filter(
+      (columnName): columnName is string =>
+        Boolean(columnName) && allColumns.includes(columnName),
+    );
 
   const periodColumns = datasourceColumns
     .filter(c => isPeriodColumn(c) && c.column_name && allColumns.includes(c.column_name))
@@ -903,6 +903,15 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
         .filter((c: string) => c.length > 0)
     : undefined;
 
+  const usesLegacyDefaultCategoricalScale =
+    use_linear_color_scheme === false &&
+    (!color_scheme || color_scheme === 'supersetColors') &&
+    legend_type !== 'staged' &&
+    legend_type !== 'manual' &&
+    !parsedManualColors?.length;
+  const effectiveUseLinearColorScheme =
+    usesLegacyDefaultCategoricalScale || use_linear_color_scheme !== false;
+
   // Derive datasetId if datasource payload is minimal (e.g., dashboards)
   const datasetId =
     (datasource as any)?.id ||
@@ -959,7 +968,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     enableDrill: enable_drill !== false,
     colorScheme: color_scheme || 'supersetColors',
     linearColorScheme: linear_color_scheme || 'superset_seq_1',
-    useLinearColorScheme: use_linear_color_scheme !== false,
+    useLinearColorScheme: effectiveUseLinearColorScheme,
+    chartBackgroundColor: chart_background_color,
     opacity: opacity ?? 0.7,
     strokeColor: stroke_color || { r: 255, g: 255, b: 255, a: 1 },
     strokeWidth: stroke_width ?? 1,

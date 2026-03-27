@@ -22,6 +22,7 @@ import { ColorBreakpointOptionProps } from './types';
 import ColorBreakpointPopoverTrigger from './ColorBreakpointPopoverTrigger';
 import { DragContainer } from '../OptionControls';
 import Option from '../DndColumnSelectControl/Option';
+import { formatBreakpointRange } from './colorBreakpointUtils';
 
 const BreakpointColorPreview = styled.div`
   width: ${({ theme }) => theme.sizeUnit * 3}px;
@@ -38,7 +39,7 @@ const ColorBreakpointOption = ({
   saveColorBreakpoint,
   onClose,
 }: ColorBreakpointOptionProps) => {
-  const { color, minValue, maxValue } = breakpoint;
+  const { color } = breakpoint;
 
   const formattedColor = color
     ? `rgba(${color.r}, ${color.g}, ${color.b}, 1)`
@@ -56,7 +57,7 @@ const ColorBreakpointOption = ({
             color={formattedColor}
             data-test="color-preview"
           />
-          {`${minValue} - ${maxValue}`}
+          {formatBreakpointRange(breakpoint)}
         </Option>
       </DragContainer>
     </ColorBreakpointPopoverTrigger>

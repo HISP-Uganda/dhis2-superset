@@ -65,6 +65,15 @@ _DHIS2_TERMINAL_PERIOD_KEYS = (
     "period_biweek",
     "period_bimonth",
 )
+_LEGACY_DHIS2_BOUNDARY_LEVEL_BY_COLUMN = {
+    "national": 1,
+    "region": 2,
+    "district_city": 3,
+    "dlg_municipality_city_council": 4,
+    "sub_county_town_council_division": 5,
+    "health_facility": 6,
+    "ward_department": 7,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -1095,6 +1104,26 @@ def prune_empty_hierarchy_columns(
 
 
 def dataset_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert manifest column specs into Superset TableColumn-compatible dicts.
+
+    Aggregation defaults
+    --------------------
+    * **Data elements / numeric variables** → ``SUM``.  Correct when aggregating
+      across orgUnits or periods because values are additive counts/volumes.
+    * **Indicators (rates, percentages, program indicators)** → ``NONE``.
+      Indicators are *already correctly computed per (period, orgUnit)* by
+      DHIS2 before staging.  The mart stores these final per-OU values.
+      Applying AVG or SUM across OUs would produce a plain arithmetic mean of
+      district values, which does **not** equal the DHIS2-calculated national
+      indicator (which divides the aggregate numerator by the aggregate
+      denominator).  Using NONE means charts get the mart's stored value
+      directly — correct when filtered to a specific OU, and giving an
+      arbitrary single-group value (ClickHouse ``any()``) when grouped at a
+      higher level.  Users who need a cross-OU summary for indicators should
+      add an explicit ``AVG`` metric in the chart editor with the understanding
+      that it is a simple mean, not the DHIS2 recalculated indicator.
+    * **String columns** → no expression (dimension-only).
+    """
     payload = []
     for column in columns:
         extra = column.get("extra") or {}
@@ -1104,9 +1133,27 @@ def dataset_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any
             except Exception:  # pylint: disable=broad-except
                 extra = {}
 
-        # Default aggregation: Indicators (rates) use AVG, others use SUM
-        is_indicator = extra.get("dhis2_is_indicator") is True
-        default_agg = "AVG" if is_indicator else "SUM"
+        is_indicator = extra.get(_DHIS2_INDICATOR_EXTRA_KEY) is True
+        is_numeric = column["type"] in ("FLOAT", "INTEGER", "NUMBER")
+
+        if is_numeric:
+            if is_indicator:
+                # Bare column reference — no double-averaging.
+                # See docstring above for the rationale.
+                expression: str | None = f"`{column['column_name']}`"
+                default_agg = "NONE"
+            else:
+                expression = f"SUM(`{column['column_name']}`)"
+                default_agg = "SUM"
+        else:
+            expression = None
+            default_agg = None
+
+        # Annotate the extra JSON with the recommended aggregation so the
+        # frontend (DatasourcePanel, metric editor) can surface a hint.
+        enriched_extra: dict[str, Any] = dict(extra)
+        if default_agg:
+            enriched_extra["dhis2_default_agg"] = default_agg
 
         payload.append(
             {
@@ -1117,16 +1164,14 @@ def dataset_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any
                 "filterable": True,
                 "groupby": True,
                 "is_active": True,
-                "expression": f"{default_agg}(`{column['column_name']}`)"
-                if column["type"] in ("FLOAT", "INTEGER", "NUMBER")
-                else None,
+                "expression": expression,
                 **(
                     {
-                        "extra": json.dumps(column["extra"])
-                        if not isinstance(column["extra"], str)
-                        else column["extra"]
+                        "extra": json.dumps(enriched_extra)
+                        if enriched_extra
+                        else None
                     }
-                    if column.get("extra")
+                    if enriched_extra
                     else {}
                 ),
             }
@@ -1152,15 +1197,21 @@ def _load_column_extra(column: Any) -> dict[str, Any]:
     return {}
 
 
+def _infer_legacy_dhis2_hierarchy_level(column_name: str) -> int | None:
+    normalized = sanitize_serving_identifier(column_name or "")
+    level = _LEGACY_DHIS2_BOUNDARY_LEVEL_BY_COLUMN.get(normalized)
+    return int(level) if level else None
+
+
 def get_dhis2_hierarchy_column_names(columns: Sequence[Any]) -> list[str]:
-    hierarchy_columns: list[tuple[int, str]] = []
+    raw_candidates: list[tuple[int | None, int | None, str]] = []
     for column in columns:
         if isinstance(column, Mapping):
             column_name = str(column.get("column_name") or "").strip()
-            fallback_level = column.get("level")
+            fallback_level_hint = column.get("level")
         else:
             column_name = str(getattr(column, "column_name", "") or "").strip()
-            fallback_level = None
+            fallback_level_hint = None
         if not column_name:
             continue
 
@@ -1168,13 +1219,44 @@ def get_dhis2_hierarchy_column_names(columns: Sequence[Any]) -> list[str]:
         if extra.get(_DHIS2_OU_HIERARCHY_EXTRA_KEY) is not True:
             continue
 
-        level = extra.get(_DHIS2_OU_LEVEL_EXTRA_KEY, fallback_level)
+        explicit_level = extra.get(_DHIS2_OU_LEVEL_EXTRA_KEY, fallback_level_hint)
         try:
-            hierarchy_columns.append((int(level), column_name))
+            parsed_explicit_level = int(explicit_level)
+            if parsed_explicit_level <= 0:
+                parsed_explicit_level = None
         except (TypeError, ValueError):
-            continue
+            parsed_explicit_level = None
 
-    return [column_name for _, column_name in sorted(hierarchy_columns)]
+        raw_candidates.append(
+            (
+                parsed_explicit_level,
+                _infer_legacy_dhis2_hierarchy_level(column_name),
+                column_name,
+            )
+        )
+
+    has_anchored_levels = any(
+        explicit_level is not None or legacy_level is not None
+        for explicit_level, legacy_level, _ in raw_candidates
+    )
+    hierarchy_columns: list[tuple[int, int, str]] = []
+    fallback_level = 0
+    for explicit_level, legacy_level, column_name in raw_candidates:
+        resolved_level = explicit_level or legacy_level
+        if resolved_level is None:
+            if has_anchored_levels:
+                continue
+            fallback_level += 1
+            resolved_level = fallback_level
+        hierarchy_columns.append((resolved_level, len(hierarchy_columns), column_name))
+
+    return [
+        column_name
+        for _, _, column_name in sorted(
+            hierarchy_columns,
+            key=lambda item: (item[0], item[1]),
+        )
+    ]
 
 
 def get_dhis2_period_column_name(columns: Sequence[Any]) -> str | None:
@@ -1289,17 +1371,23 @@ def _has_populated_sql_value(column_name: str) -> ColumnElement:
 def build_terminal_hierarchy_sqla_predicate(
     selected_column_name: str,
     hierarchy_column_names: Sequence[str],
+    terminal: bool = True,
 ) -> ColumnElement | None:
     normalized_selected = str(selected_column_name or "").strip()
     if normalized_selected not in hierarchy_column_names:
         return None
 
     selected_index = list(hierarchy_column_names).index(normalized_selected)
-    # The selected OU level must be populated and every deeper OU level must
-    # stay empty, so charts/maps only use rows where the chosen level is terminal.
+    # The selected OU level must be populated.
     conditions: list[ColumnElement] = [
         _has_populated_sql_value(normalized_selected)
     ]
-    for column_name in hierarchy_column_names[selected_index + 1 :]:
-        conditions.append(sa.not_(_has_populated_sql_value(column_name)))
+    
+    # If terminal filtering is enabled, every deeper OU level must stay empty,
+    # so charts/maps only use rows where the chosen level is terminal.
+    # This prevents double-counting for datasets that have pre-aggregated rows.
+    if terminal:
+        for column_name in hierarchy_column_names[selected_index + 1 :]:
+            conditions.append(sa.not_(_has_populated_sql_value(column_name)))
+
     return sa.and_(*conditions)

@@ -1,3 +1,0 @@
-format version: 1
-create time: 2026-03-20 10:42:17
-commands: (DELETE WHERE (source_instance_id = _CAST(2, \'Int32\')) AND (concat(dx_uid, char(0), pe, char(0), ou) IN (\'wUDxFVBapIc\\0202512\\0CCVj6k5iUsd\', \'wUDxFVBapIc\\0202512\\0Y9BKBtIjli6\')))

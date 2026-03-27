@@ -63,6 +63,10 @@ import {
 } from '../types';
 import { parseAxisBound } from '../utils/controls';
 import {
+  applyMetricColors,
+  applyColorBreakpoints,
+} from '../utils/colorApplyUtils';
+import {
   dedupSeries,
   extractDataTotalValues,
   extractGroupbyLabel,
@@ -603,6 +607,27 @@ export default function transformProps(
       mapSeriesIdToAxis(transformedSeries, yAxisIndexB);
     }
   });
+
+  // ── Colour mode application ─────────────────────────────────────────────────
+  // Same logic as Timeseries transformProps — see colorApplyUtils for details.
+  const colorMode: string | undefined = (formData as any).colorMode;
+
+  if (colorMode !== 'breakpoints' && colorMode !== 'default') {
+    const metricColorsMap: Record<string, string> | undefined =
+      (formData as any).metricColors;
+    if (metricColorsMap && typeof metricColorsMap === 'object') {
+      applyMetricColors(series, metricColorsMap);
+    }
+  }
+
+  if (colorMode !== 'metric' && colorMode !== 'default') {
+    const breakpointsRaw: any[] | undefined = (formData as any).colorBreakpoints;
+    if (Array.isArray(breakpointsRaw) && breakpointsRaw.length > 0) {
+      const defaultBreakpointColor = (formData as any).defaultBreakpointColor;
+      // MixedTimeseries does not support horizontal orientation
+      applyColorBreakpoints(series, breakpointsRaw, defaultBreakpointColor, false);
+    }
+  }
 
   // default to 0-100% range when doing row-level contribution chart
   if (contributionMode === 'row' && stack) {

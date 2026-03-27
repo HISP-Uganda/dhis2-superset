@@ -43,8 +43,15 @@ def setup_listeners() -> None:
 
 
 def _after_sqla_table_delete(mapper: Mapper, connection: Any, target: Any) -> None:
-    """Clean up DHIS2 staged dataset when the Superset virtual dataset is deleted."""
+    """Clean up DHIS2 staged dataset when the PRIMARY Superset virtual dataset is deleted.
+
+    Only triggers for the main dataset record (DHIS2_SOURCE_DATASET role or NULL role).
+    Mart records (MART_DATASET role) are internal and their deletion must NOT cascade
+    to the staged dataset — marts are rebuilt on every sync.
+    """
     try:
+        from superset.datasets.policy import DatasetRole
+
         extra_raw = getattr(target, "extra", None)
         if not extra_raw:
             return
@@ -57,19 +64,25 @@ def _after_sqla_table_delete(mapper: Mapper, connection: Any, target: Any) -> No
         if not staged_dataset_id:
             return
 
-        # Avoid circular deletion if we are already in delete_staged_dataset
-        # We use a thread-local or similar if needed, but here we can just
-        # check if the record still exists.
-        
+        # Do NOT cascade-delete the staged dataset when a mart record is removed.
+        # Mart records are generated derived tables; deleting them is routine
+        # (e.g. during migration/rebuild) and must not destroy the source dataset.
+        role = getattr(target, "dataset_role", None)
+        if role == DatasetRole.MART.value:
+            logger.debug(
+                "DHIS2 listener: SqlaTable id=%s is a mart (role=%s) — skipping staged dataset cleanup",
+                target.id,
+                role,
+            )
+            return
+
         logger.info(
             "DHIS2 listener: SqlaTable id=%s ('%s') deleted; cleaning up DHIS2StagedDataset id=%s",
             target.id,
             target.table_name,
             staged_dataset_id,
         )
-        
-        # We'll use a session from the connection if possible, or just use db.session
-        # but we must be careful.
+
         staged_dataset = db.session.query(DHIS2StagedDataset).get(staged_dataset_id)
         if staged_dataset:
             # We don't call svc.delete_staged_dataset because it tries to delete

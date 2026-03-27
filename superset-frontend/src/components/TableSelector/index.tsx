@@ -107,7 +107,7 @@ interface TableSelectorProps {
   sqlLabMode?: boolean;
   tableValue?: string | string[];
   onTableSelectChange?: (
-    value?: string | string[],
+    value?: any | any[],
     catalog?: string | null,
     schema?: string,
   ) => void;
@@ -129,6 +129,8 @@ export const TableOption = ({ table }: { table: Table }) => {
         <Icons.FunctionOutlined iconSize="m" />
       ) : type === 'materialized_view' ? (
         <Icons.ProfileOutlined iconSize="m" />
+      ) : type === 'dataset' ? (
+        <Icons.DatabaseOutlined iconSize="m" />
       ) : (
         <Icons.TableOutlined iconSize="m" />
       )}
@@ -258,10 +260,14 @@ const TableSelector: FunctionComponent<TableSelectorProps> = ({
     selectedOptions: TableOption | TableOption[] | undefined,
   ) => {
     if (currentSchema) {
+      // Find the original table objects from the options
+      const getTableData = (value: string) => 
+        data?.options.find(t => t.value === value);
+
       onTableSelectChange?.(
         Array.isArray(selectedOptions)
-          ? selectedOptions.map(option => option?.value)
-          : selectedOptions?.value,
+          ? selectedOptions.map(option => getTableData(option.value))
+          : selectedOptions ? getTableData(selectedOptions.value) : undefined,
         currentCatalog,
         currentSchema,
       );

@@ -133,6 +133,7 @@ export interface DHIS2MapProps {
   colorScheme: string;
   linearColorScheme?: string;
   useLinearColorScheme?: boolean;
+  chartBackgroundColor?: string;
   opacity: number;
   strokeColor: { r: number; g: number; b: number; a: number };
   strokeWidth: number;

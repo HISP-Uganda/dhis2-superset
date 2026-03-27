@@ -1,35 +1,33 @@
 import pytest
 from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
 from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
-from superset.explore.exceptions import DatasetAccessDeniedError
-from superset.commands.dataset.exceptions import DatasetInvalidError
 from marshmallow import ValidationError
 
 def test_dataset_role_model():
-    assert DatasetRole.SERVING == "SERVING_DATASET"
-    assert DatasetRole.METADATA_UI == "METADATA_UI_DATASET"
+    assert DatasetRole.MART == "MART"
+    assert DatasetRole.METADATA == "METADATA"
 
 def test_dataset_eligibility_policy():
-    # Chart
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.CHART)
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.CHART)
+    # Chart (ONLY MART allowed)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.CHART)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.CHART)
     
-    # Dashboard
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.DASHBOARD)
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.DASHBOARD)
+    # Dashboard (ONLY MART allowed)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.DASHBOARD)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.DASHBOARD)
     
-    # Explore
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.EXPLORE)
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.EXPLORE)
+    # Explore (ONLY MART allowed)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.EXPLORE)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.EXPLORE)
     
-    # Analysis
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.ANALYSIS)
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.ANALYSIS)
+    # Analysis (ONLY MART allowed)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.ANALYSIS)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.ANALYSIS)
     
     # Metadata Edit
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.METADATA_EDIT)
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.METADATA_EDIT)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.METADATA_EDIT)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.METADATA_EDIT)
     
     # Metadata Update
-    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.SERVING, DatasetContext.METADATA_UPDATE)
-    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA_UI, DatasetContext.METADATA_UPDATE)
+    assert not DatasetEligibilityPolicy.is_eligible(DatasetRole.MART, DatasetContext.METADATA_UPDATE)
+    assert DatasetEligibilityPolicy.is_eligible(DatasetRole.METADATA, DatasetContext.METADATA_UPDATE)

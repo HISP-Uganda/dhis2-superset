@@ -144,12 +144,23 @@ interface WorkflowState {
   selectedVariables: VariableMapping[];
   periods: string[];
   periodsAutoDetect: boolean;
+  /** 'relative' = single DHIS2 relative period; 'fixed_range' = start–end date range */
+  defaultPeriodRangeType?: 'relative' | 'fixed_range';
+  /** DHIS2 relative period identifier used as default when auto-detect is on */
+  defaultRelativePeriod?: string;
+  /** ISO date strings for fixed date-range default (inclusive) */
+  defaultPeriodStart?: string | null;
+  defaultPeriodEnd?: string | null;
   orgUnits: string[];
   orgUnitsAutoDetect: boolean;
   selectedOrgUnitDetails: SelectedOrgUnitDetail[];
   includeChildren: boolean;
   dataLevelScope: DataLevelScope;
   levelMapping?: LevelMappingConfig;
+  /** Lowest hierarchy level to include (1=national, N=facility). */
+  maxOrgUnitLevel?: number | null;
+  /** When true, co_uid/co_name disaggregation columns are promoted to first-class dimensions. */
+  includeDisaggregationDimension?: boolean;
   datasetSettings: {
     name: string;
     description: string;
@@ -295,12 +306,18 @@ export const initialWorkflowState: WorkflowState = {
   selectedVariables: [],
   periods: [],
   periodsAutoDetect: false,
+  defaultPeriodRangeType: 'relative',
+  defaultRelativePeriod: 'LAST_12_MONTHS',
+  defaultPeriodStart: null,
+  defaultPeriodEnd: null,
   orgUnits: [],
   orgUnitsAutoDetect: false,
   selectedOrgUnitDetails: [],
   includeChildren: false,
   dataLevelScope: 'selected',
   levelMapping: undefined,
+  maxOrgUnitLevel: null,
+  includeDisaggregationDimension: false,
   datasetSettings: {
     name: '',
     description: '',
@@ -493,6 +510,22 @@ export function workflowReducer(
         periodsAutoDetect:
           (action.payload.periodsAutoDetect as boolean | undefined) ??
           state.periodsAutoDetect,
+        defaultPeriodRangeType:
+          action.payload.defaultPeriodRangeType !== undefined
+            ? (action.payload.defaultPeriodRangeType as 'relative' | 'fixed_range')
+            : state.defaultPeriodRangeType,
+        defaultRelativePeriod:
+          action.payload.defaultRelativePeriod !== undefined
+            ? (action.payload.defaultRelativePeriod as string)
+            : state.defaultRelativePeriod,
+        defaultPeriodStart:
+          action.payload.defaultPeriodStart !== undefined
+            ? (action.payload.defaultPeriodStart as string | null)
+            : state.defaultPeriodStart,
+        defaultPeriodEnd:
+          action.payload.defaultPeriodEnd !== undefined
+            ? (action.payload.defaultPeriodEnd as string | null)
+            : state.defaultPeriodEnd,
         orgUnits:
           (action.payload.orgUnits as string[] | undefined) ?? state.orgUnits,
         orgUnitsAutoDetect:
@@ -517,6 +550,13 @@ export function workflowReducer(
           action.payload.levelMapping !== undefined
             ? (action.payload.levelMapping as LevelMappingConfig | undefined)
             : state.levelMapping,
+        maxOrgUnitLevel:
+          action.payload.maxOrgUnitLevel !== undefined
+            ? (action.payload.maxOrgUnitLevel as number | null)
+            : state.maxOrgUnitLevel,
+        includeDisaggregationDimension:
+          (action.payload.includeDisaggregationDimension as boolean | undefined) ??
+          state.includeDisaggregationDimension,
       };
     case 'PATCH_DATASET_SETTINGS':
       return {
@@ -1325,6 +1365,16 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             selectedVariables,
             periods: Array.isArray(cfg.periods) ? cfg.periods : [],
             periodsAutoDetect: cfg.periods_auto_detect === true,
+            defaultPeriodRangeType:
+              cfg.default_period_range_type === 'fixed_range' ? 'fixed_range' : 'relative',
+            defaultRelativePeriod:
+              typeof cfg.default_relative_period === 'string'
+                ? cfg.default_relative_period
+                : 'LAST_12_MONTHS',
+            defaultPeriodStart:
+              typeof cfg.default_period_start === 'string' ? cfg.default_period_start : null,
+            defaultPeriodEnd:
+              typeof cfg.default_period_end === 'string' ? cfg.default_period_end : null,
             orgUnits: Array.isArray(cfg.org_units) ? cfg.org_units : [],
             orgUnitsAutoDetect: cfg.org_units_auto_detect === true,
             selectedOrgUnitDetails: Array.isArray(cfg.org_unit_details)
@@ -1340,6 +1390,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
               cfg.level_mapping && typeof cfg.level_mapping === 'object'
                 ? (cfg.level_mapping as LevelMappingConfig)
                 : undefined,
+            maxOrgUnitLevel:
+              typeof sd.max_orgunit_level === 'number' ? sd.max_orgunit_level : null,
+            includeDisaggregationDimension:
+              cfg.include_disaggregation_dimension === true,
           },
         });
 
@@ -1813,11 +1867,29 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     if (updates.periodsAutoDetect !== undefined) {
       nextPayload.periodsAutoDetect = updates.periodsAutoDetect;
     }
+    if (updates.defaultPeriodRangeType !== undefined) {
+      nextPayload.defaultPeriodRangeType = updates.defaultPeriodRangeType;
+    }
+    if (updates.defaultRelativePeriod !== undefined) {
+      nextPayload.defaultRelativePeriod = updates.defaultRelativePeriod;
+    }
+    if (updates.defaultPeriodStart !== undefined) {
+      nextPayload.defaultPeriodStart = updates.defaultPeriodStart;
+    }
+    if (updates.defaultPeriodEnd !== undefined) {
+      nextPayload.defaultPeriodEnd = updates.defaultPeriodEnd;
+    }
     if (updates.orgUnitsAutoDetect !== undefined) {
       nextPayload.orgUnitsAutoDetect = updates.orgUnitsAutoDetect;
     }
     if (updates.levelMapping !== undefined) {
       nextPayload.levelMapping = updates.levelMapping;
+    }
+    if (updates.maxOrgUnitLevel !== undefined) {
+      nextPayload.maxOrgUnitLevel = updates.maxOrgUnitLevel;
+    }
+    if (updates.includeDisaggregationDimension !== undefined) {
+      nextPayload.includeDisaggregationDimension = updates.includeDisaggregationDimension;
     }
       const normalizedMode =
         updates.orgUnitSourceMode === 'federated'
@@ -1842,12 +1914,18 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       dataElements: state.selectedVariables.map(variable => variable.variableId),
       periods: state.periods,
       periodsAutoDetect: state.periodsAutoDetect,
+      defaultPeriodRangeType: state.defaultPeriodRangeType,
+      defaultRelativePeriod: state.defaultRelativePeriod,
+      defaultPeriodStart: state.defaultPeriodStart,
+      defaultPeriodEnd: state.defaultPeriodEnd,
       orgUnits: state.orgUnits,
       orgUnitsAutoDetect: state.orgUnitsAutoDetect,
       selectedOrgUnitDetails: state.selectedOrgUnitDetails,
       includeChildren: state.includeChildren,
       dataLevelScope: state.dataLevelScope,
       levelMapping: state.levelMapping,
+      maxOrgUnitLevel: state.maxOrgUnitLevel,
+      includeDisaggregationDimension: state.includeDisaggregationDimension,
       columns: [],
       previewData: [],
       scheduleConfig: state.scheduleConfig,
@@ -1957,14 +2035,20 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       description: state.datasetSettings.description.trim() || undefined,
       schedule_cron: state.scheduleConfig.cron,
       schedule_timezone: state.scheduleConfig.timezone,
+      ...(state.maxOrgUnitLevel != null ? { max_orgunit_level: state.maxOrgUnitLevel } : {}),
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
         periods_auto_detect: state.periodsAutoDetect,
+        default_period_range_type: state.defaultPeriodRangeType ?? 'relative',
+        default_relative_period: state.defaultRelativePeriod ?? 'LAST_12_MONTHS',
+        default_period_start: state.defaultPeriodStart ?? null,
+        default_period_end: state.defaultPeriodEnd ?? null,
         org_units: state.orgUnits,
         org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
+        include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
           state.orgUnitSourceMode === 'federated'
             ? 'repository'
@@ -2091,14 +2175,20 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       description: state.datasetSettings.description.trim() || undefined,
       schedule_cron: state.scheduleConfig.cron,
       schedule_timezone: state.scheduleConfig.timezone,
+      ...(state.maxOrgUnitLevel != null ? { max_orgunit_level: state.maxOrgUnitLevel } : {}),
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
         periods_auto_detect: state.periodsAutoDetect,
+        default_period_range_type: state.defaultPeriodRangeType ?? 'relative',
+        default_relative_period: state.defaultRelativePeriod ?? 'LAST_12_MONTHS',
+        default_period_start: state.defaultPeriodStart ?? null,
+        default_period_end: state.defaultPeriodEnd ?? null,
         org_units: state.orgUnits,
         org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
+        include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
           state.orgUnitSourceMode === 'federated'
             ? 'repository'

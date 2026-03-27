@@ -20,6 +20,7 @@
 import { buildQueryContext, QueryFormData } from '@superset-ui/core';
 import { sanitizeDHIS2ColumnName } from '../../features/datasets/AddDataset/DHIS2ParameterBuilder/sanitize';
 import { resolveDHIS2MetricLabel } from '../../utils/dhis2MetricLabel';
+import { getDatasourceBoundaryLevels } from './boundaryLevels';
 
 function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
   if (!extra) {
@@ -98,29 +99,8 @@ export default function buildQuery(formData: QueryFormData) {
       : null;
 
     const hierarchyColumnsFromDatasource = Array.isArray(datasourceAny?.columns)
-      ? datasourceAny.columns
-          .filter((column: any) => {
-            const extra = parseColumnExtra(column?.extra);
-            return (
-              extra?.dhis2_is_ou_hierarchy === true ||
-              extra?.dhis2IsOuHierarchy === true ||
-              Number.isFinite(
-                Number(extra?.dhis2_ou_level ?? extra?.dhis2OuLevel ?? NaN),
-              )
-            );
-          })
-          .sort((left: any, right: any) => {
-            const leftExtra = parseColumnExtra(left?.extra);
-            const rightExtra = parseColumnExtra(right?.extra);
-            const leftLevel = Number(
-              leftExtra?.dhis2_ou_level ?? leftExtra?.dhis2OuLevel ?? 0,
-            );
-            const rightLevel = Number(
-              rightExtra?.dhis2_ou_level ?? rightExtra?.dhis2OuLevel ?? 0,
-            );
-            return leftLevel - rightLevel;
-          })
-          .map((column: any) => String(column?.column_name || '').trim())
+      ? getDatasourceBoundaryLevels(datasourceAny.columns)
+          .map(level => String(level.columnName || '').trim())
           .filter(Boolean)
       : [];
     const effectiveHierarchyColumns =
@@ -262,6 +242,13 @@ export default function buildQuery(formData: QueryFormData) {
             dhis2_selected_org_unit_column: selectedFocusOrgUnitColumn,
           }
         : {}),
+      // DHIS2 Maps need to aggregate from child OUs if the selected level is
+      // empty. The restrictive "terminal" constraint (which requires all
+      // deeper levels to be NULL) prevents this, producing "No Data" for maps
+      // whose MART tables only contain granular (facility-level) data.
+      // Set to false to allow aggregation while still enforcing the
+      // "selected level must be non-null" rule.
+      dhis2_terminal_hierarchy_filtering: false,
     };
 
     // Sanitize tooltip columns
@@ -282,29 +269,15 @@ export default function buildQuery(formData: QueryFormData) {
       }
     };
 
-    // Staged-local maps need the full staged OU path in the query results so
-    // focused "one level down" rendering can still color child boundaries from
-    // serving-table rows without reloading from the live DHIS2 preview path.
+    // Staged-local maps include ALL hierarchy columns in the GROUP BY so:
+    //  - Tooltips can display the full OU path (national → region → district)
+    //  - Focus mode can color child boundaries without a second query
+    // Terminal-level filtering is handled server-side by
+    // build_terminal_hierarchy_sqla_predicate, which ensures only rows where
+    // the selected level is populated (and all deeper levels are empty) are
+    // returned.  NULL deeper columns group together correctly in SQL.
     if (isStagedLocalDataset && effectiveHierarchyColumns.length > 0) {
-      // Only GROUP BY up to the target hierarchy level so that SUM/AVG/etc.
-      // properly aggregates leaf-level data up to the requested display level.
-      // In focus mode the terminal is one level below the selected column so
-      // child boundaries are visible within the focused parent.
-      const terminalColumn = focusSelectedBoundaryWithChildren
-        ? selectedFocusOrgUnitColumn  // one level below selected
-        : sanitizedOrgUnitColumn;    // the selected display level
-
-      if (!isLatestAggregation && terminalColumn) {
-        const terminalIdx = effectiveHierarchyColumns.indexOf(terminalColumn);
-        const colsToGroup =
-          terminalIdx >= 0
-            ? effectiveHierarchyColumns.slice(0, terminalIdx + 1)
-            : effectiveHierarchyColumns;
-        colsToGroup.forEach(addColumn);
-      } else {
-        // Latest aggregation needs all columns for client-side latest selection.
-        effectiveHierarchyColumns.forEach(addColumn);
-      }
+      effectiveHierarchyColumns.forEach(addColumn);
     } else {
       addColumn(sanitizedOrgUnitColumn);
     }
@@ -367,9 +340,14 @@ export default function buildQuery(formData: QueryFormData) {
     // Fallback metric so the backend never receives an empty metrics array
     // (which causes a 500). When no user metric is selected we aggregate
     // a non-null constant so the GROUP BY still returns one row per OU.
+    // For latest aggregation the backend returns raw rows (no aggregate);
+    // the client resolves the most-recent value. Use an empty metrics array
+    // so the GROUP BY returns one row per unique column combination.
     const safeMetrics = aggregatedMetric
       ? [aggregatedMetric]
-      : [{ expressionType: 'SQL' as const, sqlExpression: 'COUNT(*)', label: '__count' }];
+      : isLatestAggregation
+        ? []
+        : [{ expressionType: 'SQL' as const, sqlExpression: 'COUNT(*)', label: '__count' }];
 
     if (isLatestAggregation) {
       // Latest needs the raw metric rows so the map can resolve the final
@@ -377,40 +355,33 @@ export default function buildQuery(formData: QueryFormData) {
       addColumn(sanitizedMetric);
     }
 
-    // When the serving table carries data at multiple OU levels (ou_level column
-    // present), filter to the target level to prevent double-counting aggregation
-    // across levels.
-    const ouLevelColumn = Array.isArray(datasourceAny?.columns)
-      ? datasourceAny.columns.find((c: any) => {
-          const ex = parseColumnExtra(c?.extra);
-          return ex?.dhis2_is_ou_level === true;
-        })
-      : null;
-
-    const ouLevelFilter = (() => {
-      if (!ouLevelColumn || !effectiveHierarchyColumns.length) return null;
-      // Find the target OU level from the terminal column's extra metadata
-      const terminalCol = focusSelectedBoundaryWithChildren
-        ? selectedFocusOrgUnitColumn
-        : sanitizedOrgUnitColumn;
-      if (!terminalCol) return null;
-      const colMeta = Array.isArray(datasourceAny?.columns)
-        ? datasourceAny.columns.find(
-            (c: any) =>
-              String(c?.column_name || '').trim() === terminalCol ||
-              sanitizeDHIS2ColumnName(String(c?.column_name || '').trim()) ===
-                terminalCol,
-          )
+    // Hierarchy-aware null filtering: exclude rows where the terminal hierarchy
+    // column is NULL. This is more reliable than filtering by ou_level because:
+    //   1. In DuckDB serving tables, ou_level is NULL for all rows when DHIS2
+    //      analytics API doesn't include level metadata (the common case).
+    //   2. Filtering IS NOT NULL on the terminal column directly expresses the
+    //      intended analytical grain: "only rows at this OU level".
+    //   3. Works consistently across DuckDB, ClickHouse, and PostgreSQL.
+    //
+    // The filter_null_ou_column form-data option allows opting out (default: true).
+    const filterNullOuColumn = formDataAny?.filter_null_ou_column !== false;
+    const terminalColForNullFilter = focusSelectedBoundaryWithChildren
+      ? selectedFocusOrgUnitColumn
+      : sanitizedOrgUnitColumn;
+    // Only add the null-exclusion filter when:
+    //   - The option is enabled (default true)
+    //   - There IS a terminal OU column to filter on
+    //   - The dataset has hierarchy columns (so this is a hierarchy-based map)
+    const ouNullExclusionFilter =
+      filterNullOuColumn &&
+      terminalColForNullFilter &&
+      effectiveHierarchyColumns.length > 0
+        ? {
+            col: terminalColForNullFilter,
+            op: 'IS NOT NULL' as const,
+            val: null as any,
+          }
         : null;
-      const colExtra = parseColumnExtra(colMeta?.extra);
-      const targetLevel = colExtra?.dhis2_ou_level;
-      if (!targetLevel || !Number.isFinite(Number(targetLevel))) return null;
-      return {
-        col: String(ouLevelColumn.column_name),
-        op: '==' as const,
-        val: Number(targetLevel),
-      };
-    })();
 
     // Build filters from the DHIS2ColumnFilterControl (dhis2_column_filters).
     // Each entry is {column: string, values: string[]} and maps to a SQL
@@ -439,7 +410,7 @@ export default function buildQuery(formData: QueryFormData) {
     const combinedFilters = [
       ...existingFilters,
       ...columnExtraFilters,
-      ...(ouLevelFilter ? [ouLevelFilter] : []),
+      ...(ouNullExclusionFilter ? [ouNullExclusionFilter] : []),
     ];
 
     // For staged serving-table datasets, aggregate on the backend whenever

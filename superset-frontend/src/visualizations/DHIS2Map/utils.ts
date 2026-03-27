@@ -563,11 +563,6 @@ export function getColorScale(
   legendType: LegendType = 'auto',
   dataValues?: number[],
 ): (value: number) => string {
-  // eslint-disable-next-line no-console
-  console.log(
-    `[getColorScale] schemeName=${schemeName}, schemeType=${schemeType}, classes=${classes}, range=[${min}, ${max}]`,
-  );
-
   if (
     (legendType === 'auto' || legendType === 'staged') &&
     hasLegendItems(stagedLegendDefinition)
@@ -624,18 +619,8 @@ export function getColorScale(
     schemeType,
   );
 
-  // eslint-disable-next-line no-console
-  console.log(
-    `[getColorScale] Final color range (${colorRange.length} colors):`,
-    colorRange,
-  );
-
   if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
     const collapsedColor = getCollapsedRangeColor(colorRange);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[getColorScale] Collapsed range detected. Using constant color: ${collapsedColor}`,
-    );
     return () => collapsedColor;
   }
 

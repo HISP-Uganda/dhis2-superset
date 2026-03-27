@@ -2418,7 +2418,6 @@ class DHIS2Connection:
                     f"&dimension=pe:{pe_param}"
                     f"&dimension=ou:{ou_param}"
                     f"&ouMode={effective_ou_mode}"
-                    f"&tableLayout=true"
                     f"{paging_params}"
                 )
                 logger.info(f"[Analytics API] Using ouMode={effective_ou_mode}")
@@ -2427,7 +2426,6 @@ class DHIS2Connection:
                     f"dimension=dx:{dx_param}"
                     f"&dimension=pe:{pe_param}"
                     f"&dimension=ou:{ou_param}"
-                    f"&tableLayout=true"
                     f"{paging_params}"
                 )
 

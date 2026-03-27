@@ -19,6 +19,7 @@
 import { ReactNode } from 'react';
 import { OptionValueType } from 'src/explore/components/controls/DndColumnSelectControl/types';
 import { ControlComponentProps } from 'src/explore/components/Control';
+import { DHIS2LegendDefinition } from './colorBreakpointUtils';
 
 export interface ColorType {
   r: number;
@@ -27,11 +28,22 @@ export interface ColorType {
   a: number;
 }
 
+/** Operator applied to the lower bound.  Defaults to '>=' (inclusive). */
+export type MinOperator = '>=' | '>';
+/** Operator applied to the upper bound.  Defaults to '<' (exclusive). */
+export type MaxOperator = '<' | '<=';
+
 export interface ColorBreakpointType {
   id?: number;
   color?: ColorType;
+  /** Lower bound value.  Undefined means no lower bound (−∞). */
   minValue?: number;
+  /** How the lower bound is compared.  Defaults to '>=' (inclusive). */
+  minOperator?: MinOperator;
+  /** Upper bound value.  Undefined means no upper bound (+∞). */
   maxValue?: number;
+  /** How the upper bound is compared.  Defaults to '<' (exclusive). */
+  maxOperator?: MaxOperator;
 }
 
 export interface ErrorMapType {
@@ -43,6 +55,18 @@ export interface ErrorMapType {
 export interface ColorBreakpointsControlProps
   extends ControlComponentProps<OptionValueType[]> {
   breakpoints: ColorBreakpointType[];
+  /**
+   * DHIS2 legend definition from ``column.extra.dhis2_legend``.  When
+   * provided, an "Import from DHIS2 legend" button is rendered alongside
+   * the auto-generate controls.
+   */
+  dhis2LegendDefinition?: DHIS2LegendDefinition | null;
+  /**
+   * Superset database ID for the current datasource.  When provided the
+   * control can fetch available DHIS2 legend sets from the metadata API and
+   * present them as a picker.
+   */
+  databaseId?: number | string;
 }
 
 export interface ColorBreakpointsPopoverTriggerProps {

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy.exc import OperationalError as _SAOperationalError
@@ -63,6 +64,156 @@ logger = logging.getLogger(__name__)
 
 # Column names that are always indexed regardless of extra metadata
 _ALWAYS_INDEX: frozenset[str] = frozenset({"period", "dhis2_instance"})
+
+# Known OU hierarchy column names (used to classify physical columns)
+_OU_HIERARCHY_NAMES: frozenset[str] = frozenset({
+    "national", "region", "district_city", "dlg_municipality_city_council",
+    "sub_county_town_council_division", "health_facility", "ward_department",
+    "ou_name", "organisation_unit",
+})
+_OU_LEVEL_NAMES: frozenset[str] = frozenset({"ou_level", "level"})
+_PERIOD_NAMES: frozenset[str] = frozenset({"period"})
+_INTERNAL_NAMES: frozenset[str] = frozenset({"dhis2_instance", "_manifest_build_v5"})
+
+
+def _sanitize_for_column(value: str) -> str:
+    """Replicate analytical_serving.sanitize_serving_identifier logic."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "").strip())
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    if not sanitized:
+        return "column"
+    if sanitized[0].isdigit():
+        sanitized = f"c_{sanitized}"
+    return sanitized.lower()
+
+
+def _build_variable_type_lookup() -> dict[str, str]:
+    """Build column-name → dhis2_variable_type mapping from metadata cache.
+
+    Loads cached DHIS2 metadata snapshots (dataElements, indicators,
+    programIndicators, eventDataItems, dataSets) and reverses the
+    sanitize_serving_identifier transform to map each item's display name
+    to the expected column name.  Returns ``{}`` on any error.
+    """
+    try:
+        from superset import db  # pylint: disable=import-outside-toplevel
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+
+        type_map: dict[str, str] = {}
+        ns_to_type = {
+            "dhis2_snapshot:dataElements": "dataElement",
+            "dhis2_snapshot:indicators": "indicator",
+            "dhis2_snapshot:programIndicators": "programIndicator",
+            "dhis2_snapshot:eventDataItems": "eventDataItem",
+            "dhis2_snapshot:dataSets": "dataSet",
+        }
+        for ns, vtype in ns_to_type.items():
+            rows = db.session.execute(
+                text("SELECT metadata_json FROM source_metadata_cache "
+                     "WHERE cache_namespace = :ns"),
+                {"ns": ns},
+            ).fetchall()
+            for cache_row in rows:
+                try:
+                    payload = json.loads(cache_row[0])
+                    items = payload.get("result") or []
+                    for item in items:
+                        name = item.get("name") or item.get("displayName") or ""
+                        if not name:
+                            continue
+                        col_name = _sanitize_for_column(name)
+                        if col_name and col_name not in type_map:
+                            type_map[col_name] = vtype
+                        # Also try shortName
+                        short = item.get("shortName") or ""
+                        if short and short != name:
+                            col_short = _sanitize_for_column(short)
+                            if col_short and col_short not in type_map:
+                                type_map[col_short] = vtype
+                except Exception:  # pylint: disable=broad-except
+                    continue
+        return type_map
+    except Exception:  # pylint: disable=broad-except
+        return {}
+
+
+def _supplement_columns_from_physical(
+    manifest_columns: list[dict[str, Any]],
+    physical_cols: set[str],
+    engine: Any,
+    dataset: Any,
+) -> list[dict[str, Any]]:
+    """Add basic column specs for physical columns absent from the manifest.
+
+    When DHIS2DatasetVariable records are missing, the manifest only contains
+    OU hierarchy + period columns.  This function adds minimal specs for all
+    other physical columns so SqlaTable registration does not remove them.
+
+    Variable-type tags (DE/IN etc.) are recovered from the metadata cache
+    where possible.
+    """
+    manifest_names = {str(c.get("column_name") or "") for c in manifest_columns}
+    missing = [col for col in physical_cols if col not in manifest_names]
+    if not missing:
+        return manifest_columns
+
+    # Build variable-type lookup lazily
+    type_map = _build_variable_type_lookup()
+
+    # Fetch ClickHouse column types for the serving table
+    ch_type_map: dict[str, str] = {}
+    try:
+        serving_name = engine.get_serving_table_name(dataset)
+        result = engine._qry(  # pylint: disable=protected-access
+            "SELECT name, type FROM system.columns "
+            "WHERE database = {db:String} AND table = {tbl:String} "
+            "ORDER BY position",
+            parameters={"db": engine._serving_database, "tbl": serving_name},  # pylint: disable=protected-access
+        )
+        ch_type_map = {r[0]: r[1] for r in result.result_rows}
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    supplemented = list(manifest_columns)
+    for col_name in missing:
+        if col_name in _INTERNAL_NAMES:
+            continue  # skip internal/marker columns
+
+        ch_type = ch_type_map.get(col_name, "")
+        is_numeric = any(t in ch_type for t in ("Float", "Int", "Decimal", "Numeric"))
+
+        col_spec: dict[str, Any] = {
+            "column_name": col_name,
+            "verbose_name": col_name.replace("_", " ").title(),
+            "type": "FLOAT" if is_numeric else "STRING",
+            "is_dttm": False,
+        }
+
+        if col_name in _PERIOD_NAMES:
+            col_spec["type"] = "STRING"
+            col_spec["extra"] = {"dhis2_is_period": True}
+        elif col_name in _OU_LEVEL_NAMES:
+            col_spec["type"] = "INTEGER"
+            col_spec["extra"] = {"dhis2_is_ou_level": True}
+        elif col_name in _OU_HIERARCHY_NAMES or (
+            not is_numeric and col_name not in _PERIOD_NAMES
+        ):
+            col_spec["type"] = "STRING"
+            col_spec["extra"] = {"dhis2_is_ou_hierarchy": True}
+        elif is_numeric:
+            # Metric column — try to recover variable type from cache
+            vtype = type_map.get(col_name)
+            if vtype:
+                col_spec["extra"] = {"dhis2_variable_type": vtype}
+
+        supplemented.append(col_spec)
+
+    logger.debug(
+        "compat_backfill: supplemented %d columns from physical table for dataset id=%s",
+        len(supplemented) - len(manifest_columns),
+        dataset.id,
+    )
+    return supplemented
 
 
 def _col_should_be_indexed(col_spec: dict[str, Any]) -> bool:
@@ -146,14 +297,37 @@ def _backfill_one_dataset(
         return
 
     try:
-        serving_cols = dataset_columns_payload(manifest_columns)
-        register_serving_table_as_superset_dataset(
-            dataset_id=dataset.id,
-            dataset_name=dataset.name,
-            serving_table_ref=full_name,
-            serving_columns=serving_cols,
-            serving_database_id=serving_db_id,
+        from superset.dhis2.superset_dataset_service import (  # pylint: disable=import-outside-toplevel
+            register_specialized_marts_as_superset_datasets,
         )
+        serving_cols = dataset_columns_payload(manifest_columns)
+
+        # Derive mart table ref for this dataset
+        mart_table_name = f"{table_name}_mart"
+        has_mart = (
+            hasattr(engine, "named_table_exists_in_serving")
+            and engine.named_table_exists_in_serving(mart_table_name)
+        )
+        if has_mart:
+            # Register/update mart record (MART_DATASET role, sql → _mart table)
+            register_specialized_marts_as_superset_datasets(
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                serving_table_ref=full_name,
+                serving_columns=serving_cols,
+                serving_database_id=serving_db_id,
+                engine=engine,
+                dataset=dataset,
+            )
+        else:
+            # No mart yet — just register the base record without overwriting role
+            register_serving_table_as_superset_dataset(
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                serving_table_ref=full_name,
+                serving_columns=serving_cols,
+                serving_database_id=serving_db_id,
+            )
     except Exception:  # pylint: disable=broad-except
         logger.warning(
             "compat_backfill: SqlaTable re-registration failed for dataset id=%s",
@@ -238,6 +412,16 @@ def run_compatibility_backfill() -> None:
                 if physical_cols
                 else all_columns
             )
+
+            # When DHIS2DatasetVariable records are absent, the manifest only
+            # has OU hierarchy + period columns.  Supplement with all remaining
+            # physical columns so SqlaTable registration does not strip metric
+            # columns — recovering dhis2_variable_type from metadata cache.
+            has_variable_columns = any(c.get("variable_id") for c in columns)
+            if not has_variable_columns and physical_cols:
+                columns = _supplement_columns_from_physical(
+                    columns, physical_cols, engine, dataset
+                )
 
             _backfill_one_dataset(dataset, engine, columns)
             processed += 1

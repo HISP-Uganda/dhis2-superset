@@ -135,15 +135,16 @@ const MapWrapper = styled.div`
   min-height: 0;
 `;
 
-const MapCanvas = styled.div`
+const MapCanvas = styled.div<{ $backgroundColor?: string }>`
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+  background: ${({ $backgroundColor }) => $backgroundColor || '#ffffff'};
 
   .leaflet-container {
     width: 100%;
     height: 100%;
-    background: #ffffff;
+    background: ${({ $backgroundColor }) => $backgroundColor || '#ffffff'};
   }
 
   .leaflet-container .leaflet-interactive:focus,
@@ -230,8 +231,9 @@ const MapFooterBar = styled.div`
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding: 1px 4px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
   min-height: 0;
   background: rgba(248, 250, 252, 0.85);
   border-top: 1px solid rgba(148, 163, 184, 0.15);
@@ -240,11 +242,84 @@ const MapFooterBar = styled.div`
 const MapFooterControlSlot = styled.div`
   flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: center;
-  padding-top: 1px;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const FooterActionButton = styled.button<{ $active?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid ${({ $active }) =>
+    $active ? '#0066cc' : 'rgba(148, 163, 184, 0.45)'};
+  background: ${({ $active }) => ($active ? '#0066cc' : 'rgba(255, 255, 255, 0.96)')};
+  color: ${({ $active }) => ($active ? '#ffffff' : '#334155')};
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+
+  &:hover {
+    background: ${({ $active }) => ($active ? '#0057ad' : 'rgba(241, 245, 249, 0.98)')};
+  }
+`;
+
+const FooterStatusPill = styled.div<{ $cacheHit?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: ${({ $cacheHit }) => ($cacheHit ? '#d4edda' : '#cce5ff')};
+  color: ${({ $cacheHit }) => ($cacheHit ? '#155724' : '#004085')};
 `;
 /* eslint-enable theme-colors/no-literal-colors */
+
+function fitMapToBoundaries(
+  map: L.Map,
+  boundaries: BoundaryFeature[],
+  viewportWidth: number,
+  viewportHeight: number,
+  animate: boolean = true,
+): boolean {
+  const bounds = calculateBounds(boundaries);
+
+  if (!bounds || !bounds.isValid()) {
+    return false;
+  }
+
+  const applyFit = (shouldAnimate: boolean) => {
+    const size = map.getSize();
+    const fitConfig = getMapFitViewportConfig(
+      Math.max(size.x, viewportWidth),
+      Math.max(size.y, viewportHeight),
+      {},
+    );
+
+    map.fitBounds(bounds, {
+      paddingTopLeft: fitConfig.paddingTopLeft,
+      paddingBottomRight: fitConfig.paddingBottomRight,
+      maxZoom: fitConfig.maxZoom,
+      animate: shouldAnimate,
+      duration: shouldAnimate ? 0.35 : undefined,
+    });
+  };
+
+  map.invalidateSize({ pan: false });
+  applyFit(animate);
+
+  requestAnimationFrame(() => {
+    map.invalidateSize({ pan: false });
+    applyFit(false);
+  });
+
+  return true;
+}
 
 // Component to auto-fit map bounds when boundaries change
 interface MapAutoFocusProps {
@@ -252,6 +327,7 @@ interface MapAutoFocusProps {
   enabled: boolean;
   viewportWidth: number;
   viewportHeight: number;
+  layoutSignature?: string;
 }
 
 function MapAutoFocus({
@@ -259,6 +335,7 @@ function MapAutoFocus({
   enabled,
   viewportWidth,
   viewportHeight,
+  layoutSignature,
 }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
@@ -283,8 +360,8 @@ function MapAutoFocus({
     [viewportHeight, viewportWidth],
   );
   const focusSignature = useMemo(
-    () => `${boundaryIdsKey}|${viewportSignature}`,
-    [boundaryIdsKey, viewportSignature],
+    () => `${boundaryIdsKey}|${viewportSignature}|${layoutSignature || 'default'}`,
+    [boundaryIdsKey, layoutSignature, viewportSignature],
   );
 
   useEffect(() => {
@@ -309,31 +386,7 @@ function MapAutoFocus({
     // Small delay to ensure map is fully initialized
     focusTimeoutRef.current = setTimeout(() => {
       try {
-        map.invalidateSize({ pan: false });
-        const bounds = calculateBounds(boundaries);
-
-        if (bounds && bounds.isValid()) {
-          const size = map.getSize();
-          // Legend is a floating overlay; no padding reservation needed.
-          // Use actual Leaflet canvas size with viewportWidth/Height as fallback
-          // in case the container hasn't rendered to full size yet.
-          const fitConfig = getMapFitViewportConfig(
-            Math.max(size.x, viewportWidth),
-            Math.max(size.y, viewportHeight),
-            {},
-          );
-          map.fitBounds(bounds, {
-            paddingTopLeft: fitConfig.paddingTopLeft,
-            paddingBottomRight: fitConfig.paddingBottomRight,
-            maxZoom: fitConfig.maxZoom,
-            animate: true,
-            duration: 0.35,
-          });
-
-          requestAnimationFrame(() => {
-            map.invalidateSize({ pan: false });
-          });
-
+        if (fitMapToBoundaries(map, boundaries, viewportWidth, viewportHeight)) {
           // Mark that we've focused on this boundary set + viewport size
           lastFocusSignatureRef.current = focusSignature;
         } else {
@@ -476,22 +529,13 @@ function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
   const handleFocus = () => {
     if (boundaries.length > 0 && map) {
       try {
-        map.invalidateSize({ pan: false });
-        const bounds = calculateBounds(boundaries);
-        if (bounds && bounds.isValid()) {
-          const size = map.getSize();
-          const fitConfig = getMapFitViewportConfig(size.x, size.y, {});
-          map.fitBounds(bounds, {
-            paddingTopLeft: fitConfig.paddingTopLeft,
-            paddingBottomRight: fitConfig.paddingBottomRight,
-            maxZoom: fitConfig.maxZoom,
-            animate: true,
-            duration: 0.35,
-          });
-          requestAnimationFrame(() => {
-            map.invalidateSize({ pan: false });
-          });
-        }
+        fitMapToBoundaries(
+          map,
+          boundaries,
+          map.getSize().x,
+          map.getSize().y,
+          true,
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('Failed to focus map:', err);
@@ -659,12 +703,21 @@ function buildAggregatedValueMaps(options: {
 
   rows.forEach(row => {
     // If a level filter is requested and the row has a level, skip rows that
-    // don't match the target level. This prevents double-counting across levels.
+    // don't match the target level. This prevents double-counting across levels
+    // when data exists at multiple OU levels.
+    // Guard: treat null/undefined ou_level as "unknown level" — include the row
+    // rather than filtering it out. NULL ou_level is common in DuckDB serving
+    // tables when the DHIS2 analytics API omits the level field. Incorrectly
+    // treating null as level 0 would skip ALL rows, producing "No Data".
     if (ouLevelFilter !== undefined && ouLevelColName) {
-      const rowLevel = Number(row[ouLevelColName]);
-      if (Number.isFinite(rowLevel) && rowLevel !== ouLevelFilter) {
-        return;
+      const rawLevel = row[ouLevelColName];
+      if (rawLevel !== null && rawLevel !== undefined) {
+        const rowLevel = Number(rawLevel);
+        if (Number.isFinite(rowLevel) && rowLevel !== ouLevelFilter) {
+          return;
+        }
       }
+      // null/undefined ou_level: cannot determine level → include the row
     }
 
     const orgUnitValue = row[actualOrgUnitCol];
@@ -833,6 +886,7 @@ function DHIS2Map({
   colorScheme,
   linearColorScheme,
   useLinearColorScheme = true,
+  chartBackgroundColor,
   opacity,
   strokeColor,
   strokeWidth,
@@ -2879,11 +2933,16 @@ function DHIS2Map({
 
   return (
     <MapWrapper style={{ width, height }}>
-      <MapCanvas onMouseLeave={() => setHoveredFeature(null)}>
+      <MapCanvas
+        $backgroundColor={chartBackgroundColor}
+        onMouseLeave={() => setHoveredFeature(null)}
+      >
       {/* @ts-ignore - React 19 compatibility */}
       <MapContainer
         center={[1.3733, 32.2903]}
         zoom={7}
+        zoomSnap={0.25}
+        zoomDelta={0.25}
         zoomControl={false}
         scrollWheelZoom={interactionEnabled}
         dragging={interactionEnabled}
@@ -2908,6 +2967,7 @@ function DHIS2Map({
         enabled={!loading}
         viewportWidth={width}
         viewportHeight={height}
+        layoutSignature={showFilters ? 'filters-open' : 'filters-closed'}
       />
 
       {/* Light basemap focus mask to de-emphasize areas outside boundaries */}
@@ -3081,31 +3141,31 @@ function DHIS2Map({
 
       <MapFooterBar>
         <MapFooterControlSlot>
+          {loadTime !== null && !loading && (
+            <FooterStatusPill
+              $cacheHit={cacheHit}
+              title={cacheHit ? 'Loaded from browser cache' : 'Loaded from server'}
+            >
+              {cacheHit ? '⚡ ' : ''}
+              {loadTime}ms
+            </FooterStatusPill>
+          )}
+          {effectiveIsStagedLocalDataset && !loading && (
+            <FooterActionButton
+              type="button"
+              $active={showFilters}
+              onClick={() => setShowFilters(!showFilters)}
+              title="Toggle filters panel"
+            >
+              <FilterOutlined /> {t('Quick Filters')}
+            </FooterActionButton>
+          )}
+        </MapFooterControlSlot>
+        <MapFooterControlSlot>
           {/* @ts-ignore - React 19 compatibility */}
           <BaseMapSelector currentMap={baseMapType} onMapChange={setBaseMapType} />
         </MapFooterControlSlot>
       </MapFooterBar>
-
-      {loadTime !== null && !loading && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 10,
-            left: 10,
-            background: cacheHit ? '#d4edda' : '#cce5ff',
-            color: cacheHit ? '#155724' : '#004085',
-            padding: '6px 12px',
-            borderRadius: '4px',
-            fontSize: '12px',
-            zIndex: 500,
-            fontWeight: 500,
-          }}
-          title={cacheHit ? 'Loaded from browser cache' : 'Loaded from server'}
-        >
-          {cacheHit ? '⚡ ' : ''}
-          {loadTime}ms
-        </div>
-      )}
 
       {dhis2Data && dhis2Data.length > 0 && !loading && (
         <button
@@ -3128,30 +3188,6 @@ function DHIS2Map({
           title="Toggle data preview panel"
         >
           📊 Data Preview
-        </button>
-      )}
-
-      {effectiveIsStagedLocalDataset && !loading && (
-        <button
-          onClick={() => setShowFilters(!showFilters)}
-          style={{
-            position: 'absolute',
-            top: '16px',
-            left: dhis2Data && dhis2Data.length > 0 ? '140px' : '16px',
-            background: showFilters ? '#0066cc' : '#ffffff',
-            color: showFilters ? '#ffffff' : '#333333',
-            border: '2px solid #0066cc',
-            padding: '8px 12px',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '12px',
-            fontWeight: 500,
-            zIndex: 1001,
-            boxShadow: '0 2px 6px rgba(0, 0, 0, 0.15)',
-          }}
-          title="Toggle filters panel"
-        >
-          <FilterOutlined /> {t('Quick Filters')}
         </button>
       )}
 

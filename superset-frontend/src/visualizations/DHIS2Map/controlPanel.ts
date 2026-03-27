@@ -19,6 +19,7 @@
 
 import {
   t,
+  getCategoricalSchemeRegistry,
   getSequentialSchemeRegistry,
   SequentialScheme,
 } from '@superset-ui/core';
@@ -67,16 +68,18 @@ function parseColumnExtra(extra: unknown): Record<string, any> | undefined {
   return undefined;
 }
 
-function getLegendSetsCacheKey(databaseId?: number): string | null {
-  if (!databaseId || !Number.isFinite(databaseId) || databaseId <= 0) {
+function getLegendSetsCacheKey(databaseId?: number | string): string | null {
+  const dbId = databaseId ? Number(databaseId) : undefined;
+  if (!dbId || !Number.isFinite(dbId) || dbId <= 0) {
     return null;
   }
-  return `dhis2_legend_sets_db${databaseId}`;
+  return `dhis2_legend_sets_db${dbId}`;
 }
 
-function readCachedLegendSetEnvelope(
-  databaseId?: number,
+export function readCachedLegendSetEnvelope(
+  databaseId?: number | string,
 ): CachedLegendSetEnvelope | null {
+
   if (typeof window === 'undefined') {
     return null;
   }
@@ -107,11 +110,11 @@ function readCachedLegendSetEnvelope(
   }
 }
 
-function readCachedLegendSets(databaseId?: number): StagedLegendSet[] {
+function readCachedLegendSets(databaseId?: number | string): StagedLegendSet[] {
   return readCachedLegendSetEnvelope(databaseId)?.data || [];
 }
 
-function shouldFetchLegendSets(databaseId?: number): boolean {
+function shouldFetchLegendSets(databaseId?: number | string): boolean {
   const envelope = readCachedLegendSetEnvelope(databaseId);
   if (!envelope) {
     return true;
@@ -204,6 +207,7 @@ function getStagedLegendChoices(
   return choices;
 }
 
+const categoricalSchemeRegistry = getCategoricalSchemeRegistry();
 const sequentialSchemeRegistry = getSequentialSchemeRegistry();
 
 const config: ControlPanelConfig = {
@@ -276,13 +280,18 @@ const config: ControlPanelConfig = {
             config: {
               type: 'SelectControl',
               label: t('Organisation Unit Column'),
-              description: t('Column containing org unit identifiers'),
+              description: t('Column containing org unit identifiers (shows only columns with OU tags)'),
               mapStateToProps: (state: any) => ({
                 choices:
-                  state.datasource?.columns?.map((col: any) => [
-                    col.column_name,
-                    col.verbose_name || col.column_name,
-                  ]) || [],
+                  state.datasource?.columns
+                    ?.filter((col: any) => {
+                      const extra = parseColumnExtra(col.extra);
+                      return extra?.dhis2_is_ou_hierarchy === true || extra?.dhis2IsOuHierarchy === true;
+                    })
+                    .map((col: any) => [
+                      col.column_name,
+                      col.verbose_name || col.column_name,
+                    ]) || [],
               }),
               validators: [],
             },
@@ -322,6 +331,26 @@ const config: ControlPanelConfig = {
         ],
         [
           {
+            // Hierarchy-aware null filtering: exclude rows where the selected
+            // OrgUnit hierarchy column is empty/null. Enabled by default.
+            // When ON: only rows where the selected OU column has a value are
+            //   included — prevents higher-level rows from mixing into the map.
+            // When OFF: all rows are included (may cause double-counting when
+            //   the serving table has data at multiple hierarchy levels).
+            name: 'filter_null_ou_column',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Exclude rows where selected OrgUnit column is empty'),
+              default: true,
+              description: t(
+                'Filter out rows where the selected OrgUnit hierarchy column has no value. ' +
+                'This prevents higher-level aggregation rows from appearing at the wrong map grain.',
+              ),
+            },
+          },
+        ],
+        [
+          {
             name: 'granularity_sqla',
             config: {
               ...sharedControls.granularity_sqla,
@@ -346,8 +375,8 @@ const config: ControlPanelConfig = {
               renderTrigger: true,
               freeForm: false,
               mapStateToProps: (state: any) => {
-                // Get database ID from datasource
-                const databaseId = state.datasource?.database?.id;
+                // Get original DHIS2 database ID from datasource
+                const databaseId = getDhis2SourceDatabaseId(state.datasource);
                 const datasourceLevels = getDatasourceBoundaryLevels(
                   state.datasource?.columns,
                 );
@@ -592,17 +621,29 @@ const config: ControlPanelConfig = {
       ],
     },
     {
-      label: t('Map Style'),
+      label: t('Color schemes'),
       expanded: true,
       controlSetRows: [
-        // Categorical color scheme - includes "Superset Colors" and all other categorical palettes
-        ['color_scheme'],
+        [
+          {
+            name: 'use_linear_color_scheme',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Use sequential palette'),
+              description: t(
+                'When checked, the map uses a sequential palette. When unchecked, it uses a categorical palette.',
+              ),
+              default: true,
+              renderTrigger: true,
+            },
+          },
+        ],
         [
           {
             name: 'linear_color_scheme',
             config: {
               type: 'ColorSchemeControl',
-              label: t('Sequential Color Scheme'),
+              label: t('Sequential color scheme'),
               description: t(
                 'Gradient color scheme for choropleth maps. Select from available sequential palettes.',
               ),
@@ -615,23 +656,182 @@ const config: ControlPanelConfig = {
               isLinear: true,
               clearable: false,
               renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.use_linear_color_scheme?.value !== false,
             },
           },
         ],
         [
           {
-            name: 'use_linear_color_scheme',
+            name: 'color_scheme',
             config: {
-              type: 'CheckboxControl',
-              label: t('Use Sequential Colors'),
+              type: 'ColorSchemeControl',
+              label: t('Categorical color scheme'),
+              default: categoricalSchemeRegistry.getDefaultKey(),
+              renderTrigger: true,
+              choices: () =>
+                categoricalSchemeRegistry.keys().map(key => [key, key]),
+              description: t('The categorical palette for rendering chart'),
+              schemes: () => categoricalSchemeRegistry.getMap(),
+              visibility: ({ controls }: any) =>
+                controls?.use_linear_color_scheme?.value === false,
+            },
+          },
+        ],
+        [
+          {
+            name: 'legend_type',
+            config: {
+              type: 'SelectControl',
+              label: t('Data range colors'),
               description: t(
-                'When checked, uses gradient colors (Sequential). When unchecked, uses the categorical Color Scheme above.',
+                'Auto uses staged DHIS2 legend ranges when available, otherwise it calculates ranges from data. Manual allows custom break points and colors.',
               ),
-              default: true,
+              default: 'auto',
+              choices: [
+                ['auto', t('Auto (from data)')],
+                ['staged', t('DHIS2 Staged Legend')],
+                ['equal_interval', t('Equal Interval')],
+                ['quantile', t('Quantile')],
+                ['manual', t('Manual Breaks')],
+              ],
               renderTrigger: true,
             },
           },
         ],
+        [
+          {
+            name: 'staged_legend_column',
+            config: {
+              type: 'SelectControl',
+              label: t('DHIS2 staged legend'),
+              description: t(
+                'Choose which staged DHIS2 legend set to apply. "Selected metric legend" keeps the legend attached to the current metric column.',
+              ),
+              default: '__metric__',
+              clearable: false,
+              renderTrigger: true,
+              mapStateToProps: (state: any) => {
+                const datasourceColumns = Array.isArray(state.datasource?.columns)
+                  ? state.datasource.columns
+                  : [];
+                const databaseId = getDhis2SourceDatabaseId(state.datasource);
+                const cachedLegendSets = readCachedLegendSets(databaseId);
+                const cacheKey = getLegendSetsCacheKey(databaseId);
+
+                if (
+                  databaseId &&
+                  cacheKey &&
+                  typeof window !== 'undefined' &&
+                  shouldFetchLegendSets(databaseId)
+                ) {
+                  setTimeout(() => {
+                    import('src/utils/dhis2LegendColorSchemes').then(
+                      ({ syncDHIS2LegendSchemesForDatabase }) => {
+                        syncDHIS2LegendSchemesForDatabase(databaseId).catch(
+                          () => {
+                            // Fallback to column-attached legends until staged legend sets arrive.
+                          },
+                        );
+                      },
+                    );
+                  }, 0);
+                }
+
+                return {
+                  choices: getStagedLegendChoices(
+                    datasourceColumns,
+                    cachedLegendSets,
+                  ),
+                };
+              },
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value === 'staged',
+            },
+          },
+        ],
+        [
+          {
+            name: 'legend_classes',
+            config: {
+              type: 'SliderControl',
+              label: t('Number of classes'),
+              description: t(
+                'Number of color classes/intervals in the legend (affects color distribution)',
+              ),
+              default: 5,
+              min: 2,
+              max: 9,
+              step: 1,
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value !== 'staged' &&
+                controls?.legend_type?.value !== 'manual',
+            },
+          },
+        ],
+        [
+          {
+            name: 'manual_breaks',
+            config: {
+              type: 'TextControl',
+              label: t('Manual break points'),
+              description: t(
+                'Comma-separated break values for manual legend. E.g., "0,100,500,1000,5000" creates 4 intervals.',
+              ),
+              default: '',
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value === 'manual',
+            },
+          },
+        ],
+        [
+          {
+            name: 'manual_colors',
+            config: {
+              type: 'TextControl',
+              label: t('Manual colors'),
+              description: t(
+                'Comma-separated hex colors for each interval. E.g., "#ffffcc,#a1dab4,#41b6c4,#225ea8". Must match number of intervals.',
+              ),
+              default: '',
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                controls?.legend_type?.value === 'manual',
+            },
+          },
+        ],
+        [
+          {
+            name: 'legend_reverse_colors',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Reverse color scheme'),
+              description: t('Reverse the order of colors in the legend'),
+              default: false,
+              renderTrigger: true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'legend_no_data_color',
+            config: {
+              type: 'ColorPickerControl',
+              label: t('No data color'),
+              description: t('Color for areas with no data'),
+              default: { r: 204, g: 204, b: 204, a: 1 },
+              renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
+      label: t('Map Style'),
+      expanded: true,
+      controlSetRows: [
         [
           {
             name: 'opacity',
@@ -645,6 +845,18 @@ const config: ControlPanelConfig = {
               min: 0,
               max: 1,
               step: 0.1,
+              renderTrigger: true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'chart_background_color',
+            config: {
+              type: 'ColorPickerControl',
+              label: t('Background color'),
+              description: t('Background behind the map viewport'),
+              default: { r: 255, g: 255, b: 255, a: 1 },
               renderTrigger: true,
             },
           },
@@ -786,7 +998,7 @@ const config: ControlPanelConfig = {
     },
     {
       label: t('Labels'),
-      expanded: false,
+      expanded: true,
       controlSetRows: [
         [
           {
@@ -877,157 +1089,6 @@ const config: ControlPanelConfig = {
                 ['horizontal_chips', t('Horizontal Chips')],
                 ['compact', t('Compact')],
               ],
-            },
-          },
-        ],
-        [
-          {
-            name: 'legend_type',
-            config: {
-              type: 'SelectControl',
-              label: t('Legend Type'),
-              description: t(
-                'Auto uses staged DHIS2 legend ranges when available, otherwise it calculates ranges from data. Manual allows custom break points and colors.',
-              ),
-              default: 'auto',
-              choices: [
-                ['auto', t('Auto (from data)')],
-                ['staged', t('DHIS2 Staged Legend')],
-                ['equal_interval', t('Equal Interval')],
-                ['quantile', t('Quantile')],
-                ['manual', t('Manual Breaks')],
-              ],
-              renderTrigger: true,
-            },
-          },
-        ],
-        [
-          {
-            name: 'staged_legend_column',
-            config: {
-              type: 'SelectControl',
-              label: t('DHIS2 Staged Legend'),
-              description: t(
-                'Choose which staged DHIS2 legend set to apply. "Selected metric legend" keeps the legend attached to the current metric column.',
-              ),
-              default: '__metric__',
-              clearable: false,
-              renderTrigger: true,
-              mapStateToProps: (state: any) => {
-                const datasourceColumns = Array.isArray(state.datasource?.columns)
-                  ? state.datasource.columns
-                  : [];
-                const databaseId = getDhis2SourceDatabaseId(state.datasource);
-                const cachedLegendSets = readCachedLegendSets(databaseId);
-                const cacheKey = getLegendSetsCacheKey(databaseId);
-
-                if (
-                  databaseId &&
-                  cacheKey &&
-                  typeof window !== 'undefined' &&
-                  shouldFetchLegendSets(databaseId)
-                ) {
-                  // Defer out of the render/mapStateToProps cycle so we never
-                  // trigger a synchronous state update while React is rendering
-                  // (causes "Cannot update a component while rendering" warning).
-                  setTimeout(() => {
-                    import('src/utils/dhis2LegendColorSchemes').then(
-                      ({ syncDHIS2LegendSchemesForDatabase }) => {
-                        syncDHIS2LegendSchemesForDatabase(databaseId).catch(
-                          () => {
-                            // Fallback to column-attached legends until staged legend sets arrive.
-                          },
-                        );
-                      },
-                    );
-                  }, 0);
-                }
-
-                return {
-                  choices: getStagedLegendChoices(
-                    datasourceColumns,
-                    cachedLegendSets,
-                  ),
-                };
-              },
-              visibility: ({ controls }: any) =>
-                controls?.legend_type?.value === 'staged',
-            },
-          },
-        ],
-        [
-          {
-            name: 'legend_classes',
-            config: {
-              type: 'SliderControl',
-              label: t('Number of Classes'),
-              description: t(
-                'Number of color classes/intervals in the legend (affects color distribution)',
-              ),
-              default: 5,
-              min: 2,
-              max: 9,
-              step: 1,
-              renderTrigger: true,
-              visibility: ({ controls }: any) =>
-                controls?.legend_type?.value !== 'staged' &&
-                controls?.legend_type?.value !== 'manual',
-            },
-          },
-        ],
-        [
-          {
-            name: 'manual_breaks',
-            config: {
-              type: 'TextControl',
-              label: t('Manual Break Points'),
-              description: t(
-                'Comma-separated break values for manual legend. E.g., "0,100,500,1000,5000" creates 4 intervals.',
-              ),
-              default: '',
-              renderTrigger: true,
-              visibility: ({ controls }: any) =>
-                controls?.legend_type?.value === 'manual',
-            },
-          },
-        ],
-        [
-          {
-            name: 'manual_colors',
-            config: {
-              type: 'TextControl',
-              label: t('Manual Colors'),
-              description: t(
-                'Comma-separated hex colors for each interval. E.g., "#ffffcc,#a1dab4,#41b6c4,#225ea8". Must match number of intervals.',
-              ),
-              default: '',
-              renderTrigger: true,
-              visibility: ({ controls }: any) =>
-                controls?.legend_type?.value === 'manual',
-            },
-          },
-        ],
-        [
-          {
-            name: 'legend_reverse_colors',
-            config: {
-              type: 'CheckboxControl',
-              label: t('Reverse Color Scheme'),
-              description: t('Reverse the order of colors in the legend'),
-              default: false,
-              renderTrigger: true,
-            },
-          },
-        ],
-        [
-          {
-            name: 'legend_no_data_color',
-            config: {
-              type: 'ColorPickerControl',
-              label: t('No Data Color'),
-              description: t('Color for areas with no data'),
-              default: { r: 204, g: 204, b: 204, a: 1 },
-              renderTrigger: true,
             },
           },
         ],

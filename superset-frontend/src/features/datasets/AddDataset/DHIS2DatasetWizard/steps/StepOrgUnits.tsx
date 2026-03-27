@@ -1860,6 +1860,56 @@ export default function WizardStepOrgUnits({
         ) : null}
       </OptionsContainer>
 
+      {orgUnitLevels.length > 0 && (
+        <OptionsContainer>
+          <SectionTitle>{t('Lower Data OrgUnit Level')}</SectionTitle>
+          <Paragraph style={{ margin: '0 0 12px 0' }}>
+            {t(
+              'Set the deepest hierarchy level to include in extraction. ' +
+                'Org units below this level are excluded. ' +
+                'Leave empty to include all descendants (down to the lowest level in the hierarchy).',
+            )}
+          </Paragraph>
+          <Select
+            allowClear
+            placeholder={t('Include all levels (no lower limit)')}
+            value={
+              wizardState.maxOrgUnitLevel != null
+                ? String(wizardState.maxOrgUnitLevel)
+                : undefined
+            }
+            onChange={value => {
+              updateState({
+                maxOrgUnitLevel:
+                  value != null ? parseInt(String(value), 10) : null,
+              });
+            }}
+            options={orgUnitLevels.map(level => ({
+              value: level.level.toString(),
+              label: `${level.displayName} (Level ${level.level})`,
+            }))}
+            showSearch
+            filterOption={(input, option) =>
+              String(option?.label || '')
+                .toLowerCase()
+                .includes(input.toLowerCase())
+            }
+            styles={{ root: { width: '100%', maxWidth: 400 } }}
+          />
+          {wizardState.maxOrgUnitLevel != null &&
+            wizardState.dataLevelScope === 'selected' && (
+              <Alert
+                style={{ marginTop: 12 }}
+                type="warning"
+                showIcon
+                message={t(
+                  'Lower level limit is most effective when "Data Level Scope" is set to include descendants (children, grandchildren, or all levels).',
+                )}
+              />
+            )}
+        </OptionsContainer>
+      )}
+
       <ContentSection>
         <div>
           <SectionTitle style={{ marginBottom: 12 }}>

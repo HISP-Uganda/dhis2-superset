@@ -1,5 +1,5 @@
 """
-Rebuild KPI and Map mart tables for a staged dataset.
+Rebuild the consolidated _mart table for a staged dataset.
 
 Reads from the existing main serving table — does NOT touch staging data or
 re-run a full sync.  Run from the repo root:
@@ -54,32 +54,110 @@ with app.app_context():
     logger.info("Main serving table exists — building manifest...")
     manifest = build_serving_manifest(dataset)
 
-    logger.info("Building specialized marts...")
+    logger.info("Building consolidated _mart table...")
     built = _build_specialized_marts(dataset, engine, serving_name, manifest)
 
     if built:
         logger.info("Built %d mart(s): %s", len(built), built)
     else:
-        logger.warning("No marts were built (no indicator columns or all marts failed)")
+        logger.warning("No marts were built (no indicator columns or mart build failed)")
+
+    # Register mart in Superset
+    logger.info("Registering mart in Superset...")
+    from superset.dhis2.analytical_serving import (
+        dataset_columns_payload,
+    )
+
+    serving_table_ref = engine.get_serving_sql_table_ref(dataset)
+    serving_columns = dataset_columns_payload(manifest["columns"])
+
+    # Collect source instance IDs from dataset variables
+    from superset.dhis2.models import DHIS2DatasetVariable as _DSVar
+    _instance_ids = list(dict.fromkeys(
+        v.instance_id
+        for v in db.session.query(_DSVar)
+            .filter_by(staged_dataset_id=dataset.id)
+            .all()
+        if v.instance_id is not None
+    ))
+
+    # For ClickHouse engines the staging engine's database_id
+    # is the DHIS2 *source* database, not the serving database.
+    if hasattr(engine, "get_or_create_superset_database"):
+        _serving_db = engine.get_or_create_superset_database()
+        serving_db_id = getattr(_serving_db, "id", None)
+    else:
+        serving_db_id = getattr(engine, "database_id", None)
+
+    if serving_db_id is not None:
+        from superset.dhis2.superset_dataset_service import (
+            register_serving_table_as_superset_dataset,
+            register_specialized_marts_as_superset_datasets,
+        )
+        from superset.datasets.policy import DatasetRole as _DatasetRole
+
+        # Repair main dataset role (MART)
+        logger.info("Ensuring main dataset has MART role...")
+        register_serving_table_as_superset_dataset(
+            dataset_id=dataset.id,
+            dataset_name=dataset.name,
+            serving_table_ref=serving_table_ref,
+            serving_columns=serving_columns,
+            serving_database_id=serving_db_id,
+            source_database_id=dataset.database_id,
+            source_instance_ids=_instance_ids,
+            dataset_role=_DatasetRole.MART.value,
+        )
+
+        logger.info("Registering consolidated mart dataset (MART_DATASET role)...")
+        register_specialized_marts_as_superset_datasets(
+            dataset_id=dataset.id,
+            dataset_name=dataset.name,
+            serving_table_ref=serving_table_ref,
+            serving_columns=serving_columns,
+            serving_database_id=serving_db_id,
+            source_database_id=dataset.database_id,
+            source_instance_ids=_instance_ids,
+            engine=engine,
+            dataset=dataset,
+        )
 
     # Update Superset dataset metadata so columns are visible in Explore
-    logger.info("Refreshing Superset dataset metadata for all marts...")
-    from superset.daos.dataset import DatasetDAO
+    logger.info("Refreshing Superset dataset metadata...")
     from superset.connectors.sqla.models import SqlaTable
     from superset import db as _db
 
-    mart_tables = _db.session.query(SqlaTable).filter(
-        SqlaTable.table_name.in_(built)
-    ).all() if built else []
+    # Verify records for this dataset (main + mart share the same friendly name)
+    target_names = [dataset.name]
+    all_records = _db.session.query(SqlaTable).filter(
+        SqlaTable.table_name.in_(target_names)
+    ).all()
 
     refreshed = 0
-    for sqla_table in mart_tables:
+    for sqla_table in all_records:
         try:
             sqla_table.fetch_metadata()
             _db.session.commit()
             refreshed += 1
-            logger.info("Refreshed metadata for %s", sqla_table.table_name)
+            logger.info(
+                "  ✓ %s (id=%d, role=%s)",
+                sqla_table.table_name, sqla_table.id, sqla_table.dataset_role,
+            )
         except Exception as exc:
-            logger.warning("Could not refresh metadata for %s: %s", sqla_table.table_name, exc)
+            logger.warning(
+                "  ✗ Could not refresh metadata for %s: %s",
+                sqla_table.table_name, exc,
+            )
 
-    logger.info("Done. Built %d marts, refreshed %d Superset datasets.", len(built), refreshed)
+    # Verification summary
+    logger.info("")
+    logger.info("=== Verification Summary ===")
+    for name in target_names:
+        rec = next((r for r in all_records if r.table_name == name), None)
+        if rec:
+            logger.info("  ✓ REGISTERED: %s (id=%d role=%s)", name, rec.id, rec.dataset_role)
+        else:
+            logger.warning("  ✗ MISSING:    %s", name)
+
+    logger.info("")
+    logger.info("Done. Built %d marts, refreshed %d Superset dataset records.", len(built), refreshed)

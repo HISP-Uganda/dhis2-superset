@@ -11,7 +11,11 @@ import {
   InputNumber,
   Empty,
   Checkbox,
+  Radio,
+  DatePicker,
+  Space,
 } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import { Typography, Loading } from '@superset-ui/core/components';
 import { DHIS2WizardState } from '../index';
 
@@ -473,15 +477,15 @@ export default function WizardStepPeriods({
           Period
         </Title>
         <Paragraph style={{ margin: 0 }}>
-          Choose time periods for your dataset. Leave empty to use the default
-          (last 12 months). Periods and org units are optional — users can
-          filter by any period or org unit directly in charts.
+          Configure the period range for your dataset sync. By default,
+          auto-detect is enabled with Last 12 Months. You can also select
+          specific periods manually.
         </Paragraph>
       </div>
 
       {errors.periods && <ErrorText>{errors.periods}</ErrorText>}
 
-      {/* Auto-detect option */}
+      {/* Auto-detect toggle */}
       <Section>
         <Checkbox
           checked={!!wizardState.periodsAutoDetect}
@@ -489,44 +493,89 @@ export default function WizardStepPeriods({
             const checked = e.target.checked;
             updateState({
               periodsAutoDetect: checked,
-              // Clear manual selections when auto-detect is enabled
               ...(checked ? { periods: [] } : {}),
             });
           }}
         >
-          <span style={{ fontWeight: 600 }}>
-            Auto-detect and stage all applicable data
-          </span>
+          <span style={{ fontWeight: 600 }}>Auto-detect period</span>
           <span
             style={{ marginLeft: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}
           >
-            (skip period selection — sync all available DHIS2 data)
+            (use the default period range below instead of manual selection)
           </span>
         </Checkbox>
-
-        {wizardState.periodsAutoDetect && (
-          <div
-            style={{
-              marginTop: 12,
-              padding: '10px 14px',
-              background: '#fffbe6',
-              border: '1px solid #ffe58f',
-              borderRadius: 4,
-              fontSize: 13,
-            }}
-          >
-            <strong>⚠ Data Loading may take some time to complete for unrestricted datasets.</strong>
-            <br />
-            Without a period restriction the sync will fetch all historical data
-            available in DHIS2. This can be a very large amount of data.
-            Consider selecting specific periods if your dataset covers many years
-            or high-frequency data.
-          </div>
-        )}
       </Section>
 
+      {/* Default Period Range — shown when auto-detect is ON */}
+      {wizardState.periodsAutoDetect && (
+        <Section>
+          <SectionTitle>Default Period Range</SectionTitle>
+          <Paragraph style={{ marginBottom: 12, fontSize: 13 }}>
+            Specify the time range to sync by default. Choose a DHIS2 relative
+            period (e.g. Last 12 Months) or a fixed start–end date range.
+          </Paragraph>
+
+          <Radio.Group
+            value={wizardState.defaultPeriodRangeType ?? 'relative'}
+            onChange={e =>
+              updateState({ defaultPeriodRangeType: e.target.value })
+            }
+            style={{ marginBottom: 16 }}
+          >
+            <Space direction="vertical">
+              <Radio value="relative">Relative period</Radio>
+              <Radio value="fixed_range">Fixed date range</Radio>
+            </Space>
+          </Radio.Group>
+
+          {(wizardState.defaultPeriodRangeType ?? 'relative') === 'relative' ? (
+            <Select
+              showSearch
+              style={{ width: '100%', maxWidth: 400 }}
+              value={wizardState.defaultRelativePeriod ?? 'LAST_12_MONTHS'}
+              onChange={val => updateState({ defaultRelativePeriod: val })}
+              options={RELATIVE_PERIODS.map(p => ({
+                value: p.value,
+                label: p.label,
+              }))}
+              placeholder="Select a relative period"
+              filterOption={(input, option) =>
+                (option?.label ?? '')
+                  .toLowerCase()
+                  .includes(input.toLowerCase())
+              }
+            />
+          ) : (
+            <DatePicker.RangePicker
+              picker="month"
+              style={{ width: '100%', maxWidth: 400 }}
+              value={
+                wizardState.defaultPeriodStart && wizardState.defaultPeriodEnd
+                  ? ([
+                      dayjs(wizardState.defaultPeriodStart),
+                      dayjs(wizardState.defaultPeriodEnd),
+                    ] as [Dayjs, Dayjs])
+                  : undefined
+              }
+              onChange={(dates) => {
+                if (dates && dates[0] && dates[1]) {
+                  updateState({
+                    defaultPeriodStart: dates[0].startOf('month').format('YYYY-MM-DD'),
+                    defaultPeriodEnd: dates[1].endOf('month').format('YYYY-MM-DD'),
+                  });
+                } else {
+                  updateState({ defaultPeriodStart: null, defaultPeriodEnd: null });
+                }
+              }}
+              format="MMM YYYY"
+            />
+          )}
+        </Section>
+      )}
+
+      {/* Manual period selection — shown when auto-detect is OFF */}
       <TabsContainer
-        style={wizardState.periodsAutoDetect ? { opacity: 0.45, pointerEvents: 'none' } : undefined}
+        style={wizardState.periodsAutoDetect ? { display: 'none' } : undefined}
         items={[
           {
             key: 'relative',

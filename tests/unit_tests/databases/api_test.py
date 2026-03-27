@@ -3273,7 +3273,7 @@ def test_dhis2_geojson_staged_uses_local_boundary_snapshots(
         federated=True,
         levels=["2"],
         parent_ids=["ROOT"],
-        allow_live_fallback=True,
+        allow_live_fallback=False,
     )
 
 
@@ -3415,5 +3415,5 @@ def test_dhis2_metadata_resolves_source_context_for_staged_local_chart(
         federated=False,
         levels=["3"],
         parent_ids=[],
-        allow_live_fallback=True,
+        allow_live_fallback=False,
     )

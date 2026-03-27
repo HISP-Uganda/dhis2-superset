@@ -277,4 +277,5 @@ describe('ControlPanelsContainer', () => {
     expect(screen.getByText('Shift start date')).not.toBeVisible();
     expect(screen.getByText('Calculation type')).not.toBeVisible();
   });
+
 });

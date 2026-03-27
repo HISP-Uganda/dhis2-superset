@@ -16,7 +16,7 @@
 # under the License.
 from typing import Any
 from flask_babel import lazy_gettext as _
-from sqlalchemy import not_, or_
+from sqlalchemy import and_, not_, or_
 from sqlalchemy.orm.query import Query
 
 from superset.connectors.sqla.models import SqlaTable
@@ -67,9 +67,10 @@ class DatasetContextFilter(BaseFilter):  # pylint: disable=too-few-public-method
 
         allowed_roles = DatasetEligibilityPolicy.get_allowed_roles(context)
         role_values = [r.value for r in allowed_roles]
-        # NULL is treated as SERVING_DATASET for backwards compatibility.
+        
+        # Backwards compatibility for NULL role
         from superset.datasets.policy import DatasetRole
-        if DatasetRole.SERVING in allowed_roles:
+        if DatasetRole.METADATA in allowed_roles:
             return query.filter(
                 or_(
                     SqlaTable.dataset_role.in_(role_values),
@@ -88,7 +89,6 @@ class DatasetRoleDefaultFilter(BaseFilter):
         import prison
 
         # Do not apply the default filter to single item GET/PUT/DELETE requests.
-        # This allows direct access to METADATA_UI_DATASET when the UI requests it by ID.
         if request.view_args and "pk" in request.view_args:
             return query
 
@@ -104,15 +104,13 @@ class DatasetRoleDefaultFilter(BaseFilter):
             except Exception:
                 pass
 
-        # Otherwise, default to only showing SERVING_DATASET.
-        # NULL is treated as SERVING_DATASET for backwards compatibility —
-        # datasets created before the dataset_role column was added have NULL,
-        # and they are all regular serving datasets.
+        # Default dataset management list shows ONLY METADATA datasets.
+        # System-generated marts (MART) are hidden from this view.
         from superset.datasets.policy import DatasetRole
+
         return query.filter(
             or_(
-                SqlaTable.dataset_role == DatasetRole.SERVING.value,
-                SqlaTable.dataset_role.is_(None),
+                SqlaTable.dataset_role == DatasetRole.METADATA.value,
+                SqlaTable.dataset_role.is_(None), # legacy datasets are treated as METADATA
             )
         )
-

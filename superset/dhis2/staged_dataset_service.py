@@ -478,7 +478,7 @@ def delete_staged_dataset(dataset_id: int) -> bool:
         if dataset.generic_dataset is not None:
             db.session.delete(dataset.generic_dataset)
         
-        # Delete all associated Superset virtual datasets (Thematic, [KPI], [Map])
+        # Delete all associated Superset virtual datasets (main + _mart)
         from superset.dhis2.superset_dataset_service import cleanup_staged_dataset_superset_resources
         cleanup_staged_dataset_superset_resources(dataset_id, dataset.database_id)
 
@@ -712,25 +712,33 @@ def query_serving_data(
     mart_table_name = None
     if group_by_columns and hasattr(engine, "named_table_exists_in_serving"):
         serving_base = engine.get_serving_table_name(dataset)
+        manifest = build_serving_manifest(dataset)
         
-        # 1. Map Mart Logic
-        # If we are grouping by exactly one hierarchy level, use the map mart.
-        is_map_query = any(
-            # Look for indicators or explicit map-like grouping
-            aggregation_method in ("sum", "average", "avg", "none")
-            for _ in [1]
-        )
-        if is_map_query:
-            map_name = f"{serving_base}_map"
-            if engine.named_table_exists_in_serving(map_name):
-                mart_table_name = map_name
+        # Identify OU hierarchy columns from manifest
+        ou_hierarchy = []
+        for c in manifest["columns"]:
+            extra = c.get("extra") or {}
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception: extra = {}
+            if extra.get("dhis2_is_ou_hierarchy"):
+                ou_hierarchy.append(c["column_name"])
+        
+        has_ou_grouping = any(c in group_by_columns for c in ou_hierarchy)
 
-        # 2. KPI Mart Logic
-        # Fallback to KPI mart for general trend/indicator queries if map mart wasn't picked
-        if not mart_table_name:
-            kpi_name = f"{serving_base}_kpi"
-            if engine.named_table_exists_in_serving(kpi_name):
-                mart_table_name = kpi_name
+        # Single consolidated mart routing — use _mart for all group-by queries
+        mart_name = f"{serving_base}_mart"
+        if engine.named_table_exists_in_serving(mart_name):
+            mart_table_name = mart_name
+        else:
+            # Legacy fallback: try _map then _kpi for datasets not yet rebuilt
+            legacy_map = f"{serving_base}_map"
+            legacy_kpi = f"{serving_base}_kpi"
+            if has_ou_grouping and engine.named_table_exists_in_serving(legacy_map):
+                mart_table_name = legacy_map
+            elif engine.named_table_exists_in_serving(legacy_kpi):
+                mart_table_name = legacy_kpi
 
     return engine.query_serving_table(
         dataset,
@@ -1023,31 +1031,22 @@ def _specialized_marts_need_rebuild(
     dataset: Any,
     manifest: dict[str, Any],
 ) -> bool:
-    """Return True if any specialized mart (KPI, Map) should exist but is missing.
+    """Return True if the consolidated _mart should exist but is missing.
 
-    Only meaningful for ClickHouse engines (duck-typed via ``kpi_mart_exists``).
+    Only meaningful for ClickHouse engines (duck-typed via ``mart_exists``).
     """
-    kpi_exists_fn = getattr(engine, "kpi_mart_exists", None)
-    map_exists_fn = getattr(engine, "map_mart_exists", None)
-    if kpi_exists_fn is None or map_exists_fn is None:
+    mart_exists_fn = getattr(engine, "mart_exists", None)
+    if mart_exists_fn is None:
         return False
 
-    has_indicators = any(
+    has_variables = any(
         c.get("variable_id") for c in list(manifest.get("columns") or [])
     )
-    
-    # Check for KPI mart - only required if we have indicators
-    if has_indicators and not kpi_exists_fn(dataset):
-        logger.info("Specialized Marts: KPI mart missing for dataset id=%s", dataset.id)
-        return True
+    if not has_variables:
+        return False
 
-    # Check for Map mart - required if hierarchy exists (even if no indicators)
-    has_hierarchy = any(
-        c.get("extra") and "dhis2_is_ou_hierarchy" in str(c.get("extra"))
-        for c in list(manifest.get("columns") or [])
-    )
-    if has_hierarchy and not map_exists_fn(dataset):
-        logger.info("Specialized Marts: Map mart missing for dataset id=%s", dataset.id)
+    if not mart_exists_fn(dataset):
+        logger.info("Consolidated mart missing for dataset id=%s", dataset.id)
         return True
 
     return False
@@ -1123,6 +1122,7 @@ def ensure_serving_table(
                     .all()
                 if v.instance_id is not None
             ))
+            from superset.datasets.policy import DatasetRole as _DatasetRole
             sqla_id = register_serving_table_as_superset_dataset(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
@@ -1131,9 +1131,11 @@ def ensure_serving_table(
                 serving_database_id=serving_db_id,
                 source_database_id=dataset.database_id,
                 source_instance_ids=_instance_ids,
+                # Mark main DHIS2 serving tables as MART (hidden from list)
+                dataset_role=_DatasetRole.MART.value,
             )
             
-            # Register specialized marts (KPI, Map) — only if ClickHouse tables exist
+            # Register consolidated mart — only if ClickHouse _mart table exists
             register_specialized_marts_as_superset_datasets(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
@@ -1255,8 +1257,9 @@ def full_cleanup_dhis2_resources() -> dict[str, Any]:
         try:
             eng = _get_engine(ds.database_id)
             known_table_refs.add(eng.get_serving_table_name(ds).lower())
-            # and marts
+            # and mart (single consolidated _mart, plus legacy suffixes for safety)
             serving_base = eng.get_serving_table_name(ds)
+            known_table_refs.add(f"{serving_base}_mart".lower())
             known_table_refs.add(f"{serving_base}_kpi".lower())
             known_table_refs.add(f"{serving_base}_map".lower())
         except Exception:  # pylint: disable=broad-except

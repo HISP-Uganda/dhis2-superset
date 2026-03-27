@@ -171,7 +171,8 @@ export default function LeftPanel({
       });
     }
   };
-  const setTable = (tableName: string) => {
+  const setTable = (tableOrName: any | string) => {
+    const tableName = typeof tableOrName === 'string' ? tableOrName : tableOrName?.value;
     setDataset({
       type: DatasetActionType.SelectTable,
       payload: { name: 'table_name', value: tableName },

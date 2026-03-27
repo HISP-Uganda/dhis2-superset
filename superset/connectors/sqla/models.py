@@ -1189,7 +1189,7 @@ class SqlaTable(
     normalize_columns = Column(Boolean, default=False)
     always_filter_main_dttm = Column(Boolean, default=False)
     folders = Column(JSON, nullable=True)
-    dataset_role = Column(String(32), default="SERVING_DATASET", nullable=True)
+    dataset_role = Column(String(32), default="METADATA", nullable=True)
 
     baselink = "tablemodelview"
 
@@ -1225,6 +1225,11 @@ class SqlaTable(
         "AVG": sa.func.AVG,
         "MIN": sa.func.MIN,
         "MAX": sa.func.MAX,
+        # NONE: use ClickHouse any() — picks an arbitrary value from the group.
+        # Correct for DHIS2 indicator columns where the mart already stores one
+        # final-grain row per (period × orgUnit); any() satisfies ClickHouse's
+        # requirement that every SELECT column be inside an aggregate or GROUP BY.
+        "NONE": lambda col: sa.func.any(col),
     }
 
     def __repr__(self) -> str:  # pylint: disable=invalid-repr-returned
@@ -1403,6 +1408,26 @@ class SqlaTable(
                     exc_info=True,
                 )
 
+        # Fallback: use the extra stored on the SqlaTable's own TableColumn
+        # records (written by the startup backfill) for any column that the
+        # manifest-derived serving_columns_by_name doesn't cover.  This
+        # preserves dhis2_variable_type / dhis2_is_period / etc. tags on
+        # columns that have no DHIS2DatasetVariable record.
+        tc_extra_by_name: dict[str, str] = {
+            col.column_name: col.extra
+            for col in self.columns
+            if col.column_name and col.extra
+        }
+
+        def _resolve_extra(col_name: str) -> dict[str, Any]:
+            sc = serving_columns_by_name.get(col_name)
+            if sc and sc.get("extra"):
+                return {"extra": sc["extra"]}
+            fallback = tc_extra_by_name.get(col_name)
+            if fallback:
+                return {"extra": fallback}
+            return {}
+
         return [
             {
                 "column_name": column["column_name"],
@@ -1414,12 +1439,7 @@ class SqlaTable(
                 "groupby": True,
                 "filterable": True,
                 "is_active": True,
-                **(
-                    {"extra": serving_columns_by_name[column["column_name"]]["extra"]}
-                    if column.get("column_name") in serving_columns_by_name
-                    and serving_columns_by_name[column["column_name"]].get("extra")
-                    else {}
-                ),
+                **_resolve_extra(str(column.get("column_name") or "")),
             }
             for column in self.external_metadata()
         ]

@@ -1,0 +1,132 @@
+columns substreams version: 1
+41 columns:
+3 substreams for column `national`:
+	national.dict_prefix
+	national.dict
+	national
+3 substreams for column `region`:
+	region.dict_prefix
+	region.dict
+	region
+3 substreams for column `district_city`:
+	district_city.dict_prefix
+	district_city.dict
+	district_city
+3 substreams for column `dlg_municipality_city_council`:
+	dlg_municipality_city_council.dict_prefix
+	dlg_municipality_city_council.dict
+	dlg_municipality_city_council
+3 substreams for column `sub_county_town_council_division`:
+	sub_county_town_council_division.dict_prefix
+	sub_county_town_council_division.dict
+	sub_county_town_council_division
+3 substreams for column `health_facility`:
+	health_facility.dict_prefix
+	health_facility.dict
+	health_facility
+3 substreams for column `ward_department`:
+	ward_department.dict_prefix
+	ward_department.dict
+	ward_department
+3 substreams for column `period`:
+	period.dict_prefix
+	period.dict
+	period
+1 substreams for column `ou_level`:
+	ou_level
+2 substreams for column `c_105_cl19_malaria_1`:
+	c_105_cl19_malaria_1.null
+	c_105_cl19_malaria_1
+2 substreams for column `c_105_cl20_malaria_2`:
+	c_105_cl20_malaria_2.null
+	c_105_cl20_malaria_2
+2 substreams for column `c_105_cl21_malaria_3`:
+	c_105_cl21_malaria_3.null
+	c_105_cl21_malaria_3
+2 substreams for column `c_105_cl26_malaria_4`:
+	c_105_cl26_malaria_4.null
+	c_105_cl26_malaria_4
+2 substreams for column `c_108_ci02_no_of_admissions`:
+	c_108_ci02_no_of_admissions.null
+	c_108_ci02_no_of_admissions
+2 substreams for column `c_108_ep01a1_malaria_total_cases`:
+	c_108_ep01a1_malaria_total_cases.null
+	c_108_ep01a1_malaria_total_cases
+2 substreams for column `c_108_ep01a2_malaria_total_deaths`:
+	c_108_ep01a2_malaria_total_deaths.null
+	c_108_ep01a2_malaria_total_deaths
+2 substreams for column `c_108_ep01b1_malaria_confirmed_microscopic_rdt_cases`:
+	c_108_ep01b1_malaria_confirmed_microscopic_rdt_cases.null
+	c_108_ep01b1_malaria_confirmed_microscopic_rdt_cases
+2 substreams for column `c_108_ep01b2_malaria_confirmed_microscopic_rdt_deaths`:
+	c_108_ep01b2_malaria_confirmed_microscopic_rdt_deaths.null
+	c_108_ep01b2_malaria_confirmed_microscopic_rdt_deaths
+2 substreams for column `c_108_ci03_no_of_deaths`:
+	c_108_ci03_no_of_deaths.null
+	c_108_ci03_no_of_deaths
+2 substreams for column `c_105_ep01a_suspected_malaria_fever`:
+	c_105_ep01a_suspected_malaria_fever.null
+	c_105_ep01a_suspected_malaria_fever
+2 substreams for column `c_105_ep01b_malaria_tested_b_s_rdt`:
+	c_105_ep01b_malaria_tested_b_s_rdt.null
+	c_105_ep01b_malaria_tested_b_s_rdt
+2 substreams for column `c_105_ep01b_2019_malaria_total`:
+	c_105_ep01b_2019_malaria_total.null
+	c_105_ep01b_2019_malaria_total
+2 substreams for column `c_105_ep01c_malaria_confirmed_b_s_rdt`:
+	c_105_ep01c_malaria_confirmed_b_s_rdt.null
+	c_105_ep01c_malaria_confirmed_b_s_rdt
+2 substreams for column `c_105_ep01d_confirmed_malaria_cases_treated`:
+	c_105_ep01d_confirmed_malaria_cases_treated.null
+	c_105_ep01d_confirmed_malaria_cases_treated
+2 substreams for column `c_105_ep01e_total_malaria_cases_treated`:
+	c_105_ep01e_total_malaria_cases_treated.null
+	c_105_ep01e_total_malaria_cases_treated
+2 substreams for column `c_105_oa01_new_attendance`:
+	c_105_oa01_new_attendance.null
+	c_105_oa01_new_attendance
+2 substreams for column `c_105_oa02_re_attendance`:
+	c_105_oa02_re_attendance.null
+	c_105_oa02_re_attendance
+2 substreams for column `c_105_mc03_malaria_in_pregnancy`:
+	c_105_mc03_malaria_in_pregnancy.null
+	c_105_mc03_malaria_in_pregnancy
+2 substreams for column `c_105_ps01a_malaria_microscopy_done`:
+	c_105_ps01a_malaria_microscopy_done.null
+	c_105_ps01a_malaria_microscopy_done
+2 substreams for column `c_105_ps01b_malaria_microscopy_positive`:
+	c_105_ps01b_malaria_microscopy_positive.null
+	c_105_ps01b_malaria_microscopy_positive
+2 substreams for column `c_105_ps02a_malaria_rdts_done`:
+	c_105_ps02a_malaria_rdts_done.null
+	c_105_ps02a_malaria_rdts_done
+2 substreams for column `c_105_ps02b_malaria_rdts_positive`:
+	c_105_ps02b_malaria_rdts_positive.null
+	c_105_ps02b_malaria_rdts_positive
+2 substreams for column `c_105_an_06a_no_of_pregnant_women_who_ipt1`:
+	c_105_an_06a_no_of_pregnant_women_who_ipt1.null
+	c_105_an_06a_no_of_pregnant_women_who_ipt1
+2 substreams for column `c_105_an_06b_no_of_pregnant_women_who_received_ipt2`:
+	c_105_an_06b_no_of_pregnant_women_who_received_ipt2.null
+	c_105_an_06b_no_of_pregnant_women_who_received_ipt2
+2 substreams for column `c_105_an06c_no_of_pregnant_women_who_received_ipt3`:
+	c_105_an06c_no_of_pregnant_women_who_received_ipt3.null
+	c_105_an06c_no_of_pregnant_women_who_received_ipt3
+2 substreams for column `c_105_an_06d_no_of_pregnant_women_who_received_ipt_4_4_dose`:
+	c_105_an_06d_no_of_pregnant_women_who_received_ipt_4_4_dose.null
+	c_105_an_06d_no_of_pregnant_women_who_received_ipt_4_4_dose
+2 substreams for column `c_105_an01a_anc_1st_visit_for_women`:
+	c_105_an01a_anc_1st_visit_for_women.null
+	c_105_an01a_anc_1st_visit_for_women
+2 substreams for column `c_105_an11_pregnant_women_receiving_llins_at_anc_1st_visit`:
+	c_105_an11_pregnant_women_receiving_llins_at_anc_1st_visit.null
+	c_105_an11_pregnant_women_receiving_llins_at_anc_1st_visit
+2 substreams for column `c_105_cl25_number_received_llins`:
+	c_105_cl25_number_received_llins.null
+	c_105_cl25_number_received_llins
+2 substreams for column `c_105_ma10_babies_received_llin`:
+	c_105_ma10_babies_received_llin.null
+	c_105_ma10_babies_received_llin
+2 substreams for column `_manifest_build_v5`:
+	_manifest_build_v5.null
+	_manifest_build_v5

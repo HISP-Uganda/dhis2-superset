@@ -43,6 +43,7 @@ import {
 import { Layer, PickingInfo, Color } from '@deck.gl/core';
 import { ScaleLinear } from 'd3-scale';
 import { ColorBreakpointType } from '../types';
+import { matchesBreakpoint } from 'src/explore/components/controls/ColorBreakpointsControl/colorBreakpointUtils';
 import sandboxedEval from '../utils/sandbox';
 import { TooltipProps } from '../components/Tooltip';
 import { getCrossFilterDataMask } from '../utils/crossFiltersDataMask';
@@ -217,9 +218,8 @@ export const getColorForBreakpoints = (
 
   if (Array.isArray(aggResult)) return undefined;
 
-  const breapointForPoint = colorBreakpoints.findIndex(
-    breakpoint =>
-      aggResult >= breakpoint.minValue && aggResult <= breakpoint.maxValue,
+  const breapointForPoint = colorBreakpoints.findIndex(breakpoint =>
+    matchesBreakpoint(aggResult, breakpoint),
   );
 
   return breapointForPoint + 1;

@@ -101,4 +101,67 @@ describe('DHIS2Map boundaryLevels', () => {
       3: 'County',
     });
   });
+
+  test('infers legacy hierarchy levels from MART column order when level metadata is missing', () => {
+    const datasourceColumns = [
+      {
+        column_name: 'national',
+        verbose_name: 'National',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+      {
+        column_name: 'region',
+        verbose_name: 'Region',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+      {
+        column_name: 'district_city',
+        verbose_name: 'District City',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+    ];
+
+    expect(getDatasourceBoundaryLevels(datasourceColumns)).toEqual([
+      { level: 1, columnName: 'national', label: 'National' },
+      { level: 2, columnName: 'region', label: 'Region' },
+      { level: 3, columnName: 'district_city', label: 'District City' },
+    ]);
+    expect(
+      inferBoundaryLevelFromOrgUnitColumn('district_city', datasourceColumns),
+    ).toBe(3);
+  });
+
+  test('ignores mis-tagged legacy helper columns when canonical OU levels are present', () => {
+    const datasourceColumns = [
+      {
+        column_name: 'period_variant',
+        verbose_name: 'Period Variant',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+      {
+        column_name: 'national',
+        verbose_name: 'National',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+      {
+        column_name: 'region',
+        verbose_name: 'Region',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+      {
+        column_name: 'district_city',
+        verbose_name: 'District City',
+        extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+      },
+    ];
+
+    expect(getDatasourceBoundaryLevels(datasourceColumns)).toEqual([
+      { level: 1, columnName: 'national', label: 'National' },
+      { level: 2, columnName: 'region', label: 'Region' },
+      { level: 3, columnName: 'district_city', label: 'District City' },
+    ]);
+    expect(
+      inferBoundaryLevelFromOrgUnitColumn('district_city', datasourceColumns),
+    ).toBe(3);
+  });
 });

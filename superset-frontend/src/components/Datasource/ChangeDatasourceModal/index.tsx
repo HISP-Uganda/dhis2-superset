@@ -119,10 +119,18 @@ const ChangeDatasourceModal: FunctionComponent<ChangeDatasourceModalProps> = ({
     setConfirmedDataset(datasource);
   }, []);
 
+  // Always include dataset_context=chart so the API returns ONLY MART records
+  // (consolidated analytical marts). METADATA records are excluded for charts.
+  const chartContextFilter = {
+    id: 'dataset_role',
+    operator: 'dataset_context',
+    value: 'chart',
+  };
+
   const fetchDatasetPayload = {
     pageIndex,
     pageSize: DATASET_PAGE_SIZE,
-    filters: [],
+    filters: [chartContextFilter],
     sortBy,
   };
 
@@ -130,15 +138,12 @@ const ChangeDatasourceModal: FunctionComponent<ChangeDatasourceModalProps> = ({
     () => {
       fetchData({
         ...fetchDatasetPayload,
-        ...(filter && {
-          filters: [
-            {
-              id: 'table_name',
-              operator: 'ct',
-              value: filter,
-            },
-          ],
-        }),
+        filters: [
+          chartContextFilter,
+          ...(filter
+            ? [{ id: 'table_name', operator: 'ct', value: filter }]
+            : []),
+        ],
       });
     },
     Constants.SLOW_DEBOUNCE,

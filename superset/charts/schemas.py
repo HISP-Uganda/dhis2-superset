@@ -1031,6 +1031,15 @@ class ChartDataExtrasSchema(Schema):
         },
         allow_none=True,
     )
+    dhis2_terminal_hierarchy_filtering = fields.Boolean(
+        metadata={
+            "description": "For DHIS2 staged-local charts, whether to apply the "
+            "terminal-level predicate (where deeper levels are NULL) to the "
+            "query. If set to false, only the selected level is required to be "
+            "non-NULL."
+        },
+        allow_none=True,
+    )
 
 
 class AnnotationLayerSchema(Schema):

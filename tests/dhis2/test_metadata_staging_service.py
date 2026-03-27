@@ -1828,3 +1828,82 @@ def test_get_staged_geo_payload_rehydrates_incomplete_success_snapshot_when_requ
     ]
     hydrate.assert_called_once_with(database=database, context=context)
     schedule.assert_not_called()
+
+
+def test_get_staged_geo_payload_serves_existing_snapshot_without_live_fallback_when_requested_level_is_missing(
+    mocker,
+) -> None:
+    from superset.dhis2 import metadata_staging_service as svc
+
+    database = _database(sqlalchemy_uri_decrypted="dhis2://")
+    context = MetadataContext(
+        instance_id=101,
+        instance_name="National eHMIS DHIS2",
+        base_url="https://national.example.org/api",
+        auth=None,
+        headers={},
+    )
+    mocker.patch(
+        "superset.dhis2.metadata_staging_service._resolve_staged_contexts",
+        return_value=[context],
+    )
+    mocker.patch(
+        "superset.staging.metadata_cache_service.get_cached_metadata_payload",
+        return_value={
+            "status": "success",
+            "result": {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "id": "ROOT",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[30.0, 0.0], [31.0, 0.0], [31.0, 1.0], [30.0, 0.0]]],
+                        },
+                        "properties": {
+                            "id": "ROOT",
+                            "name": "MOH - Uganda",
+                            "level": 1,
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    hydrate = mocker.patch(
+        "superset.dhis2.metadata_staging_service._hydrate_geo_snapshots_from_live",
+    )
+    schedule = mocker.patch(
+        "superset.dhis2.metadata_staging_service.schedule_database_metadata_refresh"
+    )
+
+    payload = svc.get_staged_geo_payload(
+        database=database,
+        metadata_type="geoJSON",
+        requested_instance_ids=[101],
+        federated=True,
+        levels=["2"],
+        parent_ids=["ROOT"],
+        allow_live_fallback=False,
+    )
+
+    assert payload["status"] == "success"
+    assert payload["count"] == 0
+    assert payload["result"]["features"] == []
+    assert payload["instance_results"] == [
+        {
+            "id": 101,
+            "name": "National eHMIS DHIS2",
+            "status": "success",
+            "count": 0,
+            "load_source": "staged",
+        }
+    ]
+    hydrate.assert_not_called()
+    schedule.assert_called_once_with(
+        database.id,
+        instance_ids=[101],
+        metadata_types=["geoJSON", "orgUnitHierarchy"],
+        reason="staged_request:geoJSON",
+    )

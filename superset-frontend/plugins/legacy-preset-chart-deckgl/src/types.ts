@@ -30,6 +30,8 @@ export interface ColorType {
 
 export interface ColorBreakpointType {
   color: ColorType;
-  minValue: number;
-  maxValue: number;
+  minValue?: number;
+  minOperator?: '>=' | '>';
+  maxValue?: number;
+  maxOperator?: '<' | '<=';
 }

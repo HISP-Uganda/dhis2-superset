@@ -320,6 +320,25 @@ const TableElement = ({ table, ...props }: TableElementProps) => {
                     title={t('CREATE VIEW statement')}
                   />
                 )}
+                {table.type === 'dataset' && (
+                  <IconTooltip
+                    onClick={() => {
+                      // Navigate to Explore for this dataset
+                      // The 'id' in 'table' for virtual datasets is actually the SqlaTable id
+                      // if we passed it from backend, but currently we only have the name.
+                      // Wait, I should check if I can get the dataset ID.
+                      // For now, use the name to find it? No, Superset needs ID.
+                      const url = `/explore/?dataset_type=table&dataset_id=${table.id}`;
+                      window.open(url, '_blank');
+                    }}
+                    tooltip={t('Explore this dataset')}
+                  >
+                    <Icons.CompassOutlined
+                      iconSize="m"
+                      iconColor={theme.colorPrimary}
+                    />
+                  </IconTooltip>
+                )}
                 <IconTooltip
                   className=" table-remove pull-left pointer"
                   onClick={removeTable}

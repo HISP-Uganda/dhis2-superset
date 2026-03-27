@@ -1,0 +1,38 @@
+columns substreams version: 1
+11 columns:
+3 substreams for column `period`:
+	period.dict_prefix
+	period.dict
+	period
+3 substreams for column `national`:
+	national.dict_prefix
+	national.dict
+	national
+3 substreams for column `region`:
+	region.dict_prefix
+	region.dict
+	region
+3 substreams for column `district_city`:
+	district_city.dict_prefix
+	district_city.dict
+	district_city
+1 substreams for column `ou_level`:
+	ou_level
+2 substreams for column `c_033b_ma01_suspected_malaria_fever`:
+	c_033b_ma01_suspected_malaria_fever.null
+	c_033b_ma01_suspected_malaria_fever
+2 substreams for column `c_033b_tr08_malaria_rapid_diagnostic_tests`:
+	c_033b_tr08_malaria_rapid_diagnostic_tests.null
+	c_033b_tr08_malaria_rapid_diagnostic_tests
+2 substreams for column `c_033b_tr01_artemether_lumefantrine_20_120_mg_tablet`:
+	c_033b_tr01_artemether_lumefantrine_20_120_mg_tablet.null
+	c_033b_tr01_artemether_lumefantrine_20_120_mg_tablet
+2 substreams for column `c_033b_tr06_artesunate_60_mg_vial`:
+	c_033b_tr06_artesunate_60_mg_vial.null
+	c_033b_tr06_artesunate_60_mg_vial
+2 substreams for column `c_033b_cd01a_malaria_confirmed_cases`:
+	c_033b_cd01a_malaria_confirmed_cases.null
+	c_033b_cd01a_malaria_confirmed_cases
+2 substreams for column `c_033b_cd01b_malaria_confirmed_deaths`:
+	c_033b_cd01b_malaria_confirmed_deaths.null
+	c_033b_cd01b_malaria_confirmed_deaths

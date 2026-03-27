@@ -109,6 +109,10 @@ import {
 } from '../constants';
 import { getDefaultTooltip } from '../utils/tooltip';
 import {
+  applyMetricColors,
+  applyColorBreakpoints,
+} from '../utils/colorApplyUtils';
+import {
   getPercentFormatter,
   getTooltipTimeFormatter,
   getXAxisFormatter,
@@ -625,6 +629,45 @@ export default function transformProps(
   if (isHorizontal) {
     [xAxis, yAxis] = [yAxis, xAxis];
     [padding.bottom, padding.left] = [padding.left, padding.bottom];
+  }
+
+  // ── Colour mode application ─────────────────────────────────────────────────
+  //
+  // `colorMode` (camelCased from `color_mode`) explicitly selects which
+  // colouring strategy is active:
+  //   'metric'      — per-series fixed colours from MetricColorControl only
+  //   'breakpoints' — value-range colours from ColorBreakpointsControl only
+  //   'default'     — neither; use the chart's default colour scheme
+  //   undefined     — legacy: both may apply, breakpoints win per-data-point
+  //
+  // formData keys are camelCased by ChartProps.convertKeysToCamelCase.
+  const colorMode: string | undefined = (formData as any).colorMode;
+
+  // Apply per-metric colours (priority 2).
+  // MetricColorControl also writes to CategoricalColorNamespace in explore,
+  // but on dashboards the control is never mounted so we apply directly here.
+  if (colorMode !== 'breakpoints' && colorMode !== 'default') {
+    const metricColorsMap: Record<string, string> | undefined =
+      (formData as any).metricColors;
+    if (metricColorsMap && typeof metricColorsMap === 'object') {
+      applyMetricColors(series as any[], metricColorsMap);
+    }
+  }
+
+  // Apply color_breakpoints per data-point (priority 1 — highest in ECharts).
+  // Setting itemStyle.color on individual data items overrides any series-level
+  // itemStyle.color, ensuring breakpoint colours always take precedence.
+  if (colorMode !== 'metric' && colorMode !== 'default') {
+    const breakpointsRaw: any[] | undefined = (formData as any).colorBreakpoints;
+    if (Array.isArray(breakpointsRaw) && breakpointsRaw.length > 0) {
+      const defaultBreakpointColor = (formData as any).defaultBreakpointColor;
+      applyColorBreakpoints(
+        series as any[],
+        breakpointsRaw,
+        defaultBreakpointColor,
+        isHorizontal,
+      );
+    }
   }
 
   const echartOptions: EChartsCoreOption = {

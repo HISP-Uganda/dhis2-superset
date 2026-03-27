@@ -157,7 +157,9 @@ function Echart(
 
   const handleSizeChange = useCallback(
     ({ width, height }: { width: number; height: number }) => {
-      if (chartRef.current) {
+      // Skip resize when the container has no dimensions (e.g. collapsed panel).
+      // ECharts logs "Can't get DOM width or height" when resized to 0.
+      if (chartRef.current && width > 0 && height > 0) {
         chartRef.current.resize({ width, height });
       }
     },

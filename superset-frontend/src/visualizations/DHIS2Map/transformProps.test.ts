@@ -140,6 +140,195 @@ describe('DHIS2Map transformProps', () => {
     expect(result.orgUnitColumn).toBe('region');
   });
 
+  test('infers legacy MART hierarchy levels from ordered hierarchy columns when explicit levels are missing', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'mal_testing_rate',
+        org_unit_column: 'district_city',
+        boundary_levels: [3],
+        tooltip_columns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              district_city: 'Abim District',
+              mal_testing_rate: 114.3,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 19,
+        database: { id: 4 },
+        columns: [
+          {
+            column_name: 'national',
+            verbose_name: 'National',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'region',
+            verbose_name: 'Region',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'district_city',
+            verbose_name: 'District City',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'mal_testing_rate',
+            extra: JSON.stringify({ dhis2_variable_type: 'indicator' }),
+          },
+        ],
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 5,
+          dhis2_source_instance_ids: [4],
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.primaryBoundaryLevel).toBe(3);
+    expect(result.boundaryLevels).toEqual([3]);
+    expect(result.boundaryLevelColumns).toEqual({
+      1: 'national',
+      2: 'region',
+      3: 'district_city',
+    });
+    expect(result.orgUnitColumn).toBe('district_city');
+  });
+
+  test('ignores mis-tagged legacy helper columns when resolving the primary boundary level', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'mal_testing_rate',
+        org_unit_column: 'district_city',
+        boundary_levels: [4],
+        tooltip_columns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              district_city: 'Abim District',
+              mal_testing_rate: 114.3,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 19,
+        database: { id: 4 },
+        columns: [
+          {
+            column_name: 'period_variant',
+            verbose_name: 'Period Variant',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'national',
+            verbose_name: 'National',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'region',
+            verbose_name: 'Region',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'district_city',
+            verbose_name: 'District City',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'mal_testing_rate',
+            extra: JSON.stringify({ dhis2_variable_type: 'indicator' }),
+          },
+        ],
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 5,
+          dhis2_source_instance_ids: [4],
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.primaryBoundaryLevel).toBe(3);
+    expect(result.boundaryLevels).toEqual([3, 4]);
+    expect(result.boundaryLevelColumns).toEqual({
+      1: 'national',
+      2: 'region',
+      3: 'district_city',
+    });
+    expect(result.ouHierarchyColumns).toEqual(['district_city']);
+  });
+
+  test('normalizes legacy default categorical color settings to sequential map colors', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'mal_testing_rate',
+        org_unit_column: 'district_city',
+        boundary_levels: [3],
+        color_scheme: 'supersetColors',
+        linear_color_scheme: 'blue_white_yellow',
+        use_linear_color_scheme: false,
+        legend_type: 'auto',
+        tooltip_columns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              district_city: 'Abim District',
+              mal_testing_rate: 114.3,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 19,
+        database: { id: 4 },
+        columns: [
+          {
+            column_name: 'district_city',
+            extra: JSON.stringify({ dhis2_is_ou_hierarchy: true }),
+          },
+          {
+            column_name: 'mal_testing_rate',
+          },
+        ],
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 5,
+          dhis2_source_instance_ids: [4],
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.useLinearColorScheme).toBe(true);
+    expect(result.linearColorScheme).toBe('blue_white_yellow');
+  });
+
   test('extracts staged DHIS2 legend metadata from the selected metric column', () => {
     const chartProps = {
       width: 800,
@@ -476,5 +665,40 @@ describe('DHIS2Map transformProps', () => {
 
     expect(result.isDHIS2Dataset).toBe(true);
     expect(result.chartId).toBe(91);
+  });
+
+  test('converts chart background colors from color picker values', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        viz_type: 'dhis2_map',
+        metric: 'c_cases',
+        org_unit_column: 'region',
+        boundary_levels: [2],
+        chart_background_color: { r: 15, g: 23, b: 42, a: 0.4 },
+        tooltip_columns: [],
+      },
+      queriesData: [{ data: [] }],
+      datasource: {
+        id: 4,
+        database: { id: 3 },
+        columns: [
+          {
+            column_name: 'region',
+            extra: JSON.stringify({
+              dhis2_is_ou_hierarchy: true,
+              dhis2_ou_level: 2,
+            }),
+          },
+        ],
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.chartBackgroundColor).toBe('rgba(15,23,42,0.4)');
   });
 });

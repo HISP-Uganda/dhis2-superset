@@ -17,6 +17,7 @@ set -euo pipefail
 #   - /etc/superset/superset.env
 #   - /opt/superset/config/superset_config.py   (unless forced config sync)
 #   - /opt/superset/backups
+# ==============================================================================
 #
 # Default staging engine: ClickHouse (installed and configured automatically)
 #   - Installs clickhouse-server, creates a dedicated user, and bootstraps DBs
@@ -28,52 +29,28 @@ set -euo pipefail
 #
 # DuckDB support (opt-in):
 #   - Enable with: --duckdb  or  DUCKDB_ENABLED=1
+# ==============================================================================
 #
-# ------------------------------------------------------------------------------
-# AUTHENTICATION MODEL
-# ------------------------------------------------------------------------------
-# This script supports a local deploy .env file for remote SSH credentials.
+# Authentication notes:
+#   - This script can read USER and PASSWORD from a local .env file.
+#   - Those values are used only for remote SSH authentication.
+#   - The original local USER variable is restored immediately afterwards so
+#     local shell behavior and sudo logic continue to refer to the initiating
+#     local account, not the remote SSH account.
 #
-# Expected optional .env variables:
-#   USER=<remote ssh username>
-#   PASSWORD=<remote ssh password>
+# Detached execution notes:
+#   - In detached mode, the script uploads itself plus a remote env file and a
+#     small bootstrap wrapper.
+#   - The bootstrap authenticates sudo remotely, relaunches as root, and then
+#     starts a detached runner via systemd-run when possible, otherwise via
+#     nohup/setsid.
+#   - The local machine then polls the remote log/status files until completion.
 #
-# Important:
-#   - The script reads USER/PASSWORD from the deploy .env ONLY to capture remote
-#     login details.
-#   - It restores the original local shell USER afterwards so local execution
-#     logic keeps using the real initiating user.
-#   - SSH_PASSWORD is then used for:
-#       * initial file uploads (scp)
-#       * launching the remote bootstrap
-#       * all later polling ssh connections
-#
-# If you see:
-#   ssh: connect to host <host> port 22: Connection refused
-#
-# that is NOT an auth failure. It means the remote host is not listening on
-# port 22 at that moment, so authentication has not even started yet.
-#
-# ------------------------------------------------------------------------------
-# DETACHED REMOTE EXECUTION MODEL
-# ------------------------------------------------------------------------------
-# In detached mode:
-#   1) this script uploads itself + env + bootstrap wrapper
-#   2) the bootstrap authenticates sudo remotely
-#   3) the bootstrap re-execs as root
-#   4) root launches a detached runner (prefer systemd-run, fallback nohup/setsid)
-#   5) local side polls the remote log and status file until completion
-#
-# The polling layer is intentionally tolerant of temporary SSH outages because:
-#   - long-running installs may restart services
-#   - the host may be briefly resource-constrained
-#   - sshd may restart or port 22 may be unavailable for a short period
-#
-# Polling therefore distinguishes:
-#   - auth errors            -> fail immediately
-#   - connection refused     -> tolerated for a time window
-#   - timeouts/network reset -> tolerated for a time window
-#   - detached runner exit with no status -> grace window, then fail
+# Polling notes:
+#   - Polling opens fresh SSH sessions by design.
+#   - Temporary SSH outages such as "Connection refused" are treated as remote
+#     host availability problems, not authentication failures.
+#   - Authentication failures still abort immediately.
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,22 +58,10 @@ DEPLOY_ENV_FILE="${DEPLOY_ENV_FILE:-$SCRIPT_DIR/.env}"
 DEFAULT_TARGET_HOST="${DEFAULT_TARGET_HOST:-209.145.54.74}"
 DEFAULT_TARGET_USER="${DEFAULT_TARGET_USER:-socaya}"
 
-# Capture the initiating local shell user before reading any deploy .env file.
-# This avoids accidentally overwriting local process semantics if the .env uses
-# USER=<remote-ssh-user>.
 ORIGINAL_LOCAL_USER="${USER:-}"
 DEPLOY_ENV_USER=""
 DEPLOY_ENV_PASSWORD=""
 
-# ------------------------------------------------------------------------------
-# Read deploy-time credentials from local .env, then restore the local USER.
-# ------------------------------------------------------------------------------
-# This is deliberate:
-#   - DEPLOY_ENV_USER is used only as a candidate remote SSH user
-#   - PASSWORD is mapped into SSH_PASSWORD later
-#   - local USER is restored so local filesystem/sudo logic keeps behaving as the
-#     initiating user expects
-# ------------------------------------------------------------------------------
 if [[ -f "$DEPLOY_ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -114,12 +79,10 @@ TARGET_HOST="${TARGET_HOST:-${HOST:-$DEFAULT_TARGET_HOST}}"
 TARGET_USER="${TARGET_USER:-${SSH_USER:-${DEPLOY_ENV_USER:-$DEFAULT_TARGET_USER}}}"
 SSH_PASSWORD="${SSH_PASSWORD:-${DEPLOY_ENV_PASSWORD:-}}"
 REMOTE_SUDO_PASSWORD="${REMOTE_SUDO_PASSWORD:-${SUDO_PASSWORD:-${SSH_PASSWORD:-}}}"
-
 TARGET="${TARGET:-${TARGET_HOST}}"
 if [[ "$TARGET" != *@* ]]; then
   TARGET="${TARGET_USER}@${TARGET}"
 fi
-
 SSH_PORT="${SSH_PORT:-22}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 
@@ -219,41 +182,24 @@ HOST_LOG="${HOST_LOG:-/var/log/supersets-deploy-host.log}"
 REMOTE_SCRIPT_PATH="${REMOTE_SCRIPT_PATH:-/tmp/deploy-supersets.sh}"
 REMOTE_ENV_PATH="${REMOTE_ENV_PATH:-/tmp/deploy-supersets.env}"
 REMOTE_BOOTSTRAP_PATH="${REMOTE_BOOTSTRAP_PATH:-/tmp/deploy-supersets-bootstrap.sh}"
-
 REMOTE_DETACH="${REMOTE_DETACH:-1}"
 
-# ------------------------------------------------------------------------------
-# Polling defaults
-# ------------------------------------------------------------------------------
-# Previous 2-second polling created many short SSH sessions and makes transient
-# host unavailability much noisier. These defaults are intentionally gentler.
-# ------------------------------------------------------------------------------
+# Gentler polling defaults than 2s to reduce SSH churn.
 REMOTE_POLL_INTERVAL_SECONDS="${REMOTE_POLL_INTERVAL_SECONDS:-10}"
 REMOTE_POLL_MAX_FAILURES="${REMOTE_POLL_MAX_FAILURES:-120}"
 REMOTE_POLL_STARTUP_GRACE_SECONDS="${REMOTE_POLL_STARTUP_GRACE_SECONDS:-15}"
-
-# Maximum tolerated wall-clock duration of SSH unavailability during polling.
-# This protects detached deploys that keep running even while sshd or port 22 is
-# temporarily unavailable.
 REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS="${REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS:-900}"
-
-# How many consecutive FAILED_NO_STATUS responses we tolerate before concluding
-# the detached process exited before writing its final status file.
 REMOTE_POLL_NO_STATUS_GRACE_CYCLES="${REMOTE_POLL_NO_STATUS_GRACE_CYCLES:-6}"
 
 REMOTE_RUN_LOG="${REMOTE_RUN_LOG:-/tmp/deploy-supersets-remote.log}"
 REMOTE_RUN_PID_FILE="${REMOTE_RUN_PID_FILE:-/tmp/deploy-supersets-remote.pid}"
 REMOTE_RUN_STATUS_FILE="${REMOTE_RUN_STATUS_FILE:-/tmp/deploy-supersets-remote.status}"
 
-# ------------------------------------------------------------------------------
-# Optional SSH connection multiplexing
-# ------------------------------------------------------------------------------
-# This is used only when password auth is NOT in use. With sshpass/askpass each
-# invocation needs a normal fresh auth flow, so multiplexing is skipped.
-# ------------------------------------------------------------------------------
+# Optional multiplexing for non-password SSH sessions. When password auth is used,
+# fresh sessions are created normally.
 SSH_CONTROL_MASTER="${SSH_CONTROL_MASTER:-1}"
 SSH_CONTROL_PERSIST="${SSH_CONTROL_PERSIST:-10m}"
-SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-$HOME/.ssh/cm}"
+SSH_CONTROL_DIR="${SSH_CONTROL_DIR:-${HOME:-/tmp}/.ssh/cm}"
 SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-$SSH_CONTROL_DIR/%r@%h:%p}"
 
 usage() {
@@ -324,22 +270,8 @@ warn() { printf 'WARN [%s] %s\n' "$(timestamp)" "$*" >&2; }
 die()  { printf 'ERROR [%s] %s\n' "$(timestamp)" "$*" >&2; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-quote_env_value() { printf '%q' "$1"; }
-
-remote_sudo_prompt() {
-  printf '[remote sudo on %s] password for %%u: ' "$TARGET"
-}
-
 mkdir -p "$SSH_CONTROL_DIR" 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
-# Build the common ssh/scp options in one place.
-# ------------------------------------------------------------------------------
-# Notes:
-#   - StrictHostKeyChecking=accept-new keeps first-run behavior practical
-#   - ServerAlive* protects against half-open sessions
-#   - Multiplexing is used only when password auth is not being forced
-# ------------------------------------------------------------------------------
 ssh_common_opts() {
   local opts=(
     -o BatchMode=no
@@ -361,19 +293,6 @@ ssh_common_opts() {
   printf '%s\n' "${opts[@]}"
 }
 
-# ------------------------------------------------------------------------------
-# Unified SSH/SCP wrapper
-# ------------------------------------------------------------------------------
-# Behavior:
-#   - If SSH_PASSWORD is empty: run ssh/scp normally
-#   - If sshpass exists: use sshpass for non-interactive password auth
-#   - Else: use SSH_ASKPASS in forced mode
-#
-# This means the local .env password is applied to:
-#   - initial uploads
-#   - bootstrap launch
-#   - all later poll connections
-# ------------------------------------------------------------------------------
 run_ssh_tool() {
   local tool="$1"
   shift
@@ -425,11 +344,12 @@ scp_to_remote() {
   run_ssh_tool scp -P "$SSH_PORT" "$src" "${TARGET}:$dst"
 }
 
-# ------------------------------------------------------------------------------
-# Classify SSH transport failures so polling can distinguish:
-#   - auth problems (fatal)
-#   - host/port/network availability problems (tolerable for a window)
-# ------------------------------------------------------------------------------
+quote_env_value() { printf '%q' "$1"; }
+
+remote_sudo_prompt() {
+  printf '[remote sudo on %s] password for %%u: ' "$TARGET"
+}
+
 classify_ssh_error() {
   local text="${1:-}"
 
@@ -487,8 +407,6 @@ write_status() {
   chown root:root "$REMOTE_RUN_STATUS_FILE" 2>/dev/null || true
 }
 
-# Emit periodic heartbeat lines so the polling side can see progress even during
-# very long install/build phases with sparse command output.
 heartbeat() {
   while true; do
     printf '[runner] heartbeat at %s\n' "$(date -Iseconds)"
@@ -504,7 +422,8 @@ printf '[runner] starting deploy at %s cmd=%s\n' "$(date -Iseconds)" "$DEPLOY_CM
 heartbeat &
 hb_pid=$!
 
-exec bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
+bash "$REMOTE_SCRIPT_PATH" __remote "$DEPLOY_CMD"
+exit $?
 EORUN
   chmod 700 /tmp/deploy-supersets-detached-runner.sh
 }
@@ -837,27 +756,39 @@ remote_worker() {
     safe_apt_run install -y "$@"
   }
 
+  # Execute container payload via stdin instead of bash -lc "<huge string>".
+  # This avoids brittle shell re-parsing and fixes syntax errors caused by
+  # embedded function definitions and quoting.
   exec_in_ct() {
     local ct="$1"
     shift || true
-    local payload
-    payload=$'\nset -Eeuo pipefail\ntrap '\''rc=$?; echo "[exec_in_ct:'"$ct"'] ERROR rc=${rc} line=${LINENO} cmd=${BASH_COMMAND}" >&2; exit ${rc}'\'' ERR\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'"$(declare -f safe_kill_matching_procs apt_quiesce_background_services apt_repair_if_needed safe_apt_run safe_apt_update safe_apt_install)"$'\n'"$*"
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "$payload"
+    local user_cmd="$*"
+
+    {
+      printf '%s\n' 'set -Eeuo pipefail'
+      printf '%s\n' "trap 'rc=\$?; echo \"[exec_in_ct:${ct}] ERROR rc=\${rc} line=\${LINENO} cmd=\${BASH_COMMAND}\" >&2; exit \${rc}' ERR"
+      printf '%s\n' 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+      declare -f safe_kill_matching_procs
+      declare -f apt_quiesce_background_services
+      declare -f apt_repair_if_needed
+      declare -f safe_apt_run
+      declare -f safe_apt_update
+      declare -f safe_apt_install
+      printf '%s\n' "$user_cmd"
+    } | lxc exec "$ct" -- env LANG=C LC_ALL=C bash -s
   }
 
   exec_in_ct_as_postgres() {
     local ct="$1"
     shift || true
     local inner="$*"
-    local quoted_inner
-    quoted_inner="$(printf '%q' "$inner")"
 
-    lxc exec "$ct" -- env LANG=C LC_ALL=C bash -lc "
-set -Eeuo pipefail
-trap 'rc=\$?; echo \"[exec_in_ct_as_postgres:$ct] ERROR rc=\${rc} line=\${LINENO} cmd=\${BASH_COMMAND}\" >&2; exit \${rc}' ERR
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-su - postgres -s /bin/bash -c $quoted_inner
-"
+    {
+      printf '%s\n' 'set -Eeuo pipefail'
+      printf '%s\n' "trap 'rc=\$?; echo \"[exec_in_ct_as_postgres:${ct}] ERROR rc=\${rc} line=\${LINENO} cmd=\${BASH_COMMAND}\" >&2; exit \${rc}' ERR"
+      printf '%s\n' 'export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+      printf 'su - postgres -s /bin/bash -lc %q\n' "$inner"
+    } | lxc exec "$ct" -- env LANG=C LC_ALL=C bash -s
   }
 
   ct_ip() {
@@ -1032,56 +963,56 @@ PY
     "
   }
 
-  ensure_clickhouse_env_vars() {
-    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
-    log "[supersets] ensure ClickHouse env vars in $ENV_FILE"
+ ensure_clickhouse_env_vars() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  log "[supersets] ensure ClickHouse env vars in $ENV_FILE"
 
-    exec_in_ct "$CT_SUP" "
-      set -euo pipefail
+  exec_in_ct "$CT_SUP" "
+    set -euo pipefail
 
-      ENV_FILE='$ENV_FILE'
+    ENV_FILE='$ENV_FILE'
 
-      _shell_quote() {
-        printf '%q' \"\$1\"
-      }
+    _shell_quote() {
+      printf '%q' \"\$1\"
+    }
 
-      _add_or_update_env_var() {
-        local key=\"\$1\"
-        local raw_val=\"\$2\"
-        local val tmp
-        val=\$(_shell_quote \"\$raw_val\")
-        tmp=\$(mktemp)
+    _add_or_update_env_var() {
+      local key=\"\$1\"
+      local raw_val=\"\$2\"
+      local val tmp
+      val=\$(_shell_quote \"\$raw_val\")
+      tmp=\$(mktemp)
 
-        if grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
-          sed \"s|^[[:space:]]*\${key}[[:space:]]*=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
-          cat \"\$tmp\" > \"\$ENV_FILE\"
-          rm -f \"\$tmp\"
-          echo \"[clickhouse] updated \${key} in \$ENV_FILE\"
-        else
-          printf '%s=%s\n' \"\$key\" \"\$val\" >> \"\$ENV_FILE\"
-          echo \"[clickhouse] added \${key} to \$ENV_FILE\"
-        fi
-      }
+      if grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
+        sed \"s|^[[:space:]]*\${key}[[:space:]]*=.*|\${key}=\${val}|\" \"\$ENV_FILE\" > \"\$tmp\"
+        cat \"\$tmp\" > \"\$ENV_FILE\"
+        rm -f \"\$tmp\"
+        echo \"[clickhouse] updated \${key} in \$ENV_FILE\"
+      else
+        printf '%s=%s\n' \"\$key\" \"\$val\" >> \"\$ENV_FILE\"
+        echo \"[clickhouse] added \${key} to \$ENV_FILE\"
+      fi
+    }
 
-      _add_or_update_env_var DHIS2_SERVING_ENGINE clickhouse
-      _add_or_update_env_var DHIS2_CLICKHOUSE_ENABLED true
-      _add_or_update_env_var DHIS2_CLICKHOUSE_HOST '${CLICKHOUSE_HOST}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_USER '${CLICKHOUSE_USER}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_PASSWORD '${CLICKHOUSE_PASSWORD}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_SECURE false
-      _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PROTOCOL http
-      _add_or_update_env_var DHIS2_CLICKHOUSE_SUPERSET_DB_NAME '${CLICKHOUSE_SUPERSET_DB_NAME}'
-      _add_or_update_env_var DHIS2_CLICKHOUSE_REFRESH_STRATEGY versioned_view_swap
-      _add_or_update_env_var DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS 2
+    _add_or_update_env_var DHIS2_SERVING_ENGINE clickhouse
+    _add_or_update_env_var DHIS2_CLICKHOUSE_ENABLED true
+    _add_or_update_env_var DHIS2_CLICKHOUSE_HOST '${CLICKHOUSE_HOST}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_PORT '${CLICKHOUSE_NATIVE_PORT}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PORT '${CLICKHOUSE_HTTP_PORT}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_DATABASE '${CLICKHOUSE_STAGING_DATABASE}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_USER '${CLICKHOUSE_USER}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_PASSWORD '${CLICKHOUSE_PASSWORD}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_SECURE false
+    _add_or_update_env_var DHIS2_CLICKHOUSE_HTTP_PROTOCOL http
+    _add_or_update_env_var DHIS2_CLICKHOUSE_SUPERSET_DB_NAME '${CLICKHOUSE_SUPERSET_DB_NAME}'
+    _add_or_update_env_var DHIS2_CLICKHOUSE_REFRESH_STRATEGY versioned_view_swap
+    _add_or_update_env_var DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS 2
 
-      echo '[clickhouse] env vars OK'
-    "
-  }
+    echo '[clickhouse] env vars OK'
+  "
+}
 
   install_clickhouse() {
     [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
@@ -2356,17 +2287,17 @@ def patch_long_constraint_names(text: str) -> str:
 
     names = set()
     for pat in patterns:
-      for m in re.finditer(pat, text, flags=re.S):
-        names.add(m.group(1))
+        for m in re.finditer(pat, text, flags=re.S):
+            names.add(m.group(1))
 
     for old in sorted(names, key=len, reverse=True):
-      new = shorten_identifier(old)
-      if new != old:
-        seen[old] = new
+        new = shorten_identifier(old)
+        if new != old:
+            seen[old] = new
 
     for old, new in seen.items():
-      text = text.replace('"' + old + '"', '"' + new + '"')
-      text = text.replace("'" + old + "'", "'" + new + "'")
+        text = text.replace('"' + old + '"', '"' + new + '"')
+        text = text.replace("'" + old + "'", "'" + new + "'")
 
     return text
 
@@ -2660,6 +2591,8 @@ from superset import create_app
 app = create_app()
 
 with app.app_context():
+    # Re-register serving tables, patch TableColumn.extra, add ClickHouse indexes.
+    # Idempotent — safe to run on existing installs without losing charts/data.
     try:
         from superset.dhis2.backfill import run_compatibility_backfill
         run_compatibility_backfill()
@@ -2667,6 +2600,8 @@ with app.app_context():
     except Exception as e:
         print(f'[dhis2-migrate] WARNING: backfill failed (non-fatal): {e}')
 
+    # Rebuild KPI/Map mart ClickHouse tables and register them as Superset datasets
+    # for any staged datasets that have a serving table but are missing mart tables.
     try:
         from superset.dhis2.models import DHIS2StagedDataset
         from superset.dhis2.clickhouse_build_service import ClickHouseBuildService
@@ -2693,6 +2628,7 @@ with app.app_context():
                     register_specialized_marts_as_superset_datasets(dataset=dataset, engine=engine)
                     rebuilt += 1
                 else:
+                    # Ensure mart Superset datasets are registered even if tables exist
                     register_specialized_marts_as_superset_datasets(dataset=dataset, engine=engine)
             except Exception as e:
                 print(f'[dhis2-migrate] WARNING: mart rebuild for {dataset.name!r} failed (non-fatal): {e}')
@@ -3061,24 +2997,6 @@ AP
   log "remote worker finished cmd=$cmd elapsed=$((remote_finished_epoch - remote_started_epoch))s"
 }
 
-# ------------------------------------------------------------------------------
-# Poll detached remote execution
-# ------------------------------------------------------------------------------
-# This function intentionally opens a fresh SSH connection on each cycle.
-#
-# Why?
-#   - Detached mode means the actual deploy process is already running remotely
-#   - The local side only needs read access to:
-#       * remote run log
-#       * remote status file
-#       * remote pid file
-#   - Fresh connections make the polling layer independent from the bootstrap TTY
-#
-# Failure semantics:
-#   - auth errors -> fail immediately
-#   - temporary host/port/network errors -> tolerated within outage window
-#   - failed status with explicit rc -> fail immediately
-# ------------------------------------------------------------------------------
 poll_remote_detached_run() {
   log "Remote deploy started; polling $REMOTE_RUN_LOG"
   log "Poll settings: interval=${REMOTE_POLL_INTERVAL_SECONDS}s startup_grace=${REMOTE_POLL_STARTUP_GRACE_SECONDS}s max_failures=${REMOTE_POLL_MAX_FAILURES} ssh_outage_window=${REMOTE_POLL_SSH_OUTAGE_WINDOW_SECONDS}s"
@@ -3087,10 +3005,8 @@ poll_remote_detached_run() {
   local poll_failures=0
   local no_status_failures=0
   local running_polls=0
-
   local ssh_outage_started_epoch=0
   local ssh_outage_type=""
-
   local q_poll_log q_poll_status q_poll_pid
   q_poll_log="$(quote_env_value "$REMOTE_RUN_LOG")"
   q_poll_status="$(quote_env_value "$REMOTE_RUN_STATUS_FILE")"
@@ -3189,7 +3105,6 @@ poll_remote_detached_run() {
       local recovered_after=$((now - ssh_outage_started_epoch))
       log "SSH polling recovered after ${recovered_after}s outage (${ssh_outage_type})"
     fi
-
     ssh_outage_started_epoch=0
     ssh_outage_type=""
     poll_failures=0

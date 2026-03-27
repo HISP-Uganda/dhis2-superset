@@ -543,13 +543,19 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         )
         return bool(result.result_rows and result.result_rows[0][0] > 0)
 
+    def mart_exists(self, staged_dataset: Any) -> bool:
+        """Return True if the consolidated _mart for *staged_dataset* exists."""
+        mart_name = f"{_serving_table_name(staged_dataset)}_mart"
+        return self.named_table_exists_in_serving(mart_name)
+
+    # Legacy aliases — kept for migration scripts that may still reference them
     def kpi_mart_exists(self, staged_dataset: Any) -> bool:
-        """Return True if the KPI mart for *staged_dataset* exists."""
+        """Deprecated: check for old _kpi mart. Use mart_exists() instead."""
         kpi_name = f"{_serving_table_name(staged_dataset)}_kpi"
         return self.named_table_exists_in_serving(kpi_name)
 
     def map_mart_exists(self, staged_dataset: Any) -> bool:
-        """Return True if the unified Map mart for *staged_dataset* exists."""
+        """Deprecated: check for old _map mart. Use mart_exists() instead."""
         map_name = f"{_serving_table_name(staged_dataset)}_map"
         return self.named_table_exists_in_serving(map_name)
 

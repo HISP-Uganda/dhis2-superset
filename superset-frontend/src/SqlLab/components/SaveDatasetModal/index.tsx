@@ -289,6 +289,11 @@ export const SaveDatasetModal = ({
             opr: 'rel_m_m',
             value: userId,
           },
+          {
+            col: 'dataset_role',
+            opr: 'dataset_context',
+            value: 'chart',
+          },
         ],
         order_column: 'changed_on_delta_humanized',
         order_direction: 'desc',

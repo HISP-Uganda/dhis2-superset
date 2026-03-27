@@ -286,7 +286,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "period_quarter",
         "anc_1st_visit",
         "reporting_rate",
-        "_manifest_build_v3",
+        "_manifest_build_v5",
     ]
     assert rows == [
         {
@@ -300,7 +300,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
-            "_manifest_build_v3": None,
+            "_manifest_build_v5": None,
         },
         {
             "dhis2_instance": "Non Routine DHIS2",
@@ -313,7 +313,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "reporting_rate": 95.3,
             "anc_1st_visit": None,
-            "_manifest_build_v3": None,
+            "_manifest_build_v5": None,
         },
     ]
 
@@ -621,7 +621,7 @@ def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
         "period_year",
         "period_month",
         "malaria_cases",
-        "_manifest_build_v3",
+        "_manifest_build_v5",
     ]
 
 
@@ -843,6 +843,92 @@ def test_terminal_level_helpers_include_only_rows_where_selected_level_is_last_p
     assert "level2" in predicate_sql
     assert "level3" in predicate_sql
     assert "CAST(" not in predicate_sql
+
+
+def test_hierarchy_helpers_fall_back_to_mart_column_order_when_level_metadata_is_missing():
+    from superset.dhis2.analytical_serving import (
+        build_terminal_hierarchy_sqla_predicate,
+        get_dhis2_hierarchy_column_names,
+        resolve_terminal_hierarchy_column,
+    )
+
+    columns = [
+        {
+            "column_name": "national",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+        {
+            "column_name": "region",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+        {
+            "column_name": "district_city",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+    ]
+
+    hierarchy_column_names = get_dhis2_hierarchy_column_names(columns)
+
+    assert hierarchy_column_names == ["national", "region", "district_city"]
+    assert (
+        resolve_terminal_hierarchy_column(
+            ["district_city"],
+            hierarchy_column_names,
+        )
+        == "district_city"
+    )
+
+    predicate = build_terminal_hierarchy_sqla_predicate(
+        "district_city",
+        hierarchy_column_names,
+        terminal=False,
+    )
+    assert predicate is not None
+    predicate_sql = str(predicate)
+    assert "district_city" in predicate_sql
+
+
+def test_hierarchy_helpers_ignore_mis_tagged_legacy_helper_columns_when_canonical_levels_exist():
+    from superset.dhis2.analytical_serving import get_dhis2_hierarchy_column_names
+
+    columns = [
+        {
+            "column_name": "period_variant",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+        {
+            "column_name": "national",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+        {
+            "column_name": "region",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+        {
+            "column_name": "district_city",
+            "extra": {
+                "dhis2_is_ou_hierarchy": True,
+            },
+        },
+    ]
+
+    assert get_dhis2_hierarchy_column_names(columns) == [
+        "national",
+        "region",
+        "district_city",
+    ]
 
 
 def test_period_hierarchy_helpers_ignore_raw_period_and_order_specific_levels():
@@ -1245,3 +1331,106 @@ def test_build_serving_manifest_flags_indicators():
     # ind_reporting is an indicator
     rep_col = col_by_name["Reporting Rate"]
     assert rep_col["extra"][_DHIS2_INDICATOR_EXTRA_KEY] is True
+
+
+# ── dataset_columns_payload — aggregation expression tests ────────────────────
+
+def _dcp_col(
+    column_name: str,
+    col_type: str = "FLOAT",
+    is_indicator: bool = False,
+    extra: dict | None = None,
+) -> dict:
+    """Build a minimal manifest column dict for dataset_columns_payload tests."""
+    import json
+
+    base_extra: dict = dict(extra or {})
+    if is_indicator:
+        base_extra["dhis2_is_indicator"] = True
+    return {
+        "column_name": column_name,
+        "verbose_name": column_name.replace("_", " ").title(),
+        "type": col_type,
+        "is_dttm": False,
+        "extra": json.dumps(base_extra) if base_extra else None,
+    }
+
+
+def test_dataset_columns_payload_data_element_uses_sum():
+    """Numeric data elements must produce SUM(col) expressions."""
+    import json
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    result = dataset_columns_payload([_dcp_col("bcg_doses", "FLOAT")])
+    assert result[0]["expression"] == "SUM(`bcg_doses`)"
+    extra = json.loads(result[0]["extra"])
+    assert extra["dhis2_default_agg"] == "SUM"
+
+
+def test_dataset_columns_payload_indicator_uses_bare_column():
+    """Indicators must NOT be wrapped in AVG/SUM — bare column reference only."""
+    import json
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    result = dataset_columns_payload([_dcp_col("malaria_incidence_rate", is_indicator=True)])
+    expr = result[0]["expression"]
+    assert expr == "`malaria_incidence_rate`", f"Expected bare col, got: {expr}"
+    assert "AVG" not in expr
+    assert "SUM" not in expr
+    extra = json.loads(result[0]["extra"])
+    assert extra["dhis2_default_agg"] == "NONE"
+
+
+def test_dataset_columns_payload_string_has_no_expression():
+    """Non-numeric columns are dimension-only: no expression, no default_agg."""
+    import json
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    result = dataset_columns_payload([_dcp_col("org_unit_name", col_type="STRING")])
+    assert result[0].get("expression") is None
+    raw_extra = result[0].get("extra")
+    if raw_extra:
+        extra = json.loads(raw_extra)
+        assert "dhis2_default_agg" not in extra
+
+
+def test_dataset_columns_payload_preserves_existing_extra_keys():
+    """dhis2_legend and other custom extra keys must survive enrichment."""
+    import json
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    col = _dcp_col("malaria_rate", is_indicator=True, extra={"dhis2_legend": {"items": []}})
+    result = dataset_columns_payload([col])
+    extra = json.loads(result[0]["extra"])
+    assert "dhis2_legend" in extra
+    assert extra["dhis2_default_agg"] == "NONE"
+
+
+def test_dataset_columns_payload_empty_input():
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    assert dataset_columns_payload([]) == []
+
+
+def test_dataset_columns_payload_multiple_types():
+    """Mixed column types all returned; correct aggregations assigned."""
+    import json
+    from superset.dhis2.analytical_serving import dataset_columns_payload
+
+    cols = [
+        _dcp_col("de_float", "FLOAT"),
+        _dcp_col("de_int", "INTEGER"),
+        _dcp_col("ind_rate", is_indicator=True),
+        _dcp_col("ou_name", "STRING"),
+    ]
+    result = dataset_columns_payload(cols)
+    assert len(result) == 4
+
+    by_name = {r["column_name"]: r for r in result}
+    assert by_name["de_float"]["expression"] == "SUM(`de_float`)"
+    assert by_name["de_int"]["expression"] == "SUM(`de_int`)"
+    assert by_name["ind_rate"]["expression"] == "`ind_rate`"
+    assert by_name["ou_name"].get("expression") is None
+
+    assert json.loads(by_name["de_float"]["extra"])["dhis2_default_agg"] == "SUM"
+    assert json.loads(by_name["ind_rate"]["extra"])["dhis2_default_agg"] == "NONE"

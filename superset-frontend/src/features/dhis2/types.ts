@@ -48,7 +48,7 @@ export interface DHIS2RequestLog {
   ou_count: number | null;
   dx_count: number | null;
   periods: string[];
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'running';
   http_status_code: number | null;
   dhis2_error_code: string | null;
   pages_fetched: number | null;
@@ -309,6 +309,8 @@ export interface DHIS2StagedDatasetSummary {
   serving_table_ref?: string | null;
   serving_database_id?: number | null;
   serving_database_name?: string | null;
+  /** Deepest hierarchy level included in extraction (1=national, N=facility). */
+  max_orgunit_level?: number | null;
   serving_columns?: Array<{
     column_name: string;
     verbose_name?: string;

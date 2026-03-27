@@ -66,7 +66,12 @@ import {
 import Tabs from '@superset-ui/core/components/Tabs';
 import { PluginContext } from 'src/components';
 import { useConfirmModal } from 'src/hooks/useConfirmModal';
+import { getDhis2LegendSetDatabaseId } from 'src/utils/dhis2Datasource';
 
+import {
+  mergeColorRowsIntoSections,
+  sectionsHaveNamedControl,
+} from 'src/explore/controlPanels/colorSectionUtils';
 import { getSectionsToRender } from 'src/explore/controlUtils';
 import { ExploreActions } from 'src/explore/actions/exploreActions';
 import { ChartState, ExplorePageState } from 'src/explore/types';
@@ -194,6 +199,7 @@ const isTimeSection = (section: ControlPanelSectionConfig): boolean =>
 
 const hasTimeColumn = (datasource: Dataset): boolean =>
   datasource?.columns?.some(c => c.is_dttm);
+
 const sectionsToExpand = (
   sections: ControlPanelSectionConfig[],
   datasource: Dataset,
@@ -247,12 +253,142 @@ function getState(
     }
   });
 
+  const colorBreakpointsAlreadyPresent = sectionsHaveNamedControl(
+    customizeSections,
+    'color_breakpoints',
+  );
+  const metricColorsAlreadyPresent = sectionsHaveNamedControl(
+    customizeSections,
+    'metric_colors',
+  );
+  const colorModeAlreadyPresent = sectionsHaveNamedControl(
+    customizeSections,
+    'color_mode',
+  );
+  const defaultBreakpointColorAlreadyPresent = sectionsHaveNamedControl(
+    customizeSections,
+    'default_breakpoint_color',
+  );
+  const chartBackgroundColorAlreadyPresent = sectionsHaveNamedControl(
+    customizeSections,
+    'chart_background_color',
+  );
+
+  const canUseSharedColorControls = vizType !== 'dhis2_map';
+  const colorRowsToMerge: ControlPanelSectionConfig['controlSetRows'] = [];
+
+  if (canUseSharedColorControls && !colorModeAlreadyPresent) {
+    colorRowsToMerge.push([
+      {
+        name: 'color_mode',
+        config: {
+          type: 'SelectControl',
+          label: t('Color mode'),
+          description: t(
+            'Choose how chart colours are applied. "Default" uses the chart colour scheme. "Per-metric" applies a fixed colour per series. "Data-range" applies colours based on value ranges (breakpoints).',
+          ),
+          renderTrigger: true,
+          default: 'default',
+          choices: [
+            ['default', t('Default color scheme')],
+            ['metric', t('Per-metric colors')],
+            ['breakpoints', t('Data-range colors')],
+          ],
+        },
+      },
+    ]);
+  }
+
+  if (canUseSharedColorControls && !metricColorsAlreadyPresent) {
+    colorRowsToMerge.push([
+      {
+        name: 'metric_colors',
+        config: {
+          type: 'MetricColorControl',
+          label: t('Colour per metric'),
+          description: t(
+            'Assign a fixed colour to each metric series in this chart. Useful for cascades where each variable has a known meaning (e.g. Tests → blue, Positives → red).',
+          ),
+          renderTrigger: true,
+          default: {},
+          shouldMapStateToProps: () => true,
+          mapStateToProps: (state: Record<string, any>) => ({
+            metrics: state.controls?.metrics?.value ?? [],
+            colorBreakpoints: state.controls?.color_breakpoints?.value ?? [],
+            colorMode: state.controls?.color_mode?.value,
+          }),
+        },
+      },
+    ]);
+  }
+
+  if (canUseSharedColorControls && !colorBreakpointsAlreadyPresent) {
+    colorRowsToMerge.push([
+      {
+        name: 'color_breakpoints',
+        config: {
+          type: 'ColorBreakpointsControl',
+          label: t('Color ranges'),
+          description: t(
+            'Map numeric value ranges to colours. Applied by chart renderers that support conditional coloring.',
+          ),
+          renderTrigger: true,
+          default: [],
+          shouldMapStateToProps: () => true,
+          mapStateToProps: (state: Record<string, any>) => ({
+            databaseId: getDhis2LegendSetDatabaseId(state.datasource),
+          }),
+        },
+      },
+    ]);
+  }
+
+  if (canUseSharedColorControls && !defaultBreakpointColorAlreadyPresent) {
+    colorRowsToMerge.push([
+      {
+        name: 'default_breakpoint_color',
+        config: {
+          type: 'ColorPickerControl',
+          label: t('Default color'),
+          description: t(
+            'Colour used for values that fall outside every defined range.',
+          ),
+          renderTrigger: true,
+          default: { r: 0, g: 0, b: 0, a: 0 },
+        },
+      },
+    ]);
+  }
+
+  if (!chartBackgroundColorAlreadyPresent) {
+    colorRowsToMerge.push([
+      {
+        name: 'chart_background_color',
+        config: {
+          type: 'ColorPickerControl',
+          label: t('Background color'),
+          description: t(
+            'Applies a background behind the chart canvas or map viewport.',
+          ),
+          renderTrigger: true,
+          default: { r: 255, g: 255, b: 255, a: 0 },
+        },
+      },
+    ]);
+  }
+
+  const mergedCustomizeSections = mergeColorRowsIntoSections(
+    customizeSections,
+    colorRowsToMerge,
+    t('Color schemes'),
+  );
+
   const expandedQuerySections: string[] = sectionsToExpand(
     querySections,
     datasource,
   );
   const expandedCustomizeSections: string[] = sectionsToExpand(
-    customizeSections,
+    mergedCustomizeSections,
     datasource,
   );
   const expandedMatrixifySections: string[] = sectionsToExpand(
@@ -265,7 +401,7 @@ function getState(
     expandedCustomizeSections,
     expandedMatrixifySections,
     querySections,
-    customizeSections,
+    customizeSections: mergedCustomizeSections,
     matrixifySections,
     matrixifyEnableControl,
   };
@@ -478,6 +614,13 @@ export const ControlPanelsContainer = (props: ControlPanelsContainerProps) => {
     const controlData = {
       ...restConfig,
       ...controls[name],
+      // Dynamically-injected controls (e.g. color_breakpoints, metric_color_overrides)
+      // are NOT processed by getAllControlsState, so they have no Redux entry on initial
+      // load.  Fall back to the saved form_data value so that saved settings are
+      // restored when the chart is reloaded or opened from a dashboard link.
+      ...(controls[name] == null && props.form_data?.[name] !== undefined
+        ? { value: props.form_data[name] }
+        : undefined),
       ...(shouldRecalculateControlState({ name, config })
         ? config?.mapStateToProps?.(exploreState, controls[name], chart)
         : // for other controls, `mapStateToProps` is already run in

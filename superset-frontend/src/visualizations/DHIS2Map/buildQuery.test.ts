@@ -193,4 +193,79 @@ describe('DHIS2Map buildQuery', () => {
     });
     expect(query.row_limit).toBe(10000);
   });
+
+  test('adds IS NOT NULL filter on terminal hierarchy column for staged datasets (fixes No Data bug)', () => {
+    const queryContext = buildQuery({
+      datasource: '4__table',
+      viz_type: 'dhis2_map',
+      metric: 'SUM(malaria_cases)',
+      org_unit_column: 'district_city',
+      dhis2_staged_local_dataset: 'true',
+      dhis2_hierarchy_columns: ['national', 'region', 'district_city'],
+      // filter_null_ou_column defaults to true when not set
+    } as any);
+
+    const [query] = queryContext.queries;
+    const nullExclusionFilter = (query.filters || []).find(
+      (f: any) => f.op === 'IS NOT NULL',
+    );
+    expect(nullExclusionFilter).toBeDefined();
+    expect(nullExclusionFilter?.col).toBe('district_city');
+  });
+
+  test('does NOT add IS NOT NULL filter when filter_null_ou_column is false', () => {
+    const queryContext = buildQuery({
+      datasource: '4__table',
+      viz_type: 'dhis2_map',
+      metric: 'SUM(malaria_cases)',
+      org_unit_column: 'district_city',
+      dhis2_staged_local_dataset: 'true',
+      dhis2_hierarchy_columns: ['national', 'region', 'district_city'],
+      filter_null_ou_column: false,
+    } as any);
+
+    const [query] = queryContext.queries;
+    const nullExclusionFilter = (query.filters || []).find(
+      (f: any) => f.op === 'IS NOT NULL',
+    );
+    expect(nullExclusionFilter).toBeUndefined();
+  });
+
+  test('uses child OU column for IS NOT NULL filter in focus-with-children mode', () => {
+    const queryContext = buildQuery({
+      datasource: '4__table',
+      viz_type: 'dhis2_map',
+      metric: 'SUM(malaria_cases)',
+      org_unit_column: 'region',
+      focus_selected_boundary_with_children: true,
+      dhis2_staged_local_dataset: 'true',
+      dhis2_hierarchy_columns: ['national', 'region', 'district_city'],
+    } as any);
+
+    const [query] = queryContext.queries;
+    const nullExclusionFilter = (query.filters || []).find(
+      (f: any) => f.op === 'IS NOT NULL',
+    );
+    expect(nullExclusionFilter).toBeDefined();
+    // Focus mode: terminal column is one level below 'region' → 'district_city'
+    expect(nullExclusionFilter?.col).toBe('district_city');
+  });
+
+  test('does NOT add IS NOT NULL filter when no hierarchy columns are configured', () => {
+    // Non-hierarchy map (plain datasource): null filter must not be injected
+    const queryContext = buildQuery({
+      datasource: '4__table',
+      viz_type: 'dhis2_map',
+      metric: 'SUM(malaria_cases)',
+      org_unit_column: 'district_city',
+      dhis2_staged_local_dataset: 'true',
+      // no dhis2_hierarchy_columns
+    } as any);
+
+    const [query] = queryContext.queries;
+    const nullExclusionFilter = (query.filters || []).find(
+      (f: any) => f.op === 'IS NOT NULL',
+    );
+    expect(nullExclusionFilter).toBeUndefined();
+  });
 });

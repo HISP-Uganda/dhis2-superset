@@ -181,8 +181,10 @@ def _execute_incremental_build(
 
 
 def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manifest: dict[str, Any]) -> list[str]:
-    """Create specialized marts (KPI, Map) from the main serving table.
+    """Create a single consolidated _mart table from the main serving table.
 
+    The mart includes the full OU hierarchy (geographic breakdown) plus all
+    measure/indicator columns aggregated with the appropriate function.
     Returns a list of mart table names that were successfully built.
     Individual mart failures are logged and skipped so a broken mart never
     prevents the main serving build from completing.
@@ -244,7 +246,7 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
     # Add hierarchy levels to grouping to allow trend analysis at different grains
     common_group_cols.extend(period_hierarchy_cols)
 
-    # Find OU hierarchy columns
+    # Find OU hierarchy columns (full geographic breakdown)
     ou_hierarchy_cols = []
     for c in manifest["columns"]:
         extra = c.get("extra") or {}
@@ -261,76 +263,79 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
     if ou_level_col:
         ou_hierarchy_cols.append(f"`{ou_level_col}`")
 
-    # Grouping columns for specialized marts
-    # We MUST have at least one column to group by. 
-    # Prefer instance + period, but fall back to ou_level if needed.
-    group_cols = list(dict.fromkeys(common_group_cols + ou_hierarchy_cols))
-    if not group_cols:
+    # Include COC (Category Option Combo) dimension columns in the mart when the
+    # manifest exposes them.  This preserves disaggregation grain so users can
+    # group and filter charts by disaggregation without losing row fidelity.
+    # When no COC columns are present the mart collapses across all COCs,
+    # which is the correct total-only behaviour for "total" disaggregation mode.
+    coc_dimension_cols: list[str] = []
+    coc_uid_col = manifest.get("coc_uid_column_name")
+    coc_name_col = manifest.get("coc_name_column_name")
+    if coc_uid_col:
+        coc_dimension_cols.append(f"`{coc_uid_col}`")
+    if coc_name_col:
+        coc_dimension_cols.append(f"`{coc_name_col}`")
+
+    # Single consolidated mart: instance + period + full OU hierarchy + COC (opt-in)
+    # This is a superset of the old KPI grouping and includes geographic dimensions
+    # needed for maps, KPI charts, pivots, and dashboard filters.
+    mart_group_cols = list(dict.fromkeys(common_group_cols + ou_hierarchy_cols + coc_dimension_cols))
+    if not mart_group_cols:
         if ou_level_col:
-            group_cols = [f"`{ou_level_col}`"]
+            mart_group_cols = [f"`{ou_level_col}`"]
         elif instance_col:
-            group_cols = [f"`{instance_col}`"]
+            mart_group_cols = [f"`{instance_col}`"]
         elif period_col:
-            group_cols = [f"`{period_col}`"]
+            mart_group_cols = [f"`{period_col}`"]
+
+    if not mart_group_cols:
+        return built
 
     # Define optimal ClickHouse primary key / sort order
-    # Leading with instance, period, and level provides best performance for typical filters.
-    # We use instance_col/period_col if they exist in this mart's grouping.
-    pk_cols = []
-    if instance_col and f"`{instance_col}`" in group_cols:
-        pk_cols.append(f"`{instance_col}`")
-    if period_col and f"`{period_col}`" in group_cols:
-        pk_cols.append(f"`{period_col}`")
-    if ou_level_col and f"`{ou_level_col}`" in group_cols:
-        pk_cols.append(f"`{ou_level_col}`")
-    
-    # Add any remaining group cols to the sort order
-    seen_pk = set(pk_cols)
-    for c in group_cols:
-        if c not in seen_pk:
-            pk_cols.append(c)
+    def _get_pk_cols(grouping: list[str]) -> list[str]:
+        pk = []
+        if instance_col and f"`{instance_col}`" in grouping:
+            pk.append(f"`{instance_col}`")
+        if period_col and f"`{period_col}`" in grouping:
+            pk.append(f"`{period_col}`")
+        if ou_level_col and f"`{ou_level_col}`" in grouping:
+            pk.append(f"`{ou_level_col}`")
+        seen = set(pk)
+        for c in grouping:
+            if c not in seen:
+                pk.append(c)
+        return pk
 
-    # 1. KPI Mart (always build if we have group cols)
-    if group_cols:
-        kpi_name = f"{serving_name}_kpi"
-        kpi_ref = f"`{serving_db}`.`{kpi_name}`"
-        try:
-            select_exprs = group_cols + [f"{c['agg']}({c['name']}) AS {c['name']}" for c in var_cols]
-            
-            engine._cmd(f"DROP TABLE IF EXISTS {kpi_ref}")
-            engine._cmd(
-                f"CREATE TABLE {kpi_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
-                f"SETTINGS allow_nullable_key = 1 "
-                f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
-            )
-            logger.info("ClickHouse: built KPI mart %s", kpi_ref)
-            built.append(kpi_name)
-        except Exception:  # pylint: disable=broad-except
-            logger.exception(
-                "ClickHouse: failed to build KPI mart %s — skipping (main serving table unaffected)",
-                kpi_ref,
-            )
+    # Single _mart table (replaces separate _kpi and _map tables)
+    mart_name = f"{serving_name}_mart"
+    mart_ref = f"`{serving_db}`.`{mart_name}`"
+    mart_pk = _get_pk_cols(mart_group_cols)
+    try:
+        select_exprs = mart_group_cols + [f"{c['agg']}({c['name']}) AS {c['name']}" for c in var_cols]
 
-    # 2. Unified Map Mart (build if we have hierarchy columns and group cols)
-    if ou_hierarchy_cols and group_cols:
-        map_name = f"{serving_name}_map"
-        map_ref = f"`{serving_db}`.`{map_name}`"
-        try:
-            select_exprs = group_cols + [f"{c['agg']}({c['name']}) AS {c['name']}" for c in var_cols]
-            
-            engine._cmd(f"DROP TABLE IF EXISTS {map_ref}")
-            engine._cmd(
-                f"CREATE TABLE {map_ref} ENGINE = MergeTree() ORDER BY ({', '.join(pk_cols)}) "
-                f"SETTINGS allow_nullable_key = 1 "
-                f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(group_cols)}"
-            )
-            logger.info("ClickHouse: built Unified Map mart %s", map_ref)
-            built.append(map_name)
-        except Exception:  # pylint: disable=broad-except
-            logger.exception(
-                "ClickHouse: failed to build Unified Map mart %s — skipping (main serving table unaffected)",
-                map_ref,
-            )
+        engine._cmd(f"DROP TABLE IF EXISTS {mart_ref}")
+        engine._cmd(
+            f"CREATE TABLE {mart_ref} ENGINE = MergeTree() ORDER BY ({', '.join(mart_pk)}) "
+            f"SETTINGS allow_nullable_key = 1 "
+            f"AS SELECT {', '.join(select_exprs)} FROM {source_ref} GROUP BY {', '.join(mart_group_cols)}"
+        )
+        logger.info("ClickHouse: built consolidated mart %s (groups=%d)", mart_ref, len(mart_group_cols))
+        built.append(mart_name)
+
+        # Drop legacy _kpi and _map tables if they still exist from the old architecture
+        for legacy_suffix in ("_kpi", "_map"):
+            legacy_name = f"{serving_name}{legacy_suffix}"
+            legacy_ref = f"`{serving_db}`.`{legacy_name}`"
+            try:
+                engine._cmd(f"DROP TABLE IF EXISTS {legacy_ref}")
+                logger.info("ClickHouse: dropped legacy mart %s", legacy_ref)
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("ClickHouse: could not drop legacy mart %s (may not exist)", legacy_ref)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "ClickHouse: failed to build consolidated mart %s — skipping",
+            mart_ref,
+        )
 
     return built
 

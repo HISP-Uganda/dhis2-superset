@@ -45,7 +45,6 @@ import {
 } from 'src/utils/localStorageHelpers';
 import { noop } from 'lodash';
 import TableElement from '../TableElement';
-import DHIS2QueryBuilder from '../DHIS2QueryBuilder';
 
 export interface SqlEditorLeftBarProps {
   queryEditorId: string;
@@ -132,7 +131,7 @@ const SqlEditorLeftBar = ({
   );
 
   const onTablesChange = (
-    tableNames: string[],
+    tablesOrNames: (any | string)[],
     catalogName: string | null,
     schemaName: string,
   ) => {
@@ -141,7 +140,8 @@ const SqlEditorLeftBar = ({
     }
 
     const currentTables = [...tables];
-    const tablesToAdd = tableNames.filter(name => {
+    const tablesToAdd = tablesOrNames.filter(tableOrName => {
+      const name = typeof tableOrName === 'string' ? tableOrName : tableOrName.value;
       const index = currentTables.findIndex(table => table.name === name);
       if (index >= 0) {
         currentTables.splice(index, 1);
@@ -151,8 +151,12 @@ const SqlEditorLeftBar = ({
       return true;
     });
 
-    tablesToAdd.forEach(tableName => {
-      dispatch(addTable(queryEditor, tableName, catalogName, schemaName));
+    tablesToAdd.forEach(tableOrName => {
+      const tableName = typeof tableOrName === 'string' ? tableOrName : tableOrName.value;
+      const tableType = typeof tableOrName === 'string' ? undefined : tableOrName.type;
+      const datasetId = typeof tableOrName === 'string' ? undefined : tableOrName.id;
+      
+      dispatch(addTable(queryEditor, tableName, catalogName, schemaName, tableType, datasetId));
     });
 
     dispatch(removeTables(currentTables));
@@ -209,23 +213,6 @@ const SqlEditorLeftBar = ({
     dispatch(resetState());
   }, [dispatch]);
 
-  const handleInsertDHIS2SQL = useCallback(
-    (sql: string) => {
-      // Get current SQL
-      const currentSql = queryEditor.sql || '';
-
-      // Insert SQL at the end or replace if empty
-      const newSql = currentSql.trim() ? `${currentSql}\n\n${sql}` : sql;
-
-      // Update the query editor
-      dispatch(queryEditorSetSql(queryEditor, newSql));
-    },
-    [dispatch, queryEditor],
-  );
-
-  // Check if current database is DHIS2
-  const isDHIS2Database = userSelectedDb?.backend === 'dhis2';
-
   return (
     <LeftBarStyles data-test="sql-editor-left-bar">
       <TableSelectorMultiple
@@ -244,18 +231,6 @@ const SqlEditorLeftBar = ({
         sqlLabMode
       />
       <div className="divider" />
-
-      {/* DHIS2 Query Builder - Show only for DHIS2 databases */}
-      {isDHIS2Database && userSelectedDb?.id && (
-        <>
-          <DHIS2QueryBuilder
-            onInsertSQL={handleInsertDHIS2SQL}
-            databaseId={userSelectedDb.id}
-            endpoint="analytics"
-          />
-          <div className="divider" />
-        </>
-      )}
 
       <StyledScrollbarContainer>
         {tables.map(table => (

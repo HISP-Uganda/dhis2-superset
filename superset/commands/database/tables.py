@@ -113,30 +113,54 @@ class TablesDatabaseCommand(BaseCommand):
                 ),
             )
 
+            # Include all SqlaTable datasets associated with this database.
+            # This allows virtual datasets (SQL-based) like DHIS2 MARTs to appear
+            # in the SQL Lab side bar so users can query them as primary objects.
+            datasets_query = (
+                db.session.query(SqlaTable)
+                .filter(SqlaTable.database_id == self._model.id)
+                .options(
+                    load_only(
+                        SqlaTable.catalog,
+                        SqlaTable.schema,
+                        SqlaTable.table_name,
+                        SqlaTable.extra,
+                        SqlaTable.sql,
+                    ),
+                    lazyload(SqlaTable.columns),
+                    lazyload(SqlaTable.metrics),
+                )
+            )
+
+            # Filter by catalog and schema if provided
+            if self._catalog_name:
+                datasets_query = datasets_query.filter(SqlaTable.catalog == self._catalog_name)
+            if self._schema_name:
+                datasets_query = datasets_query.filter(SqlaTable.schema == self._schema_name)
+            
+            datasets = datasets_query.all()
+            
             extra_dict_by_name = {
-                table.name: table.extra_dict
-                for table in (
-                    db.session.query(SqlaTable)
-                    .filter(
-                        SqlaTable.database_id == self._model.id,
-                        SqlaTable.catalog == self._catalog_name,
-                        SqlaTable.schema == self._schema_name,
-                    )
-                    .options(
-                        load_only(
-                            SqlaTable.catalog,
-                            SqlaTable.schema,
-                            SqlaTable.table_name,
-                            SqlaTable.extra,
-                        ),
-                        lazyload(SqlaTable.columns),
-                        lazyload(SqlaTable.metrics),
-                    )
-                ).all()
+                table.table_name: table.extra_dict
+                for table in datasets
             }
 
+            # Map virtual datasets to options
+            dataset_options = [
+                {
+                    "id": ds.id,
+                    "value": ds.table_name,
+                    "type": "dataset",
+                    "extra": ds.extra_dict,
+                    "sql": ds.sql,
+                }
+                for ds in datasets
+                if ds.sql  # Only include virtual datasets here; physical ones are handled by the DB driver below
+            ]
+
             options = sorted(
-                [
+                dataset_options
+                + [
                     {
                         "value": table.table,
                         "type": "table",

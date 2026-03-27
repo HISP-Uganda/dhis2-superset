@@ -57,6 +57,7 @@ def register_serving_table_as_superset_dataset(
     *,
     source_database_id: int | None = None,
     source_instance_ids: list[int] | None = None,
+    dataset_role: str | None = None,
 ) -> int:
     """Create or update a Superset SqlaTable for the DHIS2 serving table.
 
@@ -91,7 +92,12 @@ def register_serving_table_as_superset_dataset(
     from superset.models.core import Database
 
     schema, table_name = _parse_table_ref(serving_table_ref)
-    friendly_name = dataset_name.strip() if dataset_name else table_name
+    
+    # Add [SOURCE] suffix if it's a main serving table and NOT a mart
+    if not table_name.endswith("_mart") and not table_name.startswith("["):
+        friendly_name = f"{dataset_name.strip()} [SOURCE]" if dataset_name else f"{table_name} [SOURCE]"
+    else:
+        friendly_name = dataset_name.strip() if dataset_name else table_name
 
     # Look up the serving database
     serving_db = db.session.get(Database, serving_database_id)
@@ -204,12 +210,24 @@ def register_serving_table_as_superset_dataset(
             serving_database_name=serving_db.database_name,
             serving_table_ref=serving_table_ref,
         )
+        # Overwrite dataset_role only if the caller explicitly specifies one,
+        # to avoid unintentionally resetting a role set by a previous repair.
+        if dataset_role is not None:
+            existing.dataset_role = dataset_role
+        # Keep the virtual SQL pointing to the physical serving table so that
+        # query engines use the correct underlying table (especially important
+        # after migrating from _kpi/_map to _mart, or from raw sv_* to _mart).
+        new_sql = f"SELECT * FROM {serving_table_ref}"
+        if existing.sql != new_sql:
+            existing.sql = new_sql
         _sync_columns(existing, serving_columns)
         db.session.commit()
         logger.info(
-            "superset_dataset_service: updated existing SqlaTable id=%d for '%s'",
+            "superset_dataset_service: updated existing SqlaTable id=%d for '%s' "
+            "(dataset_role=%s)",
             existing.id,
             table_name,
+            dataset_role,
         )
         return existing.id
 
@@ -240,6 +258,8 @@ def register_serving_table_as_superset_dataset(
         is_managed_externally=False,
         extra=json.dumps(initial_extra),
     )
+    if dataset_role is not None:
+        sqla_table.dataset_role = dataset_role
 
     _sync_columns(sqla_table, serving_columns)
 
@@ -270,6 +290,8 @@ def register_serving_table_as_superset_dataset(
                 serving_database_name=serving_db.database_name,
                 serving_table_ref=serving_table_ref,
             )
+            if dataset_role is not None:
+                existing.dataset_role = dataset_role
             _sync_columns(existing, serving_columns)
             db.session.commit()
             logger.info(
@@ -405,6 +427,38 @@ def _cleanup_orphaned_mart_dataset(
         db.session.commit()
 
 
+def _cleanup_legacy_mart_datasets(dataset_id: int, serving_database_id: int) -> None:
+    """Remove old [KPI] and [Map] Superset dataset records for a staged dataset.
+
+    Called after migrating to the single _mart architecture to keep the dataset
+    list clean.
+    """
+    from superset.connectors.sqla.models import SqlaTable
+    from superset import db
+
+    legacy_prefixes = ("[KPI] ", "[Map] ", "[Map L")
+    candidates = (
+        db.session.query(SqlaTable)
+        .filter(SqlaTable.database_id == serving_database_id)
+        .all()
+    )
+    for ds in candidates:
+        name = ds.table_name or ""
+        if not any(name.startswith(p) for p in legacy_prefixes):
+            continue
+        try:
+            extra = json.loads(ds.extra or "{}")
+            if extra.get("dhis2_staged_dataset_id") == dataset_id:
+                logger.info(
+                    "_cleanup_legacy_mart_datasets: removing legacy '%s' (id=%d)",
+                    name, ds.id,
+                )
+                db.session.delete(ds)
+        except Exception:  # pylint: disable=broad-except
+            continue
+    db.session.commit()
+
+
 def register_specialized_marts_as_superset_datasets(
     dataset_id: int,
     dataset_name: str,
@@ -417,17 +471,20 @@ def register_specialized_marts_as_superset_datasets(
     engine: Any = None,
     dataset: Any = None,
 ) -> None:
-    """Register KPI and Map specialized marts only if their ClickHouse tables exist."""
+    """Register the single consolidated _mart dataset in Superset.
+
+    Registers one mart per source dataset using the original friendly dataset
+    name (no [KPI] / [Map] prefix). Cleans up any legacy [KPI] / [Map] records.
+    """
     schema, base_table_name = _parse_table_ref(serving_table_ref)
 
-    # Identify all hierarchy columns for unified marts
-    hierarchy_columns = [
+    # Identify all non-internal columns for the mart
+    mart_columns = [
         c for c in serving_columns
         if not (c.get("extra") and "dhis2_is_internal" in str(c.get("extra")))
     ]
 
-    # Helper: check ClickHouse existence via engine when available, else allow registration.
-    def _mart_exists(check_fn_name: str) -> bool:
+    def _mart_exists_check(check_fn_name: str, table_ref: str) -> bool:
         if engine is None or dataset is None:
             return True  # no engine to verify — optimistic
         check_fn = getattr(engine, check_fn_name, None)
@@ -435,72 +492,53 @@ def register_specialized_marts_as_superset_datasets(
             return True
         try:
             return bool(check_fn(dataset))
-        except Exception:  # pylint: disable=broad-except
-            return False
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "register_specialized_marts: %s check raised an exception for %s "
+                "(dataset_id=%s) — defaulting to optimistic registration. Error: %s",
+                check_fn_name, table_ref, dataset_id, exc,
+            )
+            return True  # optimistic: attempt registration anyway
 
-    # 1. KPI Mart
-    kpi_table_name = f"{base_table_name}_kpi"
-    kpi_ref = f"{schema}.{kpi_table_name}" if schema else kpi_table_name
+    from superset.datasets.policy import DatasetRole
 
-    if hierarchy_columns and _mart_exists("kpi_mart_exists"):
-        register_serving_table_as_superset_dataset(
-            dataset_id=dataset_id,
-            dataset_name=f"[KPI] {dataset_name}",
-            serving_table_ref=kpi_ref,
-            serving_columns=hierarchy_columns,
-            serving_database_id=serving_database_id,
-            source_database_id=source_database_id,
-            source_instance_ids=source_instance_ids,
-        )
-    elif hierarchy_columns:
-        logger.info(
-            "Skipping KPI mart Superset registration for dataset id=%s — ClickHouse table %s does not exist",
-            dataset_id, kpi_ref,
-        )
-        _cleanup_orphaned_mart_dataset(dataset_id, serving_database_id, kpi_ref)
+    # Single consolidated _mart
+    mart_table_name = f"{base_table_name}_mart"
+    mart_ref = f"{schema}.{mart_table_name}" if schema else mart_table_name
 
-    # 2. Unified Map Mart
-    map_table_name = f"{base_table_name}_map"
-    map_ref = f"{schema}.{map_table_name}" if schema else map_table_name
-
-    if hierarchy_columns and _mart_exists("map_mart_exists"):
-        register_serving_table_as_superset_dataset(
-            dataset_id=dataset_id,
-            dataset_name=f"[Map] {dataset_name}",
-            serving_table_ref=map_ref,
-            serving_columns=hierarchy_columns,
-            serving_database_id=serving_database_id,
-            source_database_id=source_database_id,
-            source_instance_ids=source_instance_ids,
-        )
-    elif hierarchy_columns:
-        logger.info(
-            "Skipping Map mart Superset registration for dataset id=%s — ClickHouse table %s does not exist",
-            dataset_id, map_ref,
-        )
-        _cleanup_orphaned_mart_dataset(dataset_id, serving_database_id, map_ref)
-
-    # 3. Cleanup pass: remove old [Map L*] datasets
-    from superset.connectors.sqla.models import SqlaTable
-    from superset import db
-    
-    # We look for datasets whose table_name starts with "[Map L" 
-    # (Because register_serving_table_as_superset_dataset sets friendly_name as table_name)
-    old_datasets = db.session.query(SqlaTable).filter(
-        (SqlaTable.database_id == serving_database_id) & 
-        (SqlaTable.table_name.like("[Map L%"))
-    ).all()
-    
-    for ds in old_datasets:
-        # Only delete if it belongs to THIS staged dataset (extra match)
+    if _mart_exists_check("mart_exists", mart_ref):
         try:
-            extra = json.loads(ds.extra or "{}")
-            if extra.get("dhis2_staged_dataset_id") == dataset_id:
-                logger.info("Cleaning up deprecated specialized mart dataset: %s (id=%d)", ds.table_name, ds.id)
-                db.session.delete(ds)
-        except Exception:
-            continue
-    db.session.commit()
+            register_serving_table_as_superset_dataset(
+                dataset_id=dataset_id,
+                dataset_name=f"{dataset_name} [MART]",  # Add suffix to avoid collision with METADATA record
+                serving_table_ref=mart_ref,
+                serving_columns=mart_columns,
+                serving_database_id=serving_database_id,
+                source_database_id=source_database_id,
+                source_instance_ids=source_instance_ids,
+                # MART role so the record is hidden from the management list
+                # but remains available in chart creation.
+                dataset_role=DatasetRole.MART.value,
+            )
+            logger.info(
+                "register_specialized_marts: mart registered for dataset id=%s (%s)",
+                dataset_id, mart_ref,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error(
+                "register_specialized_marts: FAILED to register mart for dataset id=%s (%s): %s",
+                dataset_id, mart_ref, exc,
+            )
+    else:
+        logger.info(
+            "register_specialized_marts: Skipping mart registration — "
+            "ClickHouse table %s absent for dataset id=%s",
+            mart_ref, dataset_id,
+        )
+        _cleanup_orphaned_mart_dataset(dataset_id, serving_database_id, mart_ref)
+
+    # Cleanup legacy [KPI] and [Map] Superset records for this dataset
+    _cleanup_legacy_mart_datasets(dataset_id, serving_database_id)
 
 
 def cleanup_staged_dataset_superset_resources(
@@ -536,78 +574,72 @@ def cleanup_staged_dataset_superset_resources(
 
 
 def repair_dhis2_chart_references() -> dict[str, int]:
-    """Re-point charts from deprecated [Map L*] datasets to the unified [Map] dataset.
-    
-    When marts are consolidated, old level-specific datasets are deleted. 
-    This function ensures existing charts are migrated to the new unified 
-    datasets instead of breaking.
+    """Re-point charts from deprecated [KPI]/[Map]/[Map L*] datasets to the single _mart dataset.
+
+    When marts are consolidated, old dual-mart datasets are deleted.
+    This function ensures existing charts are migrated to the new unified
+    mart dataset instead of breaking.
     """
+    from superset.datasets.policy import DatasetRole
     from superset import db
     from superset.models.slice import Slice
     from superset.connectors.sqla.models import SqlaTable
 
-    # 1. Map unified datasets by their staged dataset ID
-    unified_map_datasets = {} # staged_id -> SqlaTable.id
-    unified_kpi_datasets = {} # staged_id -> SqlaTable.id
-    
     all_datasets = db.session.query(SqlaTable).filter(
         SqlaTable.extra.like('%"dhis2_staged_dataset_id":%')
     ).all()
-    
+
+    # Build map: staged_id -> mart SqlaTable.id (single mart per dataset)
+    mart_by_staged_id: dict[int, int] = {}
+    legacy_ids: set[int] = set()
+    legacy_prefixes = ("[KPI] ", "[Map] ", "[Map L")
+
     for ds in all_datasets:
         try:
             extra = json.loads(ds.extra or "{}")
             staged_id = extra.get("dhis2_staged_dataset_id")
             if not staged_id:
                 continue
-            if ds.table_name.startswith("[Map]"):
-                unified_map_datasets[staged_id] = ds.id
-            elif ds.table_name.startswith("[KPI]"):
-                unified_kpi_datasets[staged_id] = ds.id
-        except Exception:
+            name = ds.table_name or ""
+            if any(name.startswith(p) for p in legacy_prefixes):
+                legacy_ids.add(ds.id)
+            elif ds.dataset_role == DatasetRole.MART.value:
+                # Accept MART role for the consolidated mart dataset.
+                mart_by_staged_id[staged_id] = ds.id
+        except Exception:  # pylint: disable=broad-except
             continue
 
-    # 2. Find charts using deprecated datasets
-    # Deprecated datasets often have "[Map L" in their name or "_map_l" in their table_name
-    deprecated_ids = {
-        ds.id for ds in all_datasets 
-        if ds.table_name.startswith("[Map L") or "_map_l" in ds.table_name
-    }
-    
-    if not deprecated_ids:
+    if not legacy_ids:
         return {"repointed_charts": 0}
 
     charts = db.session.query(Slice).filter(
-        Slice.datasource_id.in_(deprecated_ids),
-        Slice.datasource_type == "table"
+        Slice.datasource_id.in_(legacy_ids),
+        Slice.datasource_type == "table",
     ).all()
-    
+
     repointed_count = 0
     for chart in charts:
-        # Find the deprecated dataset to get its staged_id
         dep_ds = db.session.get(SqlaTable, chart.datasource_id)
         if not dep_ds:
             continue
-            
         try:
             extra = json.loads(dep_ds.extra or "{}")
             staged_id = extra.get("dhis2_staged_dataset_id")
-            target_id = unified_map_datasets.get(staged_id)
-            
+            target_id = mart_by_staged_id.get(staged_id)
             if target_id and target_id != chart.datasource_id:
                 logger.info(
-                    "repair_charts: repointing chart id=%d ('%s') from deprecated ds=%d to unified ds=%d",
-                    chart.id, chart.slice_name, chart.datasource_id, target_id
+                    "repair_charts: repointing chart id=%d ('%s') from legacy ds=%d to mart ds=%d",
+                    chart.id, chart.slice_name, chart.datasource_id, target_id,
                 )
                 chart.datasource_id = target_id
                 repointed_count += 1
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             continue
 
     if repointed_count > 0:
         db.session.commit()
-        logger.info("repair_charts: migrated %d charts to unified marts", repointed_count)
-        
+        logger.info("repair_charts: migrated %d charts to consolidated marts", repointed_count)
+
     return {"repointed_charts": repointed_count}
 
 

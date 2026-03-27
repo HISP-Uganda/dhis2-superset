@@ -573,16 +573,11 @@ class DHIS2EngineSpec(BaseEngineSpec):
                     # Sample first non-null value
                     sample_val = df[col].dropna().iloc[0] if len(df[col].dropna()) > 0 else None
                     if sample_val is not None:
-                        # If it's a string and not a pure number, treat as dimension
+                        # If it's a string, treat as dimension, unless it's the 'value' column
                         if isinstance(sample_val, str):
-                            # Check if it's NOT a pure numeric string
-                            try:
-                                float(sample_val)
-                                # It's numeric string - might be a value column
-                            except ValueError:
-                                # It's a non-numeric string - definitely a dimension
+                            if col.lower() != 'value':
                                 is_dimension = True
-                                logger.info(f"[DHIS2] Detected '{col}' as dimension (contains non-numeric string: '{sample_val[:50]}...')")
+                                logger.info(f"[DHIS2] Detected '{col}' as dimension (contains string and not named 'value')")
                 except Exception:
                     pass  # Keep original type if detection fails
 

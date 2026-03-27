@@ -24,9 +24,24 @@ export const AGGREGATES = {
   COUNT_DISTINCT: 'COUNT_DISTINCT',
   MAX: 'MAX',
   MIN: 'MIN',
+  NONE: 'NONE',
   SUM: 'SUM',
 };
 export const AGGREGATES_OPTIONS = Object.values(AGGREGATES);
+
+/**
+ * NONE aggregation: passes the column value through without any SQL aggregate
+ * wrapper.  Only semantically valid when the dataset/mart already stores the
+ * final grain value for every dimension combination used in the chart — i.e.
+ * at most one mart row per (period × orgUnit) group.  In ClickHouse this is
+ * safe: non-grouped columns are resolved via the implicit `any()` function.
+ *
+ * Do NOT use NONE in a chart that groups by fewer dimensions than the mart's
+ * native grain — doing so returns an arbitrary value per group rather than an
+ * aggregate.  DHIS2 data-element totals should use SUM; DHIS2 indicators
+ * (rates/percentages) may use NONE when viewing at the mart's native OU grain.
+ */
+export const AGGREGATE_NONE = AGGREGATES.NONE;
 
 export enum Operators {
   Equals = 'EQUALS',

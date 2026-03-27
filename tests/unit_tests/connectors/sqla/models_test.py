@@ -827,6 +827,88 @@ def test_staged_local_query_prefers_explicit_selected_hierarchy_level_for_termin
     assert "facility" in where_sql
 
 
+def test_staged_local_query_filters_explicit_selected_ou_column_even_without_hierarchy_metadata(
+    mocker: MockerFixture,
+) -> None:
+    serving_database = Database(
+        id=7,
+        database_name="DHIS2 Local Staging",
+        sqlalchemy_uri="sqlite://",
+    )
+    engine = create_engine("sqlite://")
+
+    @contextmanager
+    def mock_get_sqla_engine(catalog=None, schema=None, **kwargs):
+        yield engine
+
+    mocker.patch.object(
+        serving_database,
+        "get_sqla_engine",
+        new=mock_get_sqla_engine,
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_7_mal_routine_ehmis_indicators_mart",
+        sql="SELECT * FROM sv_7_mal_routine_ehmis_indicators_mart",
+        extra='{"dhis2_staged_local": true, "dhis2_staged_dataset_id": 7}',
+        database=serving_database,
+        database_id=7,
+        columns=[],
+        metrics=[],
+    )
+    mocker.patch.object(
+        sqla_table,
+        "get_serving_database",
+        return_value=serving_database,
+    )
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[
+            {
+                "column_name": "district_city",
+                "verbose_name": "District City",
+                "type": "TEXT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+            {
+                "column_name": "mal_testing_rate",
+                "verbose_name": "Mal Testing Rate",
+                "type": "FLOAT",
+                "is_dttm": False,
+                "groupby": True,
+                "filterable": True,
+                "is_active": True,
+            },
+        ],
+    )
+
+    sql = sqla_table.get_query_str_extended(
+        {
+            "granularity": None,
+            "from_dttm": None,
+            "to_dttm": None,
+            "groupby": ["district_city"],
+            "metrics": [],
+            "is_timeseries": False,
+            "filter": [],
+            "extras": {
+                "dhis2_selected_org_unit_column": "district_city",
+                "dhis2_terminal_hierarchy_filtering": False,
+            },
+        },
+        mutate=False,
+    ).sql
+
+    where_sql = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "district_city" in where_sql
+    assert "trim" in where_sql.lower()
+    assert "length" in where_sql.lower()
+
+
 def test_staged_local_query_defaults_to_deepest_ou_and_selected_period_level(
     mocker: MockerFixture,
 ) -> None:

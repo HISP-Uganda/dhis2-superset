@@ -1149,6 +1149,74 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             # instead of raising 403, raise 404 to hide table existence
             raise TableNotFoundException("No such table") from ex
 
+        # DHIS2 MART Column Exfiltration:
+        # If this is a physical table that matches a DHIS2 MART dataset registered in Superset,
+        # we prefer the Superset metadata (SqlaTable/TableColumn) over database introspection.
+        # This ensures all MART columns are available for SQL Lab analysis even if they are 
+        # virtual or the DB driver cannot introspect them correctly.
+        from superset.connectors.sqla.models import SqlaTable
+        from superset import db as superset_db
+
+        # Try to find a matching SqlaTable in this database.
+        # Physical tables have schema and table_name.
+        sqla_table = (
+            superset_db.session.query(SqlaTable)
+            .filter(
+                SqlaTable.database_id == pk,
+                SqlaTable.schema == table.schema,
+                SqlaTable.table_name == table.table,
+            )
+            .first()
+        )
+        
+        # If not found by exact schema.table, try matching by physical table name 
+        # in virtual datasets (where table_name is the friendly name and sql points to the table).
+        if not sqla_table:
+            # MART tables usually have a pattern like `sv_1_..._mart` or similar
+            # Search virtual datasets where the SQL contains the table name
+            pattern = f"%{table.table}%"
+            sqla_table = (
+                superset_db.session.query(SqlaTable)
+                .filter(
+                    SqlaTable.database_id == pk,
+                    SqlaTable.sql.like(pattern),
+                )
+                .first()
+            )
+
+        # Only use Superset columns if it's explicitly marked as a DHIS2 staged local dataset
+        if sqla_table:
+            extra_dict = sqla_table.extra_dict
+            if extra_dict.get("dhis2_staged_local") or extra_dict.get("dhis2StagedLocal"):
+                logger.info(
+                    "table_metadata: using Superset metadata for DHIS2 MART table %s (SqlaTable id=%d)",
+                    table.table, sqla_table.id
+                )
+                # Use the SQL expression from SqlaTable if it's a virtual dataset, 
+                # otherwise default to SELECT * FROM table.
+                select_star = sqla_table.sql if sqla_table.sql else f"SELECT * FROM {table.table}"
+                
+                payload = {
+                    "name": table.table,
+                    "columns": [
+                        {
+                            "name": col.column_name,
+                            "type": col.type,
+                            "is_dttm": col.is_dttm,
+                            "longType": col.type,
+                            "comment": col.description,
+                        }
+                        for col in sqla_table.columns
+                        if not col.extra_dict.get("dhis2_is_internal")
+                    ],
+                    "selectStar": select_star,
+                    "primaryKey": [],
+                    "foreignKeys": [],
+                    "indexes": [],
+                    "comment": sqla_table.description,
+                }
+                return self.response(200, **payload)
+
         payload = database.db_engine_spec.get_table_metadata(database, table)
 
         return self.response(200, **payload)
@@ -3979,7 +4047,10 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                     federated=federated,
                     levels=list(dict.fromkeys(levels)),
                     parent_ids=list(dict.fromkeys(parent_ids)),
-                    allow_live_fallback=True,
+                    # Keep map boundaries on the local staged snapshot path.
+                    # A synchronous live DHIS2 fallback can block chart render
+                    # for minutes and breaks the expected sub-second map load.
+                    allow_live_fallback=False,
                 )
                 return compress_response_if_supported(response_data)
 
@@ -4141,7 +4212,10 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                     federated=federated,
                     levels=levels,
                     parent_ids=parents,
-                    allow_live_fallback=True,
+                    # Boundaries must stay local/staged for DHIS2 Map render
+                    # performance. Missing levels should return immediately and
+                    # queue a refresh instead of rehydrating from live DHIS2.
+                    allow_live_fallback=False,
                 )
                 return compress_response_if_supported(response_data)
 

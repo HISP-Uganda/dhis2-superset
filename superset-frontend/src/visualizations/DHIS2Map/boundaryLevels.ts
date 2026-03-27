@@ -35,6 +35,23 @@ export type BoundaryLevelDefinition = {
   label: string;
 };
 
+type HierarchyColumnCandidate = {
+  columnName?: string;
+  label: string;
+  level: number;
+  hasExplicitLevel: boolean;
+};
+
+const LEGACY_DHIS2_BOUNDARY_LEVELS: Array<[string, number]> = [
+  ['national', 1],
+  ['region', 2],
+  ['district city', 3],
+  ['dlg municipality city council', 4],
+  ['sub county town council division', 5],
+  ['health facility', 6],
+  ['ward department', 7],
+];
+
 function normalizeBoundaryLevels(boundaryLevels?: number[]): number[] {
   if (!Array.isArray(boundaryLevels)) {
     return [];
@@ -79,31 +96,109 @@ function coerceLevelNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function getLegacyBoundaryLevel(
+  columnName?: string,
+  label?: string,
+): number | undefined {
+  const normalizedNames = [
+    normalizeLevelName(columnName),
+    normalizeLevelName(label),
+  ].filter(Boolean);
+  for (const [knownName, level] of LEGACY_DHIS2_BOUNDARY_LEVELS) {
+    if (normalizedNames.includes(knownName)) {
+      return level;
+    }
+  }
+  return undefined;
+}
+
+function getHierarchyColumnCandidates(
+  datasourceColumns: DatasourceColumn[] = [],
+): HierarchyColumnCandidate[] {
+  const rawCandidates = datasourceColumns.reduce<
+    Array<{
+      explicitLevel?: number;
+      legacyLevel?: number;
+      columnName?: string;
+      label: string;
+    }>
+  >((result, column) => {
+    const extra = parseColumnExtra(column.extra);
+    const isHierarchyColumn =
+      extra?.dhis2_is_ou_hierarchy === true ||
+      extra?.dhis2IsOuHierarchy === true;
+    if (!isHierarchyColumn) {
+      return result;
+    }
+
+    const columnName = String(column.column_name || '').trim() || undefined;
+    const label =
+      String(column.verbose_name || column.column_name || '').trim() ||
+      'Boundary level';
+    result.push({
+      explicitLevel: coerceLevelNumber(
+        extra?.dhis2_ou_level ?? extra?.dhis2OuLevel,
+      ),
+      legacyLevel: getLegacyBoundaryLevel(columnName, label),
+      columnName,
+      label,
+    });
+    return result;
+  }, []);
+
+  const hasAnchoredLevels = rawCandidates.some(
+    candidate =>
+      candidate.explicitLevel !== undefined || candidate.legacyLevel !== undefined,
+  );
+
+  let fallbackLevel = 0;
+  return rawCandidates.reduce<HierarchyColumnCandidate[]>((result, candidate) => {
+    const anchoredLevel = candidate.explicitLevel ?? candidate.legacyLevel;
+    if (anchoredLevel !== undefined) {
+      result.push({
+        level: anchoredLevel,
+        hasExplicitLevel: candidate.explicitLevel !== undefined,
+        columnName: candidate.columnName,
+        label: candidate.label,
+      });
+      return result;
+    }
+
+    // Legacy MART datasets were sometimes over-tagged with generic string
+    // columns like `period_variant`. Once we have at least one real boundary
+    // level anchor, ignore those stray columns instead of shifting every
+    // downstream hierarchy level by one.
+    if (hasAnchoredLevels) {
+      return result;
+    }
+
+    fallbackLevel += 1;
+    result.push({
+      level: fallbackLevel,
+      hasExplicitLevel: false,
+      columnName: candidate.columnName,
+      label: candidate.label,
+    });
+    return result;
+  }, []);
+}
+
 export function getDatasourceBoundaryLevels(
   datasourceColumns?: DatasourceColumn[],
   stagedOrgUnitLevels?: StagedOrgUnitLevel[],
 ): BoundaryLevelDefinition[] {
   const definitions = new Map<number, BoundaryLevelDefinition>();
 
-  (datasourceColumns || []).forEach(column => {
-    const extra = parseColumnExtra(column.extra);
-    const isHierarchyColumn =
-      extra?.dhis2_is_ou_hierarchy === true ||
-      extra?.dhis2IsOuHierarchy === true;
-    const level = coerceLevelNumber(
-      extra?.dhis2_ou_level ?? extra?.dhis2OuLevel,
-    );
-    if (!isHierarchyColumn || !level) {
+  getHierarchyColumnCandidates(datasourceColumns).forEach(candidate => {
+    const existing = definitions.get(candidate.level);
+    if (existing && !candidate.hasExplicitLevel) {
       return;
     }
 
-    const label =
-      String(column.verbose_name || column.column_name || '').trim() ||
-      `Level ${level}`;
-    definitions.set(level, {
-      level,
-      columnName: String(column.column_name || '').trim() || undefined,
-      label,
+    definitions.set(candidate.level, {
+      level: candidate.level,
+      columnName: candidate.columnName,
+      label: candidate.label,
     });
   });
 
