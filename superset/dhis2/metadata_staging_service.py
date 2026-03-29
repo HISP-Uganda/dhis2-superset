@@ -1563,7 +1563,11 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "categoryCombos",
             "categoryCombos",
             {
-                "fields": "id,displayName,name,dataDimensionType,categories[id,displayName,name]",
+                "fields": (
+                    "id,displayName,name,dataDimensionType,"
+                    "categories[id,displayName,name,dataDimensionType,"
+                    "categoryOptions[id,displayName,name,code]]"
+                ),
                 "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )
@@ -1572,7 +1576,11 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             "categoryOptionCombos",
             "categoryOptionCombos",
             {
-                "fields": "id,displayName,name,categoryCombo[id,displayName,name]",
+                "fields": (
+                    "id,displayName,name,"
+                    "categoryCombo[id,displayName,name],"
+                    "categoryOptions[id,displayName,name]"
+                ),
                 "pageSize": str(_METADATA_PAGE_SIZE),
             },
         )

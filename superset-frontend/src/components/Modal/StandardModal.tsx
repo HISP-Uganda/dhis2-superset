@@ -75,7 +75,7 @@ const StyledModal = styled(Modal)`
   .ant-collapse {
     border: none;
 
-    > .ant-collapse-item:first-child {
+    > .ant-collapse-item:first-of-type {
       border-top: none;
     }
 

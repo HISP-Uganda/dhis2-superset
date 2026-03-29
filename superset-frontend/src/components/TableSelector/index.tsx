@@ -122,7 +122,8 @@ export interface TableOption {
 }
 
 export const TableOption = ({ table }: { table: Table }) => {
-  const { value, type, extra } = table;
+  const { value, label, type, extra } = table;
+  const displayValue = label || value;
   return (
     <TableLabel title={value}>
       {type === 'view' ? (
@@ -148,7 +149,7 @@ export const TableOption = ({ table }: { table: Table }) => {
           marginRight={4}
         />
       )}
-      {value}
+      {displayValue}
     </TableLabel>
   );
 };
@@ -227,7 +228,7 @@ const TableSelector: FunctionComponent<TableSelectorProps> = ({
             ) : (
               <TableOption table={table} />
             ),
-            text: table.value,
+            text: [table.label, table.value].filter(Boolean).join(' '),
           }))
         : [],
     [data, customTableOptionLabelRenderer],
@@ -259,9 +260,9 @@ const TableSelector: FunctionComponent<TableSelectorProps> = ({
   const internalTableChange = (
     selectedOptions: TableOption | TableOption[] | undefined,
   ) => {
-    if (currentSchema) {
+    if (currentSchema !== undefined) {
       // Find the original table objects from the options
-      const getTableData = (value: string) => 
+      const getTableData = (value: string) =>
         data?.options.find(t => t.value === value);
 
       onTableSelectChange?.(
@@ -311,14 +312,15 @@ const TableSelector: FunctionComponent<TableSelectorProps> = ({
   const handleFilterOption = useMemo(
     () => (search: string, option: TableOption) => {
       const searchValue = search.trim().toLowerCase();
-      const { value } = option;
-      return value.toLowerCase().includes(searchValue);
+      return option.text.toLowerCase().includes(searchValue);
     },
     [],
   );
 
   function renderTableSelect() {
-    const disabled = (currentSchema && !formMode && readOnly) || !currentSchema;
+    const disabled =
+      (currentSchema !== undefined && !formMode && readOnly) ||
+      currentSchema === undefined;
 
     const header = sqlLabMode ? (
       <FormLabel>{t('See table schema')}</FormLabel>

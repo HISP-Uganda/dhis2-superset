@@ -119,6 +119,8 @@ config = current_app.config  # Backward compatibility for tests
 metadata = Model.metadata  # pylint: disable=no-member
 logger = logging.getLogger(__name__)
 
+DHIS2_STAGED_LOCAL_QUERY_CACHE_VERSION = 2
+
 _DHIS2_STAGED_LOCAL_SQL_PATTERN = re.compile(
     r"""
     select\s+\*\s+from\s+
@@ -144,6 +146,37 @@ def _extract_dhis2_staged_local_sql_ref(
 
     schema_name = str(match.group("schema") or "").strip() or None
     return schema_name, table_name
+
+
+def _extract_dhis2_staged_local_table_ref_from_extra(
+    extra: dict[str, Any] | None,
+) -> tuple[str | None, str] | None:
+    if not isinstance(extra, dict):
+        return None
+
+    serving_table_ref = str(extra.get("dhis2_serving_table_ref") or "").strip()
+    if not serving_table_ref:
+        return None
+
+    if "." in serving_table_ref:
+        schema_name, table_name = serving_table_ref.split(".", 1)
+        schema_name = schema_name.strip('"').strip("`") or None
+        table_name = table_name.strip('"').strip("`")
+    else:
+        schema_name = None
+        table_name = serving_table_ref.strip('"').strip("`")
+    if not table_name:
+        return None
+    return schema_name, table_name
+
+
+def _resolve_dhis2_staged_local_table_ref(
+    extra: dict[str, Any] | None,
+    sql: str | None,
+) -> tuple[str | None, str] | None:
+    return _extract_dhis2_staged_local_table_ref_from_extra(
+        extra,
+    ) or _extract_dhis2_staged_local_sql_ref(sql)
 
 
 def _format_sql_table_ref(schema_name: str | None, table_name: str) -> str:
@@ -404,6 +437,12 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
     @property
     def data(self) -> dict[str, Any]:
         """Data representation of the datasource sent to the frontend"""
+        display_name = self.datasource_name
+        extra = self.extra_dict
+        dhis2_display_name = str(extra.get("dhis2_dataset_display_name") or "").strip()
+        if dhis2_display_name:
+            display_name = dhis2_display_name
+
         return {
             # simple fields
             "id": self.id,
@@ -414,9 +453,9 @@ class BaseDatasource(AuditMixinNullable, ImportExportMixin):  # pylint: disable=
             "default_endpoint": self.default_endpoint,
             "filter_select": self.filter_select_enabled,  # TODO deprecate
             "filter_select_enabled": self.filter_select_enabled,
-            "name": self.name,
-            "datasource_name": self.datasource_name,
-            "table_name": self.datasource_name,
+            "name": display_name,
+            "datasource_name": display_name,
+            "table_name": display_name,
             "type": self.type,
             "catalog": self.catalog,
             "schema": self.schema or None,
@@ -1243,7 +1282,7 @@ class SqlaTable(
 
         return bool(
             getattr(self.database, "backend", None) == "dhis2"
-            and _extract_dhis2_staged_local_sql_ref(self.sql)
+            and _resolve_dhis2_staged_local_table_ref(extra, self.sql)
         )
 
     def get_serving_database(self) -> Database:
@@ -1282,12 +1321,14 @@ class SqlaTable(
         extra = self.extra_dict
         staged_dataset_id = extra.get("dhis2_staged_dataset_id")
         
-        # Detect if this is a specialized mart (KPI, Map) by checking the current SQL suffix
+        # Detect if this is a specialized mart by checking the resolved serving table ref.
         suffix = ""
-        sql_ref = _extract_dhis2_staged_local_sql_ref(self.sql)
-        if sql_ref:
-            _, current_table_name = sql_ref
-            if current_table_name.endswith("_kpi"):
+        table_ref = _resolve_dhis2_staged_local_table_ref(extra, self.sql)
+        if table_ref:
+            _, current_table_name = table_ref
+            if current_table_name.endswith("_mart"):
+                suffix = "_mart"
+            elif current_table_name.endswith("_kpi"):
                 suffix = "_kpi"
             elif current_table_name.endswith("_map"):
                 suffix = "_map"
@@ -1323,8 +1364,8 @@ class SqlaTable(
                     exc_info=True,
                 )
 
-        if sql_ref:
-            schema_name, table_name = sql_ref
+        if table_ref:
+            schema_name, table_name = table_ref
             normalized_table_name = table_name.lower()
             if normalized_table_name.startswith("sv_"):
                 return _format_sql_table_ref(schema_name, table_name)
@@ -1336,12 +1377,27 @@ class SqlaTable(
 
         return None
 
-    def repair_staged_local_database_binding(self) -> None:
+    def repair_staged_local_database_binding(self, ensure_exists: bool = False) -> None:
         if not self.is_dhis2_staged_local:
             return
 
         changed = False
         extra = self.extra_dict
+        role = getattr(self, "dataset_role", None)
+
+        # Preserve user-facing METADATA datasets on the logical DHIS2 database.
+        # Query execution is already routed through get_serving_database(), so
+        # mutating these rows into ClickHouse physical tables makes Dataset
+        # Management show the wrong database/schema and defeats the staged-local
+        # metadata layer entirely.
+        if role == "METADATA" and self.sql:
+            if extra.get("dhis2_staged_local") is not True:
+                extra["dhis2_staged_local"] = True
+                changed = True
+            if changed:
+                self.extra = json.dumps(extra)
+            return
+
         serving_database = self.get_serving_database()
         serving_database_id = getattr(serving_database, "id", None)
         serving_database_name = getattr(serving_database, "database_name", None)
@@ -1357,11 +1413,21 @@ class SqlaTable(
             self.database_id = serving_database_id
             changed = True
 
-        serving_table_ref = self.get_staged_local_serving_table_ref(ensure_exists=True)
+        serving_table_ref = self.get_staged_local_serving_table_ref(
+            ensure_exists=ensure_exists
+        )
         if serving_table_ref:
-            expected_sql = f"SELECT * FROM {serving_table_ref}"
-            if (self.sql or "").strip() != expected_sql:
-                self.sql = expected_sql
+            schema_name, table_name = _extract_dhis2_staged_local_table_ref_from_extra(
+                {"dhis2_serving_table_ref": serving_table_ref},
+            ) or (None, self.table_name)
+            if self.schema != schema_name:
+                self.schema = schema_name
+                changed = True
+            if self.table_name != table_name:
+                self.table_name = table_name
+                changed = True
+            if self.sql:
+                self.sql = None
                 changed = True
 
             if extra.get("dhis2_serving_table_ref") != serving_table_ref:
@@ -2023,10 +2089,15 @@ class SqlaTable(
         errors = None
         error_message = None
         database = self.get_serving_database()
-        
-        logger.info(f"[COLUMN_TRACE] Query execution in connectors/sqla/models.py:")
-        logger.info(f"[COLUMN_TRACE]   SQL (first 500 chars): {sql[:500]}")
-        logger.info(f"[COLUMN_TRACE]   labels_expected: {query_str_ext.labels_expected}")
+        trace_logging = logger.isEnabledFor(logging.DEBUG)
+
+        if trace_logging:
+            logger.debug("[COLUMN_TRACE] Query execution in connectors/sqla/models.py:")
+            logger.debug("[COLUMN_TRACE]   SQL (first 500 chars): %s", sql[:500])
+            logger.debug(
+                "[COLUMN_TRACE]   labels_expected: %s",
+                query_str_ext.labels_expected,
+            )
 
         def assign_column_label(df: pd.DataFrame) -> pd.DataFrame | None:
             """
@@ -2043,12 +2114,21 @@ class SqlaTable(
             :return: Mutated DataFrame
             """
             import re
-            from superset.utils.column_trace_logger import ColumnTraceLogger, log_dataframe_snapshot
-            
+
             labels_expected = query_str_ext.labels_expected
-            datasource_name = getattr(self, 'table_name', 'unknown')
-            
-            log_dataframe_snapshot(df, "BEFORE assign_column_label", labels_expected)
+            datasource_name = getattr(self, "table_name", "unknown")
+
+            ColumnTraceLogger = None
+            log_dataframe_snapshot = None
+            if trace_logging:
+                from superset.utils.column_trace_logger import (
+                    ColumnTraceLogger as _ColumnTraceLogger,
+                    log_dataframe_snapshot as _log_dataframe_snapshot,
+                )
+
+                ColumnTraceLogger = _ColumnTraceLogger
+                log_dataframe_snapshot = _log_dataframe_snapshot
+                log_dataframe_snapshot(df, "BEFORE assign_column_label", labels_expected)
             
             def normalize_column_name(name: str) -> str:
                 """Normalize column name for fuzzy matching.
@@ -2081,7 +2161,11 @@ class SqlaTable(
                     inner_col = agg_match.group(2)
                     # Try exact match with inner column
                     if inner_col in df_columns:
-                        logger.debug(f"[COLUMN_TRACE] Matched aggregate '{expected}' -> '{inner_col}' (stripped wrapper)")
+                        logger.debug(
+                            "[COLUMN_TRACE] Matched aggregate '%s' -> '%s' (stripped wrapper)",
+                            expected,
+                            inner_col,
+                        )
                         return inner_col
                     
                     # Try DHIS2 sanitization match (inner_col with special chars -> sanitized version)
@@ -2089,7 +2173,12 @@ class SqlaTable(
                         from superset.db_engine_specs.dhis2_dialect import sanitize_dhis2_column_name
                         sanitized_inner = sanitize_dhis2_column_name(inner_col)
                         if sanitized_inner in df_columns:
-                            logger.debug(f"[COLUMN_TRACE] Matched aggregate via DHIS2 sanitization: '{expected}' -> '{inner_col}' -> '{sanitized_inner}'")
+                            logger.debug(
+                                "[COLUMN_TRACE] Matched aggregate via DHIS2 sanitization: '%s' -> '%s' -> '%s'",
+                                expected,
+                                inner_col,
+                                sanitized_inner,
+                            )
                             return sanitized_inner
                     except (ImportError, ModuleNotFoundError):
                         pass
@@ -2098,7 +2187,11 @@ class SqlaTable(
                     inner_normalized = normalize_column_name(inner_col)
                     for col in df_columns:
                         if normalize_column_name(col) == inner_normalized:
-                            logger.debug(f"[COLUMN_TRACE] Fuzzy matched aggregate '{expected}' -> '{col}'")
+                            logger.debug(
+                                "[COLUMN_TRACE] Fuzzy matched aggregate '%s' -> '%s'",
+                                expected,
+                                col,
+                            )
                             return col
 
                 # Normalize expected name
@@ -2107,7 +2200,11 @@ class SqlaTable(
                 # Try to find fuzzy match
                 for col in df_columns:
                     if normalize_column_name(col) == expected_normalized:
-                        logger.debug(f"[COLUMN_TRACE] Fuzzy matched '{expected}' -> '{col}'")
+                        logger.debug(
+                            "[COLUMN_TRACE] Fuzzy matched '%s' -> '%s'",
+                            expected,
+                            col,
+                        )
                         return col
 
                 return None
@@ -2118,9 +2215,20 @@ class SqlaTable(
                         _("Db engine did not return all queried columns")
                     )
                 if len(df.columns) > len(labels_expected):
-                    logger.info(f"[COLUMN_TRACE] Column truncation needed: df has {len(df.columns)} columns, expected {len(labels_expected)}")
-                    logger.info(f"[COLUMN_TRACE]   DataFrame actual columns: {list(df.columns)}")
-                    logger.info(f"[COLUMN_TRACE]   Expected columns: {labels_expected}")
+                    if trace_logging:
+                        logger.debug(
+                            "[COLUMN_TRACE] Column truncation needed: df has %s columns, expected %s",
+                            len(df.columns),
+                            len(labels_expected),
+                        )
+                        logger.debug(
+                            "[COLUMN_TRACE]   DataFrame actual columns: %s",
+                            list(df.columns),
+                        )
+                        logger.debug(
+                            "[COLUMN_TRACE]   Expected columns: %s",
+                            labels_expected,
+                        )
                     
                     # Build column mapping: expected_name -> actual_column_name
                     df_columns = list(df.columns)
@@ -2136,39 +2244,56 @@ class SqlaTable(
                     all_matched = len(column_mapping) == len(labels_expected)
 
                     if all_matched:
-                        logger.info(f"[COLUMN_TRACE] ✓ Selecting columns BY NAME (matched all expected columns)")
-                        logger.info(f"[COLUMN_TRACE]   Column mapping: {column_mapping}")
+                        if trace_logging:
+                            logger.debug(
+                                "[COLUMN_TRACE] Selecting columns by name; mapping=%s",
+                                column_mapping,
+                            )
                         # Select columns by their actual names in the DataFrame
                         df = df[matched_columns]
-                        ColumnTraceLogger.log_index_vs_name_selection(
-                            tried_by_name=True,
-                            success_by_name=True,
-                            fallback_to_index=False,
-                            columns=labels_expected,
-                            datasource_name=datasource_name,
-                        )
+                        if trace_logging and ColumnTraceLogger is not None:
+                            ColumnTraceLogger.log_index_vs_name_selection(
+                                tried_by_name=True,
+                                success_by_name=True,
+                                fallback_to_index=False,
+                                columns=labels_expected,
+                                datasource_name=datasource_name,
+                            )
                     else:
                         # Log which columns could not be matched
                         unmatched = [e for e in labels_expected if e not in column_mapping]
-                        logger.warning(
-                            f"[COLUMN_TRACE] ⚠️  Could not match all expected columns. "
-                            f"Using POSITION-BASED (INDEX) fallback for {len(labels_expected)} columns"
-                        )
-                        logger.warning(f"[COLUMN_TRACE]   Unmatched columns: {unmatched}")
-                        logger.warning(f"[COLUMN_TRACE]   Available columns: {df_columns}")
+                        if trace_logging:
+                            logger.debug(
+                                "[COLUMN_TRACE] Could not match all expected columns; using positional fallback for %s columns",
+                                len(labels_expected),
+                            )
+                            logger.debug(
+                                "[COLUMN_TRACE]   Unmatched columns: %s",
+                                unmatched,
+                            )
+                            logger.debug(
+                                "[COLUMN_TRACE]   Available columns: %s",
+                                df_columns,
+                            )
                         df = df.iloc[:, 0 : len(labels_expected)]
-                        ColumnTraceLogger.log_index_vs_name_selection(
-                            tried_by_name=True,
-                            success_by_name=False,
-                            fallback_to_index=True,
-                            columns=labels_expected,
-                            datasource_name=datasource_name,
-                        )
+                        if trace_logging and ColumnTraceLogger is not None:
+                            ColumnTraceLogger.log_index_vs_name_selection(
+                                tried_by_name=True,
+                                success_by_name=False,
+                                fallback_to_index=True,
+                                columns=labels_expected,
+                                datasource_name=datasource_name,
+                            )
                 
-                logger.info(f"[COLUMN_TRACE] Assigning column labels: {labels_expected}")
+                if trace_logging:
+                    logger.debug(
+                        "[COLUMN_TRACE] Assigning column labels: %s",
+                        labels_expected,
+                    )
                 df.columns = labels_expected
             
-            log_dataframe_snapshot(df, "AFTER assign_column_label", labels_expected)
+            if trace_logging and log_dataframe_snapshot is not None:
+                log_dataframe_snapshot(df, "AFTER assign_column_label", labels_expected)
             return df
 
         try:
@@ -2454,6 +2579,52 @@ class SqlaTable(
         :return: The extra cache keys
         """
         extra_cache_keys = super().get_extra_cache_keys(query_obj)
+        if self.is_dhis2_staged_local:
+            extra_cache_keys.append(
+                (
+                    "dhis2_staged_local_query_cache_version",
+                    DHIS2_STAGED_LOCAL_QUERY_CACHE_VERSION,
+                )
+            )
+
+            extra = self.extra_dict
+            serving_table_ref = extra.get("dhis2_serving_table_ref")
+            if serving_table_ref:
+                extra_cache_keys.append(
+                    ("dhis2_staged_local_serving_table_ref", serving_table_ref)
+                )
+
+            staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+            if isinstance(staged_dataset_id, int):
+                try:
+                    from superset.dhis2.models import DHIS2StagedDataset
+
+                    staged_dataset = db.session.get(
+                        DHIS2StagedDataset,
+                        staged_dataset_id,
+                    )
+                    if staged_dataset is not None:
+                        last_sync_at = getattr(staged_dataset, "last_sync_at", None)
+                        sync_marker = (
+                            last_sync_at.isoformat()
+                            if isinstance(last_sync_at, datetime)
+                            else str(last_sync_at or "")
+                        )
+                        extra_cache_keys.append(
+                            (
+                                "dhis2_staged_local_sync_marker",
+                                staged_dataset_id,
+                                sync_marker,
+                                getattr(staged_dataset, "last_sync_status", None),
+                                getattr(staged_dataset, "last_sync_rows", None),
+                            )
+                        )
+                except Exception:
+                    logger.debug(
+                        "Unable to resolve DHIS2 staged dataset sync marker for cache key",
+                        exc_info=True,
+                    )
+
         if self.has_extra_cache_key_calls(query_obj):
             sqla_query = self.get_sqla_query(**query_obj)
             extra_cache_keys += sqla_query.extra_cache_keys

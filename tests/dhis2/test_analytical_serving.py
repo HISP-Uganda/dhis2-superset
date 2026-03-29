@@ -286,7 +286,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
         "period_quarter",
         "anc_1st_visit",
         "reporting_rate",
-        "_manifest_build_v5",
+        "_manifest_build_v7",
     ]
     assert rows == [
         {
@@ -300,7 +300,7 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "anc_1st_visit": 12.0,
             "reporting_rate": None,
-            "_manifest_build_v5": None,
+            "_manifest_build_v7": None,
         },
         {
             "dhis2_instance": "Non Routine DHIS2",
@@ -313,8 +313,513 @@ def test_materialize_serving_rows_pivots_local_rows_into_chart_ready_columns():
             "period_quarter": "2024Q1",
             "reporting_rate": 95.3,
             "anc_1st_visit": None,
-            "_manifest_build_v5": None,
+            "_manifest_build_v7": None,
         },
+    ]
+
+
+def test_build_serving_manifest_applies_repository_enabled_dimensions():
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = SimpleNamespace(
+        id=21,
+        database_id=10,
+        database=SimpleNamespace(
+            repository_org_unit_config={
+                "enabled_dimensions": {
+                    "levels": [
+                        {
+                            "key": "level:2",
+                            "label": "District",
+                            "repository_level": 2,
+                            "source_refs": [{"instance_id": 1, "source_level": 2}],
+                        }
+                    ],
+                    "groups": [
+                        {
+                            "key": "g_urban",
+                            "label": "Urban",
+                            "source_refs": [{"instance_id": 1, "source_id": "g_urban"}],
+                        }
+                    ],
+                    "group_sets": [
+                        {
+                            "key": "gs_ownership",
+                            "label": "Ownership",
+                            "source_refs": [
+                                {"instance_id": 1, "source_id": "gs_ownership"}
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        variables=[
+            SimpleNamespace(
+                instance_id=1,
+                variable_id="de_cases",
+                variable_type="dataElement",
+                variable_name="Cases",
+                alias=None,
+                instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
+                get_extra_params=lambda: {},
+            ),
+        ],
+        get_dataset_config=lambda: {
+            "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
+            "org_unit_scope": "children",
+            "org_unit_details": [
+                {
+                    "id": "root-a",
+                    "source_org_unit_id": "root-a",
+                    "level": 1,
+                    "source_instance_ids": [1],
+                }
+            ],
+        },
+    )
+    payloads = {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [
+                {"level": 1, "displayName": "Region"},
+                {"level": 2, "displayName": "District"},
+            ],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "root-a",
+                    "name": "Central",
+                    "displayName": "Central",
+                    "level": 1,
+                    "path": "/root-a",
+                },
+                {
+                    "id": "ou-a",
+                    "name": "Kampala",
+                    "displayName": "Kampala",
+                    "level": 2,
+                    "path": "/root-a/ou-a",
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroups", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "g_urban",
+                    "displayName": "Urban",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+                {
+                    "id": "g_public",
+                    "displayName": "Public",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroupSets", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "gs_ownership",
+                    "displayName": "Ownership",
+                    "organisationUnitGroups": [
+                        {"id": "g_public", "displayName": "Public"}
+                    ],
+                }
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_cases",
+                    "displayName": "Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS-Test",
+            "dx_uid": "de_cases",
+            "pe": "2024Q1",
+            "ou": "ou-a",
+            "ou_name": "Kampala",
+            "value": "12",
+            "value_numeric": 12.0,
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+        _, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    assert [column["verbose_name"] for column in manifest["columns"][:5]] == [
+        "District",
+        "Urban",
+        "Ownership",
+        "Period",
+        "OU Level",
+    ]
+    assert manifest["dimension_column_names"][:3] == [
+        "district",
+        "urban",
+        "ownership",
+    ]
+    assert rows == [
+        {
+            "district": "Kampala",
+            "urban": "Urban",
+            "ownership": "Public",
+            "period": "2024Q1",
+            "ou_level": None,
+            "period_year": "2024",
+            "period_half": "2024S1",
+            "period_quarter": "2024Q1",
+            "cases": 12.0,
+            "_manifest_build_v7": None,
+        }
+    ]
+
+
+def test_build_serving_manifest_respects_dataset_specific_repository_dimension_subset():
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = SimpleNamespace(
+        id=21,
+        database_id=10,
+        database=SimpleNamespace(
+            repository_org_unit_config={
+                "enabled_dimensions": {
+                    "levels": [
+                        {
+                            "key": "level:2",
+                            "label": "District",
+                            "repository_level": 2,
+                            "source_refs": [{"instance_id": 1, "source_level": 2}],
+                        }
+                    ],
+                    "groups": [
+                        {
+                            "key": "g_urban",
+                            "label": "Urban",
+                            "source_refs": [{"instance_id": 1, "source_id": "g_urban"}],
+                        }
+                    ],
+                    "group_sets": [
+                        {
+                            "key": "gs_ownership",
+                            "label": "Ownership",
+                            "source_refs": [
+                                {"instance_id": 1, "source_id": "gs_ownership"}
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        variables=[
+            SimpleNamespace(
+                instance_id=1,
+                variable_id="de_cases",
+                variable_type="dataElement",
+                variable_name="Cases",
+                alias=None,
+                instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
+                get_extra_params=lambda: {},
+            ),
+        ],
+        get_dataset_config=lambda: {
+            "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
+            "org_unit_scope": "children",
+            "repository_enabled_dimensions": {
+                "levels": ["level:2"],
+                "groups": [],
+                "group_sets": ["gs_ownership"],
+            },
+            "org_unit_details": [
+                {
+                    "id": "root-a",
+                    "source_org_unit_id": "root-a",
+                    "level": 1,
+                    "source_instance_ids": [1],
+                }
+            ],
+        },
+    )
+    payloads = {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [
+                {"level": 1, "displayName": "Region"},
+                {"level": 2, "displayName": "District"},
+            ],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "root-a",
+                    "name": "Central",
+                    "displayName": "Central",
+                    "level": 1,
+                    "path": "/root-a",
+                },
+                {
+                    "id": "ou-a",
+                    "name": "Kampala",
+                    "displayName": "Kampala",
+                    "level": 2,
+                    "path": "/root-a/ou-a",
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroups", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "g_urban",
+                    "displayName": "Urban",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+                {
+                    "id": "g_public",
+                    "displayName": "Public",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroupSets", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "gs_ownership",
+                    "displayName": "Ownership",
+                    "organisationUnitGroups": [
+                        {"id": "g_public", "displayName": "Public"}
+                    ],
+                }
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_cases",
+                    "displayName": "Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS-Test",
+            "dx_uid": "de_cases",
+            "pe": "2024Q1",
+            "ou": "ou-a",
+            "ou_name": "Kampala",
+            "value": "12",
+            "value_numeric": 12.0,
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+        _, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    assert manifest["dimension_column_names"][:2] == [
+        "district",
+        "ownership",
+    ]
+    assert "urban" not in manifest["dimension_column_names"]
+    assert rows == [
+        {
+            "district": "Kampala",
+            "ownership": "Public",
+            "period": "2024Q1",
+            "ou_level": None,
+            "period_year": "2024",
+            "period_half": "2024S1",
+            "period_quarter": "2024Q1",
+            "cases": 12.0,
+            "_manifest_build_v7": None,
+        }
+    ]
+
+
+def test_build_serving_manifest_defaults_all_org_unit_groups_and_group_sets():
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = SimpleNamespace(
+        id=22,
+        database_id=10,
+        database=SimpleNamespace(repository_org_unit_config={}),
+        variables=[
+            SimpleNamespace(
+                instance_id=1,
+                variable_id="de_cases",
+                variable_type="dataElement",
+                variable_name="Cases",
+                alias=None,
+                instance=SimpleNamespace(id=1, name="HMIS-Test"),
+                staged_dataset_id=None,
+                get_extra_params=lambda: {},
+            ),
+        ],
+        get_dataset_config=lambda: {
+            "configured_connection_ids": [1],
+            "periods": ["2024Q1"],
+            "org_unit_scope": "children",
+            "org_unit_details": [
+                {
+                    "id": "root-a",
+                    "source_org_unit_id": "root-a",
+                    "level": 1,
+                    "source_instance_ids": [1],
+                }
+            ],
+        },
+    )
+    payloads = {
+        ("dhis2_snapshot:organisationUnitLevels", 1): {
+            "status": "success",
+            "result": [
+                {"level": 1, "displayName": "Region"},
+                {"level": 2, "displayName": "District"},
+            ],
+        },
+        ("dhis2_snapshot:orgUnitHierarchy", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "root-a",
+                    "name": "Central",
+                    "displayName": "Central",
+                    "level": 1,
+                    "path": "/root-a",
+                },
+                {
+                    "id": "ou-a",
+                    "name": "Kampala",
+                    "displayName": "Kampala",
+                    "level": 2,
+                    "path": "/root-a/ou-a",
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroups", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "g_urban",
+                    "displayName": "Urban",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+                {
+                    "id": "g_public",
+                    "displayName": "Public",
+                    "organisationUnits": [{"id": "ou-a"}],
+                },
+            ],
+        },
+        ("dhis2_snapshot:organisationUnitGroupSets", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "gs_ownership",
+                    "displayName": "Ownership",
+                    "organisationUnitGroups": [
+                        {"id": "g_public", "displayName": "Public"}
+                    ],
+                }
+            ],
+        },
+        ("dhis2_snapshot:dataElements", 1): {
+            "status": "success",
+            "result": [
+                {
+                    "id": "de_cases",
+                    "displayName": "Cases",
+                    "valueType": "NUMBER",
+                }
+            ],
+        },
+    }
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS-Test",
+            "dx_uid": "de_cases",
+            "pe": "2024Q1",
+            "ou": "ou-a",
+            "ou_name": "Kampala",
+            "value": "12",
+            "value_numeric": 12.0,
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+        _, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    assert manifest["dimension_column_names"][:5] == [
+        "region",
+        "district",
+        "urban",
+        "public",
+        "ownership",
+    ]
+    assert rows == [
+        {
+            "region": "Central",
+            "district": "Kampala",
+            "urban": "Urban",
+            "public": "Public",
+            "ownership": "Public",
+            "period": "2024Q1",
+            "ou_level": None,
+            "period_year": "2024",
+            "period_half": "2024S1",
+            "period_quarter": "2024Q1",
+            "cases": 12.0,
+            "_manifest_build_v7": None,
+        }
     ]
 
 
@@ -621,7 +1126,7 @@ def test_build_serving_manifest_honors_explicit_period_hierarchy_keys():
         "period_year",
         "period_month",
         "malaria_cases",
-        "_manifest_build_v5",
+        "_manifest_build_v7",
     ]
 
 
@@ -1066,6 +1571,45 @@ def _single_instance_payloads():
     }
 
 
+def test_selected_root_details_use_repository_structure_for_lineage_backed_nodes():
+    from superset.dhis2.analytical_serving import _selected_root_details
+
+    dataset_config = {
+        "org_units": ["1:uganda", "1:uganda/2:kampala"],
+        "org_unit_details": [
+            {
+                "id": "1:uganda",
+                "selectionKey": "1:uganda",
+                "sourceOrgUnitId": "1:uganda",
+                "level": 1,
+                "path": "1:uganda",
+                "sourceInstanceIds": [101, 102],
+                "lineage": [
+                    {"instance_id": 101, "source_org_unit_uid": "OU_A_ROOT"},
+                    {"instance_id": 102, "source_org_unit_uid": "OU_B_ROOT"},
+                ],
+            },
+            {
+                "id": "1:uganda/2:kampala",
+                "selectionKey": "1:uganda/2:kampala",
+                "sourceOrgUnitId": "1:uganda/2:kampala",
+                "level": 2,
+                "path": "1:uganda/2:kampala",
+                "parentId": "1:uganda",
+                "sourceInstanceIds": [101, 102],
+                "lineage": [
+                    {"instance_id": 101, "source_org_unit_uid": "OU_A_KLA"},
+                    {"instance_id": 102, "source_org_unit_uid": "OU_B_KLA"},
+                ],
+            },
+        ],
+    }
+
+    roots = _selected_root_details(dataset_config)
+
+    assert [detail["selectionKey"] for detail in roots] == ["1:uganda"]
+
+
 def test_build_serving_manifest_without_coc_dimension_has_no_co_columns():
     """Default (include_disaggregation_dimension=False) must not add CO columns."""
     from superset.dhis2.analytical_serving import build_serving_manifest
@@ -1084,13 +1628,19 @@ def test_build_serving_manifest_without_coc_dimension_has_no_co_columns():
     col_names = [c["column_name"] for c in manifest["columns"]]
     assert "co_uid" not in col_names
     assert "disaggregation" not in col_names
+    assert "aoc_uid" not in col_names
+    assert "attribute_option_combo" not in col_names
     assert manifest["coc_uid_column_name"] is None
     assert manifest["coc_name_column_name"] is None
+    assert manifest["aoc_uid_column_name"] is None
+    assert manifest["aoc_name_column_name"] is None
 
 
 def test_build_serving_manifest_with_coc_dimension_adds_co_columns():
     """include_disaggregation_dimension=True must expose co_uid and disaggregation columns."""
     from superset.dhis2.analytical_serving import (
+        _DHIS2_AOC_EXTRA_KEY,
+        _DHIS2_AOC_UID_EXTRA_KEY,
         _DHIS2_COC_EXTRA_KEY,
         _DHIS2_COC_UID_EXTRA_KEY,
         build_serving_manifest,
@@ -1120,22 +1670,192 @@ def test_build_serving_manifest_with_coc_dimension_adds_co_columns():
 
     assert "co_uid" in col_names
     assert "disaggregation" in col_names
+    assert "aoc_uid" in col_names
+    assert "attribute_option_combo" in col_names
     assert "Category Option Combo (UID)" in verbose_names
     assert "Disaggregation" in verbose_names
+    assert "Attribute Option Combo (UID)" in verbose_names
+    assert "Attribute Option Combo" in verbose_names
 
     # Both must be in dimension_column_names
     assert "co_uid" in manifest["dimension_column_names"]
     assert "disaggregation" in manifest["dimension_column_names"]
+    assert "aoc_uid" in manifest["dimension_column_names"]
+    assert "attribute_option_combo" in manifest["dimension_column_names"]
 
     # Manifest returns the column name references
     assert manifest["coc_uid_column_name"] == "co_uid"
     assert manifest["coc_name_column_name"] == "disaggregation"
+    assert manifest["aoc_uid_column_name"] == "aoc_uid"
+    assert manifest["aoc_name_column_name"] == "attribute_option_combo"
 
     # Extra metadata must carry the right keys
     co_uid_col = next(c for c in manifest["columns"] if c["column_name"] == "co_uid")
     co_name_col = next(c for c in manifest["columns"] if c["column_name"] == "disaggregation")
+    aoc_uid_col = next(c for c in manifest["columns"] if c["column_name"] == "aoc_uid")
+    aoc_name_col = next(
+        c for c in manifest["columns"] if c["column_name"] == "attribute_option_combo"
+    )
     assert co_uid_col["extra"].get(_DHIS2_COC_UID_EXTRA_KEY) is True
     assert co_name_col["extra"].get(_DHIS2_COC_EXTRA_KEY) is True
+    assert aoc_uid_col["extra"].get(_DHIS2_AOC_UID_EXTRA_KEY) is True
+    assert aoc_name_col["extra"].get(_DHIS2_AOC_EXTRA_KEY) is True
+
+
+def test_materialize_serving_rows_with_category_dimensions_resolves_coc_and_aoc_labels():
+    from superset.dhis2.analytical_serving import (
+        build_serving_manifest,
+        materialize_serving_rows,
+    )
+
+    dataset = _make_single_instance_dataset(
+        extra_config={"include_disaggregation_dimension": True}
+    )
+    dataset.variables[0].get_dimension_availability = lambda: [
+        {
+            "dimension_key": "sex",
+            "dimension_label": "Sex",
+            "category_id": "cat_sex",
+            "category_combo_id": "cc_disagg",
+            "data_dimension_type": "DISAGGREGATION",
+            "display_order": 1,
+            "options": [
+                {"id": "opt_male", "displayName": "Male"},
+                {"id": "opt_female", "displayName": "Female"},
+            ],
+        },
+        {
+            "dimension_key": "age_group",
+            "dimension_label": "Age Group",
+            "category_id": "cat_age",
+            "category_combo_id": "cc_disagg",
+            "data_dimension_type": "DISAGGREGATION",
+            "display_order": 2,
+            "options": [
+                {"id": "opt_under_5", "displayName": "Under 5"},
+                {"id": "opt_over_5", "displayName": "Over 5"},
+            ],
+        },
+        {
+            "dimension_key": "project",
+            "dimension_label": "Project",
+            "category_id": "cat_project",
+            "category_combo_id": "cc_attribute",
+            "data_dimension_type": "ATTRIBUTE",
+            "display_order": 1,
+            "options": [
+                {"id": "opt_proj_a", "displayName": "Project A"},
+                {"id": "opt_proj_b", "displayName": "Project B"},
+            ],
+        },
+    ]
+    payloads = _single_instance_payloads()
+    payloads[("dhis2_snapshot:categoryCombos", 1)] = {
+        "status": "success",
+        "result": [
+            {
+                "id": "cc_disagg",
+                "displayName": "Disaggregation",
+                "categories": [
+                    {
+                        "id": "cat_sex",
+                        "displayName": "Sex",
+                        "categoryOptions": [
+                            {"id": "opt_male", "displayName": "Male"},
+                            {"id": "opt_female", "displayName": "Female"},
+                        ],
+                    },
+                    {
+                        "id": "cat_age",
+                        "displayName": "Age Group",
+                        "categoryOptions": [
+                            {"id": "opt_under_5", "displayName": "Under 5"},
+                            {"id": "opt_over_5", "displayName": "Over 5"},
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "cc_attribute",
+                "displayName": "Attribute",
+                "categories": [
+                    {
+                        "id": "cat_project",
+                        "displayName": "Project",
+                        "categoryOptions": [
+                            {"id": "opt_proj_a", "displayName": "Project A"},
+                            {"id": "opt_proj_b", "displayName": "Project B"},
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+    payloads[("dhis2_snapshot:categoryOptionCombos", 1)] = {
+        "status": "success",
+        "result": [
+            {
+                "id": "coc_female_under_5",
+                "displayName": "Female, Under 5",
+                "categoryCombo": {"id": "cc_disagg", "displayName": "Disaggregation"},
+                "categoryOptions": [
+                    {"id": "opt_female", "displayName": "Female"},
+                    {"id": "opt_under_5", "displayName": "Under 5"},
+                ],
+            },
+            {
+                "id": "aoc_project_a",
+                "displayName": "Project A",
+                "categoryCombo": {"id": "cc_attribute", "displayName": "Attribute"},
+                "categoryOptions": [
+                    {"id": "opt_proj_a", "displayName": "Project A"},
+                ],
+            },
+        ],
+    }
+
+    raw_rows = [
+        {
+            "source_instance_id": 1,
+            "source_instance_name": "HMIS",
+            "dx_uid": "de_malaria",
+            "pe": "2024",
+            "ou": "ou-national",
+            "ou_name": "Uganda",
+            "ou_level": 1,
+            "value": "9",
+            "value_numeric": 9.0,
+            "co_uid": "coc_female_under_5",
+            "co_name": "Female, Under 5",
+            "aoc_uid": "aoc_project_a",
+            "aoc_name": "Project A",
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.analytical_serving.metadata_cache_service.get_cached_metadata_payload",
+        side_effect=lambda database_id, namespace, key_parts: payloads.get(
+            (namespace, key_parts["instance_id"])
+        ),
+    ):
+        manifest = build_serving_manifest(dataset)
+        _, rows = materialize_serving_rows(dataset, raw_rows, manifest)
+
+    assert "sex" in [column["column_name"] for column in manifest["columns"]]
+    assert "age_group" in [column["column_name"] for column in manifest["columns"]]
+    assert "project" in [column["column_name"] for column in manifest["columns"]]
+    assert len(rows) == 1
+    assert rows[0]["national"] == "Uganda"
+    assert rows[0]["period"] == "2024"
+    assert rows[0]["co_uid"] == "coc_female_under_5"
+    assert rows[0]["disaggregation"] == "Female, Under 5"
+    assert rows[0]["aoc_uid"] == "aoc_project_a"
+    assert rows[0]["attribute_option_combo"] == "Project A"
+    assert rows[0]["sex"] == "Female"
+    assert rows[0]["age_group"] == "Under 5"
+    assert rows[0]["project"] == "Project A"
+    assert rows[0]["malaria_cases"] == 9.0
+    assert rows[0]["_manifest_build_v7"] is None
 
 
 def test_materialize_serving_rows_with_coc_dimension_keeps_rows_separate():

@@ -47,6 +47,9 @@ def _dataset(**kw):
         is_active=True,
         auto_refresh_enabled=True,
         dataset_config=None,
+        serving_superset_dataset_id=None,
+        variables=[],
+        database=SimpleNamespace(repository_org_unit_config={}),
     )
     for key, value in kw.items():
         setattr(ds, key, value)
@@ -226,6 +229,249 @@ def test_ensure_staging_table_persists_computed_table_name():
     superset.db.session.commit.assert_called_once()
 
 
+def test_repair_staged_dataset_definition_restores_missing_legacy_metadata():
+    import superset
+    from superset.dhis2 import staged_dataset_service as svc
+
+    class _FakeVariable:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    superset.db.session.add = MagicMock()
+    superset.db.session.flush = MagicMock()
+    superset.db.session.commit = MagicMock()
+
+    dataset = _dataset(
+        id=7,
+        database_id=5,
+        name="MAL - Routine eHMIS Indicators",
+        staging_table_name=None,
+        dataset_config=None,
+        max_orgunit_level=None,
+        org_unit_scope=None,
+        org_unit_source_mode=None,
+        primary_instance_id=None,
+    )
+    dataset.get_dataset_config = lambda: {}
+
+    fake_engine = MagicMock()
+    fake_engine.get_staging_table_name.return_value = "ds_7_mal_routine_ehmis_indicators"
+
+    inferred_level_mapping = {
+        "enabled": True,
+        "rows": [{"merged_level": 1, "label": "National", "instance_levels": {"4": 1}}],
+    }
+    inferred_root = [
+        {
+            "selectionKey": "akV6429SUqu",
+            "sourceOrgUnitId": "akV6429SUqu",
+            "displayName": "MOH - Uganda",
+            "level": 1,
+        }
+    ]
+    inferred_variables = [
+        {
+            "instance_id": 4,
+            "variable_id": "abc123def45",
+            "variable_type": "indicator",
+            "variable_name": "Mal test positivity rate",
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.get_dataset_variables",
+        return_value=[],
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=fake_engine,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._infer_configured_instance_ids_from_related_sqla_tables",
+        return_value=[4],
+    ), patch(
+        "superset.dhis2.staged_dataset_service._infer_default_period_config",
+        return_value={
+            "periods": [],
+            "periods_auto_detect": True,
+            "default_period_range_type": "relative",
+            "default_relative_period": "LAST_12_MONTHS",
+        },
+    ), patch(
+        "superset.dhis2.staged_dataset_service._infer_root_org_unit_details",
+        return_value=inferred_root,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._infer_level_mapping_config",
+        return_value=(inferred_level_mapping, 7),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._select_sqla_table_for_definition_repair",
+        return_value=object(),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._infer_variable_payloads_from_sqla_table",
+        return_value=inferred_variables,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._sync_compat_dataset",
+    ) as sync_dataset, patch(
+        "superset.dhis2.staged_dataset_service._sync_compat_variable",
+    ) as sync_variable, patch(
+        "superset.dhis2.staged_dataset_service.DHIS2DatasetVariable",
+        _FakeVariable,
+    ):
+        result = svc.repair_staged_dataset_definition(dataset.id)
+
+    repaired_config = json.loads(dataset.dataset_config)
+    assert result["repaired"] is True
+    assert result["variables_added"] == 1
+    assert dataset.staging_table_name == "ds_7_mal_routine_ehmis_indicators"
+    assert repaired_config["configured_connection_ids"] == [4]
+    assert repaired_config["org_units"] == ["akV6429SUqu"]
+    assert repaired_config["org_unit_scope"] == "all_levels"
+    assert repaired_config["level_mapping"] == inferred_level_mapping
+    assert repaired_config["variable_mappings"] == inferred_variables
+    assert dataset.max_orgunit_level == 7
+    assert dataset.primary_instance_id == 4
+    sync_variable.assert_called_once()
+    sync_dataset.assert_called_once_with(dataset)
+    superset.db.session.commit.assert_called_once()
+
+
+def test_infer_variable_payloads_from_sqla_table_uses_column_extra_directly():
+    import superset
+    from superset.dhis2 import staged_dataset_service as svc
+
+    class _FakeColumn:
+        column_name = "mal_test_positivity_rate"
+        verbose_name = "MAL Test Positivity Rate"
+
+        @staticmethod
+        def get_extra_dict():
+            return {
+                "dhis2_variable_id": "ScLQeTJOITd",
+                "dhis2_variable_type": "indicator",
+                "dhis2_source_instance_id": 4,
+            }
+
+    class _FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def order_by(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return [_FakeColumn()]
+
+    superset.db.session.query = MagicMock(return_value=_FakeQuery())
+    dataset = _dataset(id=7, database_id=5, name="MAL - Routine eHMIS Indicators")
+
+    with patch(
+        "superset.dhis2.staged_dataset_service._build_metadata_repair_lookup",
+        return_value={},
+    ):
+        payloads = svc._infer_variable_payloads_from_sqla_table(
+            dataset,
+            sqla_table=SimpleNamespace(id=23),
+            instance_ids=[4],
+        )
+
+    assert payloads == [
+        {
+            "instance_id": 4,
+            "variable_id": "ScLQeTJOITd",
+            "variable_type": "indicator",
+            "variable_name": "MAL Test Positivity Rate",
+            "alias": "mal_test_positivity_rate",
+        }
+    ]
+
+
+def test_recover_missing_staged_datasets_from_sqla_tables_recreates_parent_rows():
+    import superset
+    from superset.dhis2 import staged_dataset_service as svc
+
+    class _FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return list(self._rows)
+
+    metadata_sqla = SimpleNamespace(
+        id=31,
+        table_name="MAL - Routine eHMIS Indicators",
+        database_id=5,
+        schema=None,
+        dataset_role="METADATA",
+        extra=json.dumps(
+            {
+                "dhis2_staged_dataset_id": 7,
+                "dhis2_dataset_display_name": "MAL - Routine eHMIS Indicators",
+                "dhis2_source_database_id": 5,
+                "dhis2_source_database_name": "UG Malaria Repository",
+                "dhis2_source_instance_ids": [4],
+            }
+        ),
+    )
+    source_sqla = SimpleNamespace(
+        id=23,
+        table_name="sv_7_mal_routine_ehmis_indicators",
+        database_id=4,
+        schema="dhis2_serving",
+        dataset_role="DHIS2_SOURCE_DATASET",
+        extra=json.dumps(
+            {
+                "dhis2_staged_dataset_id": 7,
+                "dhis2_dataset_display_name": "MAL - Routine eHMIS Indicators",
+                "dhis2_source_database_id": 5,
+                "dhis2_source_database_name": "UG Malaria Repository",
+                "dhis2_source_instance_ids": [4],
+            }
+        ),
+    )
+
+    superset.db.session.query = MagicMock(
+        return_value=_FakeQuery([metadata_sqla, source_sqla]),
+    )
+    superset.db.session.get = MagicMock(return_value=None)
+    superset.db.session.add = MagicMock()
+    superset.db.session.flush = MagicMock()
+    superset.db.session.commit = MagicMock()
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.ensure_dhis2_logical_database",
+        return_value=SimpleNamespace(id=1),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=SimpleNamespace(
+            get_staging_table_name=lambda dataset: "ds_7_mal_routine_ehmis_indicators",
+        ),
+    ), patch(
+        "superset.dhis2.staged_dataset_service._sync_compat_dataset",
+    ) as sync_dataset:
+        recovered_ids = svc.recover_missing_staged_datasets_from_sqla_tables(
+            database_id=5,
+        )
+
+    added_dataset = superset.db.session.add.call_args[0][0]
+    assert recovered_ids == [7]
+    assert added_dataset.id == 7
+    assert added_dataset.database_id == 5
+    assert added_dataset.logical_database_id == 1
+    assert added_dataset.name == "MAL - Routine eHMIS Indicators"
+    assert added_dataset.primary_instance_id == 4
+    assert added_dataset.org_unit_source_mode == "primary"
+    assert added_dataset.org_unit_scope == "all_levels"
+    assert added_dataset.serving_superset_dataset_id == 31
+    assert added_dataset.staging_table_name == "ds_7_mal_routine_ehmis_indicators"
+    assert json.loads(added_dataset.dataset_config)["configured_connection_ids"] == [4]
+    sync_dataset.assert_called_once_with(added_dataset)
+    superset.db.session.commit.assert_called_once()
+
+
 def test_clear_staged_dataset_data_truncates_local_rows_and_preserves_mappings():
     import superset
     from superset.dhis2 import staged_dataset_service as svc
@@ -312,6 +558,67 @@ def test_get_staging_preview_uses_local_staging_engine():
     preview_service.preview_dataset.assert_called_once_with(1, limit=25)
 
 
+def test_get_local_data_stats_keeps_raw_totals_and_exposes_serving_totals():
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(database_id=10)
+    engine = MagicMock()
+    engine.get_staging_table_stats.return_value = {"total_rows": 0, "engine": "clickhouse"}
+    engine.serving_table_exists.return_value = True
+    engine.query_serving_table.return_value = {"total_rows": 8364}
+    engine.get_superset_sql_table_ref.return_value = "dhis2_staging.ds_7_indicators"
+    engine.get_serving_sql_table_ref.return_value = "dhis2_serving.sv_7_indicators"
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=engine,
+    ):
+        stats = svc.get_local_data_stats(dataset.id)
+
+    assert stats["total_rows"] == 0
+    assert stats["staging_total_rows"] == 0
+    assert stats["serving_total_rows"] == 8364
+    assert stats["available_total_rows"] == 8364
+    assert stats["row_source"] == "staging"
+    assert stats["staging_table_ref"] == "dhis2_staging.ds_7_indicators"
+    assert stats["serving_table_ref"] == "dhis2_serving.sv_7_indicators"
+
+
+def test_get_serving_columns_prefers_registered_sqla_columns():
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(id=7, database_id=10)
+    registered_columns = [
+        {
+            "column_name": "period",
+            "verbose_name": "Period",
+            "type": "STRING",
+            "is_dttm": False,
+            "filterable": True,
+            "groupby": True,
+            "is_active": True,
+            "extra": '{"dhis2_is_period": true}',
+        }
+    ]
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_registered_serving_columns",
+        return_value=registered_columns,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_manifest_serving_columns",
+        side_effect=AssertionError("manifest fallback should not run"),
+    ):
+        serving_columns = svc.get_serving_columns(dataset.id)
+
+    assert serving_columns == registered_columns
+
+
 def test_query_serving_data_uses_local_serving_engine():
     from superset.dhis2 import staged_dataset_service as svc
 
@@ -360,6 +667,7 @@ def test_query_serving_data_uses_local_serving_engine():
         metric_alias=None,
         aggregation_method=None,
         count_rows=True,
+        table_name_override=None,
     )
 
 
@@ -382,7 +690,7 @@ def test_query_serving_data_forwards_grouped_aggregation():
         "serving_table_ref": "dhis2_staging.sv_1_dataset",
         "sql_preview": 'SELECT "district_city" FROM dhis2_staging.sv_1_dataset LIMIT 500',
     }
-    engine = MagicMock()
+    engine = MagicMock(spec=["query_serving_table"])
     engine.query_serving_table.return_value = query_result
 
     with patch(
@@ -418,6 +726,7 @@ def test_query_serving_data_forwards_grouped_aggregation():
         metric_alias="SUM(c_105_ep01b_malaria_tested_b_s_rdt)",
         aggregation_method="sum",
         count_rows=True,
+        table_name_override=None,
     )
 
 
@@ -587,6 +896,9 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
     ) as build_mock, patch(
         "superset.dhis2.staged_dataset_service.dataset_columns_payload",
         return_value=[{"column_name": column["column_name"]} for column in rebuilt_columns],
+    ), patch(
+        "superset.dhis2.staged_dataset_service.get_serving_columns",
+        return_value=[],
     ):
         table_ref, serving_columns = svc.ensure_serving_table(dataset.id)
 
@@ -600,6 +912,61 @@ def test_ensure_serving_table_rebuilds_existing_legacy_org_unit_projection():
         "anc_1st_visit",
     ]
     build_mock.assert_called_once_with(dataset, engine=engine, refresh_scope=None)
+
+
+def test_ensure_serving_table_keeps_live_columns_when_staging_is_empty():
+    from superset.dhis2 import staged_dataset_service as svc
+
+    dataset = _dataset(database_id=10)
+
+    class _StaticEngine:
+        def serving_table_exists(self, _dataset):
+            return True
+
+        def get_staging_table_stats(self, _dataset):
+            return {"total_rows": 0}
+
+        def get_serving_table_columns(self, _dataset):
+            return ["period", "region", "malaria_cases"]
+
+        def get_serving_sql_table_ref(self, _dataset):
+            return "dhis2_serving.sv_1_dataset"
+
+    engine = _StaticEngine()
+    manifest = {
+        "columns": [
+            {"column_name": "period"},
+            {"column_name": "ou_level"},
+            {"column_name": "malaria_cases"},
+            {"column_name": "_manifest_build_v7"},
+        ]
+    }
+    registered_columns = [
+        {"column_name": "period"},
+        {"column_name": "region"},
+        {"column_name": "malaria_cases"},
+    ]
+
+    with patch(
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=dataset,
+    ), patch(
+        "superset.dhis2.staged_dataset_service._get_engine",
+        return_value=engine,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.build_serving_manifest",
+        return_value=manifest,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.get_serving_columns",
+        return_value=registered_columns,
+    ), patch(
+        "superset.dhis2.staged_dataset_service.build_serving_table",
+        side_effect=AssertionError("build_serving_table should not run"),
+    ):
+        table_ref, serving_columns = svc.ensure_serving_table(dataset.id)
+
+    assert table_ref == "dhis2_serving.sv_1_dataset"
+    assert serving_columns == registered_columns
 
 def test_add_variable_coerces_instance_id_to_integer():
     import superset
@@ -742,14 +1109,14 @@ def test_specialized_marts_need_rebuild_returns_false_when_no_indicators():
     result = _specialized_marts_need_rebuild(engine, dataset, manifest)
 
     assert result is False
-    engine.kpi_mart_exists.assert_not_called()
+    engine.mart_exists.assert_not_called()
 
 
 def test_specialized_marts_need_rebuild_returns_true_when_kpi_missing():
     from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
 
     engine = MagicMock()
-    engine.kpi_mart_exists.return_value = False
+    engine.mart_exists.return_value = False
     dataset = _dataset()
     manifest = {
         "columns": [
@@ -760,14 +1127,14 @@ def test_specialized_marts_need_rebuild_returns_true_when_kpi_missing():
     result = _specialized_marts_need_rebuild(engine, dataset, manifest)
 
     assert result is True
-    engine.kpi_mart_exists.assert_called_once_with(dataset)
+    engine.mart_exists.assert_called_once_with(dataset)
 
 
 def test_specialized_marts_need_rebuild_returns_false_when_kpi_exists():
     from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
 
     engine = MagicMock()
-    engine.kpi_mart_exists.return_value = True
+    engine.mart_exists.return_value = True
     dataset = _dataset()
     manifest = {
         "columns": [
@@ -784,7 +1151,7 @@ def test_specialized_marts_need_rebuild_swallows_exception():
     from superset.dhis2.staged_dataset_service import _specialized_marts_need_rebuild
 
     engine = MagicMock()
-    engine.kpi_mart_exists.side_effect = RuntimeError("ClickHouse down")
+    engine.mart_exists.side_effect = RuntimeError("ClickHouse down")
     dataset = _dataset()
     manifest = {
         "columns": [{"column_name": "malaria_cases", "variable_id": "abc123"}]
@@ -807,8 +1174,8 @@ def test_ensure_serving_table_triggers_rebuild_when_kpi_mart_missing():
     engine.get_serving_table_columns.return_value = ["period", "malaria_cases"]
     engine.get_staging_table_stats.return_value = {"total_rows": 5}
     engine.query_serving_table.return_value = {"total_rows": 5}
-    # KPI mart is missing
-    engine.kpi_mart_exists.return_value = False
+    # Consolidated mart is missing
+    engine.mart_exists.return_value = False
 
     manifest = {
         "columns": [
@@ -841,6 +1208,9 @@ def test_ensure_serving_table_triggers_rebuild_when_kpi_mart_missing():
     ) as build_mock, patch(
         "superset.dhis2.staged_dataset_service.dataset_columns_payload",
         return_value=[{"column_name": "period"}, {"column_name": "malaria_cases"}],
+    ), patch(
+        "superset.dhis2.staged_dataset_service.get_serving_columns",
+        return_value=[],
     ):
         svc.ensure_serving_table(dataset.id)
 

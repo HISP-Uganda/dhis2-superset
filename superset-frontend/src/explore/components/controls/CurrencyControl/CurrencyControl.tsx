@@ -44,14 +44,9 @@ const CurrencyControlContainer = styled.div`
   ${({ theme }) => css`
     display: flex;
     align-items: center;
+    column-gap: ${theme.sizeUnit * 4}px;
 
-    & > :first-child {
-      margin-right: ${theme.sizeUnit * 4}px;
-      min-width: 0;
-      flex: 1;
-    }
-
-    & > :nth-child(2) {
+    .currency-control__segment {
       min-width: 0;
       flex: 1;
     }
@@ -90,40 +85,44 @@ export const CurrencyControl = ({
       <ControlHeader {...props} />
       <CurrencyControlContainer
         css={css`
-          & > :first-child {
+          .currency-control__symbol-position {
             ${symbolSelectAdditionalStyles};
           }
-          & > :nth-child(2) {
+          .currency-control__currency {
             ${currencySelectAdditionalStyles};
           }
         `}
         className="currency-control-container"
       >
-        <Select
-          ariaLabel={t('Currency prefix or suffix')}
-          options={CURRENCY_SYMBOL_POSITION_OPTIONS}
-          placeholder={t('Prefix or suffix')}
-          onChange={(symbolPosition: string) => {
-            onChange({ ...currency, symbolPosition });
-          }}
-          onClear={() => onChange({ ...currency, symbolPosition: undefined })}
-          value={currency?.symbolPosition}
-          allowClear
-          {...symbolSelectOverrideProps}
-        />
-        <Select
-          ariaLabel={t('Currency symbol')}
-          options={currenciesOptions}
-          placeholder={t('Currency')}
-          onChange={(symbol: string) => {
-            onChange({ ...currency, symbol });
-          }}
-          onClear={() => onChange({ ...currency, symbol: undefined })}
-          value={currency?.symbol}
-          allowClear
-          allowNewOptions
-          {...currencySelectOverrideProps}
-        />
+        <div className="currency-control__segment currency-control__symbol-position">
+          <Select
+            ariaLabel={t('Currency prefix or suffix')}
+            options={CURRENCY_SYMBOL_POSITION_OPTIONS}
+            placeholder={t('Prefix or suffix')}
+            onChange={(symbolPosition: string) => {
+              onChange({ ...currency, symbolPosition });
+            }}
+            onClear={() => onChange({ ...currency, symbolPosition: undefined })}
+            value={currency?.symbolPosition}
+            allowClear
+            {...symbolSelectOverrideProps}
+          />
+        </div>
+        <div className="currency-control__segment currency-control__currency">
+          <Select
+            ariaLabel={t('Currency symbol')}
+            options={currenciesOptions}
+            placeholder={t('Currency')}
+            onChange={(symbol: string) => {
+              onChange({ ...currency, symbol });
+            }}
+            onClear={() => onChange({ ...currency, symbol: undefined })}
+            value={currency?.symbol}
+            allowClear
+            allowNewOptions
+            {...currencySelectOverrideProps}
+          />
+        </div>
       </CurrencyControlContainer>
     </>
   );

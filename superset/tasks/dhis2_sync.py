@@ -35,7 +35,7 @@ Or to check all scheduled datasets immediately::
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import requests

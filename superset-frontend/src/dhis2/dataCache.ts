@@ -30,6 +30,8 @@
  * 5. Integration with Superset's chart data flow
  */
 
+import { isDirectDhis2Datasource } from 'src/utils/dhis2Datasource';
+
 // Configuration
 const CACHE_DB_NAME = 'superset_dhis2_cache';
 const CACHE_DB_VERSION = 2;
@@ -220,19 +222,7 @@ class DHIS2DataCacheService {
    * Check if a datasource is DHIS2
    */
   isDHIS2Datasource(datasource: any): boolean {
-    if (!datasource) return false;
-
-    // Check database engine
-    const dbEngine = datasource.database?.backend?.toLowerCase() || '';
-    if (dbEngine.includes('dhis2')) return true;
-
-    // Check database name
-    const dbName = datasource.database?.name?.toLowerCase() || '';
-    if (dbName.includes('dhis2')) return true;
-
-    // Check SQLAlchemy URI
-    const uri = datasource.database?.sqlalchemy_uri?.toLowerCase() || '';
-    return uri.includes('dhis2');
+    return isDirectDhis2Datasource(datasource);
   }
 
   /**

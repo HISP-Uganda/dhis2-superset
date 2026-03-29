@@ -40,6 +40,7 @@ import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import getBootstrapData from 'src/utils/getBootstrapData';
 import { Dataset } from 'src/features/datasets/DatasetSelectLabel';
 import { Icons } from '@superset-ui/core/components/Icons';
+import { getDatasetDisplayName } from 'src/utils/dhis2DatasetDisplay';
 
 export interface ChartCreationProps extends RouteComponentProps {
   user: UserWithPermissionsAndRoles;
@@ -243,12 +244,13 @@ export class ChartCreation extends PureComponent<
 
   mapDatasetToOption(item: Dataset) {
     const dbName = item.database?.database_name;
-    const label = dbName ? `${item.table_name} — ${dbName}` : item.table_name;
+    const datasetLabel = getDatasetDisplayName(item);
+    const label = dbName ? `${datasetLabel} — ${dbName}` : datasetLabel;
     return {
       id: item.id,
       value: `${item.id}__${item.datasource_type || 'table'}`,
       label,
-      customLabel: item.table_name,
+      customLabel: datasetLabel,
     };
   }
 
@@ -297,6 +299,7 @@ export class ChartCreation extends PureComponent<
       columns: [
         'id',
         'table_name',
+        'extra',
         'datasource_type',
         'database.database_name',
         'schema',

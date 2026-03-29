@@ -20,6 +20,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   userEvent,
@@ -62,6 +63,12 @@ const getSelectItemContainer = (select: HTMLElement) =>
   select.parentElement?.parentElement?.getElementsByClassName(
     'ant-select-selection-item',
   );
+
+const openAntdSelect = async (select: HTMLElement) => {
+  const trigger = select.closest('.ant-select') as HTMLElement | null;
+  expect(trigger).toBeTruthy();
+  fireEvent.mouseDown(trigger as HTMLElement);
+};
 
 // Add cleanup and increase timeout
 beforeAll(() => {
@@ -138,7 +145,7 @@ test('renders table options without Select All option', async () => {
   });
 
   await act(async () => {
-    await userEvent.click(tableSelect);
+    await openAntdSelect(tableSelect);
   });
 
   await waitFor(
@@ -171,7 +178,7 @@ test('table select retain value if not in SQL Lab mode', async () => {
   expect(getSelectItemContainer(tableSelect)).toHaveLength(0);
 
   await act(async () => {
-    await userEvent.click(tableSelect);
+    await openAntdSelect(tableSelect);
   });
 
   await waitFor(
@@ -223,6 +230,24 @@ test('renders disabled without schema', async () => {
   });
 });
 
+test('allows table selection when the active schema is blank', async () => {
+  fetchMock.get(catalogApiRoute, { result: [] });
+  fetchMock.get(schemaApiRoute, { result: [] });
+  fetchMock.get(tablesApiRoute, getTableMockFunction());
+
+  const props = createProps({ schema: '' });
+  render(<TableSelector {...props} />, {
+    useRedux: true,
+    store,
+  });
+  const tableSelect = screen.getByRole('combobox', {
+    name: 'Select table or type to search tables',
+  });
+  await waitFor(() => {
+    expect(tableSelect).not.toBeDisabled();
+  });
+});
+
 test('table multi select retain all the values selected', async () => {
   fetchMock.get(catalogApiRoute, { result: [] });
   fetchMock.get(schemaApiRoute, { result: ['test_schema'] });
@@ -242,7 +267,7 @@ test('table multi select retain all the values selected', async () => {
   expect(screen.queryByText('table_a')).not.toBeInTheDocument();
   expect(getSelectItemContainer(tableSelect)).toHaveLength(0);
 
-  await userEvent.click(tableSelect);
+  await openAntdSelect(tableSelect);
 
   await waitFor(async () => {
     const item = await screen.findAllByText('table_b');

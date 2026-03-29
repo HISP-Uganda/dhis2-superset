@@ -90,6 +90,7 @@ export interface Table {
   catalog: string | null;
   schema: string;
   name: string;
+  label?: string;
   queryEditorId: QueryEditor['id'];
   dataPreviewQueryId?: string | null;
   expanded: boolean;

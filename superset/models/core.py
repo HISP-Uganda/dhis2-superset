@@ -183,6 +183,23 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
     is_managed_externally = Column(Boolean, nullable=False, default=False)
     external_url = Column(Text, nullable=True)
     is_dhis2_staging_internal = Column(Boolean, nullable=False, default=False)
+    repository_reporting_unit_approach = Column(String(50), nullable=True)
+    lowest_data_level_to_use = Column(Integer, nullable=True)
+    primary_instance_id = Column(
+        Integer,
+        ForeignKey("dhis2_instances.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    repository_data_scope = Column(String(50), nullable=True)
+    repository_org_unit_config_json = Column(Text, nullable=True)
+    repository_org_unit_status = Column(
+        String(20),
+        nullable=False,
+        default="not_configured",
+    )
+    repository_org_unit_status_message = Column(Text, nullable=True)
+    repository_org_unit_task_id = Column(String(255), nullable=True)
+    repository_org_unit_last_finalized_at = Column(DateTime, nullable=True)
 
     export_fields = [
         "database_name",
@@ -197,6 +214,15 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         "extra",
         "impersonate_user",
         "is_dhis2_staging_internal",
+        "repository_reporting_unit_approach",
+        "lowest_data_level_to_use",
+        "primary_instance_id",
+        "repository_data_scope",
+        "repository_org_unit_config_json",
+        "repository_org_unit_status",
+        "repository_org_unit_status_message",
+        "repository_org_unit_task_id",
+        "repository_org_unit_last_finalized_at",
     ]
     extra_import_fields = [
         "password",
@@ -271,6 +297,7 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
 
     @property
     def data(self) -> dict[str, Any]:
+        repository_status = self.repository_org_unit_effective_status
         return {
             "id": self.id,
             "name": self.database_name,
@@ -287,6 +314,19 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
             "allow_multi_catalog": self.allow_multi_catalog,
             "parameters_schema": self.parameters_schema,
             "engine_information": self.engine_information,
+            "repository_reporting_unit_approach": self.repository_reporting_unit_approach,
+            "lowest_data_level_to_use": self.lowest_data_level_to_use,
+            "primary_instance_id": self.primary_instance_id,
+            "repository_data_scope": self.repository_data_scope,
+            "repository_org_unit_config": self.repository_org_unit_config,
+            "repository_org_units": self.repository_org_units_data,
+            "repository_org_unit_summary": self.repository_org_unit_summary,
+            "repository_org_unit_status": repository_status,
+            "repository_org_unit_status_message": self.repository_org_unit_status_message,
+            "repository_org_unit_task_id": self.repository_org_unit_task_id,
+            "repository_org_unit_last_finalized_at": self.repository_org_unit_last_finalized_at.isoformat()
+            if self.repository_org_unit_last_finalized_at
+            else None,
         }
 
     @property
@@ -381,6 +421,105 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         except Exception:  # pylint: disable=broad-except
             engine_information = {}
         return engine_information
+
+    @property
+    def repository_org_unit_config(self) -> dict[str, Any]:
+        raw_value = getattr(self, "repository_org_unit_config_json", None)
+        if not raw_value:
+            return {}
+        if isinstance(raw_value, dict):
+            return raw_value
+        try:
+            parsed = json.loads(raw_value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def repository_org_unit_effective_status(self) -> str:
+        raw_status = getattr(self, "repository_org_unit_status", None)
+        if isinstance(raw_status, str) and raw_status.strip():
+            return raw_status
+        preview_payload = self.repository_org_unit_config.get("repository_org_units")
+        has_preview_payload = bool(
+            isinstance(preview_payload, list)
+            and any(isinstance(unit, dict) for unit in preview_payload)
+        )
+        has_persisted_units = bool(getattr(self, "repository_org_units", None))
+        if (
+            self.repository_reporting_unit_approach
+            or has_preview_payload
+            or has_persisted_units
+        ):
+            return "ready"
+        return "not_configured"
+
+    @property
+    def repository_org_units_data(self) -> list[dict[str, Any]]:
+        status = self.repository_org_unit_effective_status
+        persisted_units = getattr(self, "repository_org_units", None) or []
+        persisted_payload = [
+            unit.to_dict()
+            for unit in persisted_units
+            if hasattr(unit, "to_dict") and callable(unit.to_dict)
+        ]
+        config_payload = self.repository_org_unit_config.get("repository_org_units")
+        preview_payload = [
+            unit
+            for unit in list(config_payload or [])
+            if isinstance(unit, dict)
+        ]
+
+        if status == "ready":
+            return persisted_payload or preview_payload
+        if preview_payload:
+            return preview_payload
+        return persisted_payload
+
+    @property
+    def repository_org_unit_summary(self) -> dict[str, Any]:
+        status = self.repository_org_unit_effective_status
+        units = self.repository_org_units_data
+        enabled_dimensions = self.repository_org_unit_config.get("enabled_dimensions")
+        enabled_dimensions = (
+            enabled_dimensions if isinstance(enabled_dimensions, dict) else {}
+        )
+        lineage_counts: dict[str, int] = {}
+        conflicted_count = 0
+        unmatched_count = 0
+        for unit in units:
+            label = str(unit.get("source_lineage_label") or "").strip()
+            if label:
+                lineage_counts[label] = lineage_counts.get(label, 0) + 1
+            if unit.get("is_conflicted"):
+                conflicted_count += 1
+            if unit.get("is_unmatched"):
+                unmatched_count += 1
+        return {
+            "approach": self.repository_reporting_unit_approach,
+            "lowest_data_level_to_use": self.lowest_data_level_to_use,
+            "primary_instance_id": self.primary_instance_id,
+            "data_scope": self.repository_data_scope,
+            "status": status,
+            "status_message": self.repository_org_unit_status_message,
+            "task_id": self.repository_org_unit_task_id,
+            "last_finalized_at": self.repository_org_unit_last_finalized_at.isoformat()
+            if self.repository_org_unit_last_finalized_at
+            else None,
+            "total_repository_org_units": len(units),
+            "source_lineage_counts": lineage_counts,
+            "conflicted_count": conflicted_count,
+            "unmatched_count": unmatched_count,
+            "enabled_level_dimensions": len(
+                list(enabled_dimensions.get("levels") or [])
+            ),
+            "enabled_group_dimensions": len(
+                list(enabled_dimensions.get("groups") or [])
+            ),
+            "enabled_group_set_dimensions": len(
+                list(enabled_dimensions.get("group_sets") or [])
+            ),
+        }
 
     @classmethod
     def get_password_masked_url_from_uri(  # pylint: disable=invalid-name
@@ -1300,6 +1439,175 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         db.session.query(DatabaseUserOAuth2Tokens).filter(
             DatabaseUserOAuth2Tokens.id == self.id
         ).delete()
+
+
+class DatabaseRepositoryOrgUnit(Model):
+    __tablename__ = "dhis2_repository_org_units"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "database_id",
+            "repository_key",
+            name="uq_dhis2_repository_org_units_db_key",
+        ),
+        sqla.Index("ix_dhis2_repository_org_units_database_id", "database_id"),
+        sqla.Index(
+            "ix_dhis2_repository_org_units_database_id_level",
+            "database_id",
+            "level",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    database_id = Column(
+        Integer,
+        ForeignKey("dbs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    repository_key = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=False)
+    parent_repository_key = Column(String(255), nullable=True)
+    level = Column(Integer, nullable=True)
+    hierarchy_path = Column(Text, nullable=True)
+    selection_key = Column(String(255), nullable=True)
+    strategy = Column(String(50), nullable=True)
+    source_lineage_label = Column(String(50), nullable=True)
+    is_conflicted = Column(Boolean, nullable=False, default=False)
+    is_unmatched = Column(Boolean, nullable=False, default=False)
+    provenance_json = Column(Text, nullable=True)
+
+    database = relationship(
+        "Database",
+        foreign_keys=[database_id],
+        backref=sqla.orm.backref(
+            "repository_org_units",
+            cascade="all, delete-orphan",
+            passive_deletes=True,
+            order_by="DatabaseRepositoryOrgUnit.level.asc()",
+        ),
+    )
+    lineage_entries = relationship(
+        "DatabaseRepositoryOrgUnitLineage",
+        back_populates="repository_org_unit",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DatabaseRepositoryOrgUnitLineage.instance_id.asc()",
+    )
+
+    def get_provenance(self) -> dict[str, Any]:
+        if not self.provenance_json:
+            return {}
+        try:
+            payload = json.loads(self.provenance_json)
+            return payload if isinstance(payload, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return self.get_provenance()
+
+    @property
+    def lineage(self) -> list[dict[str, Any]]:
+        return [entry.to_dict() for entry in self.lineage_entries or []]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "database_id": self.database_id,
+            "repository_key": self.repository_key,
+            "display_name": self.display_name,
+            "parent_repository_key": self.parent_repository_key,
+            "level": self.level,
+            "hierarchy_path": self.hierarchy_path,
+            "selection_key": self.selection_key,
+            "strategy": self.strategy,
+            "source_lineage_label": self.source_lineage_label,
+            "is_conflicted": self.is_conflicted,
+            "is_unmatched": self.is_unmatched,
+            "provenance": self.get_provenance(),
+            "lineage": [entry.to_dict() for entry in self.lineage_entries or []],
+        }
+
+
+class DatabaseRepositoryOrgUnitLineage(Model):
+    __tablename__ = "dhis2_repository_org_unit_lineage"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_org_unit_id",
+            "instance_id",
+            "source_org_unit_uid",
+            name="uq_dhis2_repository_org_unit_lineage",
+        ),
+        sqla.Index(
+            "ix_dhis2_repository_org_unit_lineage_database_id",
+            "database_id",
+        ),
+        sqla.Index(
+            "ix_dhis2_repository_org_unit_lineage_instance_id",
+            "instance_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    repository_org_unit_id = Column(
+        Integer,
+        ForeignKey("dhis2_repository_org_units.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    database_id = Column(
+        Integer,
+        ForeignKey("dbs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instance_id = Column(
+        Integer,
+        ForeignKey("dhis2_instances.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_instance_role = Column(String(50), nullable=True)
+    source_instance_code = Column(String(20), nullable=True)
+    source_org_unit_uid = Column(String(255), nullable=False)
+    source_org_unit_name = Column(String(255), nullable=True)
+    source_parent_uid = Column(String(255), nullable=True)
+    source_path = Column(Text, nullable=True)
+    source_level = Column(Integer, nullable=True)
+    provenance_json = Column(Text, nullable=True)
+
+    repository_org_unit = relationship(
+        "DatabaseRepositoryOrgUnit",
+        back_populates="lineage_entries",
+        foreign_keys=[repository_org_unit_id],
+    )
+
+    def get_provenance(self) -> dict[str, Any]:
+        if not self.provenance_json:
+            return {}
+        try:
+            payload = json.loads(self.provenance_json)
+            return payload if isinstance(payload, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return self.get_provenance()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "database_id": self.database_id,
+            "instance_id": self.instance_id,
+            "source_instance_role": self.source_instance_role,
+            "source_instance_code": self.source_instance_code,
+            "source_org_unit_uid": self.source_org_unit_uid,
+            "source_org_unit_name": self.source_org_unit_name,
+            "source_parent_uid": self.source_parent_uid,
+            "source_path": self.source_path,
+            "source_level": self.source_level,
+            "provenance": self.get_provenance(),
+        }
 
 
 sqla.event.listen(Database, "after_insert", security_manager.database_after_insert)

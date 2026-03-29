@@ -21,6 +21,7 @@ import {
   styled,
   SupersetTheme,
   getExtensionsRegistry,
+  SupersetClient,
 } from '@superset-ui/core';
 
 import {
@@ -32,6 +33,7 @@ import {
   Reducer,
   useCallback,
   ChangeEvent,
+  useMemo,
 } from 'react';
 import { CheckboxChangeEvent } from '@superset-ui/core/components/Checkbox/types';
 
@@ -83,6 +85,10 @@ import ExtraOptions from './ExtraOptions';
 import SqlAlchemyForm from './SqlAlchemyForm';
 import DatabaseConnectionForm from './DatabaseConnectionForm';
 import DHIS2ConfiguredConnectionsPanel from './DHIS2ConfiguredConnectionsPanel';
+import DHIS2RepositoryReportingUnitsStep, {
+  renderRepositorySummaryLines,
+  type RepositoryReportingUnitsStepValue,
+} from './DHIS2RepositoryReportingUnitsStep';
 import {
   antDAlertStyles,
   antdWarningAlertStyles,
@@ -166,7 +172,11 @@ interface FormStatusState {
   details?: string;
 }
 
-type DHIS2CreateStage = 'details' | 'connections' | 'review';
+type DHIS2CreateStage =
+  | 'details'
+  | 'connections'
+  | 'repository'
+  | 'review';
 
 const SSHTunnelContainer = styled.div`
   ${({ theme }) => `
@@ -641,6 +651,10 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   const [dhis2ConfiguredConnections, setDhis2ConfiguredConnections] = useState<
     DHIS2Instance[]
   >([]);
+  const [
+    repositoryReportingUnitsValue,
+    setRepositoryReportingUnitsValue,
+  ] = useState<RepositoryReportingUnitsStepValue | null>(null);
   const [dbName, setDbName] = useState('');
   const [editNewDb, setEditNewDb] = useState<boolean>(false);
   const [isLoading, setLoading] = useState<boolean>(false);
@@ -728,6 +742,163 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   const activeDHIS2ConfiguredConnections = dhis2ConfiguredConnections.filter(
     instance => instance.is_active,
   );
+  const repositoryStepInitialValueFromDb = useMemo(
+    () => {
+      if (!db) {
+        return null;
+      }
+      return {
+        repository_reporting_unit_approach:
+          db.repository_reporting_unit_approach || null,
+        lowest_data_level_to_use: db.lowest_data_level_to_use ?? null,
+        primary_instance_id: db.primary_instance_id ?? null,
+        repository_data_scope: db.repository_data_scope || null,
+        repository_org_unit_config: db.repository_org_unit_config || null,
+        repository_org_units: db.repository_org_units || [],
+        repository_org_unit_summary:
+          db.repository_org_unit_summary || undefined,
+      };
+    },
+    [db],
+  );
+  const repositoryStepInitialValue = useMemo(() => {
+    const dbValue = repositoryStepInitialValueFromDb;
+    const dbHasRepositoryConfig = Boolean(
+      dbValue?.repository_reporting_unit_approach ||
+        dbValue?.repository_org_unit_config ||
+        (dbValue?.repository_org_units || []).length,
+    );
+    if (dbHasRepositoryConfig) {
+      return dbValue;
+    }
+    return repositoryReportingUnitsValue || dbValue;
+  }, [repositoryReportingUnitsValue, repositoryStepInitialValueFromDb]);
+  const effectiveRepositoryReportingUnitsValue = useMemo(() => {
+    if (!repositoryReportingUnitsValue) {
+      return repositoryStepInitialValueFromDb
+        ? ({
+            ...repositoryStepInitialValueFromDb,
+            validationError: null,
+          } as RepositoryReportingUnitsStepValue)
+        : null;
+    }
+
+    if (
+      repositoryReportingUnitsValue.repository_reporting_unit_approach ===
+        'primary_instance' &&
+      repositoryReportingUnitsValue.primary_instance_id == null &&
+      repositoryStepInitialValueFromDb?.primary_instance_id != null
+    ) {
+      const hasResolvedRepositoryOrgUnits =
+        (repositoryReportingUnitsValue.repository_org_units || []).length > 0 ||
+        Boolean(
+          repositoryReportingUnitsValue.repository_org_unit_config
+            ?.selected_org_unit_details?.length,
+        ) ||
+        Boolean(
+          repositoryReportingUnitsValue.repository_org_unit_config
+            ?.separate_instance_configs?.some(
+              config => config.selected_org_units.length > 0,
+            ),
+        );
+      return {
+        ...repositoryReportingUnitsValue,
+        primary_instance_id: repositoryStepInitialValueFromDb.primary_instance_id,
+        validationError: hasResolvedRepositoryOrgUnits
+          ? null
+          : repositoryReportingUnitsValue.validationError,
+      };
+    }
+
+    return repositoryReportingUnitsValue;
+  }, [repositoryReportingUnitsValue, repositoryStepInitialValueFromDb]);
+
+  const loadDhis2ConfiguredConnections = useCallback(
+    async (nextDatabaseId: number) => {
+      try {
+        const response = await SupersetClient.get({
+          endpoint: `/api/v1/dhis2/instances/?database_id=${nextDatabaseId}&include_inactive=true`,
+        });
+        const nextInstances = ((response.json.result || []) as DHIS2Instance[]).sort(
+          (left, right) => {
+            if (left.is_active !== right.is_active) {
+              return left.is_active ? -1 : 1;
+            }
+            if ((left.display_order || 0) !== (right.display_order || 0)) {
+              return (left.display_order || 0) - (right.display_order || 0);
+            }
+            return left.name.localeCompare(right.name);
+          },
+        );
+        setDhis2ConfiguredConnections(nextInstances);
+      } catch {
+        setDhis2ConfiguredConnections([]);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      !isDHIS2GuidedFlow ||
+      !db?.id ||
+      repositoryReportingUnitsValue ||
+      !repositoryStepInitialValue
+    ) {
+      return;
+    }
+
+    setRepositoryReportingUnitsValue({
+      ...repositoryStepInitialValue,
+      validationError: null,
+    } as RepositoryReportingUnitsStepValue);
+  }, [
+    db?.id,
+    isDHIS2GuidedFlow,
+    repositoryReportingUnitsValue,
+    repositoryStepInitialValue,
+  ]);
+
+  useEffect(() => {
+    if (!isDHIS2GuidedFlow || !repositoryStepInitialValueFromDb) {
+      return;
+    }
+
+    const dbHasRepositoryConfig = Boolean(
+      repositoryStepInitialValueFromDb.repository_reporting_unit_approach ||
+        repositoryStepInitialValueFromDb.repository_org_unit_config ||
+        (repositoryStepInitialValueFromDb.repository_org_units || []).length,
+    );
+
+    if (!dbHasRepositoryConfig) {
+      return;
+    }
+
+    const shouldRepairPrimaryInstance =
+      repositoryReportingUnitsValue?.repository_reporting_unit_approach ===
+        'primary_instance' &&
+      repositoryReportingUnitsValue.primary_instance_id == null &&
+      repositoryStepInitialValueFromDb.primary_instance_id != null;
+
+    if (!repositoryReportingUnitsValue || shouldRepairPrimaryInstance) {
+      setRepositoryReportingUnitsValue({
+        ...repositoryStepInitialValueFromDb,
+        validationError: null,
+      } as RepositoryReportingUnitsStepValue);
+    }
+  }, [
+    isDHIS2GuidedFlow,
+    repositoryReportingUnitsValue,
+    repositoryStepInitialValueFromDb,
+  ]);
+
+  useEffect(() => {
+    if (!isDHIS2GuidedFlow || !dbFetched?.id) {
+      return;
+    }
+    void loadDhis2ConfiguredConnections(dbFetched.id as number);
+  }, [dbFetched?.id, isDHIS2GuidedFlow, loadDhis2ConfiguredConnections]);
+
   const modalWidth = isDHIS2Database ? '960px' : '500px';
 
   const dbModel: DatabaseForm =
@@ -900,6 +1071,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     setEditNewDb(false);
     setDhis2CreateStage('details');
     setDhis2ConfiguredConnections([]);
+    setRepositoryReportingUnitsValue(null);
     setFileList([]);
     setImportingModal(false);
     setImportingErrorMessage('');
@@ -982,6 +1154,48 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     clearFormStatus();
     // Clone DB object
     const dbToUpdate = { ...(db || {}) };
+
+    delete dbToUpdate.repository_org_unit_status;
+    delete dbToUpdate.repository_org_unit_status_message;
+    delete dbToUpdate.repository_org_unit_task_id;
+    delete dbToUpdate.repository_org_unit_last_finalized_at;
+    delete dbToUpdate.repository_org_unit_summary;
+
+    if (isDHIS2GuidedFlow && dhis2CreateStage === 'review') {
+      if (
+        !effectiveRepositoryReportingUnitsValue ||
+        effectiveRepositoryReportingUnitsValue.validationError
+      ) {
+        showFormError(
+          t('Repository reporting unit setup needs attention'),
+          t(
+            'Review the repository reporting unit configuration before saving this DHIS2 Database.',
+          ),
+          effectiveRepositoryReportingUnitsValue?.validationError || undefined,
+        );
+        setLoading(false);
+        return;
+      }
+
+      delete dbToUpdate.repository_org_units;
+      dbToUpdate.repository_reporting_unit_approach =
+        effectiveRepositoryReportingUnitsValue.repository_reporting_unit_approach;
+      dbToUpdate.lowest_data_level_to_use =
+        effectiveRepositoryReportingUnitsValue.lowest_data_level_to_use;
+      dbToUpdate.primary_instance_id =
+        effectiveRepositoryReportingUnitsValue.primary_instance_id;
+      dbToUpdate.repository_data_scope =
+        effectiveRepositoryReportingUnitsValue.repository_data_scope;
+      dbToUpdate.repository_org_unit_config =
+        effectiveRepositoryReportingUnitsValue.repository_org_unit_config;
+    } else if (isDHIS2GuidedFlow) {
+      delete dbToUpdate.repository_reporting_unit_approach;
+      delete dbToUpdate.lowest_data_level_to_use;
+      delete dbToUpdate.primary_instance_id;
+      delete dbToUpdate.repository_data_scope;
+      delete dbToUpdate.repository_org_unit_config;
+      delete dbToUpdate.repository_org_units;
+    }
 
     if (await runExtraExtensionSave(dbToUpdate)) {
       setLoading(false);
@@ -1103,6 +1317,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
             addSuccessToast(t('DHIS2 Database saved'));
             redirectURL(DATABASE_LIST_ROUTE);
           } else {
+            await fetchResource(db.id as number);
             setEditNewDb(false);
             setHasConnectedDb(true);
             setDhis2CreateStage('connections');
@@ -1387,16 +1602,16 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
               <StyledFooterButton
                 key="submit"
                 buttonStyle="primary"
-                onClick={() => setDhis2CreateStage('review')}
+                onClick={() => setDhis2CreateStage('repository')}
                 disabled={activeDHIS2ConfiguredConnections.length === 0}
               >
-                {t('Review database')}
+                {t('Continue')}
               </StyledFooterButton>
             </>
           );
         }
 
-        if (dhis2CreateStage === 'review') {
+        if (dhis2CreateStage === 'repository') {
           return (
             <>
               <StyledFooterButton
@@ -1409,8 +1624,37 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
               <StyledFooterButton
                 key="submit"
                 buttonStyle="primary"
+                onClick={() => setDhis2CreateStage('review')}
+                disabled={
+                  !repositoryReportingUnitsValue ||
+                  !!repositoryReportingUnitsValue.validationError
+                }
+              >
+                {t('Continue')}
+              </StyledFooterButton>
+            </>
+          );
+        }
+
+        if (dhis2CreateStage === 'review') {
+          return (
+            <>
+              <StyledFooterButton
+                key="back"
+                onClick={() => setDhis2CreateStage('repository')}
+                buttonStyle="secondary"
+              >
+                {t('Back')}
+              </StyledFooterButton>
+              <StyledFooterButton
+                key="submit"
+                buttonStyle="primary"
                 onClick={onSave}
                 loading={isLoading}
+                disabled={
+                  !effectiveRepositoryReportingUnitsValue ||
+                  !!effectiveRepositoryReportingUnitsValue.validationError
+                }
               >
                 {t('Save Database')}
               </StyledFooterButton>
@@ -2055,15 +2299,41 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
   );
 
   const renderDHIS2ConnectionsPanel = () => (
-    <DHIS2ConfiguredConnectionsPanel
-      databaseId={db?.id}
-      databaseName={db?.database_name}
-      onInstancesChange={setDhis2ConfiguredConnections}
-    />
+    <div css={formScrollableStyles}>
+      <DHIS2ConfiguredConnectionsPanel
+        databaseId={db?.id}
+        databaseName={db?.database_name}
+        onInstancesChange={setDhis2ConfiguredConnections}
+      />
+    </div>
   );
 
-  const renderDHIS2CreateReview = () => (
-    <>
+  const renderDHIS2RepositoryReportingUnitsStep = () => (
+    <div css={formScrollableStyles}>
+      <DHIS2RepositoryReportingUnitsStep
+        databaseId={db?.id}
+        instances={dhis2ConfiguredConnections}
+        initialValue={repositoryStepInitialValue}
+        onChange={setRepositoryReportingUnitsValue}
+      />
+    </div>
+  );
+
+  const renderDHIS2CreateReview = () => {
+    const repositoryValue =
+      effectiveRepositoryReportingUnitsValue || repositoryReportingUnitsValue;
+    const selectedRepositoryOrgUnitCount = repositoryValue
+      ? repositoryValue.repository_org_unit_config
+          ?.selected_org_unit_details?.length ||
+        repositoryValue.repository_org_unit_config?.separate_instance_configs?.reduce(
+          (sum, item) => sum + item.selected_org_units.length,
+          0,
+        ) ||
+        0
+      : 0;
+
+    return (
+      <>
       <StyledAlertMargin>
         <Alert
           closable={false}
@@ -2071,7 +2341,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
           message={t('Review the DHIS2 Database before saving')}
           showIcon
           description={t(
-            'This database will expose the configured DHIS2 instances below as a single logical Superset Database. Dataset creation uses these saved connections directly and loads metadata from local staging.',
+            'This database will expose the configured DHIS2 instances below as a single logical Superset Database. Dataset creation uses these saved connections directly and loads metadata from local staging, while repository reporting units persist the lineage needed to route future extraction back to the correct DHIS2 source instances.',
           )}
           type="info"
         />
@@ -2109,6 +2379,98 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+        <div className="control-label">
+          {t('Repository reporting unit configuration')}
+        </div>
+        {repositoryValue ? (
+          <div style={{ display: 'grid', gap: 12, marginBottom: 24 }}>
+            {renderRepositorySummaryLines(
+              repositoryValue,
+              activeDHIS2ConfiguredConnections,
+            ).map(item => (
+              <div key={item.label}>
+                <div style={{ fontWeight: 600 }}>{item.label}</div>
+                <div style={{ color: 'rgba(0, 0, 0, 0.65)' }}>{item.value}</div>
+              </div>
+            ))}
+            <div>
+              <div style={{ fontWeight: 600 }}>
+                {t('Selected child instances')}
+              </div>
+              <div style={{ color: 'rgba(0, 0, 0, 0.65)' }}>
+                {activeDHIS2ConfiguredConnections.length === 0
+                  ? t('No active instances configured yet')
+                  : activeDHIS2ConfiguredConnections
+                      .map(instance => instance.name)
+                      .join(', ')}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600 }}>{t('Selected org units')}</div>
+              <div style={{ color: 'rgba(0, 0, 0, 0.65)' }}>
+                {selectedRepositoryOrgUnitCount > 0
+                  ? t(
+                      '%s item(s) selected for repository persistence.',
+                      selectedRepositoryOrgUnitCount,
+                    )
+                  : t('No repository org units selected yet')}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600 }}>
+                {t('Enabled analysis dimensions')}
+              </div>
+              <div style={{ color: 'rgba(0, 0, 0, 0.65)' }}>
+                {t(
+                  '%s level(s), %s group set(s), %s group(s).',
+                  repositoryValue.repository_org_unit_summary
+                    .enabled_level_dimensions || 0,
+                  repositoryValue.repository_org_unit_summary
+                    .enabled_group_set_dimensions || 0,
+                  repositoryValue.repository_org_unit_summary
+                    .enabled_group_dimensions || 0,
+                )}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600 }}>
+                {t('Mapping / merge summary')}
+              </div>
+              <div style={{ color: 'rgba(0, 0, 0, 0.65)' }}>
+                {repositoryValue.repository_reporting_unit_approach ===
+                'map_merge'
+                  ? t(
+                      'Repository level mappings are persisted alongside the resolved merged repository hierarchy.',
+                    )
+                  : repositoryValue.repository_reporting_unit_approach ===
+                      'auto_merge'
+                    ? t(
+                        'Auto-merge settings, resolved repository units, unmatched units, and conflicted units are persisted for reviewable lineage.',
+                      )
+                    : repositoryValue.repository_reporting_unit_approach ===
+                        'separate'
+                      ? t(
+                          'Each instance keeps its own source-specific repository reporting units and data scope configuration.',
+                        )
+                      : t(
+                          'The selected primary instance defines the repository hierarchy and stored source lineage.',
+                        )}
+              </div>
+            </div>
+            {repositoryValue.validationError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message={t('Repository reporting unit setup needs attention')}
+                description={repositoryValue.validationError}
+              />
+            ) : null}
+          </div>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            {t('Repository reporting units have not been reviewed yet.')}
           </div>
         )}
       </div>
@@ -2151,12 +2513,16 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
         }
       />
     </>
-  );
+    );
+  };
 
   const renderFinishState = () => {
     if (isDHIS2GuidedFlow) {
       if (dhis2CreateStage === 'connections') {
         return renderDHIS2ConnectionsPanel();
+      }
+      if (dhis2CreateStage === 'repository') {
+        return renderDHIS2RepositoryReportingUnitsStep();
       }
       if (dhis2CreateStage === 'review') {
         return renderDHIS2CreateReview();
@@ -2487,9 +2853,7 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
         isDHIS2GuidedFlow
           ? dhis2CreateStage === 'review'
             ? t('Save Database')
-            : dhis2CreateStage === 'connections'
-              ? t('Review database')
-              : t('Continue')
+            : t('Continue')
           : hasConnectedDb
             ? t('Finish')
             : t('Connect')

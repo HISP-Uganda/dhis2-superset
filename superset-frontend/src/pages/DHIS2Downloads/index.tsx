@@ -57,9 +57,11 @@ interface DatasetSummary {
   serving_superset_dataset_id?: number | null;
   stats?: {
     row_count?: number;
+    total_rows?: number;
+    serving_total_rows?: number | null;
     last_updated?: string;
   } | null;
-  last_synced_at?: string | null;
+  last_sync_at?: string | null;
 }
 
 const PageContent = styled.div`
@@ -327,11 +329,14 @@ export default function DHIS2Downloads() {
       ),
     },
     {
-      title: t('Rows'),
+      title: t('Downloadable rows'),
       key: 'rows',
       width: 100,
       render: (_: unknown, record: DatasetSummary) => {
-        const count = record.stats?.row_count;
+        const count =
+          record.stats?.serving_total_rows ??
+          record.stats?.total_rows ??
+          record.stats?.row_count;
         return count != null ? (
           <Text>{formatCount(count)}</Text>
         ) : (
@@ -373,7 +378,7 @@ export default function DHIS2Downloads() {
       key: 'last_updated',
       width: 170,
       render: (_: unknown, record: DatasetSummary) => {
-        const ts = record.last_synced_at || record.stats?.last_updated;
+        const ts = record.last_sync_at || record.stats?.last_updated;
         return ts ? (
           <Text style={{ fontSize: 12 }}>{formatDateTime(ts)}</Text>
         ) : (

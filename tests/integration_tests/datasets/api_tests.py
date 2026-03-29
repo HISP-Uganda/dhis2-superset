@@ -292,6 +292,72 @@ class TestDatasetApi(SupersetTestCase):
         ]
         assert sorted(response["result"][0]) == expected_columns
 
+    def test_get_dataset_list_shows_metadata_roles_only(self):
+        self.login(ADMIN_USERNAME)
+        admin = self.get_user("admin")
+        main_db = get_main_database()
+
+        metadata_dataset = self.insert_dataset(
+            "dataset_role_metadata_visible",
+            [admin.id],
+            main_db,
+            schema="role_filter_metadata_schema",
+            fetch_metadata=False,
+        )
+        mart_dataset = self.insert_dataset(
+            "dataset_role_mart_hidden",
+            [admin.id],
+            main_db,
+            schema="role_filter_mart_schema",
+            fetch_metadata=False,
+        )
+        serving_dataset = self.insert_dataset(
+            "dataset_role_serving_visible",
+            [admin.id],
+            main_db,
+            schema="role_filter_serving_schema",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        source_dataset = self.insert_dataset(
+            "dataset_role_source_hidden",
+            [admin.id],
+            main_db,
+            schema="role_filter_source_schema",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        legacy_null_dataset = self.insert_dataset(
+            "dataset_role_null_hidden",
+            [admin.id],
+            main_db,
+            schema="role_filter_null_schema",
+            fetch_metadata=False,
+        )
+        mart_dataset.dataset_role = "MART"
+        serving_dataset.dataset_role = "MART"
+        source_dataset.dataset_role = "DHIS2_SOURCE_DATASET"
+        legacy_null_dataset.dataset_role = None
+        db.session.commit()
+        self.items_to_delete = [
+            metadata_dataset,
+            mart_dataset,
+            serving_dataset,
+            source_dataset,
+            legacy_null_dataset,
+        ]
+
+        rv = self.client.get("api/v1/dataset/")
+        assert rv.status_code == 200
+        response = json.loads(rv.data.decode("utf-8"))
+        table_names = {dataset["table_name"] for dataset in response["result"]}
+
+        assert metadata_dataset.table_name in table_names
+        assert serving_dataset.table_name not in table_names
+        assert mart_dataset.table_name not in table_names
+        assert source_dataset.table_name not in table_names
+        assert legacy_null_dataset.table_name not in table_names
+
     def test_get_dataset_list_gamma(self):
         """
         Dataset API: Test get dataset list gamma
@@ -379,6 +445,78 @@ class TestDatasetApi(SupersetTestCase):
         # revert gamma permission
         gamma_role.permissions.remove(main_db_pvm)
         db.session.commit()
+
+    def test_get_dataset_related_database_shows_only_metadata_databases(self):
+        self.login(ADMIN_USERNAME)
+        admin = self.get_user("admin")
+
+        metadata_db = self.insert_database("metadata_only_database")
+        mart_db = self.insert_database("mart_only_database")
+        staged_local_db = self.insert_database("staged_local_only_database")
+        null_db = self.insert_database("null_only_database")
+        metadata_dataset = self.insert_dataset(
+            "metadata_only_dataset",
+            [admin.id],
+            metadata_db,
+            schema="metadata_only_schema",
+            fetch_metadata=False,
+        )
+        mart_dataset = self.insert_dataset(
+            "mart_only_dataset",
+            [admin.id],
+            mart_db,
+            schema="mart_only_schema",
+            fetch_metadata=False,
+        )
+        serving_dataset = self.insert_dataset(
+            "serving_only_dataset",
+            [admin.id],
+            staged_local_db,
+            schema="serving_only_schema",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        source_dataset = self.insert_dataset(
+            "source_only_dataset",
+            [admin.id],
+            staged_local_db,
+            schema="source_only_schema",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        null_dataset = self.insert_dataset(
+            "null_only_dataset",
+            [admin.id],
+            null_db,
+            schema="null_only_schema",
+            fetch_metadata=False,
+        )
+        mart_dataset.dataset_role = "MART"
+        serving_dataset.dataset_role = "MART"
+        source_dataset.dataset_role = "DHIS2_SOURCE_DATASET"
+        null_dataset.dataset_role = None
+        db.session.commit()
+        self.items_to_delete = [
+            metadata_dataset,
+            mart_dataset,
+            serving_dataset,
+            source_dataset,
+            null_dataset,
+            metadata_db,
+            mart_db,
+            staged_local_db,
+            null_db,
+        ]
+
+        rv = self.client.get("api/v1/dataset/related/database")
+        assert rv.status_code == 200
+        response = json.loads(rv.data.decode("utf-8"))
+        database_names = {database["text"] for database in response["result"]}
+
+        assert metadata_db.database_name in database_names
+        assert staged_local_db.database_name not in database_names
+        assert mart_db.database_name not in database_names
+        assert null_db.database_name not in database_names
 
     @pytest.mark.usefixtures("load_energy_table_with_slice")
     def test_get_dataset_item(self):
@@ -644,6 +782,72 @@ class TestDatasetApi(SupersetTestCase):
             )
 
         self.items_to_delete = datasets
+
+    def test_get_dataset_distinct_schema_shows_only_metadata_schemas(self):
+        self.login(ADMIN_USERNAME)
+        admin = self.get_user("admin")
+        main_db = get_main_database()
+
+        metadata_dataset = self.insert_dataset(
+            "metadata_schema_dataset",
+            [admin.id],
+            main_db,
+            schema="metadata_only_schema_filter",
+            fetch_metadata=False,
+        )
+        mart_dataset = self.insert_dataset(
+            "mart_schema_dataset",
+            [admin.id],
+            main_db,
+            schema="mart_only_schema_filter",
+            fetch_metadata=False,
+        )
+        serving_dataset = self.insert_dataset(
+            "serving_schema_dataset",
+            [admin.id],
+            main_db,
+            schema="serving_schema_filter",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        source_dataset = self.insert_dataset(
+            "source_schema_dataset",
+            [admin.id],
+            main_db,
+            schema="source_schema_filter",
+            fetch_metadata=False,
+            extra='{"dhis2_staged_local": true}',
+        )
+        null_dataset = self.insert_dataset(
+            "null_schema_dataset",
+            [admin.id],
+            main_db,
+            schema="null_only_schema_filter",
+            fetch_metadata=False,
+        )
+        mart_dataset.dataset_role = "MART"
+        serving_dataset.dataset_role = "MART"
+        source_dataset.dataset_role = "DHIS2_SOURCE_DATASET"
+        null_dataset.dataset_role = None
+        db.session.commit()
+        self.items_to_delete = [
+            metadata_dataset,
+            mart_dataset,
+            serving_dataset,
+            source_dataset,
+            null_dataset,
+        ]
+
+        rv = self.client.get("api/v1/dataset/distinct/schema")
+        assert rv.status_code == 200
+        response = json.loads(rv.data.decode("utf-8"))
+        schema_names = {schema["text"] for schema in response["result"]}
+
+        assert metadata_dataset.schema in schema_names
+        assert serving_dataset.schema not in schema_names
+        assert mart_dataset.schema not in schema_names
+        assert source_dataset.schema not in schema_names
+        assert null_dataset.schema not in schema_names
 
     def test_get_dataset_distinct_not_allowed(self):
         """

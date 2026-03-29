@@ -31,6 +31,7 @@ import * as exploreUtils from 'src/explore/exploreUtils';
 import * as actions from 'src/components/Chart/chartAction';
 import * as asyncEvent from 'src/middleware/asyncEvent';
 import { handleChartDataResponse } from 'src/components/Chart/chartAction';
+import { dhis2DataPreloader } from 'src/utils/dhis2DataPreloader';
 
 import configureMockStore from 'redux-mock-store';
 import thunk from 'redux-thunk';
@@ -193,6 +194,36 @@ describe('chart actions', () => {
 
       getSpy.mockRestore();
       window.history.pushState({}, 'Default route', '/');
+    });
+
+    test('should ignore stale DHIS2 preload cache for ClickHouse serving datasets', async () => {
+      const preloadSpy = jest
+        .spyOn(dhis2DataPreloader, 'getPreloadedData')
+        .mockReturnValue({
+          data: [{ period: '202602', value: 0 }],
+          columns: ['period', 'value'],
+        });
+      const clearSpy = jest
+        .spyOn(dhis2DataPreloader, 'clearCache')
+        .mockImplementation(() => {});
+
+      await actions.getChartDataRequest({
+        formData: {
+          datasource: '19__table',
+          viz_type: 'my_viz',
+          database: {
+            backend: 'clickhousedb',
+            name: 'DHIS2 Serving (ClickHouse)',
+          },
+        },
+      });
+
+      expect(preloadSpy).not.toHaveBeenCalled();
+      expect(clearSpy).toHaveBeenCalledWith(19);
+      expect(fetchMock.calls(MOCK_URL)).toHaveLength(1);
+
+      preloadSpy.mockRestore();
+      clearSpy.mockRestore();
     });
 
     test('handleChartDataResponse should return result if GlobalAsyncQueries flag is disabled', async () => {

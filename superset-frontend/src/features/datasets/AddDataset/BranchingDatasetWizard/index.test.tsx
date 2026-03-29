@@ -264,6 +264,12 @@ test('resets dependent DHIS2 selections when the selected database changes', () 
     orgUnits: ['OU_1'],
     includeChildren: true,
     dataLevelScope: 'children' as const,
+    repositoryDimensionKeys: {
+      levels: ['level:2'],
+      groups: ['g_urban'],
+      group_sets: ['gs_ownership'],
+    },
+    repositoryDimensionKeysConfigured: true,
     datasetSettings: {
       name: 'Existing dataset',
       description: '',
@@ -287,7 +293,42 @@ test('resets dependent DHIS2 selections when the selected database changes', () 
   expect(nextState.periods).toEqual([]);
   expect(nextState.orgUnits).toEqual([]);
   expect(nextState.dataLevelScope).toBe('selected');
+  expect(nextState.repositoryDimensionKeys).toEqual({
+    levels: [],
+    groups: [],
+    group_sets: [],
+  });
+  expect(nextState.repositoryDimensionKeysConfigured).toBe(false);
   expect(nextState.datasetSettings.name).toBe('');
+});
+
+test('stores dataset-specific repository dimension keys from DHIS2 selection updates', () => {
+  const baseState = workflowReducer(initialWorkflowState, {
+    type: 'SET_SOURCE',
+    payload: {
+      id: 9,
+      database_name: 'Malaria Repository Multiple Sources',
+      backend: 'dhis2',
+    },
+  });
+
+  const nextState = workflowReducer(baseState, {
+    type: 'PATCH_DHIS2_SELECTION',
+    payload: {
+      repositoryDimensionKeys: {
+        levels: ['level:2'],
+        groups: ['g_urban'],
+        group_sets: ['gs_ownership'],
+      },
+    },
+  });
+
+  expect(nextState.repositoryDimensionKeys).toEqual({
+    levels: ['level:2'],
+    groups: ['g_urban'],
+    group_sets: ['gs_ownership'],
+  });
+  expect(nextState.repositoryDimensionKeysConfigured).toBe(true);
 });
 
 test('prunes invalid federated org-unit selections when configured connection scope changes', () => {

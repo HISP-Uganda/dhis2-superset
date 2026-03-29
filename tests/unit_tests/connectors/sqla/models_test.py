@@ -16,6 +16,7 @@
 # under the License.
 
 from contextlib import contextmanager
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -92,8 +93,12 @@ def test_staged_local_dataset_resolves_serving_database_from_extra(
 
     sqla_table = SqlaTable(
         table_name="ds_1_test",
-        sql="SELECT * FROM ds_1_test",
-        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_serving_database_id": 7, '
+            '"dhis2_serving_table_ref": "dhis2_serving.ds_1_test"}'
+        ),
         database=source_database,
         database_id=2,
     )
@@ -175,6 +180,142 @@ def test_staged_local_dataset_detects_quoted_serving_sql(
     get_staging_database.assert_called_once_with(always_create=True)
 
 
+def test_staged_local_dataset_resolves_physical_serving_ref_from_extra(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+    serving_database = Database(
+        id=7,
+        database_name="main",
+        sqlalchemy_uri="sqlite://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_7_ep_malaria",
+        schema="dhis2_serving",
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_serving_database_id": 7, '
+            '"dhis2_serving_table_ref": '
+            '"`dhis2_serving`.`sv_7_ep_malaria`"}'
+        ),
+        database=source_database,
+        database_id=2,
+    )
+
+    get_mock = mocker.patch("superset.connectors.sqla.models.db.session.get")
+    get_mock.return_value = serving_database
+
+    assert sqla_table.is_dhis2_staged_local is True
+    assert (
+        sqla_table.get_staged_local_serving_table_ref()
+        == "dhis2_serving.sv_7_ep_malaria"
+    )
+    assert sqla_table.get_serving_database() is serving_database
+    get_mock.assert_called_once_with(Database, 7)
+
+
+def test_staged_local_dataset_cache_keys_include_sync_marker(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="MAL - Routine eHMIS Indicators [MART]",
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_staged_dataset_id": 7, '
+            '"dhis2_serving_table_ref": '
+            '"dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"}'
+        ),
+        database=source_database,
+        database_id=2,
+        columns=[],
+        metrics=[],
+    )
+
+    staged_dataset = mocker.MagicMock(
+        last_sync_at=datetime(2026, 3, 28, 4, 46, 51),
+        last_sync_status="success",
+        last_sync_rows=123,
+    )
+    get_mock = mocker.patch("superset.connectors.sqla.models.db.session.get")
+    get_mock.return_value = staged_dataset
+
+    extra_cache_keys = sqla_table.get_extra_cache_keys(
+        {
+            "columns": ["period"],
+            "metrics": [],
+            "filter": [],
+            "extras": {},
+        }
+    )
+
+    assert (
+        "dhis2_staged_local_query_cache_version",
+        2,
+    ) in extra_cache_keys
+    assert (
+        "dhis2_staged_local_serving_table_ref",
+        "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart",
+    ) in extra_cache_keys
+    assert (
+        "dhis2_staged_local_sync_marker",
+        7,
+        "2026-03-28T04:46:51",
+        "success",
+        123,
+    ) in extra_cache_keys
+    get_mock.assert_called_once()
+
+
+def test_staged_local_dataset_data_prefers_saved_dhis2_display_name(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=2,
+        database_name="dhis2_repo",
+        sqlalchemy_uri="dhis2://admin:district@none",
+    )
+
+    sqla_table = SqlaTable(
+        id=19,
+        table_name="sv_7_mal_routine_ehmis_indicators_mart",
+        schema="dhis2_serving",
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_dataset_display_name": '
+            '"MAL - Routine eHMIS Indicators [MART]"}'
+        ),
+        database=source_database,
+        database_id=2,
+        columns=[],
+        metrics=[],
+    )
+    mocker.patch.object(
+        sqla_table,
+        "get_staged_local_columns_payload",
+        return_value=[],
+    )
+
+    data = sqla_table.data
+
+    assert data["name"] == "MAL - Routine eHMIS Indicators [MART]"
+    assert data["datasource_name"] == "MAL - Routine eHMIS Indicators [MART]"
+    assert data["table_name"] == "MAL - Routine eHMIS Indicators [MART]"
+
+
 def test_query_uses_serving_database_for_staged_local_dataset(
     mocker: MockerFixture,
 ) -> None:
@@ -191,8 +332,12 @@ def test_query_uses_serving_database_for_staged_local_dataset(
 
     sqla_table = SqlaTable(
         table_name="ds_1_test",
-        sql="SELECT * FROM ds_1_test",
-        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_serving_database_id": 7, '
+            '"dhis2_serving_table_ref": "dhis2_serving.ds_1_test"}'
+        ),
         columns=[],
         metrics=[],
         database=source_database,
@@ -242,25 +387,28 @@ def test_external_metadata_uses_serving_database_for_staged_local_dataset(
 
     sqla_table = SqlaTable(
         table_name="ds_1_test",
-        sql="SELECT * FROM ds_1_test",
-        extra='{"dhis2_staged_local": true, "dhis2_serving_database_id": 7}',
+        sql=None,
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_serving_database_id": 7, '
+            '"dhis2_serving_table_ref": "dhis2_serving.sv_1_test"}'
+        ),
         database=source_database,
         database_id=2,
     )
     mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
-    get_columns_description = mocker.patch(
-        "superset.connectors.sqla.utils.get_columns_description",
+    get_physical_table_metadata = mocker.patch(
+        "superset.connectors.sqla.models.get_physical_table_metadata",
         return_value=[{"column_name": "value", "type": "INT"}],
     )
 
     result = sqla_table.external_metadata()
 
     assert result == [{"column_name": "value", "type": "INT"}]
-    get_columns_description.assert_called_once_with(
-        serving_database,
-        sqla_table.catalog,
-        sqla_table.schema,
-        "SELECT * FROM sv_1_test",
+    get_physical_table_metadata.assert_called_once_with(
+        database=serving_database,
+        table=Table("sv_1_test", "dhis2_serving", None),
+        normalize_columns=sqla_table.normalize_columns,
     )
 
 
@@ -315,15 +463,149 @@ def test_staged_local_repair_updates_legacy_sql_to_serving_table(
         return_value=("dhis2_staging.sv_4_anc_coverage", []),
     )
 
-    sqla_table.repair_staged_local_database_binding()
+    sqla_table.repair_staged_local_database_binding(ensure_exists=True)
 
     assert sqla_table.database_id == 7
-    assert sqla_table.sql == "SELECT * FROM dhis2_staging.sv_4_anc_coverage"
+    assert sqla_table.schema == "dhis2_staging"
+    assert sqla_table.table_name == "sv_4_anc_coverage"
+    assert sqla_table.sql is None
     assert sqla_table.extra_dict["dhis2_serving_table_ref"] == (
         "dhis2_staging.sv_4_anc_coverage"
     )
     assert sqla_table.extra_dict["dhis2_serving_database_id"] == 7
     ensure_serving_table.assert_called_once_with(4)
+
+
+def test_staged_local_repair_preserves_metadata_wrapper_on_logical_database(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=5,
+        database_name="UG Malaria Repository",
+        sqlalchemy_uri="dhis2://",
+    )
+    serving_database = Database(
+        id=4,
+        database_name="DHIS2 Serving (ClickHouse)",
+        sqlalchemy_uri="clickhousedb://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="Malaria Routine Monthly Datasets",
+        sql="SELECT * FROM `dhis2_serving`.`sv_4_malaria_routine_monthly_datasets`",
+        schema=None,
+        dataset_role="METADATA",
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_staged_dataset_id": 4, '
+            '"dhis2_serving_database_id": 4, '
+            '"dhis2_serving_table_ref": "`dhis2_serving`.`sv_4_malaria_routine_monthly_datasets`"}'
+        ),
+        database=source_database,
+        database_id=5,
+    )
+
+    mocker.patch.object(
+        sqla_table,
+        "get_serving_database",
+        return_value=serving_database,
+    )
+
+    sqla_table.repair_staged_local_database_binding()
+
+    assert sqla_table.database_id == 5
+    assert sqla_table.database is source_database
+    assert sqla_table.schema is None
+    assert sqla_table.table_name == "Malaria Routine Monthly Datasets"
+    assert (
+        sqla_table.sql
+        == "SELECT * FROM `dhis2_serving`.`sv_4_malaria_routine_monthly_datasets`"
+    )
+
+
+def test_staged_local_serving_ref_preserves_mart_suffix_when_ensuring_table(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=5,
+        database_name="UG Malaria Repository",
+        sqlalchemy_uri="dhis2://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_7_mal_routine_ehmis_indicators_mart",
+        sql=None,
+        dataset_role="MART",
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_staged_dataset_id": 7, '
+            '"dhis2_serving_database_id": 4, '
+            '"dhis2_serving_table_ref": "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"}'
+        ),
+        database=source_database,
+        database_id=5,
+    )
+
+    ensure_serving_table = mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_serving.sv_7_mal_routine_ehmis_indicators", []),
+    )
+
+    assert (
+        sqla_table.get_staged_local_serving_table_ref(ensure_exists=True)
+        == "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"
+    )
+    ensure_serving_table.assert_called_once_with(7)
+
+
+def test_staged_local_repair_preserves_mart_dataset_binding(
+    mocker: MockerFixture,
+) -> None:
+    source_database = Database(
+        id=5,
+        database_name="UG Malaria Repository",
+        sqlalchemy_uri="dhis2://",
+    )
+    serving_database = Database(
+        id=4,
+        database_name="DHIS2 Serving (ClickHouse)",
+        sqlalchemy_uri="clickhousedb://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_7_mal_routine_ehmis_indicators_mart",
+        sql=None,
+        schema="dhis2_serving",
+        dataset_role="MART",
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_staged_dataset_id": 7, '
+            '"dhis2_serving_database_id": 4, '
+            '"dhis2_serving_table_ref": "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"}'
+        ),
+        database=serving_database,
+        database_id=4,
+    )
+
+    mocker.patch.object(
+        sqla_table,
+        "get_serving_database",
+        return_value=serving_database,
+    )
+    ensure_serving_table = mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+        return_value=("dhis2_serving.sv_7_mal_routine_ehmis_indicators", []),
+    )
+
+    sqla_table.repair_staged_local_database_binding(ensure_exists=True)
+
+    assert sqla_table.database_id == 4
+    assert sqla_table.schema == "dhis2_serving"
+    assert sqla_table.table_name == "sv_7_mal_routine_ehmis_indicators_mart"
+    assert sqla_table.extra_dict["dhis2_serving_table_ref"] == (
+        "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"
+    )
+    ensure_serving_table.assert_called_once_with(7)
 
 
 def test_external_metadata_repairs_legacy_staged_local_sql_before_introspection(
@@ -348,24 +630,64 @@ def test_external_metadata_repairs_legacy_staged_local_sql_before_introspection(
         database_id=2,
     )
     mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    staged_dataset = mocker.MagicMock(database_id=2)
     mocker.patch(
-        "superset.dhis2.staged_dataset_service.ensure_serving_table",
-        return_value=("dhis2_staging.sv_4_anc_coverage", []),
+        "superset.dhis2.staged_dataset_service.get_staged_dataset",
+        return_value=staged_dataset,
     )
-    get_columns_description = mocker.patch(
-        "superset.connectors.sqla.utils.get_columns_description",
+    mocker.patch(
+        "superset.dhis2.staging_engine.DHIS2StagingEngine.get_serving_sql_table_ref",
+        return_value="dhis2_staging.sv_4_anc_coverage",
+    )
+    get_physical_table_metadata = mocker.patch(
+        "superset.connectors.sqla.models.get_physical_table_metadata",
         return_value=[{"column_name": "period", "type": "STRING"}],
     )
 
     result = sqla_table.external_metadata()
 
     assert result == [{"column_name": "period", "type": "STRING"}]
-    get_columns_description.assert_called_once_with(
-        serving_database,
-        sqla_table.catalog,
-        sqla_table.schema,
-        "SELECT * FROM dhis2_staging.sv_4_anc_coverage",
+    get_physical_table_metadata.assert_called_once_with(
+        database=serving_database,
+        table=Table("sv_4_anc_coverage", "dhis2_staging", None),
+        normalize_columns=sqla_table.normalize_columns,
     )
+
+
+def test_staged_local_runtime_repair_skips_ensure_for_existing_mart_binding(
+    mocker: MockerFixture,
+) -> None:
+    serving_database = Database(
+        id=4,
+        database_name="DHIS2 Serving (ClickHouse)",
+        sqlalchemy_uri="clickhousedb://",
+    )
+
+    sqla_table = SqlaTable(
+        table_name="sv_7_mal_routine_ehmis_indicators_mart",
+        schema="dhis2_serving",
+        sql=None,
+        dataset_role="MART",
+        extra=(
+            '{"dhis2_staged_local": true, '
+            '"dhis2_staged_dataset_id": 7, '
+            '"dhis2_serving_database_id": 4, '
+            '"dhis2_serving_table_ref": "dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart"}'
+        ),
+        database=serving_database,
+        database_id=4,
+    )
+
+    mocker.patch.object(sqla_table, "get_serving_database", return_value=serving_database)
+    ensure_serving_table = mocker.patch(
+        "superset.dhis2.staged_dataset_service.ensure_serving_table",
+    )
+
+    sqla_table.repair_staged_local_database_binding()
+
+    assert sqla_table.schema == "dhis2_serving"
+    assert sqla_table.table_name == "sv_7_mal_routine_ehmis_indicators_mart"
+    ensure_serving_table.assert_not_called()
 
 
 def test_staged_local_columns_payload_uses_serving_metadata_shape(
@@ -909,7 +1231,7 @@ def test_staged_local_query_filters_explicit_selected_ou_column_even_without_hie
     assert "length" in where_sql.lower()
 
 
-def test_staged_local_query_defaults_to_deepest_ou_and_selected_period_level(
+def test_staged_local_query_defaults_only_period_terminal_level_when_no_ou_is_selected(
     mocker: MockerFixture,
 ) -> None:
     serving_database = Database(
@@ -1053,7 +1375,7 @@ def test_staged_local_query_defaults_to_deepest_ou_and_selected_period_level(
     ).sql
 
     where_sql = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
-    assert "facility" in where_sql
+    assert "facility" not in where_sql
     assert "period_year" in where_sql
     assert "period_quarter" in where_sql
     assert "period_month" in where_sql

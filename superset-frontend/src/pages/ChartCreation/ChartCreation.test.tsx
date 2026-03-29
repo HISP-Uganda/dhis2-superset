@@ -39,7 +39,10 @@ const mockDatasourceResponse = {
   result: [
     {
       id: 1,
-      table_name: 'table',
+      table_name: 'sv_7_mal_routine_ehmis_indicators_mart',
+      extra: JSON.stringify({
+        dhis2_dataset_display_name: 'MAL - Routine eHMIS Indicators [MART]',
+      }),
       datasource_type: 'table',
       database: { database_name: 'test_db' },
       schema: 'public',
@@ -205,9 +208,21 @@ test('prepopulates the dataset chooser from a dataset id query param', async () 
   await renderComponent();
 
   await waitFor(() => {
-    expect(screen.getByText('table')).toBeInTheDocument();
-    expect(screen.getByText('test_db')).toBeInTheDocument();
+    expect(
+      screen.getByText('MAL - Routine eHMIS Indicators [MART] — test_db'),
+    ).toBeInTheDocument();
   });
 
   window.history.pushState({}, '', '/chart/add/');
+});
+
+test('renders MART datasource options with the saved display name', async () => {
+  await renderComponent();
+
+  const datasourceSelect = screen.getByRole('combobox');
+  userEvent.click(datasourceSelect);
+
+  expect(
+    await screen.findByText('MAL - Routine eHMIS Indicators [MART] — test_db'),
+  ).toBeInTheDocument();
 });

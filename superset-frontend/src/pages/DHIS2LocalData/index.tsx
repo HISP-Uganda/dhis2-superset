@@ -462,7 +462,20 @@ export default function DHIS2LocalData() {
   const totalRows = useMemo(
     () =>
       datasets.reduce(
-        (sum, dataset) => sum + Number(dataset.stats?.total_rows || 0),
+        (sum, dataset) =>
+          sum +
+          Number(
+            (dataset.stats?.staging_total_rows ?? dataset.stats?.total_rows) || 0,
+          ),
+        0,
+      ),
+    [datasets],
+  );
+
+  const totalServingRows = useMemo(
+    () =>
+      datasets.reduce(
+        (sum, dataset) => sum + Number(dataset.stats?.serving_total_rows || 0),
         0,
       ),
     [datasets],
@@ -933,7 +946,13 @@ export default function DHIS2LocalData() {
             />
           </Card>
           <Card style={{ minWidth: 180 }}>
-            <Statistic title={t('Local rows')} value={formatCount(totalRows)} />
+            <Statistic title={t('Raw local rows')} value={formatCount(totalRows)} />
+          </Card>
+          <Card style={{ minWidth: 180 }}>
+            <Statistic
+              title={t('Serving rows')}
+              value={formatCount(totalServingRows)}
+            />
           </Card>
         </Space>
 
@@ -963,8 +982,22 @@ export default function DHIS2LocalData() {
                   {t('Last sync: %s', formatDateTime(activeDataset.last_sync_at))}
                 </Text>
                 <Text type="secondary">
-                  {t('Rows: %s', formatCount(activeDataset.stats?.total_rows))}
+                  {t(
+                    'Raw rows: %s',
+                    formatCount(
+                      activeDataset.stats?.staging_total_rows ??
+                        activeDataset.stats?.total_rows,
+                    ),
+                  )}
                 </Text>
+                {activeDataset.stats?.serving_total_rows != null ? (
+                  <Text type="secondary">
+                    {t(
+                      'Serving rows: %s',
+                      formatCount(activeDataset.stats?.serving_total_rows),
+                    )}
+                  </Text>
+                ) : null}
               </Space>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
                 {activeDataset.description ||
@@ -972,6 +1005,18 @@ export default function DHIS2LocalData() {
                     'This staged dataset serves local analytical columns for charts, previews, and controlled downloads.',
                   )}
               </Paragraph>
+              {Number(activeDataset.stats?.staging_total_rows || 0) <= 0 &&
+              Number(activeDataset.stats?.serving_total_rows || 0) > 0 ? (
+                <Alert
+                  showIcon
+                  type="warning"
+                  message={t('Raw staging rows are not currently loaded')}
+                  description={t(
+                    'The raw ds_* table is empty or unavailable, but the analytical serving table still has %s rows. Re-run Refresh now to repopulate raw staging data.',
+                    formatCount(activeDataset.stats?.serving_total_rows),
+                  )}
+                />
+              ) : null}
               <Alert
                 showIcon
                 type="info"
@@ -1499,10 +1544,12 @@ export default function DHIS2LocalData() {
                   ),
                 },
                 {
-                  title: t('Rows'),
+                  title: t('Raw rows'),
                   key: 'rows',
                   render: (_value: unknown, dataset: DHIS2StagedDatasetSummary) =>
-                    formatCount(dataset.stats?.total_rows),
+                    formatCount(
+                      dataset.stats?.staging_total_rows ?? dataset.stats?.total_rows,
+                    ),
                 },
                 {
                   title: t('Actions'),

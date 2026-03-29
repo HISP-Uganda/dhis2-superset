@@ -193,6 +193,36 @@ describe('useTables hook', () => {
     expect(result.current.data).toEqual(expectedHasMoreData);
   });
 
+  test('allows table loading when the database exposes no schemas', async () => {
+    const expectDbId = 'db1';
+    const expectedSchema = '';
+    const tableApiRoute = `glob:*/api/v1/database/${expectDbId}/tables/?q=*`;
+    fetchMock.get(tableApiRoute, fakeApiResult);
+    fetchMock.get(`glob:*/api/v1/database/${expectDbId}/catalogs/*`, {
+      count: 0,
+      result: [],
+    });
+    fetchMock.get(`glob:*/api/v1/database/${expectDbId}/schemas/*`, {
+      result: [],
+    });
+    const { result, waitFor } = renderHook(
+      () =>
+        useTables({
+          dbId: expectDbId,
+          schema: expectedSchema,
+        }),
+      {
+        wrapper: createWrapper({
+          useRedux: true,
+          store,
+        }),
+      },
+    );
+
+    await waitFor(() => expect(result.current.data).toEqual(expectedData));
+    expect(fetchMock.calls(tableApiRoute).length).toBe(1);
+  });
+
   test('returns cached data without api request', async () => {
     const expectDbId = 'db1';
     const expectedSchema = 'schema1';

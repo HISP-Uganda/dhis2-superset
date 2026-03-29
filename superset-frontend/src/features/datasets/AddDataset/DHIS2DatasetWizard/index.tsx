@@ -44,6 +44,7 @@ export type LevelMappingConfig = {
 };
 import buildStagedDhIS2DatasetPayload from '../buildStagedDhIS2DatasetPayload';
 import refreshDatasetMetadata from '../refreshDatasetMetadata';
+import type { RepositoryOrgUnitLineage } from 'src/features/databases/types';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -140,15 +141,30 @@ export interface DHIS2WizardState {
     sourceInstanceNames?: string[];
     repositoryLevel?: number;
     repositoryLevelName?: string;
+    repositoryKey?: string;
+    sourceLineageLabel?: string | null;
+    strategy?: string | null;
+    lineage?: RepositoryOrgUnitLineage[];
+    provenance?: Record<string, unknown> | null;
   }>;
   includeChildren: boolean;
-  dataLevelScope?: 'selected' | 'children' | 'grandchildren' | 'all_levels';
+  dataLevelScope?:
+    | 'selected'
+    | 'children'
+    | 'grandchildren'
+    | 'ancestors'
+    | 'all_levels';
   /**
    * Lowest hierarchy level to include (1 = national, N = facility).
    * Extraction stops at this level — org units deeper than this are excluded.
    * Corresponds to DHIS2StagedDataset.max_orgunit_level on the backend.
    */
   maxOrgUnitLevel?: number | null;
+  repositoryDimensionKeys?: {
+    levels?: string[];
+    groups?: string[];
+    group_sets?: string[];
+  };
   columns: Array<{
     name: string;
     type: string;
@@ -275,6 +291,11 @@ export default function DHIS2DatasetWizard({
     includeChildren: false,
     columns: dataset?.dhis2_columns || [],
     previewData: [],
+    repositoryDimensionKeys: {
+      levels: [],
+      groups: [],
+      group_sets: [],
+    },
     scheduleConfig: DEFAULT_SCHEDULE,
   });
 
@@ -418,6 +439,11 @@ export default function DHIS2DatasetWizard({
               org_units_auto_detect: wizardState.orgUnitsAutoDetect ?? false,
               org_unit_details: wizardState.selectedOrgUnitDetails || [],
               org_unit_scope: dataLevelScope,
+              repository_enabled_dimensions: wizardState.repositoryDimensionKeys || {
+                levels: [],
+                groups: [],
+                group_sets: [],
+              },
               org_unit_source_mode:
                 wizardState.orgUnitSourceMode === 'federated'
                   ? 'repository'

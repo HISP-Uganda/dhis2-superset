@@ -667,3 +667,55 @@ def test_regression_levels_7_8_with_allowed_levels_only():
     assert 6 not in levels
     assert 7 not in levels
     assert 8 not in levels
+
+
+def test_repository_selected_root_details_use_repository_keys_for_structure():
+    from superset.dhis2.org_unit_hierarchy_service import OrgUnitHierarchyService
+
+    svc = OrgUnitHierarchyService(database_id=10)
+    dataset_config = {
+        "org_units": ["1:uganda", "1:uganda/2:kampala"],
+        "org_unit_details": [
+            {
+                "id": "1:uganda",
+                "selectionKey": "1:uganda",
+                "sourceOrgUnitId": "1:uganda",
+                "level": 1,
+                "path": "1:uganda",
+                "sourceInstanceIds": [101, 102],
+                "lineage": [
+                    {
+                        "instance_id": 101,
+                        "source_org_unit_uid": "OU_A_ROOT",
+                    },
+                    {
+                        "instance_id": 102,
+                        "source_org_unit_uid": "OU_B_ROOT",
+                    },
+                ],
+            },
+            {
+                "id": "1:uganda/2:kampala",
+                "selectionKey": "1:uganda/2:kampala",
+                "sourceOrgUnitId": "1:uganda/2:kampala",
+                "level": 2,
+                "path": "1:uganda/2:kampala",
+                "parentId": "1:uganda",
+                "sourceInstanceIds": [101, 102],
+                "lineage": [
+                    {
+                        "instance_id": 101,
+                        "source_org_unit_uid": "OU_A_KLA",
+                    },
+                    {
+                        "instance_id": 102,
+                        "source_org_unit_uid": "OU_B_KLA",
+                    },
+                ],
+            },
+        ],
+    }
+
+    roots = svc._selected_root_details(dataset_config, [101, 102])
+
+    assert [detail["selectionKey"] for detail in roots] == ["1:uganda"]

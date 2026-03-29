@@ -51,9 +51,7 @@ const StyledDropdownItemWithIcon = styled.div`
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
-  > *:first-child {
-    margin-right: ${({ theme }) => theme.sizeUnit}px;
-  }
+  column-gap: ${({ theme }) => theme.sizeUnit}px;
 `;
 
 const DropdownItemExtension = extensionsRegistry.get(

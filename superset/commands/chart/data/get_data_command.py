@@ -73,7 +73,10 @@ class ChartDataCommand(BaseCommand):
                 from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
                 from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
                 role = DatasetRole(datasource.dataset_role)
-                if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.ANALYSIS):
+                if not DatasetEligibilityPolicy.is_dataset_eligible(
+                    datasource,
+                    DatasetContext.ANALYSIS,
+                ):
                     raise ChartInvalidDatasetRoleError(role)
             except ValueError:
                 pass

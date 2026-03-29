@@ -126,13 +126,13 @@ export const Header: React.FC<Params> = ({
   }, [api, column]);
 
   useEffect(() => {
-    api.addEventListener('sortChanged', onSortChanged);
+    onSortChanged();
+    column.addEventListener('sortChanged', onSortChanged);
 
     return () => {
-      if (api.isDestroyed()) return;
-      api.removeEventListener('sortChanged', onSortChanged);
+      column.removeEventListener('sortChanged', onSortChanged);
     };
-  }, [api, onSortChanged]);
+  }, [column, onSortChanged]);
 
   return (
     <>

@@ -106,7 +106,7 @@ const defaultProps = {
 };
 
 const NotFoundContentWrapper = styled.div`
-  && > div:first-child {
+  && > div:first-of-type {
     padding-left: 0;
     padding-right: 0;
   }

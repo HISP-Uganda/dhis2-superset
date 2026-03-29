@@ -48,10 +48,13 @@ from superset.dhis2.models import (
     DHIS2Instance,
     DHIS2StagedDataset,
 )
+from superset.dhis2.org_unit_hierarchy_service import sanitize_serving_identifier
 from superset.dhis2.serving_build_service import build_serving_table
 from superset.dhis2.staging_engine import DHIS2StagingEngine
 from superset.local_staging.engine_factory import get_active_staging_engine
+from superset.staging import metadata_cache_service
 from superset.staging.compat import (
+    ensure_dhis2_logical_database,
     sync_dhis2_dataset_variable,
     sync_dhis2_staged_dataset,
 )
@@ -104,6 +107,21 @@ _ALLOWED_VARIABLE_FIELDS = frozenset(
         "extra_params",
     }
 )
+
+_METADATA_NAMESPACE_BY_VARIABLE_TYPE = {
+    "dataelement": "dataElements",
+    "indicator": "indicators",
+    "programindicator": "programIndicators",
+    "eventdataitem": "eventDataItems",
+    "dataset": "dataSets",
+}
+_ORG_UNITS_NAMESPACE = "dhis2_snapshot:organisationUnits"
+_ORG_UNIT_LEVELS_NAMESPACE = "dhis2_snapshot:organisationUnitLevels"
+_MONTH_PERIOD_RE = re.compile(r"^\d{6}$")
+_WEEK_PERIOD_RE = re.compile(r"^\d{4}W\d{1,2}$")
+_QUARTER_PERIOD_RE = re.compile(r"^\d{4}Q[1-4]$")
+_HALF_PERIOD_RE = re.compile(r"^\d{4}S[1-2]$")
+_YEAR_PERIOD_RE = re.compile(r"^\d{4}$")
 
 
 def _sync_compat_dataset(dataset: DHIS2StagedDataset) -> None:
@@ -189,6 +207,773 @@ def _coerce_json_field(value: Any, field_name: str = "value") -> str | None:
         raise ValueError(f"'{field_name}' must be JSON serializable") from exc
 
 
+def _parse_extra_dict(raw_extra: Any) -> dict[str, Any]:
+    if isinstance(raw_extra, dict):
+        return raw_extra
+    if isinstance(raw_extra, str) and raw_extra.strip():
+        try:
+            parsed = json.loads(raw_extra)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_instance_ids(value: Any) -> list[int]:
+    raw_values = value
+    if raw_values is None:
+        return []
+    if not isinstance(raw_values, list):
+        raw_values = [raw_values]
+
+    normalized: list[int] = []
+    for raw_value in raw_values:
+        try:
+            instance_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if instance_id not in normalized:
+            normalized.append(instance_id)
+    return normalized
+
+
+def _normalize_variable_type(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_internal_serving_column(
+    column_name: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> bool:
+    normalized = str(column_name or "").strip()
+    if not normalized:
+        return True
+    if normalized.startswith("_"):
+        return True
+    if (extra or {}).get("dhis2_is_internal") is True:
+        return True
+    return False
+
+
+def _resolve_registered_serving_sqla_table(dataset: DHIS2StagedDataset) -> Any | None:
+    from superset.connectors.sqla.models import SqlaTable
+
+    if dataset.serving_superset_dataset_id is not None:
+        sqla_table = db.session.get(SqlaTable, dataset.serving_superset_dataset_id)
+        if sqla_table is not None:
+            return sqla_table
+
+    candidates: dict[int, Any] = {}
+    for pattern in (
+        f'%"dhis2_staged_dataset_id": {dataset.id}%',
+        f'%"dhis2_staged_dataset_id":{dataset.id}%',
+    ):
+        for sqla_table in db.session.query(SqlaTable).filter(
+            SqlaTable.extra.like(pattern)
+        ):
+            candidates[sqla_table.id] = sqla_table
+
+    if not candidates:
+        return None
+
+    def _candidate_score(sqla_table: Any) -> tuple[int, int]:
+        extra = _parse_extra_dict(getattr(sqla_table, "extra", None))
+        serving_ref = str(extra.get("dhis2_serving_table_ref") or "")
+        table_name = str(getattr(sqla_table, "table_name", "") or "")
+        return (
+            int(serving_ref.endswith("_mart")) * 4
+            + int(table_name.endswith("[MART]")) * 3
+            + int(bool(getattr(sqla_table, "schema", None))) * 2
+            + int(bool(getattr(sqla_table, "columns", None))),
+            int(getattr(sqla_table, "id", 0) or 0),
+        )
+
+    return max(candidates.values(), key=_candidate_score)
+
+
+def _list_related_sqla_tables(dataset: DHIS2StagedDataset) -> list[Any]:
+    from superset.connectors.sqla.models import SqlaTable
+
+    candidates: dict[int, Any] = {}
+    if dataset.serving_superset_dataset_id is not None:
+        sqla_table = db.session.get(SqlaTable, dataset.serving_superset_dataset_id)
+        if sqla_table is not None:
+            candidates[sqla_table.id] = sqla_table
+
+    for pattern in (
+        f'%"dhis2_staged_dataset_id": {dataset.id}%',
+        f'%"dhis2_staged_dataset_id":{dataset.id}%',
+    ):
+        for sqla_table in db.session.query(SqlaTable).filter(
+            SqlaTable.extra.like(pattern)
+        ):
+            candidates[sqla_table.id] = sqla_table
+
+    return list(candidates.values())
+
+
+def _select_sqla_table_for_definition_repair(dataset: DHIS2StagedDataset) -> Any | None:
+    candidates = _list_related_sqla_tables(dataset)
+    if not candidates:
+        return None
+
+    def _candidate_score(sqla_table: Any) -> tuple[int, int, int, int]:
+        extra = _parse_extra_dict(getattr(sqla_table, "extra", None))
+        table_name = str(getattr(sqla_table, "table_name", "") or "")
+        serving_ref = str(extra.get("dhis2_serving_table_ref") or "")
+        has_columns = int(bool(getattr(sqla_table, "columns", None)))
+        return (
+            int(table_name.endswith("[SOURCE]")) * 8
+            + int(bool(serving_ref) and not serving_ref.endswith("_mart")) * 6
+            + int(table_name.endswith("[MART]")) * 4
+            + has_columns * 2
+            + int(bool(getattr(sqla_table, "schema", None))),
+            has_columns,
+            int(getattr(sqla_table, "id", 0) or 0),
+            len(getattr(sqla_table, "columns", None) or []),
+        )
+
+    return max(candidates, key=_candidate_score)
+
+
+def _infer_configured_instance_ids_from_related_sqla_tables(
+    dataset: DHIS2StagedDataset,
+) -> list[int]:
+    configured_instance_ids = _normalize_instance_ids(
+        dataset.get_dataset_config().get("configured_connection_ids")
+    )
+    if configured_instance_ids:
+        return configured_instance_ids
+
+    for sqla_table in _list_related_sqla_tables(dataset):
+        extra = _parse_extra_dict(getattr(sqla_table, "extra", None))
+        inferred_ids = _normalize_instance_ids(extra.get("dhis2_source_instance_ids"))
+        for instance_id in inferred_ids:
+            if instance_id not in configured_instance_ids:
+                configured_instance_ids.append(instance_id)
+
+    if configured_instance_ids:
+        return configured_instance_ids
+
+    instances = (
+        db.session.query(DHIS2Instance)
+        .filter(DHIS2Instance.database_id == dataset.database_id)
+        .filter(DHIS2Instance.is_active.is_(True))
+        .order_by(DHIS2Instance.id.asc())
+        .all()
+    )
+    if len(instances) == 1:
+        return [int(instances[0].id)]
+    return []
+
+
+def _get_registered_serving_columns(
+    dataset: DHIS2StagedDataset,
+) -> list[dict[str, Any]]:
+    from superset.connectors.sqla.models import TableColumn
+
+    sqla_table = _resolve_registered_serving_sqla_table(dataset)
+    if sqla_table is None:
+        return []
+
+    columns = (
+        db.session.query(TableColumn)
+        .filter(TableColumn.table_id == sqla_table.id)
+        .order_by(TableColumn.id.asc())
+        .all()
+    )
+
+    payload: list[dict[str, Any]] = []
+    for column in columns:
+        column_name = str(getattr(column, "column_name", "") or "").strip()
+        extra_dict = column.get_extra_dict()
+        if _is_internal_serving_column(column_name, extra=extra_dict):
+            continue
+
+        column_payload: dict[str, Any] = {
+            "column_name": column_name,
+            "verbose_name": getattr(column, "verbose_name", None) or column_name,
+            "type": getattr(column, "type", None),
+            "is_dttm": bool(getattr(column, "is_dttm", False)),
+            "filterable": getattr(column, "filterable", True) is not False,
+            "groupby": getattr(column, "groupby", True) is not False,
+            "is_active": getattr(column, "is_active", True) is not False,
+        }
+        if getattr(column, "extra", None):
+            column_payload["extra"] = column.extra
+        if getattr(column, "description", None):
+            column_payload["description"] = column.description
+        if getattr(column, "expression", None):
+            column_payload["expression"] = column.expression
+        if getattr(column, "advanced_data_type", None):
+            column_payload["advanced_data_type"] = column.advanced_data_type
+        if getattr(column, "python_date_format", None):
+            column_payload["python_date_format"] = column.python_date_format
+        payload.append(column_payload)
+
+    return payload
+
+
+def _load_metadata_snapshot_items(
+    database_id: int,
+    *,
+    instance_id: int,
+    variable_type: str,
+) -> list[dict[str, Any]]:
+    namespace = _METADATA_NAMESPACE_BY_VARIABLE_TYPE.get(variable_type)
+    if namespace is None:
+        return []
+
+    snapshot = metadata_cache_service.get_cached_metadata_payload(
+        database_id,
+        f"dhis2_snapshot:{namespace}",
+        {"instance_id": instance_id},
+    )
+    if not isinstance(snapshot, dict) or snapshot.get("status") != "success":
+        return []
+
+    return [
+        item
+        for item in list(snapshot.get("result") or [])
+        if isinstance(item, dict)
+    ]
+
+
+def _build_metadata_repair_lookup(
+    database_id: int,
+    instance_ids: list[int],
+) -> dict[tuple[int, str], list[dict[str, Any]]]:
+    lookup: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    seen: set[tuple[int, str, str, str]] = set()
+
+    for instance_id in instance_ids:
+        for variable_type in _METADATA_NAMESPACE_BY_VARIABLE_TYPE:
+            items = _load_metadata_snapshot_items(
+                database_id,
+                instance_id=instance_id,
+                variable_type=variable_type,
+            )
+            for item in items:
+                variable_id = str(item.get("id") or "").strip()
+                if not variable_id:
+                    continue
+                variable_name = str(
+                    item.get("displayName")
+                    or item.get("name")
+                    or item.get("shortName")
+                    or variable_id
+                ).strip()
+                candidate_names = [
+                    item.get("displayName"),
+                    item.get("name"),
+                    item.get("shortName"),
+                ]
+                for candidate_name in candidate_names:
+                    normalized_name = str(candidate_name or "").strip()
+                    if not normalized_name:
+                        continue
+                    column_name = sanitize_serving_identifier(normalized_name)
+                    dedupe_key = (instance_id, column_name, variable_type, variable_id)
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    lookup.setdefault((instance_id, column_name), []).append(
+                        {
+                            "instance_id": instance_id,
+                            "variable_id": variable_id,
+                            "variable_type": variable_type,
+                            "variable_name": variable_name,
+                        }
+                    )
+
+    return lookup
+
+
+def _infer_variable_payloads_from_sqla_table(
+    dataset: DHIS2StagedDataset,
+    sqla_table: Any,
+    instance_ids: list[int],
+) -> list[dict[str, Any]]:
+    from superset.connectors.sqla.models import TableColumn
+
+    if sqla_table is None or not instance_ids:
+        return []
+
+    metadata_lookup = _build_metadata_repair_lookup(dataset.database_id, instance_ids)
+    columns = (
+        db.session.query(TableColumn)
+        .filter(TableColumn.table_id == sqla_table.id)
+        .order_by(TableColumn.id.asc())
+        .all()
+    )
+
+    variable_payloads: list[dict[str, Any]] = []
+    seen_variable_keys: set[tuple[int, str, str]] = set()
+    for column in columns:
+        column_name = str(getattr(column, "column_name", "") or "").strip()
+        if not column_name:
+            continue
+
+        extra_dict = column.get_extra_dict()
+        if _is_internal_serving_column(column_name, extra=extra_dict):
+            continue
+        if (
+            extra_dict.get("dhis2_is_period") is True
+            or extra_dict.get("dhis2_is_period_hierarchy") is True
+            or extra_dict.get("dhis2_is_ou_hierarchy") is True
+            or extra_dict.get("dhis2_is_ou_level") is True
+            or extra_dict.get("dhis2_is_dimension") is True
+        ):
+            continue
+
+        preferred_type = _normalize_variable_type(
+            extra_dict.get("dhis2_variable_type")
+        )
+        candidate_payload: dict[str, Any] | None = None
+
+        direct_variable_id = str(extra_dict.get("dhis2_variable_id") or "").strip()
+        direct_instance_id = _coerce_int(extra_dict.get("dhis2_source_instance_id"))
+        if (
+            direct_variable_id
+            and preferred_type
+            and direct_instance_id in instance_ids
+        ):
+            candidate_payload = {
+                "instance_id": direct_instance_id,
+                "variable_id": direct_variable_id,
+                "variable_type": preferred_type,
+                "variable_name": str(
+                    getattr(column, "verbose_name", None)
+                    or extra_dict.get("dhis2_variable_name")
+                    or column_name
+                ).strip(),
+                "alias": column_name,
+            }
+
+        if candidate_payload is None:
+            for instance_id in instance_ids:
+                candidates = list(metadata_lookup.get((instance_id, column_name), []))
+                if preferred_type:
+                    preferred_candidates = [
+                        candidate
+                        for candidate in candidates
+                        if candidate["variable_type"] == preferred_type
+                    ]
+                    if preferred_candidates:
+                        candidates = preferred_candidates
+                if len(candidates) == 1:
+                    candidate_payload = dict(candidates[0])
+                    break
+
+        if candidate_payload is None and preferred_type:
+            matching_candidates: list[dict[str, Any]] = []
+            for instance_id in instance_ids:
+                matching_candidates.extend(
+                    [
+                        candidate
+                        for candidate in metadata_lookup.get((instance_id, column_name), [])
+                        if candidate["variable_type"] == preferred_type
+                    ]
+                )
+            if len(matching_candidates) == 1:
+                candidate_payload = dict(matching_candidates[0])
+
+        if candidate_payload is None:
+            continue
+
+        variable_key = (
+            int(candidate_payload["instance_id"]),
+            str(candidate_payload["variable_id"]),
+            str(candidate_payload["variable_type"]),
+        )
+        if variable_key in seen_variable_keys:
+            continue
+        seen_variable_keys.add(variable_key)
+        variable_payloads.append(candidate_payload)
+
+    return variable_payloads
+
+
+def recover_missing_staged_datasets_from_sqla_tables(
+    database_id: int | None = None,
+) -> list[int]:
+    """Recreate missing legacy ``dhis2_staged_datasets`` rows from SqlaTable metadata.
+
+    Older local states can retain the logical/serving/MART Superset datasets
+    while losing the parent staged-dataset rows those datasets point to via
+    ``extra.dhis2_staged_dataset_id``.  Recreate the missing parent rows so
+    normal definition repair and sync/build flows work again.
+    """
+
+    from superset.connectors.sqla.models import SqlaTable
+
+    all_sqla_tables = (
+        db.session.query(SqlaTable)
+        .filter(
+            SqlaTable.extra.like('%"dhis2_staged_dataset_id":%')
+            | SqlaTable.extra.like('%"dhis2_staged_dataset_id": %')
+        )
+        .all()
+    )
+
+    grouped_tables: dict[int, list[Any]] = {}
+    for sqla_table in all_sqla_tables:
+        extra = _parse_extra_dict(getattr(sqla_table, "extra", None))
+        staged_dataset_id = _coerce_int(extra.get("dhis2_staged_dataset_id"))
+        if staged_dataset_id <= 0:
+            continue
+        source_database_id = _coerce_int(extra.get("dhis2_source_database_id"))
+        candidate_database_id = source_database_id or _coerce_int(
+            getattr(sqla_table, "database_id", None)
+        )
+        if database_id is not None and candidate_database_id != database_id:
+            continue
+        grouped_tables.setdefault(staged_dataset_id, []).append(sqla_table)
+
+    recovered_ids: list[int] = []
+    for staged_dataset_id in sorted(grouped_tables):
+        if db.session.get(DHIS2StagedDataset, staged_dataset_id) is not None:
+            continue
+
+        related_tables = grouped_tables[staged_dataset_id]
+
+        def _candidate_rank(sqla_table: Any) -> tuple[int, int]:
+            extra = _parse_extra_dict(getattr(sqla_table, "extra", None))
+            table_name = str(getattr(sqla_table, "table_name", "") or "")
+            return (
+                int(getattr(sqla_table, "dataset_role", None) == "METADATA") * 8
+                + int(bool(extra.get("dhis2_dataset_display_name"))) * 4
+                + int(not table_name.endswith("[MART]")) * 2
+                + int(_coerce_int(getattr(sqla_table, "database_id", None)) > 0),
+                _coerce_int(getattr(sqla_table, "id", None)),
+            )
+
+        best_table = max(related_tables, key=_candidate_rank)
+        best_extra = _parse_extra_dict(getattr(best_table, "extra", None))
+        source_database_id = _coerce_int(
+            best_extra.get("dhis2_source_database_id")
+        ) or _coerce_int(getattr(best_table, "database_id", None))
+        if source_database_id <= 0:
+            logger.warning(
+                "recover_missing_staged_datasets_from_sqla_tables: skipping staged id=%s with no source database",
+                staged_dataset_id,
+            )
+            continue
+
+        logical_database = ensure_dhis2_logical_database(
+            source_database_id,
+            source_name=str(best_extra.get("dhis2_source_database_name") or "").strip()
+            or str(getattr(best_table, "table_name", "") or f"DHIS2 database {source_database_id}"),
+        )
+
+        source_instance_ids = _normalize_instance_ids(
+            best_extra.get("dhis2_source_instance_ids")
+        )
+        display_name = str(
+            best_extra.get("dhis2_dataset_display_name")
+            or getattr(best_table, "table_name", "")
+            or f"Recovered DHIS2 Dataset {staged_dataset_id}"
+        ).strip()
+        display_name = re.sub(r"\s+\[MART\]$", "", display_name, flags=re.IGNORECASE)
+
+        metadata_sqla = next(
+            (
+                sqla_table
+                for sqla_table in related_tables
+                if _coerce_int(getattr(sqla_table, "database_id", None)) == source_database_id
+                and getattr(sqla_table, "schema", None) in (None, "")
+            ),
+            None,
+        )
+
+        dataset_config: dict[str, Any] = {}
+        if source_instance_ids:
+            dataset_config["configured_connection_ids"] = list(source_instance_ids)
+            if len(source_instance_ids) == 1:
+                dataset_config["org_unit_source_mode"] = "primary"
+                dataset_config["primary_org_unit_instance_id"] = int(
+                    source_instance_ids[0]
+                )
+
+        dataset = DHIS2StagedDataset(
+            id=staged_dataset_id,
+            database_id=source_database_id,
+            logical_database_id=logical_database.id,
+            name=display_name,
+            is_active=True,
+            auto_refresh_enabled=True,
+            dataset_config=_coerce_json_field(
+                dataset_config,
+                field_name="dataset_config",
+            ),
+            source_mode="analytics",
+            preserve_period_dimension=True,
+            preserve_orgunit_dimension=True,
+            preserve_category_dimensions=True,
+            include_descendants=True,
+            org_unit_scope="all_levels" if source_instance_ids else None,
+            org_unit_source_mode=(
+                "primary" if len(source_instance_ids) == 1 else None
+            ),
+            primary_instance_id=(
+                int(source_instance_ids[0]) if len(source_instance_ids) == 1 else None
+            ),
+            serving_superset_dataset_id=(
+                _coerce_int(getattr(metadata_sqla, "id", None)) or None
+            ),
+            last_sync_status="pending",
+            last_sync_rows=0,
+        )
+
+        try:
+            engine = _get_engine(source_database_id)
+            dataset.staging_table_name = engine.get_staging_table_name(dataset)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "recover_missing_staged_datasets_from_sqla_tables: could not derive staging table name for staged id=%s",
+                staged_dataset_id,
+                exc_info=True,
+            )
+
+        db.session.add(dataset)
+        db.session.flush()
+        _sync_compat_dataset(dataset)
+        recovered_ids.append(staged_dataset_id)
+
+    if recovered_ids:
+        db.session.commit()
+        logger.info(
+            "recover_missing_staged_datasets_from_sqla_tables: recreated staged dataset ids=%s",
+            recovered_ids,
+        )
+
+    return recovered_ids
+
+
+def _infer_root_org_unit_details(
+    database_id: int,
+    instance_id: int,
+) -> list[dict[str, Any]]:
+    snapshot = metadata_cache_service.get_cached_metadata_payload(
+        database_id,
+        _ORG_UNITS_NAMESPACE,
+        {"instance_id": instance_id},
+    )
+    if not isinstance(snapshot, dict) or snapshot.get("status") != "success":
+        return []
+
+    items = [
+        item for item in list(snapshot.get("result") or []) if isinstance(item, dict)
+    ]
+    if not items:
+        return []
+
+    minimum_level = min(
+        (
+            _coerce_int(item.get("level"))
+            for item in items
+            if _coerce_int(item.get("level")) is not None
+        ),
+        default=None,
+    )
+    if minimum_level is None:
+        return []
+
+    root_items = [
+        item
+        for item in items
+        if _coerce_int(item.get("level")) == minimum_level
+        and str(item.get("id") or "").strip()
+    ]
+    root_items.sort(
+        key=lambda item: (
+            str(item.get("path") or "").strip(),
+            str(item.get("displayName") or item.get("name") or "").strip(),
+        )
+    )
+
+    details: list[dict[str, Any]] = []
+    for item in root_items:
+        root_id = str(item.get("id") or "").strip()
+        display_name = str(
+            item.get("displayName") or item.get("name") or root_id
+        ).strip()
+        path = str(item.get("path") or f"/{root_id}").strip() or f"/{root_id}"
+        details.append(
+            {
+                "id": root_id,
+                "selectionKey": root_id,
+                "sourceOrgUnitId": root_id,
+                "displayName": display_name,
+                "level": minimum_level,
+                "path": path,
+                "sourceInstanceIds": [instance_id],
+                "sourceInstanceNames": [
+                    str(item.get("source_instance_name") or "").strip()
+                ]
+                if str(item.get("source_instance_name") or "").strip()
+                else [],
+                "repositoryLevel": minimum_level,
+                "repositoryLevelName": display_name,
+            }
+        )
+
+    return details
+
+
+def _infer_level_mapping_config(
+    database_id: int,
+    instance_id: int,
+) -> tuple[dict[str, Any] | None, int | None]:
+    snapshot = metadata_cache_service.get_cached_metadata_payload(
+        database_id,
+        _ORG_UNIT_LEVELS_NAMESPACE,
+        {"instance_id": instance_id},
+    )
+    if not isinstance(snapshot, dict) or snapshot.get("status") != "success":
+        return None, None
+
+    rows: list[dict[str, Any]] = []
+    max_level: int | None = None
+    for item in list(snapshot.get("result") or []):
+        if not isinstance(item, dict):
+            continue
+        level = _coerce_int(item.get("level"))
+        if level is None:
+            continue
+        label = str(item.get("displayName") or item.get("name") or f"Level {level}").strip()
+        rows.append(
+            {
+                "merged_level": level,
+                "label": label or f"Level {level}",
+                "instance_levels": {str(instance_id): level},
+            }
+        )
+        max_level = level if max_level is None else max(max_level, level)
+
+    if not rows:
+        return None, max_level
+
+    rows.sort(key=lambda row: row["merged_level"])
+    return {"enabled": True, "rows": rows}, max_level
+
+
+def _infer_default_period_config(
+    engine: DHIS2StagingEngine,
+    dataset: DHIS2StagedDataset,
+) -> dict[str, Any]:
+    default_config = {
+        "periods": [],
+        "periods_auto_detect": True,
+        "default_period_range_type": "relative",
+        "default_relative_period": "LAST_12_MONTHS",
+    }
+    try:
+        result = engine.query_serving_table(
+            dataset,
+            selected_columns=["period"],
+            group_by_columns=["period"],
+            limit=60,
+            count_rows=False,
+        )
+    except Exception:  # pylint: disable=broad-except
+        return default_config
+
+    period_values = sorted(
+        {
+            str(row.get("period") or "").strip()
+            for row in list(result.get("rows") or [])
+            if str(row.get("period") or "").strip()
+        }
+    )
+    if not period_values:
+        return default_config
+
+    if all(_MONTH_PERIOD_RE.match(period_value) for period_value in period_values):
+        return default_config
+    if all(_WEEK_PERIOD_RE.match(period_value) for period_value in period_values):
+        return {
+            "periods": [],
+            "periods_auto_detect": True,
+            "default_period_range_type": "relative",
+            "default_relative_period": "LAST_52_WEEKS",
+        }
+    if all(_QUARTER_PERIOD_RE.match(period_value) for period_value in period_values):
+        return {
+            "periods": period_values,
+            "periods_auto_detect": True,
+            "default_period_range_type": "relative",
+            "default_relative_period": "LAST_12_MONTHS",
+        }
+    if all(_HALF_PERIOD_RE.match(period_value) for period_value in period_values):
+        return {
+            "periods": period_values,
+            "periods_auto_detect": True,
+            "default_period_range_type": "relative",
+            "default_relative_period": "LAST_12_MONTHS",
+        }
+    if all(_YEAR_PERIOD_RE.match(period_value) for period_value in period_values):
+        return {
+            "periods": period_values,
+            "periods_auto_detect": True,
+            "default_period_range_type": "relative",
+            "default_relative_period": "LAST_12_MONTHS",
+        }
+    return {
+        "periods": period_values,
+        "periods_auto_detect": True,
+        "default_period_range_type": "relative",
+        "default_relative_period": "LAST_12_MONTHS",
+    }
+
+
+def _get_manifest_serving_columns(dataset: DHIS2StagedDataset) -> list[dict[str, Any]]:
+    manifest = build_serving_manifest(dataset)
+    return [
+        column
+        for column in dataset_columns_payload(manifest["columns"])
+        if not _is_internal_serving_column(
+            str(column.get("column_name") or "").strip(),
+            extra=_parse_extra_dict(column.get("extra")),
+        )
+    ]
+
+
+def _get_serving_total_rows(
+    engine: DHIS2StagingEngine,
+    dataset: DHIS2StagedDataset,
+) -> int | None:
+    try:
+        result = engine.query_serving_table(
+            dataset,
+            selected_columns=[],
+            filters=None,
+            limit=1,
+            page=1,
+            count_rows=True,
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to query serving row count for dataset id=%s",
+            dataset.id,
+            exc_info=True,
+        )
+        return None
+
+    try:
+        return int(result.get("total_rows") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Read helpers
 # ---------------------------------------------------------------------------
@@ -267,6 +1052,165 @@ def get_dataset_variables(dataset_id: int) -> list[DHIS2DatasetVariable]:
         .order_by(DHIS2DatasetVariable.variable_id)
         .all()
     )
+
+
+def repair_staged_dataset_definition(dataset_id: int) -> dict[str, Any]:
+    """Repair legacy staged datasets that lost raw-stage metadata."""
+    dataset = get_staged_dataset(dataset_id)
+    if dataset is None:
+        raise ValueError(f"DHIS2StagedDataset with id={dataset_id} not found")
+
+    engine = _get_engine(dataset.database_id)
+    dataset_config = dataset.get_dataset_config()
+    repaired = False
+    variables_added = 0
+
+    if not dataset.staging_table_name:
+        dataset.staging_table_name = engine.get_staging_table_name(dataset)
+        repaired = True
+
+    instance_ids = _infer_configured_instance_ids_from_related_sqla_tables(dataset)
+    if instance_ids and not _normalize_instance_ids(
+        dataset_config.get("configured_connection_ids")
+    ):
+        dataset_config["configured_connection_ids"] = list(instance_ids)
+        repaired = True
+
+    if "periods" not in dataset_config:
+        for key, value in _infer_default_period_config(engine, dataset).items():
+            if key not in dataset_config:
+                dataset_config[key] = value
+                repaired = True
+    elif "periods_auto_detect" not in dataset_config:
+        dataset_config["periods_auto_detect"] = True
+        repaired = True
+
+    if instance_ids:
+        if len(instance_ids) == 1:
+            primary_instance_id = int(instance_ids[0])
+            if not dataset_config.get("org_unit_source_mode"):
+                dataset_config["org_unit_source_mode"] = "primary"
+                repaired = True
+            if not dataset_config.get("primary_org_unit_instance_id"):
+                dataset_config["primary_org_unit_instance_id"] = primary_instance_id
+                repaired = True
+            if getattr(dataset, "primary_instance_id", None) is None:
+                dataset.primary_instance_id = primary_instance_id
+                repaired = True
+        elif not dataset_config.get("org_unit_source_mode"):
+            dataset_config["org_unit_source_mode"] = "repository"
+            repaired = True
+
+        if not dataset_config.get("org_units"):
+            root_details = _infer_root_org_unit_details(
+                dataset.database_id,
+                int(instance_ids[0]),
+            )
+            if root_details:
+                dataset_config["org_units"] = [
+                    detail["selectionKey"]
+                    for detail in root_details
+                    if str(detail.get("selectionKey") or "").strip()
+                ]
+                dataset_config["org_units_auto_detect"] = False
+                dataset_config["org_unit_details"] = root_details
+                dataset_config["org_unit_scope"] = "all_levels"
+                repaired = True
+
+        if not dataset_config.get("level_mapping"):
+            level_mapping, max_level = _infer_level_mapping_config(
+                dataset.database_id,
+                int(instance_ids[0]),
+            )
+            if level_mapping:
+                dataset_config["level_mapping"] = level_mapping
+                repaired = True
+            if (
+                max_level is not None
+                and getattr(dataset, "max_orgunit_level", None) in (None, 0)
+            ):
+                dataset.max_orgunit_level = max_level
+                repaired = True
+
+    if getattr(dataset, "org_unit_scope", None) in (None, "") and dataset_config.get(
+        "org_unit_scope"
+    ):
+        dataset.org_unit_scope = str(dataset_config["org_unit_scope"])
+        repaired = True
+    if getattr(dataset, "org_unit_source_mode", None) in (
+        None,
+        "",
+    ) and dataset_config.get("org_unit_source_mode"):
+        dataset.org_unit_source_mode = str(dataset_config["org_unit_source_mode"])
+        repaired = True
+
+    existing_variables = get_dataset_variables(dataset_id)
+    if not existing_variables:
+        sqla_table = _select_sqla_table_for_definition_repair(dataset)
+        variable_payloads = _infer_variable_payloads_from_sqla_table(
+            dataset,
+            sqla_table,
+            instance_ids,
+        )
+        created_variables: list[DHIS2DatasetVariable] = []
+        for payload in variable_payloads:
+            variable = DHIS2DatasetVariable(
+                staged_dataset_id=dataset.id,
+                instance_id=int(payload["instance_id"]),
+                variable_id=str(payload["variable_id"]),
+                variable_type=str(payload["variable_type"]),
+                variable_name=str(
+                    payload.get("variable_name") or payload["variable_id"]
+                ),
+                alias=payload.get("alias"),
+                extra_params=_coerce_json_field(
+                    payload.get("extra_params"),
+                    "extra_params",
+                ),
+            )
+            created_variables.append(variable)
+            db.session.add(variable)
+
+        if created_variables:
+            db.session.flush()
+            for variable in created_variables:
+                _sync_compat_variable(variable)
+            variables_added = len(created_variables)
+            existing_variables = created_variables
+            repaired = True
+
+    if existing_variables and not dataset_config.get("variable_mappings"):
+        dataset_config["variable_mappings"] = [
+            {
+                "instance_id": int(variable.instance_id),
+                "variable_id": str(variable.variable_id),
+                "variable_type": str(variable.variable_type),
+                "variable_name": str(
+                    getattr(variable, "variable_name", None) or variable.variable_id
+                ),
+            }
+            for variable in existing_variables
+            if getattr(variable, "instance_id", None) is not None
+            and str(getattr(variable, "variable_id", "") or "").strip()
+            and str(getattr(variable, "variable_type", "") or "").strip()
+        ]
+        repaired = True
+
+    if repaired:
+        dataset.dataset_config = _coerce_json_field(
+            dataset_config,
+            field_name="dataset_config",
+        )
+        _sync_compat_dataset(dataset)
+        db.session.commit()
+
+    return {
+        "dataset_id": dataset.id,
+        "repaired": repaired,
+        "staging_table_name": dataset.staging_table_name,
+        "configured_connection_ids": instance_ids,
+        "variables_added": variables_added,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +1619,51 @@ def get_staging_stats(dataset_id: int) -> dict[str, Any]:
     return engine.get_staging_table_stats(dataset)
 
 
+def get_local_data_stats(dataset_id: int) -> dict[str, Any]:
+    """Return raw staging and serving-table statistics for a staged dataset."""
+    dataset = get_staged_dataset(dataset_id)
+    if dataset is None:
+        return {"not_found": True}
+
+    engine = _get_engine(dataset.database_id)
+    stats: dict[str, Any] = {}
+    try:
+        staging_stats = engine.get_staging_table_stats(dataset) or {}
+        if isinstance(staging_stats, dict):
+            stats.update(staging_stats)
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to query staging stats for dataset id=%s",
+            dataset_id,
+            exc_info=True,
+        )
+        stats["staging_error"] = str(ex)
+
+    staging_total_rows = _coerce_int(stats.get("total_rows") or stats.get("row_count"))
+    serving_total_rows = None
+    try:
+        if engine.serving_table_exists(dataset):
+            serving_total_rows = _get_serving_total_rows(engine, dataset)
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to query serving stats for dataset id=%s",
+            dataset_id,
+            exc_info=True,
+        )
+        stats["serving_error"] = str(ex)
+
+    stats["total_rows"] = staging_total_rows
+    stats["staging_total_rows"] = staging_total_rows
+    stats["serving_total_rows"] = serving_total_rows
+    stats["available_total_rows"] = (
+        serving_total_rows if serving_total_rows is not None else staging_total_rows
+    )
+    stats["row_source"] = "staging"
+    stats["staging_table_ref"] = engine.get_superset_sql_table_ref(dataset)
+    stats["serving_table_ref"] = engine.get_serving_sql_table_ref(dataset)
+    return stats
+
+
 def get_staging_preview(
     dataset_id: int,
     *,
@@ -922,8 +1911,10 @@ def get_serving_columns(dataset_id: int) -> list[dict[str, Any]]:
     dataset = get_staged_dataset(dataset_id)
     if dataset is None:
         raise ValueError(f"DHIS2StagedDataset with id={dataset_id} not found")
-    manifest = build_serving_manifest(dataset)
-    return dataset_columns_payload(manifest["columns"])
+    registered_columns = _get_registered_serving_columns(dataset)
+    if registered_columns:
+        return registered_columns
+    return _get_manifest_serving_columns(dataset)
 
 
 def _serving_table_needs_rebuild(
@@ -955,43 +1946,34 @@ def _serving_table_needs_rebuild(
     if not engine.serving_table_exists(dataset):
         return True
 
-    def _serving_table_is_empty_with_populated_staging() -> bool:
-        try:
-            staging_total_rows = int(
-                (engine.get_staging_table_stats(dataset) or {}).get("total_rows") or 0
-            )
-        except Exception:  # pylint: disable=broad-except
-            staging_total_rows = 0
+    try:
+        staging_total_rows = _coerce_int(
+            (engine.get_staging_table_stats(dataset) or {}).get("total_rows")
+        )
+    except Exception:  # pylint: disable=broad-except
+        staging_total_rows = 0
 
+    def _serving_table_is_empty_with_populated_staging() -> bool:
         if staging_total_rows <= 0:
             return False
 
-        try:
-            serving_result = engine.query_serving_table(
-                dataset,
-                selected_columns=[],
-                filters=None,
-                limit=1,
-                page=1,
-                count_rows=True,
-            )
-        except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "ensure_serving_table: failed to query serving row count for dataset id=%s",
-                dataset.id,
-                exc_info=True,
-            )
-            return True
-
-        try:
-            serving_total_rows = int(serving_result.get("total_rows") or 0)
-        except (TypeError, ValueError, AttributeError):
-            serving_total_rows = 0
-        return serving_total_rows == 0
+        serving_total_rows = _get_serving_total_rows(engine, dataset)
+        return (serving_total_rows or 0) == 0
 
     current_columns = list(engine.get_serving_table_columns(dataset))
     if current_columns == expected_columns:
         return _serving_table_is_empty_with_populated_staging()
+
+    # Keep the current serving table when the staging source is empty. This
+    # avoids rebuilding a healthy live table from a stale manifest after the
+    # ephemeral ds_* source has been pruned.
+    if staging_total_rows <= 0 and current_columns:
+        logger.info(
+            "ensure_serving_table: keeping existing serving table for dataset id=%s "
+            "because staging is empty and live columns are present",
+            dataset.id,
+        )
+        return False
 
     # Additive-column tolerance: do not trigger a rebuild when the only
     # missing columns are system columns that are populated on the next
@@ -1045,9 +2027,17 @@ def _specialized_marts_need_rebuild(
     if not has_variables:
         return False
 
-    if not mart_exists_fn(dataset):
-        logger.info("Consolidated mart missing for dataset id=%s", dataset.id)
-        return True
+    try:
+        if not mart_exists_fn(dataset):
+            logger.info("Consolidated mart missing for dataset id=%s", dataset.id)
+            return True
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to check consolidated mart state for dataset id=%s",
+            dataset.id,
+            exc_info=True,
+        )
+        return False
 
     return False
 
@@ -1065,7 +2055,7 @@ def ensure_serving_table(
     manifest = build_serving_manifest(dataset)
     # serving_columns tracks the *actual* columns in the physical table.
     # When a rebuild runs, pruned columns replace the full manifest set.
-    serving_columns = dataset_columns_payload(manifest["columns"])
+    serving_columns = get_serving_columns(dataset.id)
     
     table_needs_rebuild = _serving_table_needs_rebuild(engine, dataset, manifest)
     marts_need_rebuild = _specialized_marts_need_rebuild(engine, dataset, manifest)
@@ -1093,14 +2083,18 @@ def ensure_serving_table(
             build_result.diagnostics.get("live_serving_row_count"),
             refresh_scope,
         )
+    else:
+        serving_columns = get_serving_columns(dataset.id)
     serving_table_ref = engine.get_serving_sql_table_ref(dataset)
 
     # Auto-register the serving table as a Superset virtual dataset
     try:
         from superset.dhis2.superset_dataset_service import (
+            register_metadata_dataset_as_superset_dataset,
             register_serving_table_as_superset_dataset,
             register_specialized_marts_as_superset_datasets,
         )
+        from superset.datasets.policy import DatasetRole
         from superset import db as _db
 
         # For DuckDB (and ClickHouse) engines the staging engine's database_id
@@ -1122,8 +2116,7 @@ def ensure_serving_table(
                     .all()
                 if v.instance_id is not None
             ))
-            from superset.datasets.policy import DatasetRole as _DatasetRole
-            sqla_id = register_serving_table_as_superset_dataset(
+            register_serving_table_as_superset_dataset(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
                 serving_table_ref=serving_table_ref,
@@ -1131,8 +2124,7 @@ def ensure_serving_table(
                 serving_database_id=serving_db_id,
                 source_database_id=dataset.database_id,
                 source_instance_ids=_instance_ids,
-                # Mark main DHIS2 serving tables as MART (hidden from list)
-                dataset_role=_DatasetRole.MART.value,
+                dataset_role=DatasetRole.SOURCE.value,
             )
             
             # Register consolidated mart — only if ClickHouse _mart table exists
@@ -1148,8 +2140,18 @@ def ensure_serving_table(
                 dataset=dataset,
             )
 
-            if dataset.serving_superset_dataset_id != sqla_id:
-                dataset.serving_superset_dataset_id = sqla_id
+            metadata_sqla_id = register_metadata_dataset_as_superset_dataset(
+                dataset_id=dataset.id,
+                dataset_name=dataset.name,
+                serving_table_ref=serving_table_ref,
+                serving_columns=serving_columns,
+                source_database_id=dataset.database_id,
+                serving_database_id=serving_db_id,
+                source_instance_ids=_instance_ids,
+            )
+
+            if dataset.serving_superset_dataset_id != metadata_sqla_id:
+                dataset.serving_superset_dataset_id = metadata_sqla_id
                 _db.session.commit()
     except Exception:  # pylint: disable=broad-except
         logger.exception(
@@ -1306,4 +2308,3 @@ def full_cleanup_dhis2_resources() -> dict[str, Any]:
         "purged_sqla_datasets": purged_sqla_count,
         "purged_physical_tables": purged_physical_count,
     }
-

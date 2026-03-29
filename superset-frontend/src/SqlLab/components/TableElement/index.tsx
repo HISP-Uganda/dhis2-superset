@@ -72,7 +72,8 @@ const Fade = styled.div`
 `;
 
 const TableElement = ({ table, ...props }: TableElementProps) => {
-  const { dbId, catalog, schema, name, expanded, id } = table;
+  const { dbId, catalog, schema, name, label, expanded, id } = table;
+  const displayName = label || name;
   const theme = useTheme();
   const dispatch = useDispatch();
   const {
@@ -238,7 +239,7 @@ const TableElement = ({ table, ...props }: TableElementProps) => {
     if (tableData?.indexes?.length) {
       keyLink = (
         <ModalTrigger
-          modalTitle={`${KEYS_FOR_TABLE_TEXT} ${name}`}
+          modalTitle={`${KEYS_FOR_TABLE_TEXT} ${displayName}`}
           modalBody={tableData.indexes.map((ix, i) => (
             <pre key={i}>{JSON.stringify(ix, null, '  ')}</pre>
           ))}
@@ -328,12 +329,14 @@ const TableElement = ({ table, ...props }: TableElementProps) => {
                       // if we passed it from backend, but currently we only have the name.
                       // Wait, I should check if I can get the dataset ID.
                       // For now, use the name to find it? No, Superset needs ID.
-                      const url = `/explore/?dataset_type=table&dataset_id=${table.id}`;
+                      const url = `/explore/?dataset_type=table&dataset_id=${
+                        table.datasetId ?? table.id
+                      }`;
                       window.open(url, '_blank');
                     }}
                     tooltip={t('Explore this dataset')}
                   >
-                    <Icons.CompassOutlined
+                    <Icons.LineChartOutlined
                       iconSize="m"
                       iconColor={theme.colorPrimary}
                     />
@@ -373,7 +376,7 @@ const TableElement = ({ table, ...props }: TableElementProps) => {
         <Tooltip
           id="copy-to-clipboard-tooltip"
           style={{ cursor: 'pointer' }}
-          title={name}
+          title={displayName}
           trigger={trigger}
         >
           <StyledSpan
@@ -381,7 +384,7 @@ const TableElement = ({ table, ...props }: TableElementProps) => {
             ref={tableNameRef}
             className="table-name"
           >
-            <strong>{name}</strong>
+            <strong>{displayName}</strong>
           </StyledSpan>
         </Tooltip>
       </div>

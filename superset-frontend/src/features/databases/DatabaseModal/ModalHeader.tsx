@@ -29,7 +29,11 @@ import {
   StyledStickyHeader,
 } from './styles';
 
-type DHIS2CreateStage = 'details' | 'connections' | 'review';
+type DHIS2CreateStage =
+  | 'details'
+  | 'connections'
+  | 'repository'
+  | 'review';
 
 const supersetTextDocs = getDatabaseDocumentationLinks();
 
@@ -150,7 +154,7 @@ const ModalHeader = ({
         <p className="helper-top">
           {t('STEP %(stepCurr)s OF %(stepLast)s', {
             stepCurr: 2,
-            stepLast: 4,
+            stepLast: 5,
           })}
         </p>
         <Typography.Title level={4}>
@@ -158,7 +162,7 @@ const ModalHeader = ({
         </Typography.Title>
         <p className="helper-bottom">
           {t(
-            'Name the logical Superset Database here. The DHIS2 instance URLs and authentication details are added in the next step.',
+            'Name the logical Superset Database here. Add DHIS2 instance credentials in the next step.',
           )}
         </p>
       </StyledFormHeader>
@@ -171,7 +175,7 @@ const ModalHeader = ({
         <p className="helper-top">
           {t('STEP %(stepCurr)s OF %(stepLast)s', {
             stepCurr: 3,
-            stepLast: 4,
+            stepLast: 5,
           })}
         </p>
         <Typography.Title level={4}>
@@ -179,7 +183,28 @@ const ModalHeader = ({
         </Typography.Title>
         <p className="helper-bottom">
           {t(
-            'Add the configured DHIS2 instances that belong to this Database. Dataset creation will load these saved child connections automatically.',
+            'Add the DHIS2 instances that belong to this Database.',
+          )}
+        </p>
+      </StyledFormHeader>
+    </StyledStickyHeader>
+  );
+
+  const dhis2RepositoryHeader = (
+    <StyledStickyHeader>
+      <StyledFormHeader>
+        <p className="helper-top">
+          {t('STEP %(stepCurr)s OF %(stepLast)s', {
+            stepCurr: 4,
+            stepLast: 5,
+          })}
+        </p>
+        <Typography.Title level={4}>
+          {t('Manage Repository Reporting Units and Hierarchy')}
+        </Typography.Title>
+        <p className="helper-bottom">
+          {t(
+            'Choose how reporting units from the connected DHIS2 instances should be selected, merged, and stored for repository reporting.',
           )}
         </p>
       </StyledFormHeader>
@@ -191,8 +216,8 @@ const ModalHeader = ({
       <StyledFormHeader>
         <p className="helper-top">
           {t('STEP %(stepCurr)s OF %(stepLast)s', {
-            stepCurr: 4,
-            stepLast: 4,
+            stepCurr: 5,
+            stepLast: 5,
           })}
         </p>
         <Typography.Title level={4}>
@@ -200,7 +225,7 @@ const ModalHeader = ({
         </Typography.Title>
         <p className="helper-bottom">
           {t(
-            'Confirm the logical Database details and configured DHIS2 instances before saving.',
+            'Review the database, DHIS2 instances, and repository reporting unit setup before saving.',
           )}
         </p>
       </StyledFormHeader>
@@ -242,7 +267,7 @@ const ModalHeader = ({
           <p className="helper-top">
             {t('STEP %(stepCurr)s OF %(stepLast)s', {
               stepCurr: 1,
-              stepLast: 4,
+              stepLast: 5,
             })}
           </p>
           <Typography.Title level={4}>
@@ -280,6 +305,9 @@ const ModalHeader = ({
     }
     if (dhis2CreateStage === 'connections') {
       return dhis2ConnectionsHeader;
+    }
+    if (dhis2CreateStage === 'repository') {
+      return dhis2RepositoryHeader;
     }
     return dhis2ReviewHeader;
   }

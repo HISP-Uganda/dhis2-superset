@@ -12,8 +12,14 @@ logger = logging.getLogger(__name__)
 
 _ORG_UNIT_HIERARCHY_NAMESPACE = "dhis2_snapshot:orgUnitHierarchy"
 _ORG_UNIT_LEVELS_NAMESPACE = "dhis2_snapshot:organisationUnitLevels"
+_ORG_UNIT_GROUPS_NAMESPACE = "dhis2_snapshot:organisationUnitGroups"
+_ORG_UNIT_GROUPSETS_NAMESPACE = "dhis2_snapshot:organisationUnitGroupSets"
 _DHIS2_OU_HIERARCHY_EXTRA_KEY = "dhis2_is_ou_hierarchy"
 _DHIS2_OU_LEVEL_EXTRA_KEY = "dhis2_ou_level"
+_DHIS2_OU_GROUP_EXTRA_KEY = "dhis2_is_ou_group"
+_DHIS2_OU_GROUP_ID_EXTRA_KEY = "dhis2_ou_group_id"
+_DHIS2_OU_GROUPSET_EXTRA_KEY = "dhis2_is_ou_group_set"
+_DHIS2_OU_GROUPSET_ID_EXTRA_KEY = "dhis2_ou_group_set_id"
 
 
 def sanitize_serving_identifier(value: str) -> str:
@@ -43,6 +49,7 @@ def dedupe_identifier(value: str, used: set[str]) -> str:
 @dataclass(frozen=True)
 class OrgUnitHierarchyContext:
     hierarchy_columns: list[dict[str, Any]]
+    attribute_columns: list[dict[str, Any]]
     dimension_column_names: list[str]
     hierarchy_lookup: dict[tuple[int, str], dict[str, Any]]
     fallback_org_unit_column: str | None
@@ -92,6 +99,15 @@ class OrgUnitHierarchyService:
                 return item[key]
         return None
 
+    @staticmethod
+    def _normalize_optional_int(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _detail_level(self, detail: dict[str, Any]) -> int | None:
         candidate = self._config_value(detail, "level", "repositoryLevel")
         try:
@@ -125,6 +141,20 @@ class OrgUnitHierarchyService:
             return candidate.strip()
         return None
 
+    def _detail_structure_id(self, detail: dict[str, Any]) -> str | None:
+        has_lineage = isinstance(self._config_value(detail, "lineage"), list)
+        if has_lineage:
+            candidate = self._config_value(
+                detail,
+                "selection_key",
+                "selectionKey",
+                "repository_key",
+                "id",
+            )
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return self._detail_source_id(detail) or self._detail_selection_key(detail)
+
     def _detail_selection_key(self, detail: dict[str, Any]) -> str | None:
         candidate = self._config_value(detail, "selection_key", "selectionKey", "id")
         if isinstance(candidate, str) and candidate.strip():
@@ -154,18 +184,18 @@ class OrgUnitHierarchyService:
         descendant_detail: dict[str, Any],
         ancestor_detail: dict[str, Any],
     ) -> bool:
-        ancestor_source_id = self._detail_source_id(ancestor_detail)
-        descendant_source_id = self._detail_source_id(descendant_detail)
-        if not ancestor_source_id or not descendant_source_id:
+        ancestor_structure_id = self._detail_structure_id(ancestor_detail)
+        descendant_structure_id = self._detail_structure_id(descendant_detail)
+        if not ancestor_structure_id or not descendant_structure_id:
             return False
-        if ancestor_source_id == descendant_source_id:
+        if ancestor_structure_id == descendant_structure_id:
             return False
         if not self._details_share_instance_scope(ancestor_detail, descendant_detail):
             return False
 
         path_parts = self._detail_path_parts(descendant_detail)
         if path_parts:
-            return ancestor_source_id in path_parts[:-1]
+            return ancestor_structure_id in path_parts[:-1]
 
         return False
 
@@ -275,8 +305,13 @@ class OrgUnitHierarchyService:
         return list(range(start_level, max_level + 1))
 
     @staticmethod
-    def get_level_mapping(dataset_config: dict[str, Any]) -> list[dict[str, Any]] | None:
+    def get_level_mapping(
+        dataset_config: dict[str, Any],
+        repository_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | None:
         level_mapping = dataset_config.get("level_mapping")
+        if not isinstance(level_mapping, dict) and isinstance(repository_config, dict):
+            level_mapping = repository_config.get("level_mapping")
         if not isinstance(level_mapping, dict) or not level_mapping.get("enabled"):
             return None
 
@@ -290,6 +325,265 @@ class OrgUnitHierarchyService:
             if merged_level > 0:
                 valid_rows.append({**row, "merged_level": merged_level})
         return valid_rows
+
+    def _default_enabled_attribute_dimension_items(
+        self,
+        field_name: str,
+        instance_ids: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        if field_name not in {"groups", "group_sets"}:
+            return []
+
+        normalized_instance_ids = [
+            instance_id
+            for instance_id in list(instance_ids or [])
+            if isinstance(instance_id, int)
+        ]
+        if not normalized_instance_ids:
+            return []
+
+        items_by_key: dict[str, dict[str, Any]] = {}
+        for instance_id in normalized_instance_ids:
+            namespace = (
+                _ORG_UNIT_GROUPS_NAMESPACE
+                if field_name == "groups"
+                else _ORG_UNIT_GROUPSETS_NAMESPACE
+            )
+            snapshot = self._load_snapshot(namespace, instance_id)
+            if snapshot is None or snapshot.get("status") != "success":
+                continue
+
+            for raw_item in list(snapshot.get("result") or []):
+                if not isinstance(raw_item, dict):
+                    continue
+                item_key = str(raw_item.get("id") or "").strip()
+                if not item_key:
+                    continue
+                label = str(
+                    raw_item.get("displayName")
+                    or raw_item.get("name")
+                    or item_key
+                ).strip() or item_key
+                item = items_by_key.setdefault(
+                    item_key,
+                    {
+                        "key": item_key,
+                        "label": label,
+                        "source_refs": [],
+                    },
+                )
+                source_ref: dict[str, Any] = {
+                    "instance_id": instance_id,
+                    "source_id": item_key,
+                    "source_label": label,
+                }
+                if field_name == "group_sets":
+                    source_ref["source_group_ids"] = [
+                        str(group.get("id") or "").strip()
+                        for group in list(raw_item.get("organisationUnitGroups") or [])
+                        if isinstance(group, dict)
+                        and str(group.get("id") or "").strip()
+                    ]
+                    source_ref["source_group_labels"] = [
+                        str(
+                            group.get("displayName")
+                            or group.get("name")
+                            or group.get("id")
+                            or ""
+                        ).strip()
+                        for group in list(raw_item.get("organisationUnitGroups") or [])
+                        if isinstance(group, dict)
+                        and str(
+                            group.get("displayName")
+                            or group.get("name")
+                            or group.get("id")
+                            or ""
+                        ).strip()
+                    ]
+                    item["member_group_keys"] = sorted(
+                        {
+                            *list(item.get("member_group_keys") or []),
+                            *list(source_ref["source_group_ids"] or []),
+                        }
+                    )
+                    item["member_group_labels"] = sorted(
+                        {
+                            *list(item.get("member_group_labels") or []),
+                            *list(source_ref["source_group_labels"] or []),
+                        }
+                    )
+                item["source_refs"] = [
+                    *list(item.get("source_refs") or []),
+                    source_ref,
+                ]
+
+        return list(items_by_key.values())
+
+    def _enabled_dimension_items(
+        self,
+        repository_config: dict[str, Any] | None,
+        field_name: str,
+        instance_ids: list[int] | None = None,
+        dataset_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        dataset_dimension_keys: set[str] | None = None
+        if isinstance(dataset_config, dict):
+            dataset_dimensions = dataset_config.get("repository_enabled_dimensions")
+            if isinstance(dataset_dimensions, dict):
+                raw_keys = dataset_dimensions.get(field_name)
+                if raw_keys is not None:
+                    dataset_dimension_keys = {
+                        str(item).strip()
+                        for item in (list(raw_keys) if isinstance(raw_keys, list) else [])
+                        if str(item).strip()
+                    }
+
+        if not isinstance(repository_config, dict):
+            items = self._default_enabled_attribute_dimension_items(
+                field_name,
+                instance_ids,
+            )
+        else:
+            enabled_dimensions = repository_config.get("enabled_dimensions")
+            if not isinstance(enabled_dimensions, dict):
+                items = self._default_enabled_attribute_dimension_items(
+                    field_name,
+                    instance_ids,
+                )
+            else:
+                items = enabled_dimensions.get(field_name)
+                if items is None:
+                    items = self._default_enabled_attribute_dimension_items(
+                        field_name,
+                        instance_ids,
+                    )
+                elif not isinstance(items, list):
+                    items = []
+
+        normalized_items = [item for item in items if isinstance(item, dict)]
+        if dataset_dimension_keys is None:
+            return normalized_items
+        if not dataset_dimension_keys:
+            return []
+        return [
+            item
+            for item in normalized_items
+            if str(item.get("key") or "").strip() in dataset_dimension_keys
+        ]
+
+    def _enabled_level_numbers(
+        self,
+        repository_config: dict[str, Any] | None,
+        dataset_config: dict[str, Any] | None = None,
+    ) -> set[int] | None:
+        dataset_levels_configured = False
+        dataset_level_keys: list[str] = []
+        if isinstance(dataset_config, dict):
+            dataset_dimensions = dataset_config.get("repository_enabled_dimensions")
+            if isinstance(dataset_dimensions, dict) and "levels" in dataset_dimensions:
+                dataset_levels_configured = True
+                raw_level_keys = dataset_dimensions.get("levels")
+                if isinstance(raw_level_keys, list):
+                    dataset_level_keys = [
+                        str(item).strip()
+                        for item in raw_level_keys
+                        if str(item).strip()
+                    ]
+        items = self._enabled_dimension_items(
+            repository_config,
+            "levels",
+            dataset_config=dataset_config,
+        )
+        if not items:
+            if not dataset_levels_configured:
+                return None
+            parsed_levels = {
+                int(key.split(":", 1)[1])
+                for key in dataset_level_keys
+                if key.startswith("level:")
+                and key.split(":", 1)[1].isdigit()
+            }
+            return parsed_levels if parsed_levels else set()
+        enabled_levels = {
+            int(item["repository_level"])
+            for item in items
+            if item.get("repository_level") is not None
+        }
+        return enabled_levels if enabled_levels else set()
+
+    def _build_attribute_columns(
+        self,
+        repository_config: dict[str, Any] | None,
+        instance_ids: list[int],
+        used_identifiers: set[str],
+        dataset_config: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, str]]:
+        attribute_columns: list[dict[str, Any]] = []
+        group_column_names: dict[str, str] = {}
+        group_set_column_names: dict[str, str] = {}
+
+        for item in self._enabled_dimension_items(
+            repository_config,
+            "groups",
+            instance_ids,
+            dataset_config=dataset_config,
+        ):
+            key = str(item.get("key") or "").strip()
+            label = str(item.get("label") or key).strip()
+            if not key or not label:
+                continue
+            column_name = dedupe_identifier(label, used_identifiers)
+            group_column_names[key] = column_name
+            attribute_columns.append(
+                {
+                    "column_name": column_name,
+                    "verbose_name": label,
+                    "type": "STRING",
+                    "sql_type": "TEXT",
+                    "is_dttm": False,
+                    "is_dimension": True,
+                    "extra": {
+                        _DHIS2_OU_GROUP_EXTRA_KEY: True,
+                        _DHIS2_OU_GROUP_ID_EXTRA_KEY: key,
+                    },
+                }
+            )
+
+        for item in self._enabled_dimension_items(
+            repository_config,
+            "group_sets",
+            instance_ids,
+            dataset_config=dataset_config,
+        ):
+            key = str(item.get("key") or "").strip()
+            label = str(item.get("label") or key).strip()
+            if not key or not label:
+                continue
+            column_name = dedupe_identifier(label, used_identifiers)
+            group_set_column_names[key] = column_name
+            attribute_columns.append(
+                {
+                    "column_name": column_name,
+                    "verbose_name": label,
+                    "type": "STRING",
+                    "sql_type": "TEXT",
+                    "is_dttm": False,
+                    "is_dimension": True,
+                    "extra": {
+                        _DHIS2_OU_GROUPSET_EXTRA_KEY: True,
+                        _DHIS2_OU_GROUPSET_ID_EXTRA_KEY: key,
+                    },
+                }
+            )
+
+        return attribute_columns, group_column_names, group_set_column_names
+
+    @staticmethod
+    def _normalized_source_refs(item: dict[str, Any]) -> list[dict[str, Any]]:
+        source_refs = item.get("source_refs")
+        if not isinstance(source_refs, list):
+            return []
+        return [source_ref for source_ref in source_refs if isinstance(source_ref, dict)]
 
     def _resolve_level_labels(
         self,
@@ -544,6 +838,115 @@ class OrgUnitHierarchyService:
 
         return hierarchy_lookup
 
+    def _build_attribute_lookup(
+        self,
+        instance_ids: list[int],
+        repository_config: dict[str, Any] | None,
+        group_column_names: dict[str, str],
+        group_set_column_names: dict[str, str],
+        dataset_config: dict[str, Any] | None = None,
+    ) -> dict[tuple[int, str], dict[str, Any]]:
+        if not group_column_names and not group_set_column_names:
+            return {}
+
+        enabled_groups = self._enabled_dimension_items(
+            repository_config,
+            "groups",
+            instance_ids,
+            dataset_config=dataset_config,
+        )
+        enabled_group_sets = self._enabled_dimension_items(
+            repository_config,
+            "group_sets",
+            instance_ids,
+            dataset_config=dataset_config,
+        )
+        attribute_lookup: dict[tuple[int, str], dict[str, Any]] = defaultdict(dict)
+
+        for instance_id in instance_ids:
+            group_snapshot = self._load_snapshot(_ORG_UNIT_GROUPS_NAMESPACE, instance_id)
+            group_set_snapshot = self._load_snapshot(
+                _ORG_UNIT_GROUPSETS_NAMESPACE,
+                instance_id,
+            )
+
+            group_membership: dict[str, set[str]] = defaultdict(set)
+            for group in list((group_snapshot or {}).get("result") or []):
+                if not isinstance(group, dict):
+                    continue
+                group_id = str(group.get("id") or "").strip()
+                if not group_id:
+                    continue
+                for member in list(group.get("organisationUnits") or []):
+                    member_id = (
+                        str(member.get("id") or "").strip()
+                        if isinstance(member, dict)
+                        else ""
+                    )
+                    if member_id:
+                        group_membership[group_id].add(member_id)
+
+            group_set_membership: dict[str, dict[str, str]] = {}
+            for group_set in list((group_set_snapshot or {}).get("result") or []):
+                if not isinstance(group_set, dict):
+                    continue
+                group_set_id = str(group_set.get("id") or "").strip()
+                if not group_set_id:
+                    continue
+                group_set_membership[group_set_id] = {}
+                for group in list(group_set.get("organisationUnitGroups") or []):
+                    if not isinstance(group, dict):
+                        continue
+                    group_id = str(group.get("id") or "").strip()
+                    if not group_id:
+                        continue
+                    group_set_membership[group_set_id][group_id] = str(
+                        group.get("displayName") or group.get("name") or group_id
+                    ).strip()
+
+            for item in enabled_groups:
+                item_key = str(item.get("key") or "").strip()
+                column_name = group_column_names.get(item_key)
+                if not item_key or not column_name:
+                    continue
+                matched_group_ids = {
+                    str(source_ref.get("source_id") or "").strip()
+                    for source_ref in self._normalized_source_refs(item)
+                    if self._normalize_optional_int(source_ref.get("instance_id"))
+                    == instance_id
+                }
+                if not matched_group_ids:
+                    matched_group_ids = {item_key}
+                for group_id in matched_group_ids:
+                    for org_unit_id in group_membership.get(group_id, set()):
+                        attribute_lookup[(instance_id, org_unit_id)][column_name] = (
+                            str(item.get("label") or item_key).strip() or item_key
+                        )
+
+            for item in enabled_group_sets:
+                item_key = str(item.get("key") or "").strip()
+                column_name = group_set_column_names.get(item_key)
+                if not item_key or not column_name:
+                    continue
+                matched_group_set_ids = {
+                    str(source_ref.get("source_id") or "").strip()
+                    for source_ref in self._normalized_source_refs(item)
+                    if self._normalize_optional_int(source_ref.get("instance_id"))
+                    == instance_id
+                }
+                if not matched_group_set_ids:
+                    matched_group_set_ids = {item_key}
+                for group_set_id in matched_group_set_ids:
+                    for group_id, group_label in group_set_membership.get(
+                        group_set_id, {}
+                    ).items():
+                        for org_unit_id in group_membership.get(group_id, set()):
+                            attribute_lookup[(instance_id, org_unit_id)][column_name] = (
+                                group_label or item_key
+                            )
+
+        return dict(attribute_lookup)
+
     def get_ancestor_chain(
         self,
         instance_id: int,
@@ -589,19 +992,34 @@ class OrgUnitHierarchyService:
         dataset_config: dict[str, Any],
         selected_instance_ids: list[int],
         used_identifiers: set[str],
+        repository_config: dict[str, Any] | None = None,
     ) -> OrgUnitHierarchyContext:
-        mapping_rows = self.get_level_mapping(dataset_config)
+        mapping_rows = self.get_level_mapping(dataset_config, repository_config)
         selected_root_details = self._selected_root_details(
             dataset_config,
             selected_instance_ids,
         )
-        level_range = self._resolve_level_range(
+        resolved_level_range = self._resolve_level_range(
             dataset_config,
             selected_instance_ids,
             mapping_rows,
         )
+        enabled_level_numbers = self._enabled_level_numbers(
+            repository_config,
+            dataset_config,
+        )
+        level_range = (
+            [
+                level
+                for level in resolved_level_range
+                if enabled_level_numbers is None or level in enabled_level_numbers
+            ]
+            if resolved_level_range
+            else []
+        )
 
         hierarchy_columns: list[dict[str, Any]] = []
+        attribute_columns: list[dict[str, Any]] = []
         dimension_column_names: list[str] = []
         fallback_org_unit_column: str | None = None
 
@@ -630,7 +1048,7 @@ class OrgUnitHierarchyService:
                     }
                 )
                 dimension_column_names.append(column_name)
-        else:
+        elif not resolved_level_range:
             fallback_org_unit_column = dedupe_identifier("organisation_unit", used_identifiers)
             dimension_column_names.append(fallback_org_unit_column)
 
@@ -639,6 +1057,28 @@ class OrgUnitHierarchyService:
             hierarchy_columns,
             mapping_rows,
         )
+        (
+            attribute_columns,
+            group_column_names,
+            group_set_column_names,
+        ) = self._build_attribute_columns(
+            repository_config,
+            selected_instance_ids,
+            used_identifiers,
+            dataset_config,
+        )
+        attribute_lookup = self._build_attribute_lookup(
+            selected_instance_ids,
+            repository_config,
+            group_column_names,
+            group_set_column_names,
+            dataset_config,
+        )
+        for column in attribute_columns:
+            dimension_column_names.append(column["column_name"])
+        for lookup_key, attribute_values in attribute_lookup.items():
+            current_values = hierarchy_lookup.setdefault(lookup_key, {})
+            current_values.update(attribute_values)
         diagnostics = {
             "selected_instance_ids": selected_instance_ids,
             "level_range": level_range,
@@ -646,6 +1086,8 @@ class OrgUnitHierarchyService:
             "selected_root_details_count": len(selected_root_details),
             "mapping_enabled": mapping_rows is not None,
             "hierarchy_nodes_resolved": len(hierarchy_lookup),
+            "enabled_group_dimensions": len(group_column_names),
+            "enabled_group_set_dimensions": len(group_set_column_names),
             "query_context": self.build_level_specific_query_context(
                 dataset_config,
                 selected_root_details,
@@ -659,6 +1101,7 @@ class OrgUnitHierarchyService:
         )
         return OrgUnitHierarchyContext(
             hierarchy_columns=hierarchy_columns,
+            attribute_columns=attribute_columns,
             dimension_column_names=dimension_column_names,
             hierarchy_lookup=hierarchy_lookup,
             fallback_org_unit_column=fallback_org_unit_column,

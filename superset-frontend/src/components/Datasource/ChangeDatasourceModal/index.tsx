@@ -54,6 +54,7 @@ import {
   SORT_BY as DATASET_SORT_BY,
 } from 'src/features/datasets/constants';
 import withToasts from 'src/components/MessageToasts/withToasts';
+import { getDatasetDisplayName } from 'src/utils/dhis2DatasetDisplay';
 import { InputRef } from 'antd';
 import type { Datasource, ChangeDatasourceModalProps } from '../types';
 
@@ -211,7 +212,7 @@ const ChangeDatasourceModal: FunctionComponent<ChangeDatasourceModalProps> = ({
           data-test="datasource-link"
           onClick={() => selectDatasource({ type: 'table', ...original })}
         >
-          {original?.table_name}
+          {getDatasetDisplayName(original)}
         </StyledSpan>
       ),
       Header: t('Name'),

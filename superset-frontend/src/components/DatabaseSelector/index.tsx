@@ -130,6 +130,7 @@ export function DatabaseSelector({
   readOnly = false,
   sqlLabMode = false,
 }: DatabaseSelectorProps) {
+  const defaultSchemaLabel = t('Default schema');
   const showCatalogSelector = !!db?.allow_multi_catalog;
   const [currentDb, setCurrentDb] = useState<DatabaseValue | undefined>();
   const [errorPayload, setErrorPayload] = useState<SupersetError | null>();
@@ -139,7 +140,13 @@ export function DatabaseSelector({
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
   const [currentSchema, setCurrentSchema] = useState<SchemaOption | undefined>(
-    schema ? { label: schema, value: schema, title: schema } : undefined,
+    schema !== undefined
+      ? {
+          label: schema || defaultSchemaLabel,
+          value: schema,
+          title: schema || defaultSchemaLabel,
+        }
+      : undefined,
   );
   const schemaRef = useRef(schema);
   schemaRef.current = schema;
@@ -249,6 +256,12 @@ export function DatabaseSelector({
       setErrorPayload(null);
       if (schemas.length === 1) {
         changeSchema(schemas[0]);
+      } else if (schemas.length === 0) {
+        changeSchema({
+          label: defaultSchemaLabel,
+          value: '',
+          title: defaultSchemaLabel,
+        });
       } else if (
         !schemas.find(schemaOption => schemaRef.current === schemaOption.value)
       ) {

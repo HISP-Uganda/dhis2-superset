@@ -121,6 +121,165 @@ export type DatabaseObject = {
 
   // SSH Tunnel information
   ssh_tunnel?: SSHTunnelObject | null;
+
+  // DHIS2 repository reporting units
+  repository_reporting_unit_approach?: RepositoryReportingUnitApproach | null;
+  lowest_data_level_to_use?: number | null;
+  primary_instance_id?: number | null;
+  repository_data_scope?: RepositoryDataScope | null;
+  repository_org_unit_config?: DatabaseRepositoryOrgUnitConfig | null;
+  repository_org_units?: RepositoryOrgUnitRecord[];
+  repository_org_unit_status?: string | null;
+  repository_org_unit_status_message?: string | null;
+  repository_org_unit_task_id?: string | null;
+  repository_org_unit_last_finalized_at?: string | null;
+  repository_org_unit_summary?: {
+    approach?: RepositoryReportingUnitApproach | null;
+    lowest_data_level_to_use?: number | null;
+    primary_instance_id?: number | null;
+    data_scope?: RepositoryDataScope | null;
+    status?: string | null;
+    status_message?: string | null;
+    task_id?: string | null;
+    last_finalized_at?: string | null;
+    total_repository_org_units?: number;
+    source_lineage_counts?: Record<string, number>;
+    conflicted_count?: number;
+    unmatched_count?: number;
+    enabled_level_dimensions?: number;
+    enabled_group_dimensions?: number;
+    enabled_group_set_dimensions?: number;
+  } | null;
+};
+
+export type RepositoryReportingUnitApproach =
+  | 'primary_instance'
+  | 'map_merge'
+  | 'auto_merge'
+  | 'separate';
+
+export type RepositoryDataScope =
+  | 'selected'
+  | 'children'
+  | 'grandchildren'
+  | 'ancestors'
+  | 'all_levels';
+
+export type RepositoryLevelMappingRow = {
+  merged_level: number;
+  label: string;
+  instance_levels: Record<string, number | null>;
+};
+
+export type RepositoryLevelMappingConfig = {
+  enabled: boolean;
+  rows: RepositoryLevelMappingRow[];
+};
+
+export type RepositoryOrgUnitDetail = {
+  id: string;
+  selectionKey?: string;
+  sourceOrgUnitId?: string;
+  displayName: string;
+  parentId?: string;
+  level?: number;
+  path?: string;
+  sourceInstanceIds?: number[];
+  sourceInstanceNames?: string[];
+  repositoryLevel?: number;
+  repositoryLevelName?: string;
+  repositoryKey?: string;
+  sourceLineageLabel?: string | null;
+  strategy?: string | null;
+  lineage?: RepositoryOrgUnitLineage[];
+  provenance?: Record<string, unknown> | null;
+};
+
+export type RepositoryOrgUnitLineage = {
+  instance_id: number;
+  source_instance_role?: string | null;
+  source_instance_code?: string | null;
+  source_org_unit_uid: string;
+  source_org_unit_name?: string | null;
+  source_parent_uid?: string | null;
+  source_path?: string | null;
+  source_level?: number | null;
+  provenance?: Record<string, any> | null;
+};
+
+export type RepositoryOrgUnitRecord = {
+  repository_key: string;
+  display_name: string;
+  parent_repository_key?: string | null;
+  level?: number | null;
+  hierarchy_path?: string | null;
+  selection_key?: string | null;
+  strategy?: RepositoryReportingUnitApproach | string | null;
+  source_lineage_label?: string | null;
+  is_conflicted?: boolean;
+  is_unmatched?: boolean;
+  provenance?: Record<string, any> | null;
+  lineage: RepositoryOrgUnitLineage[];
+};
+
+export type RepositorySeparateInstanceConfig = {
+  instance_id: number;
+  data_scope: RepositoryDataScope;
+  lowest_data_level_to_use?: number | null;
+  selected_org_units: string[];
+  selected_org_unit_details: RepositoryOrgUnitDetail[];
+};
+
+export type RepositoryDimensionSourceRef = {
+  instance_id: number;
+  source_instance_code?: string | null;
+  source_instance_name?: string | null;
+  source_id?: string | null;
+  source_label?: string | null;
+  source_level?: number | null;
+  source_group_ids?: string[];
+  source_group_labels?: string[];
+};
+
+export type RepositoryEnabledLevelDimension = {
+  key: string;
+  label: string;
+  repository_level: number;
+  source_refs: RepositoryDimensionSourceRef[];
+};
+
+export type RepositoryEnabledGroupDimension = {
+  key: string;
+  label: string;
+  source_refs: RepositoryDimensionSourceRef[];
+};
+
+export type RepositoryEnabledGroupSetDimension = {
+  key: string;
+  label: string;
+  member_group_keys?: string[];
+  member_group_labels?: string[];
+  source_refs: RepositoryDimensionSourceRef[];
+};
+
+export type DatabaseRepositoryEnabledDimensions = {
+  levels?: RepositoryEnabledLevelDimension[];
+  groups?: RepositoryEnabledGroupDimension[];
+  group_sets?: RepositoryEnabledGroupSetDimension[];
+};
+
+export type DatabaseRepositoryOrgUnitConfig = {
+  selected_org_units?: string[];
+  selected_org_unit_details?: RepositoryOrgUnitDetail[];
+  level_mapping?: RepositoryLevelMappingConfig | null;
+  filters?: Record<string, any>;
+  auto_merge?: {
+    fallback_behavior?: 'preserve_unmatched' | 'drop_unmatched';
+    unresolved_conflicts?: 'preserve_for_review' | 'drop';
+  } | null;
+  separate_instance_configs?: RepositorySeparateInstanceConfig[];
+  enabled_dimensions?: DatabaseRepositoryEnabledDimensions | null;
+  repository_org_units?: RepositoryOrgUnitRecord[];
 };
 
 export type DatabaseForm = {

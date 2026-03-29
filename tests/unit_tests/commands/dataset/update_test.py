@@ -115,6 +115,60 @@ def test_update_dataset_sql_authorized_schema(mocker: MockerFixture) -> None:
     mock_dataset_dao.update.assert_called_once()
 
 
+def test_update_dhis2_metadata_wrapper_dataset(mocker: MockerFixture) -> None:
+    """
+    Staged-local logical METADATA datasets should remain editable like any
+    other metadata dataset.
+    """
+    mock_dataset_dao = mocker.patch("superset.commands.dataset.update.DatasetDAO")
+    mock_database = mocker.MagicMock()
+    mock_database.id = 5
+    mock_database.get_default_catalog.return_value = None
+    mock_database.allow_multi_catalog = False
+
+    mock_dataset = mocker.MagicMock()
+    mock_dataset.database = mock_database
+    mock_dataset.catalog = None
+    mock_dataset.schema = None
+    mock_dataset.table_name = "Malaria Routine Monthly Datasets"
+    mock_dataset.owners = []
+    mock_dataset.dataset_role = "METADATA"
+    mock_dataset.extra = (
+        '{"dhis2_staged_local": true, '
+        '"dhis2_staged_dataset_id": 4, '
+        '"dhis2_serving_database_id": 4, '
+        '"dhis2_serving_table_ref": "`dhis2_serving`.`sv_4_malaria_routine_monthly_datasets`"}'
+    )
+    mock_dataset.sql = (
+        "SELECT * FROM `dhis2_serving`.`sv_4_malaria_routine_monthly_datasets`"
+    )
+
+    mock_dataset_dao.find_by_id.return_value = mock_dataset
+    mock_dataset_dao.validate_update_uniqueness.return_value = True
+    mock_dataset_dao.update.return_value = mock_dataset
+
+    mocker.patch(
+        "superset.commands.dataset.update.security_manager.raise_for_ownership",
+    )
+    mocker.patch("superset.commands.utils.security_manager.is_admin", return_value=True)
+    schedule_sync = mocker.patch(
+        "superset.commands.dataset.update.schedule_staged_dataset_sync_after_commit",
+    )
+
+    result = UpdateDatasetCommand(
+        1,
+        {"description": "Updated description"},
+    ).run()
+
+    assert result == mock_dataset
+    mock_dataset_dao.update.assert_called_once()
+    schedule_sync.assert_called_once_with(
+        4,
+        job_type="scheduled",
+        prefer_immediate=True,
+    )
+
+
 def test_update_dataset_sql_unauthorized_schema(mocker: MockerFixture) -> None:
     """
     Test that updating a dataset with SQL to an unauthorized schema raises an error.

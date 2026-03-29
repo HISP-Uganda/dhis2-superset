@@ -32,4 +32,5 @@ export default interface Dataset {
   owners: Array<Owner>;
   schema: string;
   table_name: string;
+  extra?: string | Record<string, any> | null;
 }

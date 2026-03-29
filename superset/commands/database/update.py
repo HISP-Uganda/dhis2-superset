@@ -22,6 +22,7 @@ from functools import partial
 from typing import Any
 
 from flask_appbuilder.models.sqla import Model
+from marshmallow import ValidationError
 
 from superset import db, is_feature_enabled
 from superset.commands.base import BaseCommand
@@ -43,6 +44,10 @@ from superset.commands.database.sync_permissions import SyncPermissionsCommand
 from superset.daos.database import DatabaseDAO
 from superset.databases.ssh_tunnel.models import SSHTunnel
 from superset.db_engine_specs.dhis2 import DHIS2EngineSpec
+from superset.dhis2.database_repository_org_unit_service import (
+    DatabaseRepositoryOrgUnitService,
+    extract_repository_reporting_unit_payload,
+)
 from superset.dhis2.metadata_staging_service import (
     schedule_database_metadata_refresh_after_commit,
 )
@@ -62,6 +67,9 @@ class UpdateDatabaseCommand(BaseCommand):
         self._properties = data.copy()
         self._model_id = model_id
         self._model: Database | None = None
+        self._repository_reporting_unit_payload = (
+            extract_repository_reporting_unit_payload(self._properties)
+        )
 
     @transaction(on_error=partial(on_error, reraise=DatabaseUpdateFailedError))
     def run(self) -> Model:
@@ -100,8 +108,16 @@ class UpdateDatabaseCommand(BaseCommand):
                 force_update = True
 
         # build new DB
-        database = DatabaseDAO.update(self._model, self._properties)
-        database.set_sqlalchemy_uri(database.sqlalchemy_uri)
+        try:
+            database = DatabaseDAO.update(self._model, self._properties)
+            database.set_sqlalchemy_uri(database.sqlalchemy_uri)
+            if self._repository_reporting_unit_payload:
+                DatabaseRepositoryOrgUnitService.validate_and_stage(
+                    database,
+                    self._repository_reporting_unit_payload,
+                )
+        except ValidationError as ex:
+            raise DatabaseInvalidError(exceptions=[ex]) from ex
         ssh_tunnel = self._handle_ssh_tunnel(database)
         new_catalog = None if is_dhis2_shell else database.get_default_catalog()
 
@@ -263,3 +279,7 @@ class UpdateDatabaseCommand(BaseCommand):
             database.id,
             reason="database_updated",
         )
+        if database.repository_reporting_unit_approach:
+            DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit(
+                database.id
+            )

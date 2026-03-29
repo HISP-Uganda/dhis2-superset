@@ -64,6 +64,69 @@ const VALIDATE_PARAMS_ENDPOINT = 'glob:*/api/v1/database/validate_parameters*';
 const DATABASE_CONNECT_ENDPOINT = 'glob:*/api/v1/database/';
 const DHIS2_INSTANCES_ENDPOINT =
   'glob:*/api/v1/dhis2/instances/?database_id=10&include_inactive=true';
+const DHIS2_METADATA_STATUS_ENDPOINT =
+  'glob:*/api/v1/dhis2/diagnostics/metadata-status/10';
+const DHIS2_ORG_UNITS_ENDPOINT =
+  'glob:*/api/v1/database/10/dhis2_metadata/?type=organisationUnits*&staged=true*';
+const DHIS2_ORG_UNIT_LEVELS_ENDPOINT =
+  'glob:*/api/v1/database/10/dhis2_metadata/?type=organisationUnitLevels*&staged=true*';
+const DHIS2_ORG_UNIT_GROUPS_ENDPOINT =
+  'glob:*/api/v1/database/10/dhis2_metadata/?type=organisationUnitGroups*&staged=true*';
+const DHIS2_ORG_UNIT_GROUPSETS_ENDPOINT =
+  'glob:*/api/v1/database/10/dhis2_metadata/?type=organisationUnitGroupSets*&staged=true*';
+
+const repositoryOrgUnitSelection = {
+  id: 'OU_ROOT',
+  selectionKey: 'OU_ROOT',
+  sourceOrgUnitId: 'OU_ROOT',
+  displayName: 'Uganda',
+  level: 1,
+  sourceInstanceIds: [101],
+  sourceInstanceNames: ['National eHMIS DHIS2'],
+};
+
+const repositoryOrgUnitRecords = [
+  {
+    repository_key: 'OU_ROOT',
+    display_name: 'Uganda',
+    parent_repository_key: null,
+    level: 1,
+    hierarchy_path: 'OU_ROOT',
+    selection_key: 'OU_ROOT',
+    strategy: 'primary_instance',
+    source_lineage_label: 'A',
+    is_conflicted: false,
+    is_unmatched: false,
+    provenance: {
+      sourceSelectionKeys: ['OU_ROOT'],
+    },
+    lineage: [
+      {
+        instance_id: 101,
+        source_instance_code: 'A',
+        source_org_unit_uid: 'OU_ROOT',
+        source_org_unit_name: 'Uganda',
+        source_level: 1,
+      },
+    ],
+  },
+];
+
+const repositorySummary = {
+  approach: 'primary_instance',
+  lowest_data_level_to_use: 2,
+  primary_instance_id: 101,
+  data_scope: 'children',
+  total_repository_org_units: 1,
+  source_lineage_counts: {
+    A: 1,
+  },
+  conflicted_count: 0,
+  unmatched_count: 0,
+  enabled_level_dimensions: 1,
+  enabled_group_dimensions: 1,
+  enabled_group_set_dimensions: 1,
+};
 
 const databaseFixture: DatabaseObject = {
   id: 123,
@@ -99,6 +162,24 @@ describe('DatabaseModal', () => {
         allow_ctas: false,
         allow_cvas: false,
         configuration_method: 'sqlalchemy_form',
+      },
+    });
+    fetchMock.get(DHIS2_METADATA_STATUS_ENDPOINT, {
+      result: {
+        database_id: 10,
+        overall_status: 'ready',
+        variables: {
+          count: 12,
+          status: 'ready',
+        },
+        org_units: {
+          count: 4,
+          status: 'ready',
+        },
+        legend_sets: {
+          count: 1,
+          status: 'ready',
+        },
       },
     });
     fetchMock.mock(AVAILABLE_DB_ENDPOINT, {
@@ -362,6 +443,55 @@ describe('DatabaseModal', () => {
     fetchMock.post(VALIDATE_PARAMS_ENDPOINT, {
       message: 'OK',
     });
+    fetchMock.get(DHIS2_ORG_UNITS_ENDPOINT, {
+      status: 'success',
+      result: [
+        {
+          id: 'OU_ROOT',
+          displayName: 'Uganda',
+          level: 1,
+          source_instance_id: 101,
+          source_instance_name: 'National eHMIS DHIS2',
+        },
+        {
+          id: 'OU_DISTRICT',
+          displayName: 'Kampala',
+          level: 2,
+          parent: { id: 'OU_ROOT' },
+          source_instance_id: 101,
+          source_instance_name: 'National eHMIS DHIS2',
+        },
+      ],
+      instance_results: [
+        {
+          id: 101,
+          name: 'National eHMIS DHIS2',
+          status: 'success',
+          count: 2,
+        },
+      ],
+    });
+    fetchMock.get(DHIS2_ORG_UNIT_LEVELS_ENDPOINT, {
+      status: 'success',
+      result: [
+        {
+          level: 1,
+          displayName: 'National',
+        },
+        {
+          level: 2,
+          displayName: 'District',
+        },
+      ],
+    });
+    fetchMock.get(DHIS2_ORG_UNIT_GROUPS_ENDPOINT, {
+      status: 'success',
+      result: [],
+    });
+    fetchMock.get(DHIS2_ORG_UNIT_GROUPSETS_ENDPOINT, {
+      status: 'success',
+      result: [],
+    });
   });
 
   beforeEach(() => {
@@ -378,6 +508,9 @@ describe('DatabaseModal', () => {
 
   test('uses the staged DHIS2 edit flow and exposes configured instances', async () => {
     const onHide = jest.fn();
+    const updateResource = jest.fn().mockResolvedValue({
+      id: 10,
+    });
     const useSingleViewResourceMock = jest.spyOn(hooks, 'useSingleViewResource');
     useSingleViewResourceMock.mockReturnValue({
       state: {
@@ -392,14 +525,47 @@ describe('DatabaseModal', () => {
           allow_ctas: false,
           allow_cvas: false,
           is_managed_externally: false,
+          repository_reporting_unit_approach: 'primary_instance',
+          lowest_data_level_to_use: 2,
+          primary_instance_id: 101,
+          repository_data_scope: 'children',
+          repository_org_unit_config: {
+            selected_org_units: ['OU_ROOT'],
+            selected_org_unit_details: [repositoryOrgUnitSelection],
+            enabled_dimensions: {
+              levels: [
+                {
+                  key: 'level:1',
+                  label: 'Country',
+                  repository_level: 1,
+                  source_refs: [{ instance_id: 101, source_level: 1 }],
+                },
+              ],
+              groups: [
+                {
+                  key: 'g_urban',
+                  label: 'Urban',
+                  source_refs: [{ instance_id: 101, source_id: 'g_urban' }],
+                },
+              ],
+              group_sets: [
+                {
+                  key: 'gs_ownership',
+                  label: 'Ownership',
+                  source_refs: [{ instance_id: 101, source_id: 'gs_ownership' }],
+                },
+              ],
+            },
+            repository_org_units: repositoryOrgUnitRecords,
+          },
+          repository_org_units: repositoryOrgUnitRecords,
+          repository_org_unit_summary: repositorySummary,
         },
         error: null,
       },
       fetchResource: jest.fn().mockResolvedValue({}),
       createResource: jest.fn(),
-      updateResource: jest.fn().mockResolvedValue({
-        id: 10,
-      }),
+      updateResource,
       clearError: jest.fn(),
       setResource: jest.fn(),
     });
@@ -423,7 +589,7 @@ describe('DatabaseModal', () => {
 
     setup({ databaseId: 10, dbEngine: undefined, onHide });
 
-    expect(await screen.findByText(/step 2 of 4/i)).toBeInTheDocument();
+    expect(await screen.findByText(/step 2 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /configure database details/i }),
     ).toBeInTheDocument();
@@ -433,7 +599,20 @@ describe('DatabaseModal', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
 
-    expect(await screen.findByText(/step 3 of 4/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(updateResource).toHaveBeenCalledTimes(1);
+    });
+    expect(updateResource.mock.calls[0][1]).not.toHaveProperty(
+      'repository_reporting_unit_approach',
+    );
+    expect(updateResource.mock.calls[0][1]).not.toHaveProperty(
+      'repository_org_unit_config',
+    );
+    expect(updateResource.mock.calls[0][1]).not.toHaveProperty(
+      'repository_org_units',
+    );
+
+    expect(await screen.findByText(/step 3 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /add dhis2 instances/i }),
     ).toBeInTheDocument();
@@ -447,22 +626,204 @@ describe('DatabaseModal', () => {
     expect(screen.getByRole('button', { name: /^Edit$/i })).toBeInTheDocument();
 
     await userEvent.click(
-      screen.getByRole('button', { name: /Review database/i }),
+      screen.getByRole('button', {
+        name: /^Continue$/i,
+      }),
     );
 
-    expect(await screen.findByText(/step 4 of 4/i)).toBeInTheDocument();
+    expect(await screen.findByText(/step 4 of 5/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        name: /manage repository reporting units and hierarchy/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Repository org unit builder/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Use a primary instance/i).length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.queryByText(/Auto merge review rules/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Enabled hierarchy levels/i).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Enabled org unit group sets/i).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Enabled org unit groups/i).length,
+    ).toBeGreaterThan(0);
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /^Continue$/i }),
+    );
+
+    expect(await screen.findByText(/step 5 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /review & save database/i }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Repository reporting unit approach/i),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Use a primary instance/i).length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getByText(/Total repository reporting units to store/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Enabled analysis dimensions/i)).toBeInTheDocument();
+    expect(screen.getByText(/Source lineage summary/i)).toBeInTheDocument();
+    expect(screen.getByText(/Primary DHIS2 instance/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/National eHMIS DHIS2/i).length,
+    ).toBeGreaterThan(0);
 
     await userEvent.click(
       screen.getByRole('button', { name: /save database/i }),
     );
 
     await waitFor(() => {
+      expect(updateResource).toHaveBeenCalledTimes(2);
       expect(onHide).toHaveBeenCalled();
       expect(mockHistoryPush).toHaveBeenCalledWith('/databaseview/list/');
     });
+    expect(updateResource.mock.calls[1][1]).toHaveProperty(
+      'repository_reporting_unit_approach',
+      'primary_instance',
+    );
+    expect(updateResource.mock.calls[1][1]).toHaveProperty(
+      'primary_instance_id',
+      101,
+    );
+    expect(updateResource.mock.calls[1][1]).toHaveProperty(
+      'repository_org_unit_config',
+    );
+
+    useSingleViewResourceMock.mockRestore();
+  });
+
+  test('preserves the saved repository approach after intermediate edit saves return partial database payloads', async () => {
+    const React = jest.requireActual('react');
+    const onHide = jest.fn();
+    const fullDatabaseResource = {
+      id: 10,
+      database_name: 'Malaria Repository Multiple Sources',
+      backend: 'dhis2',
+      engine: 'dhis2',
+      configuration_method: 'sqlalchemy_form',
+      expose_in_sqllab: false,
+      allow_ctas: false,
+      allow_cvas: false,
+      is_managed_externally: false,
+      repository_reporting_unit_approach: 'primary_instance',
+      lowest_data_level_to_use: 2,
+      primary_instance_id: 101,
+      repository_data_scope: 'children',
+      repository_org_unit_config: {
+        selected_org_units: ['OU_ROOT'],
+        selected_org_unit_details: [repositoryOrgUnitSelection],
+        enabled_dimensions: {
+          levels: [
+            {
+              key: 'level:1',
+              label: 'Country',
+              repository_level: 1,
+              source_refs: [{ instance_id: 101, source_level: 1 }],
+            },
+          ],
+          groups: [
+            {
+              key: 'g_urban',
+              label: 'Urban',
+              source_refs: [{ instance_id: 101, source_id: 'g_urban' }],
+            },
+          ],
+          group_sets: [
+            {
+              key: 'gs_ownership',
+              label: 'Ownership',
+              source_refs: [{ instance_id: 101, source_id: 'gs_ownership' }],
+            },
+          ],
+        },
+        repository_org_units: repositoryOrgUnitRecords,
+      },
+      repository_org_units: repositoryOrgUnitRecords,
+      repository_org_unit_summary: repositorySummary,
+    };
+
+    const useSingleViewResourceMock = jest.spyOn(hooks, 'useSingleViewResource');
+    useSingleViewResourceMock.mockImplementation(() => {
+      const [state, setState] = React.useState({
+        loading: false,
+        resource: fullDatabaseResource,
+        error: null,
+      });
+
+      return {
+        state,
+        fetchResource: jest.fn().mockImplementation(async () => {
+          setState({
+            loading: false,
+            resource: fullDatabaseResource,
+            error: null,
+          });
+          return fullDatabaseResource;
+        }),
+        createResource: jest.fn(),
+        updateResource: jest.fn().mockImplementation(async (_id, resource) => {
+          setState({
+            loading: false,
+            resource: { ...(resource as object), id: 10 },
+            error: null,
+          });
+          return resource;
+        }),
+        clearError: jest.fn(),
+        setResource: jest.fn(),
+      };
+    });
+
+    fetchMock.get(DHIS2_INSTANCES_ENDPOINT, {
+      result: [
+        {
+          id: 101,
+          database_id: 10,
+          name: 'National eHMIS DHIS2',
+          url: 'https://national.example.org',
+          auth_type: 'basic',
+          is_active: true,
+          display_order: 10,
+        },
+        {
+          id: 102,
+          database_id: 10,
+          name: 'Partner DHIS2',
+          url: 'https://partner.example.org',
+          auth_type: 'basic',
+          is_active: true,
+          display_order: 20,
+        },
+      ],
+    });
+
+    setup({ databaseId: 10, dbEngine: undefined, onHide });
+
+    expect(await screen.findByText(/step 2 of 5/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+
+    expect(await screen.findByText(/step 3 of 5/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+
+    expect(await screen.findByText(/step 4 of 5/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Use a primary instance/i).length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.queryByText(/Auto merge review rules/i),
+    ).not.toBeInTheDocument();
 
     useSingleViewResourceMock.mockRestore();
   });
@@ -494,6 +855,41 @@ describe('DatabaseModal', () => {
               allow_ctas: false,
               allow_cvas: false,
               is_managed_externally: false,
+              repository_reporting_unit_approach: 'primary_instance',
+              lowest_data_level_to_use: 2,
+              primary_instance_id: 101,
+              repository_data_scope: 'children',
+              repository_org_unit_config: {
+                selected_org_units: ['OU_ROOT'],
+                selected_org_unit_details: [repositoryOrgUnitSelection],
+                enabled_dimensions: {
+                  levels: [
+                    {
+                      key: 'level:1',
+                      label: 'Country',
+                      repository_level: 1,
+                      source_refs: [{ instance_id: 101, source_level: 1 }],
+                    },
+                  ],
+                  groups: [
+                    {
+                      key: 'g_urban',
+                      label: 'Urban',
+                      source_refs: [{ instance_id: 101, source_id: 'g_urban' }],
+                    },
+                  ],
+                  group_sets: [
+                    {
+                      key: 'gs_ownership',
+                      label: 'Ownership',
+                      source_refs: [{ instance_id: 101, source_id: 'gs_ownership' }],
+                    },
+                  ],
+                },
+                repository_org_units: repositoryOrgUnitRecords,
+              },
+              repository_org_units: repositoryOrgUnitRecords,
+              repository_org_unit_summary: repositorySummary,
             },
             error: null,
           });
@@ -534,7 +930,7 @@ describe('DatabaseModal', () => {
       }),
     );
 
-    expect(await screen.findByText(/step 2 of 4/i)).toBeInTheDocument();
+    expect(await screen.findByText(/step 2 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /configure database details/i }),
     ).toBeInTheDocument();
@@ -551,7 +947,7 @@ describe('DatabaseModal', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
 
-    expect(await screen.findByText(/step 3 of 4/i)).toBeInTheDocument();
+    expect(await screen.findByText(/step 3 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /add dhis2 instances/i }),
     ).toBeInTheDocument();
@@ -564,15 +960,37 @@ describe('DatabaseModal', () => {
     expect(fetchMock.calls(VALIDATE_PARAMS_ENDPOINT)).toHaveLength(0);
 
     await userEvent.click(
-      screen.getByRole('button', { name: /Review database/i }),
+      screen.getByRole('button', {
+        name: /^Continue$/i,
+      }),
     );
 
-    expect(await screen.findByText(/step 4 of 4/i)).toBeInTheDocument();
+    expect(await screen.findByText(/step 4 of 5/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        name: /manage repository reporting units and hierarchy/i,
+      }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /^Continue$/i }),
+    );
+
+    expect(await screen.findByText(/step 5 of 5/i)).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /review & save database/i }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/1 active instance\(s\) will be available for dataset creation/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Repository reporting unit configuration/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Use a primary instance/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Primary DHIS2 instance/i),
     ).toBeInTheDocument();
 
     await userEvent.click(
@@ -600,7 +1018,7 @@ describe('DatabaseModal', () => {
         name: /connect a database/i,
       });
       // <ModalHeader> - Connection header
-      const step1Helper = await screen.findByText(/step 1 of 4/i);
+      const step1Helper = await screen.findByText(/step 1 of 5/i);
       const selectDbHeader = screen.getByRole('heading', {
         name: /select database type/i,
       });
@@ -704,7 +1122,7 @@ describe('DatabaseModal', () => {
 
       // ---------- Components ----------
       // <TabHeader> - AntD header
-      const closeButton = screen.getByRole('img', { name: 'close' });
+      const closeButton = screen.getAllByLabelText('Close')[0];
 
       const basicHeader = screen.getByRole('heading', {
         name: /connect a database/i,
@@ -819,7 +1237,8 @@ describe('DatabaseModal', () => {
 
       // ---------- Components ----------
       // <TabHeader> - AntD header
-      const closeButton = screen.getByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -899,7 +1318,8 @@ describe('DatabaseModal', () => {
 
       // ----- BEGIN STEP 2 (ADVANCED - SQL LAB)
       // <TabHeader> - AntD header
-      const closeButton = await screen.findByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -1062,7 +1482,8 @@ describe('DatabaseModal', () => {
 
       // ----- BEGIN STEP 2 (ADVANCED - PERFORMANCE)
       // <TabHeader> - AntD header
-      const closeButton = screen.getByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -1119,7 +1540,8 @@ describe('DatabaseModal', () => {
 
       // ----- BEGIN STEP 2 (ADVANCED - SECURITY)
       // <TabHeader> - AntD header
-      const closeButton = screen.getByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -1200,7 +1622,8 @@ describe('DatabaseModal', () => {
 
       // ----- BEGIN STEP 2 (ADVANCED - SECURITY)
       // <TabHeader> - AntD header
-      const closeButton = screen.getByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -1273,7 +1696,8 @@ describe('DatabaseModal', () => {
 
       // ----- BEGIN STEP 2 (ADVANCED - OTHER)
       // <TabHeader> - AntD header
-      const closeButton = await screen.findByRole('button', { name: /close/i });
+      const closeButtons = await screen.findAllByLabelText('Close');
+      const closeButton = closeButtons[0];
       const advancedHeader = screen.getByRole('heading', {
         name: /connect a database/i,
       });
@@ -1690,7 +2114,7 @@ describe('DatabaseModal', () => {
       test('enters step 2 of 3 when proper database is selected', async () => {
         setup();
 
-        expect(await screen.findByText(/step 1 of 4/i)).toBeInTheDocument();
+        expect(await screen.findByText(/step 1 of 5/i)).toBeInTheDocument();
         userEvent.click(
           screen.getByRole('button', {
             name: /postgresql/i,
@@ -1860,9 +2284,14 @@ describe('DatabaseModal', () => {
     test('Error displays when it is an object', async () => {
       setup({ dbEngine: 'PostgreSQL' });
       const step2of3text = await screen.findByText(/step 2 of 3/i);
-      const errorSection = screen.getByText(/Database Creation Error/i);
+      const errorSection = screen.getByRole('alert');
       expect(step2of3text).toBeInTheDocument();
       expect(errorSection).toBeInTheDocument();
+      expect(
+        within(errorSection).getByText(
+          /Review the details below, update the settings, and try again./i,
+        ),
+      ).toBeInTheDocument();
     });
   });
 
@@ -1894,9 +2323,12 @@ describe('DatabaseModal', () => {
       setup({ dbEngine: 'PostgreSQL' });
 
       const step2of3text = await screen.findByText(/step 2 of 3/i);
-      const errorTitleMessage = screen.getByText(/Database Creation Error/i);
+      const errorSection = screen.getByRole('alert');
+      const errorTitleMessage = within(errorSection).getByText(
+        /Review the details below, update the settings, and try again./i,
+      );
       expect(errorTitleMessage).toBeInTheDocument();
-      const button = screen.getByText('See more');
+      const button = screen.getByRole('button', { name: /See more/i });
       userEvent.click(button);
       const errorMessage = screen.getByText(/Test Error With String/i);
       expect(errorMessage).toBeInTheDocument();

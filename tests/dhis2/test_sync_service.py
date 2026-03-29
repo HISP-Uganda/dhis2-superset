@@ -150,6 +150,36 @@ class TestNormalizeAnalyticsResponse:
         rows = svc._normalize_analytics_response(resp, var_map, inst)
         assert rows == []
 
+    def test_reads_coc_and_aoc_dimensions_from_response_headers(self):
+        resp = {
+            "headers": [
+                {"name": "dx"},
+                {"name": "pe"},
+                {"name": "ou"},
+                {"name": "co"},
+                {"name": "ao"},
+                {"name": "value"},
+            ],
+            "rows": [
+                ["abc123", "2024Q1", "ou_xyz", "coc_female", "aoc_project_a", "33"],
+            ],
+            "metaData": {
+                "items": {
+                    "abc123": {"name": "ANC 1st visit"},
+                    "ou_xyz": {"name": "District Hospital"},
+                    "coc_female": {"name": "Female"},
+                    "aoc_project_a": {"name": "Project A"},
+                }
+            },
+        }
+        svc = self._svc()
+        var_map, inst = self._var_map()
+        rows = svc._normalize_analytics_response(resp, var_map, inst)
+        assert rows[0]["co_uid"] == "coc_female"
+        assert rows[0]["co_name"] == "Female"
+        assert rows[0]["aoc_uid"] == "aoc_project_a"
+        assert rows[0]["aoc_name"] == "Project A"
+
     def test_missing_headers_key_handles_gracefully(self):
         svc = self._svc()
         var_map, inst = self._var_map()
@@ -199,6 +229,52 @@ class TestFetchFromInstanceBatching:
         svc._make_analytics_request = fake_request
         svc._fetch_from_instance(inst, variables, {"periods": ["2024Q1"], "org_units": ["abc"]})
         assert call_count[0] == 1
+
+    def test_requests_combo_dimensions_when_category_dimensions_enabled(self):
+        svc = self._svc()
+        inst = _make_instance()
+        variables = [_make_variable()]
+        captured_include_flags: list[bool] = []
+        mock_resp = {**SAMPLE_ANALYTICS_RESPONSE, "rows": []}
+
+        def fake_request(*args, include_combo_dimensions=False, **kwargs):
+            captured_include_flags.append(bool(include_combo_dimensions))
+            return mock_resp
+
+        svc._make_analytics_request = fake_request
+        svc._fetch_from_instance(
+            inst,
+            variables,
+            {
+                "periods": ["2024Q1"],
+                "org_units": ["abc"],
+                "include_disaggregation_dimension": True,
+            },
+        )
+        assert captured_include_flags == [True]
+
+    def test_make_analytics_request_appends_co_and_ao_dimensions(self):
+        from superset.dhis2 import sync_service
+
+        svc = sync_service.DHIS2SyncService()
+        inst = _make_instance()
+        response = MagicMock()
+        response.ok = True
+        response.status_code = 200
+        response.json.return_value = SAMPLE_ANALYTICS_RESPONSE
+
+        with patch("superset.dhis2.sync_service.requests.get", return_value=response) as get_mock:
+            svc._make_analytics_request(
+                inst,
+                dx_ids=["abc123"],
+                periods=["2024Q1"],
+                org_units=["ou_xyz"],
+                include_combo_dimensions=True,
+            )
+
+        params = get_mock.call_args.kwargs["params"]
+        assert ("dimension", "co") in params
+        assert ("dimension", "ao") in params
 
     def test_paginates_within_batch(self):
         """If pageCount > 1, additional page requests should be made."""
@@ -422,6 +498,81 @@ class TestFetchFromInstanceBatching:
         )
 
         assert captured_org_units == [["OU_NATIONAL", "OU_REGION", "OU_DISTRICT"]]
+
+    def test_repository_org_unit_mode_resolves_repository_lineage_for_each_instance(self):
+        svc = self._svc()
+        instance = _make_instance(id=102, name="Non Routine DHIS2")
+        variables = [_make_variable()]
+        captured_org_units: list[list[str]] = []
+        mock_resp = {**SAMPLE_ANALYTICS_RESPONSE, "rows": []}
+
+        def fake_request(*args, org_units=None, **kwargs):
+            captured_org_units.append(list(org_units or []))
+            return mock_resp
+
+        svc._make_analytics_request = fake_request
+        svc._fetch_from_instance(
+            instance,
+            variables,
+            {
+                "periods": ["2024Q1"],
+                "org_units": ["1:uganda", "1:uganda/2:kampala"],
+                "org_unit_source_mode": "repository",
+                "org_unit_scope": "selected",
+                "org_unit_details": [
+                    {
+                        "id": "1:uganda",
+                        "selectionKey": "1:uganda",
+                        "sourceOrgUnitId": "1:uganda",
+                        "level": 1,
+                        "path": "1:uganda",
+                        "sourceInstanceIds": [101, 102],
+                        "lineage": [
+                            {
+                                "instance_id": 101,
+                                "source_org_unit_uid": "OU_A_ROOT",
+                                "source_parent_uid": None,
+                                "source_path": "/OU_A_ROOT",
+                                "source_level": 1,
+                            },
+                            {
+                                "instance_id": 102,
+                                "source_org_unit_uid": "OU_B_ROOT",
+                                "source_parent_uid": None,
+                                "source_path": "/OU_B_ROOT",
+                                "source_level": 1,
+                            },
+                        ],
+                    },
+                    {
+                        "id": "1:uganda/2:kampala",
+                        "selectionKey": "1:uganda/2:kampala",
+                        "sourceOrgUnitId": "1:uganda/2:kampala",
+                        "level": 2,
+                        "path": "1:uganda/2:kampala",
+                        "sourceInstanceIds": [101, 102],
+                        "lineage": [
+                            {
+                                "instance_id": 101,
+                                "source_org_unit_uid": "OU_A_KLA",
+                                "source_parent_uid": "OU_A_ROOT",
+                                "source_path": "/OU_A_ROOT/OU_A_KLA",
+                                "source_level": 2,
+                            },
+                            {
+                                "instance_id": 102,
+                                "source_org_unit_uid": "OU_B_KLA",
+                                "source_parent_uid": "OU_B_ROOT",
+                                "source_path": "/OU_B_ROOT/OU_B_KLA",
+                                "source_level": 2,
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+
+        assert captured_org_units == [["OU_B_ROOT", "OU_B_KLA"]]
 
     def test_per_instance_org_unit_mode_uses_selection_keys_from_local_staging(self):
         svc = self._svc()
@@ -890,6 +1041,95 @@ class TestSyncStagedDatasetPartialFailure:
                         pass  # Acceptable if ORM calls fail in test env
 
 
+def test_fetch_analytics_batch_reuses_stockout_bad_ou_cache_across_indicators():
+    from superset.dhis2 import sync_service
+
+    svc = sync_service.DHIS2SyncService()
+    instance = _make_instance(id=101, name="HMIS-Test")
+    stock_a = _make_variable(
+        id=1,
+        instance_id=101,
+        variable_id="stock_al",
+        variable_type="indicator",
+        variable_name="MAL : Proportion of facilities with stock out of AL",
+    )
+    stock_b = _make_variable(
+        id=2,
+        instance_id=101,
+        variable_id="stock_sp",
+        variable_type="indicator",
+        variable_name="MAL : Proportion of facilities with stock out of SP",
+    )
+    variable_map = {
+        stock_a.variable_id: stock_a,
+        stock_b.variable_id: stock_b,
+    }
+
+    request_log: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    def fake_request(*args, dx_ids=None, org_units=None, **kwargs):
+        batch = tuple(dx_ids or [])
+        ous = tuple(org_units or [])
+        request_log.append((batch, ous))
+        if "ou_bad" in ous:
+            response = SimpleNamespace(
+                status_code=500,
+                ok=False,
+                reason=None,
+                url="https://hmis-tests.health.go.ug/api/analytics",
+            )
+            raise requests.HTTPError(
+                "500 Server Error: Upstream server error",
+                response=response,
+            )
+        return {
+            **SAMPLE_ANALYTICS_RESPONSE,
+            "rows": [[batch[0], "2024Q1", "ou_good", "1"]],
+            "metaData": {
+                "items": {
+                    batch[0]: {"name": batch[0]},
+                    "ou_good": {"name": "Good OU"},
+                    "2024Q1": {"name": "2024Q1"},
+                },
+                "dimensions": {
+                    "dx": [batch[0]],
+                    "pe": ["2024Q1"],
+                    "ou": ["ou_good"],
+                },
+            },
+            "pager": {"page": 1, "pageCount": 1, "total": 1},
+        }
+
+    with patch.object(svc, "_make_analytics_request", side_effect=fake_request):
+        first_rows = svc._fetch_analytics_batch(
+            instance=instance,
+            batch=[stock_a.variable_id],
+            periods=["2024Q1"],
+            org_units=["ou_good", "ou_bad"],
+            variable_map=variable_map,
+            page_size=1000,
+        )
+        second_rows = svc._fetch_analytics_batch(
+            instance=instance,
+            batch=[stock_b.variable_id],
+            periods=["2024Q1"],
+            org_units=["ou_good", "ou_bad"],
+            variable_map=variable_map,
+            page_size=1000,
+        )
+
+    assert len(first_rows) == 1
+    assert len(second_rows) == 1
+    assert any(
+        batch == ("stock_al",) and ous == ("ou_bad",)
+        for batch, ous in request_log
+    )
+    assert not any(
+        batch == ("stock_sp",) and ous == ("ou_bad",)
+        for batch, ous in request_log
+    )
+
+
 class TestUpdateJobStatus:
 
     def _svc(self):
@@ -1132,11 +1372,13 @@ def test_sync_staged_dataset_uses_dataset_config_variable_mappings_when_rows_mis
 
     dataset_query = MagicMock()
     dataset_query.filter_by.return_value.first.return_value = dataset
+    variable_exists_query = MagicMock()
+    variable_exists_query.filter_by.return_value.first.return_value = object()
     variables_query = MagicMock()
     variables_query.filter_by.return_value.all.return_value = []
 
     session = mocker.patch("superset.dhis2.sync_service.db.session")
-    session.query.side_effect = [dataset_query, variables_query]
+    session.query.side_effect = [dataset_query, variable_exists_query, variables_query]
     session.commit = MagicMock()
 
     mocker.patch("superset.dhis2.sync_service._sync_compat_dataset")
@@ -1166,6 +1408,71 @@ def test_sync_staged_dataset_uses_dataset_config_variable_mappings_when_rows_mis
     assert resolved_variables[0].variable_id == "abc123"
 
 
+def test_sync_staged_dataset_repairs_legacy_definition_before_loading_variables(
+    mocker,
+) -> None:
+    from superset.dhis2 import sync_service
+
+    dataset = _make_dataset(
+        dataset_config="{}",
+        staging_table_name=None,
+        last_sync_status=None,
+        last_sync_rows=None,
+    )
+    repaired_dataset = _make_dataset(
+        dataset_config=json.dumps(
+            {
+                "periods": ["2024Q1"],
+                "org_units": ["abc"],
+                "configured_connection_ids": [1],
+            }
+        ),
+        staging_table_name="dhis2_staging.ds_1_test",
+        last_sync_status=None,
+        last_sync_rows=None,
+    )
+    instance = _make_instance(id=1, name="HMIS-Test")
+    variable = _make_variable(instance_id=1, variable_id="abc123")
+
+    dataset_query = MagicMock()
+    dataset_query.filter_by.return_value.first.return_value = dataset
+    repaired_dataset_query = MagicMock()
+    repaired_dataset_query.filter_by.return_value.first.return_value = repaired_dataset
+    variables_query = MagicMock()
+    variables_query.filter_by.return_value.all.return_value = [variable]
+
+    session = mocker.patch("superset.dhis2.sync_service.db.session")
+    session.query.side_effect = [dataset_query, repaired_dataset_query, variables_query]
+    session.commit = MagicMock()
+
+    repair_mock = mocker.patch(
+        "superset.dhis2.staged_dataset_service.repair_staged_dataset_definition",
+        return_value={"dataset_id": 1, "repaired": True},
+    )
+    mocker.patch("superset.dhis2.sync_service._sync_compat_dataset")
+    mocker.patch(
+        "superset.dhis2.sync_service.get_instances_with_legacy_fallback",
+        return_value=[instance],
+    )
+
+    svc = sync_service.DHIS2SyncService()
+    fetch_mock = mocker.patch.object(
+        svc,
+        "_fetch_from_instance",
+        return_value=[{"dx_uid": "abc123", "value": "10"}],
+    )
+    mocker.patch.object(svc, "_load_rows", return_value=3)
+    mocker.patch.object(svc, "_materialize_serving_table")
+
+    result = svc.sync_staged_dataset(1)
+
+    assert result["status"] == "success"
+    assert result["total_rows"] == 3
+    repair_mock.assert_called_once_with(1)
+    fetch_mock.assert_called_once()
+    assert fetch_mock.call_args.args[1][0].variable_id == "abc123"
+
+
 def test_sync_staged_dataset_fails_when_variable_instance_cannot_be_resolved(
     mocker,
 ) -> None:
@@ -1187,11 +1494,13 @@ def test_sync_staged_dataset_fails_when_variable_instance_cannot_be_resolved(
 
     dataset_query = MagicMock()
     dataset_query.filter_by.return_value.first.return_value = dataset
+    variable_exists_query = MagicMock()
+    variable_exists_query.filter_by.return_value.first.return_value = object()
     variables_query = MagicMock()
     variables_query.filter_by.return_value.all.return_value = [unresolved_variable]
 
     session = mocker.patch("superset.dhis2.sync_service.db.session")
-    session.query.side_effect = [dataset_query, variables_query]
+    session.query.side_effect = [dataset_query, variable_exists_query, variables_query]
     session.commit = MagicMock()
 
     mocker.patch("superset.dhis2.sync_service._sync_compat_dataset")

@@ -120,7 +120,10 @@ class GetExploreCommand(BaseCommand, ABC):
                         from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
                         from superset.explore.exceptions import DatasetAccessDeniedError
                         role = DatasetRole(datasource.dataset_role)
-                        if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.EXPLORE):
+                        if not DatasetEligibilityPolicy.is_dataset_eligible(
+                            datasource,
+                            DatasetContext.EXPLORE,
+                        ):
                             raise DatasetAccessDeniedError(
                                 message="Dataset is not eligible for explore context.",
                                 dataset_id=self._datasource_id,

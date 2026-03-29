@@ -83,11 +83,16 @@ import { DatasetPreviewModal } from 'src/features/datasets/DatasetPreviewModal';
 import { useSelector } from 'react-redux';
 import { QueryObjectColumns } from 'src/views/CRUD/types';
 import { WIDER_DROPDOWN_WIDTH } from 'src/components/ListView/utils';
+import {
+  getDatasetDisplayName,
+  parseDatasetExtra,
+} from 'src/utils/dhis2DatasetDisplay';
 
 const extensionsRegistry = getExtensionsRegistry();
 const DatasetDeleteRelatedExtension = extensionsRegistry.get(
   'dataset.delete.related',
 );
+const METADATA_DATASET_ROLE = 'METADATA';
 
 const FlexRowContainer = styled.div`
   align-items: center;
@@ -165,7 +170,22 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
   const history = useHistory();
   const theme = useTheme();
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  const metadataBaseFilters = useMemo(
+    () => [
+      {
+        id: 'dataset_role',
+        operator: FilterOperator.Equals,
+        value: METADATA_DATASET_ROLE,
+      },
+    ],
+    [],
+  );
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   const {
     state: {
       loading,
@@ -183,6 +203,7 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
     addDangerToast,
     true,
     [],
+    metadataBaseFilters,
   );
 
   const [datasetCurrentlyDeleting, setDatasetCurrentlyDeleting] = useState<
@@ -372,22 +393,31 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
             }
           };
 
+          const displayTitle = getDatasetDisplayName({
+            table_name: datasetTitle,
+            extra,
+          });
+
           let titleLink: JSX.Element;
           if (PREVENT_UNSAFE_DEFAULT_URLS_ON_DATASET) {
             titleLink = (
-              <Link data-test="internal-link" to={exploreURL} onClick={handleDatasetClick}>
-                {datasetTitle}
+              <Link
+                data-test="internal-link"
+                to={exploreURL}
+                onClick={handleDatasetClick}
+              >
+                {displayTitle}
               </Link>
             );
           } else {
             titleLink = (
               <GenericLink to={exploreURL} onClick={handleDatasetClick}>
-                {datasetTitle}
+                {displayTitle}
               </GenericLink>
             );
           }
           try {
-            const parsedExtra = JSON.parse(extra);
+            const parsedExtra = parseDatasetExtra(extra);
             return (
               <FlexRowContainer>
                 {parsedExtra?.certification && (
@@ -586,8 +616,14 @@ const DatasetList: FunctionComponent<DatasetListProps> = ({
                     role="button"
                     tabIndex={0}
                     className={`action-button ${allowEdit && !isEditLoading ? '' : 'disabled'}`}
-                    onClick={allowEdit && !isEditLoading ? handleEdit : undefined}
-                    style={isEditLoading ? { opacity: 0.5, cursor: 'wait' } : undefined}
+                    onClick={
+                      allowEdit && !isEditLoading ? handleEdit : undefined
+                    }
+                    style={
+                      isEditLoading
+                        ? { opacity: 0.5, cursor: 'wait' }
+                        : undefined
+                    }
                   >
                     {isEditLoading ? (
                       <Loading position="inline" size="s" />

@@ -200,6 +200,7 @@ class StagingEngineMigrationService:
                 serving_database_id=getattr(serving_db, "id", None),
                 source_database_id=dataset.database_id,
                 source_instance_ids=self._source_instance_ids(dataset),
+                dataset_role=DatasetRole.SOURCE.value,
             )
 
             repaired_charts = 0

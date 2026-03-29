@@ -63,6 +63,7 @@ export function useKeywords(
   { queryEditorId, dbId, catalog, schema, tabViewId }: Params,
   skip = false,
 ) {
+  const hasSchemaContext = schema !== undefined && schema !== null;
   const useCustomKeywords = extensionsRegistry.get(
     'sqleditor.extension.customAutocomplete',
   );
@@ -93,7 +94,7 @@ export function useKeywords(
       schema,
       forceRefresh: false,
     },
-    { skip: skipFetch || !dbId || !schema },
+    { skip: skipFetch || !dbId || !hasSchemaContext },
   );
 
   const { currentData: functionNames, isError } = useDatabaseFunctionsQuery(
@@ -127,7 +128,7 @@ export function useKeywords(
     tablesForColumnMetadata.forEach(table => {
       tableEndpoints.tableMetadata
         .select(
-          dbId && schema
+          dbId && hasSchemaContext
             ? {
                 dbId,
                 catalog,
@@ -143,7 +144,7 @@ export function useKeywords(
         });
     });
     return [...columns];
-  }, [dbId, catalog, schema, apiState, tablesForColumnMetadata]);
+  }, [dbId, catalog, schema, hasSchemaContext, apiState, tablesForColumnMetadata]);
 
   const insertMatch = useEffectEvent((editor: Editor, data: any) => {
     if (data.meta === 'table') {
@@ -153,6 +154,9 @@ export function useKeywords(
           data.value,
           catalog,
           schema,
+          undefined,
+          undefined,
+          data.name,
         ),
       );
     }
@@ -186,7 +190,8 @@ export function useKeywords(
   const tableKeywords = useMemo(
     () =>
       (tableData?.options ?? []).map(({ value, label }) => ({
-        name: label,
+        name: label || value,
+        caption: value,
         value,
         score: TABLE_AUTOCOMPLETE_SCORE,
         meta: 'table',

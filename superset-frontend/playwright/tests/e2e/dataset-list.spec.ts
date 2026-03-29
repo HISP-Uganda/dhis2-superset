@@ -27,11 +27,13 @@ import { attachFailureContext, watchConsoleMessages } from './helpers';
  * System-generated datasets (marts, source tables) are hidden.
  *
  * MUST show:
- *   • METADATA          – regular user-created Superset datasets
- *   • NULL role         – legacy datasets (treated as METADATA)
+ *   • METADATA          – editable datasets shown in the management list
  *
  * MUST NOT show:
- *   • MART              – analytical marts, kpi/map variants, and source tables
+ *   • MART              – analytical `_mart` datasets
+ *   • MART_DATASET      – analytical kpi/map/internal variants
+ *   • DHIS2_SOURCE_DATASET – staging-engine managed raw source registrations
+ *   • NULL role         – legacy/unclassified datasets
  */
 
 const DATASET_LIST_URL =
@@ -46,13 +48,19 @@ const HIDDEN_DHIS2_MARTS = [
   'MAL - Routine eHMIS Indicators',
 ];
 
+const HIDDEN_DHIS2_SOURCE_TABLES = [
+  'sv_4_malaria_routine_monthly_datasets',
+  'sv_5_routine_monthly_stock_management',
+  'sv_6_routine_weekly_surveilance',
+  'sv_7_mal_routine_ehmis_indicators',
+];
+
 // Internal mart sub-table suffixes (defence-in-depth)
 const INTERNAL_MART_SUFFIXES = ['_kpi', '_map', '[KPI]', '[Map]', '_mart'];
 
-test('dataset list shows DHIS2 source tables but hides analytical marts', async (
-  { page },
-  testInfo,
-) => {
+test('dataset list hides raw DHIS2 source tables and internal marts', async ({
+  page,
+}, testInfo) => {
   const consoleMessages = watchConsoleMessages(page);
 
   try {
@@ -63,7 +71,9 @@ test('dataset list shows DHIS2 source tables but hides analytical marts', async 
     await expect(page.locator('.loading')).toHaveCount(0, { timeout: 30000 });
 
     // The list table must be visible.
-    const listView = page.locator('.ant-table, [data-test="listview-table"]').first();
+    const listView = page
+      .locator('.ant-table, [data-test="listview-table"]')
+      .first();
     await expect(listView).toBeVisible({ timeout: 30000 });
 
     // ── 2. Fetch the raw API response to inspect dataset roles ──────────────
@@ -72,8 +82,12 @@ test('dataset list shows DHIS2 source tables but hides analytical marts', async 
     );
     expect(apiResponse.ok()).toBeTruthy();
 
-    const body = await apiResponse.json() as {
-      result?: Array<{ table_name: string; dataset_role?: string | null; extra?: string | null }>;
+    const body = (await apiResponse.json()) as {
+      result?: Array<{
+        table_name: string;
+        dataset_role?: string | null;
+        extra?: string | null;
+      }>;
       count?: number;
     };
     const datasets = body.result ?? [];
@@ -84,11 +98,13 @@ test('dataset list shows DHIS2 source tables but hides analytical marts', async 
 
     // ── 4. System-generated marts (MART) MUST NOT appear ───────────────────
     for (const d of datasets) {
-      // Role check: MART must always be hidden from the management list
+      // Role check: internal mart/source roles must always be hidden from the management list
       expect(
         d.dataset_role,
-        `Dataset "${d.table_name}" has role MART which must be hidden`,
+        `Dataset "${d.table_name}" has role "${d.dataset_role}" which must be hidden`,
       ).not.toBe('MART');
+      expect(d.dataset_role).not.toBe('MART_DATASET');
+      expect(d.dataset_role).not.toBe('DHIS2_SOURCE_DATASET');
 
       // Name-pattern check (defence-in-depth for hidden marts)
       for (const suffix of INTERNAL_MART_SUFFIXES) {
@@ -105,9 +121,18 @@ test('dataset list shows DHIS2 source tables but hides analytical marts', async 
     // ── 5. Known DHIS2 marts must specifically NOT be found ─────────────────
     for (const name of HIDDEN_DHIS2_MARTS) {
       const found = datasets.some(d => d.table_name === name);
-      expect(found, `DHIS2 mart "${name}" should be HIDDEN from the list`).toBe(false);
+      expect(found, `DHIS2 mart "${name}" should be HIDDEN from the list`).toBe(
+        false,
+      );
     }
 
+    for (const name of HIDDEN_DHIS2_SOURCE_TABLES) {
+      const found = datasets.some(d => d.table_name === name);
+      expect(
+        found,
+        `DHIS2 staged-local source dataset "${name}" should be HIDDEN from the list`,
+      ).toBe(false);
+    }
 
     // Attach summary for debugging
     await testInfo.attach('dataset-list-api-result', {
@@ -129,7 +154,9 @@ test('dataset list shows DHIS2 source tables but hides analytical marts', async 
   }
 });
 
-test('dataset list API returns only editable roles', async ({ page }, testInfo) => {
+test('dataset list API returns only metadata roles', async ({
+  page,
+}, testInfo) => {
   const consoleMessages = watchConsoleMessages(page);
 
   try {
@@ -140,18 +167,12 @@ test('dataset list API returns only editable roles', async ({ page }, testInfo) 
     );
     expect(response.ok()).toBeTruthy();
 
-    const body = await response.json() as {
+    const body = (await response.json()) as {
       result?: Array<{ table_name: string; dataset_role?: string | null }>;
     };
     const datasets = body.result ?? [];
 
-    const ALLOWED_ROLES = new Set([
-      'MART_DATASET',
-      'SERVING_DATASET',
-      'METADATA_UI_DATASET',
-      null,
-      undefined,
-    ]);
+    const ALLOWED_ROLES = new Set(['METADATA']);
 
     for (const d of datasets) {
       expect(

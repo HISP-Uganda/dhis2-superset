@@ -45,9 +45,9 @@ def setup_listeners() -> None:
 def _after_sqla_table_delete(mapper: Mapper, connection: Any, target: Any) -> None:
     """Clean up DHIS2 staged dataset when the PRIMARY Superset virtual dataset is deleted.
 
-    Only triggers for the main dataset record (DHIS2_SOURCE_DATASET role or NULL role).
-    Mart records (MART_DATASET role) are internal and their deletion must NOT cascade
-    to the staged dataset — marts are rebuilt on every sync.
+    Only skips cascade cleanup for internal MART records. User-facing SERVING
+    datasets and raw DHIS2 source registrations both represent the same staged
+    dataset lifecycle and their deletion should still cascade.
     """
     try:
         from superset.datasets.policy import DatasetRole

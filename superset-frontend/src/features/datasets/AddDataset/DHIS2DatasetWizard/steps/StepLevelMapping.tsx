@@ -2,11 +2,12 @@
  * StepLevelMapping — repository org-unit level mapping table, embedded inside
  * the Organisation Units tab when source mode is "repository".
  *
- * Always shown (no toggle). Auto-initialises with 8 Uganda hierarchy levels.
- * Each instance column shows only that instance's actual OU levels.
+ * Always shown (no toggle). The selected template instance defines the initial
+ * repository rows and labels, so users start from a real source hierarchy and
+ * then adjust or trim the mapping as needed.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { styled, t } from '@superset-ui/core';
 import {
   Button,
@@ -20,6 +21,19 @@ import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { DHIS2WizardState, LevelMappingConfig, LevelMappingRow } from '../index';
 
 const { Text } = Typography;
+
+const SELECT_DROPDOWN_STYLE = {
+  maxHeight: 320,
+  overflow: 'auto' as const,
+};
+
+function getSelectPopupContainer(triggerNode: HTMLElement): HTMLElement {
+  return (
+    (triggerNode.closest('.ant-modal-content') as HTMLElement | null) ||
+    triggerNode.parentElement ||
+    document.body
+  );
+}
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -104,9 +118,9 @@ const DefaultInstanceRow = styled.div`
   flex-wrap: wrap;
 `;
 
-// ── Pre-defined Uganda repository levels ────────────────────────────────────
+// ── Legacy static defaults (kept only to auto-upgrade old generated rows) ───
 
-const REPOSITORY_LEVEL_DEFAULTS: { level: number; label: string }[] = [
+const LEGACY_REPOSITORY_LEVEL_DEFAULTS: { level: number; label: string }[] = [
   { level: 1, label: 'National' },
   { level: 2, label: 'Region' },
   { level: 3, label: 'District/City' },
@@ -129,6 +143,10 @@ function makeGenericLevelOptions() {
   ];
 }
 
+function sortOrgUnitLevelsAscending(levels: OrgUnitLevel[]): OrgUnitLevel[] {
+  return levels.slice().sort((left, right) => left.level - right.level);
+}
+
 function getInstanceLevels(
   orgUnitLevels: OrgUnitLevel[],
   instanceId: number,
@@ -137,12 +155,14 @@ function getInstanceLevels(
   const hasPerInstanceTracking = orgUnitLevels.some(
     l => l.sourceInstanceIds && l.sourceInstanceIds.length > 0,
   );
-  if (!hasPerInstanceTracking) return orgUnitLevels;
-  return orgUnitLevels.filter(
-    l =>
-      !l.sourceInstanceIds ||
-      l.sourceInstanceIds.length === 0 ||
-      l.sourceInstanceIds.includes(instanceId),
+  if (!hasPerInstanceTracking) return sortOrgUnitLevelsAscending(orgUnitLevels);
+  return sortOrgUnitLevelsAscending(
+    orgUnitLevels.filter(
+      l =>
+        !l.sourceInstanceIds ||
+        l.sourceInstanceIds.length === 0 ||
+        l.sourceInstanceIds.includes(instanceId),
+    ),
   );
 }
 
@@ -168,6 +188,60 @@ function makeInstanceLevelOptions(
   ];
 }
 
+function buildRowsFromTemplateInstance(
+  templateInstanceId: number,
+  orgUnitLevels: OrgUnitLevel[],
+  instances: Array<{ id: number; name: string }>,
+  instanceAvailableLevels: Map<number, Set<number>>,
+): LevelMappingRow[] {
+  return getInstanceLevels(orgUnitLevels, templateInstanceId)
+    .slice()
+    .sort((left, right) => left.level - right.level)
+    .map(levelDef => ({
+      merged_level: levelDef.level,
+      label:
+        (levelDef.instanceLevelNames &&
+          levelDef.instanceLevelNames[templateInstanceId]) ||
+        levelDef.displayName ||
+        t('Level %s', levelDef.level),
+      instance_levels: Object.fromEntries(
+        instances.map(({ id }) => [
+          String(id),
+          instanceAvailableLevels.get(id)?.has(levelDef.level)
+            ? levelDef.level
+            : null,
+        ]),
+      ),
+    }));
+}
+
+function buildLegacyDefaultRows(
+  instances: Array<{ id: number; name: string }>,
+  instanceAvailableLevels: Map<number, Set<number>>,
+): LevelMappingRow[] {
+  return LEGACY_REPOSITORY_LEVEL_DEFAULTS.map(({ level, label }) => ({
+    merged_level: level,
+    label,
+    instance_levels: Object.fromEntries(
+      instances.map(({ id }) => {
+        const available = instanceAvailableLevels.get(id);
+        const value =
+          !available || available.size === 0 || available.has(level)
+            ? level
+            : null;
+        return [String(id), value];
+      }),
+    ),
+  }));
+}
+
+function areMappingRowsEqual(
+  left: LevelMappingRow[],
+  right: LevelMappingRow[],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export interface StepLevelMappingProps {
@@ -185,6 +259,7 @@ export default function StepLevelMapping({
 }: StepLevelMappingProps) {
   const { levelMapping, selectedInstanceIds, variableMappings } = wizardState;
   const [defaultInstanceId, setDefaultInstanceId] = useState<number | null>(null);
+  const hasAutoInitializedRows = useRef(false);
 
   const instances = useMemo(() => {
     if (instancesProp && instancesProp.length > 0) return instancesProp;
@@ -217,32 +292,77 @@ export default function StepLevelMapping({
     return map;
   }, [instances, orgUnitLevels]);
 
-  const buildDefaultRows = useCallback(
-    (): LevelMappingRow[] =>
-      REPOSITORY_LEVEL_DEFAULTS.map(({ level, label }) => ({
-        merged_level: level,
-        label,
-        instance_levels: Object.fromEntries(
-          instances.map(({ id }) => {
-            const available = instanceAvailableLevels.get(id);
-            const value =
-              !available || available.size === 0 || available.has(level)
-                ? level
-                : null;
-            return [String(id), value];
-          }),
-        ),
-      })),
+  const legacyDefaultRows = useMemo(
+    () => buildLegacyDefaultRows(instances, instanceAvailableLevels),
     [instances, instanceAvailableLevels],
   );
 
-  // Auto-initialise with 8 default rows whenever instances become available
-  // and no rows have been configured yet.
-  useEffect(() => {
-    if (instances.length > 0 && rows.length === 0) {
-      setMapping({ enabled: true, rows: buildDefaultRows() });
+  const effectiveTemplateInstanceId = useMemo(() => {
+    if (defaultInstanceId != null) {
+      return defaultInstanceId;
     }
-  }, [instances.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    return rows.length === 0 && instances.length > 0 ? instances[0].id : null;
+  }, [defaultInstanceId, instances, rows.length]);
+
+  const templateRows = useMemo(
+    () =>
+      effectiveTemplateInstanceId == null
+        ? []
+        : buildRowsFromTemplateInstance(
+            effectiveTemplateInstanceId,
+            orgUnitLevels,
+            instances,
+            instanceAvailableLevels,
+          ),
+    [
+      effectiveTemplateInstanceId,
+      orgUnitLevels,
+      instances,
+      instanceAvailableLevels,
+    ],
+  );
+
+  // Auto-initialise from the selected template instance once metadata is
+  // available. Also upgrades the old static default rows when they are still
+  // untouched generated placeholders.
+  useEffect(() => {
+    if (
+      effectiveTemplateInstanceId == null ||
+      instances.length === 0 ||
+      templateRows.length === 0
+    ) {
+      return;
+    }
+
+    if (rows.length === 0 && !hasAutoInitializedRows.current) {
+      hasAutoInitializedRows.current = true;
+      setDefaultInstanceId(effectiveTemplateInstanceId);
+      setMapping({ enabled: true, rows: templateRows });
+      return;
+    }
+
+    if (
+      !hasAutoInitializedRows.current &&
+      areMappingRowsEqual(rows, legacyDefaultRows) &&
+      !areMappingRowsEqual(rows, templateRows)
+    ) {
+      hasAutoInitializedRows.current = true;
+      setDefaultInstanceId(effectiveTemplateInstanceId);
+      setMapping({ enabled: true, rows: templateRows });
+      return;
+    }
+
+    if (rows.length > 0) {
+      hasAutoInitializedRows.current = true;
+    }
+  }, [
+    effectiveTemplateInstanceId,
+    instances.length,
+    legacyDefaultRows,
+    rows,
+    setMapping,
+    templateRows,
+  ]);
 
   const handleAddRow = useCallback(() => {
     const nextLevel =
@@ -296,25 +416,25 @@ export default function StepLevelMapping({
   const handleApplyDefaultInstance = useCallback(
     (instanceId: number | null) => {
       setDefaultInstanceId(instanceId);
-      if (instanceId === null || orgUnitLevels.length === 0) return;
-      const levelNameMap = new Map<number, string>();
-      getInstanceLevels(orgUnitLevels, instanceId).forEach(l =>
-        levelNameMap.set(
-          l.level,
-          (l.instanceLevelNames && l.instanceLevelNames[instanceId]) ||
-            l.displayName,
-        ),
+      if (instanceId == null) {
+        return;
+      }
+      const nextRows = buildRowsFromTemplateInstance(
+        instanceId,
+        orgUnitLevels,
+        instances,
+        instanceAvailableLevels,
       );
-      if (levelNameMap.size === 0) return;
+      if (nextRows.length === 0) {
+        return;
+      }
+      hasAutoInitializedRows.current = true;
       setMapping({
         enabled: true,
-        rows: rows.map(r => ({
-          ...r,
-          label: levelNameMap.get(r.merged_level) ?? r.label,
-        })),
+        rows: nextRows,
       });
     },
-    [orgUnitLevels, rows, setMapping],
+    [instanceAvailableLevels, instances, orgUnitLevels, setMapping],
   );
 
   const instanceOptions = useMemo(
@@ -336,12 +456,37 @@ export default function StepLevelMapping({
             onChange={(val: unknown) =>
               handleApplyDefaultInstance(val == null ? null : Number(val))
             }
+            getPopupContainer={getSelectPopupContainer}
+            dropdownStyle={SELECT_DROPDOWN_STYLE}
             styles={{ root: { minWidth: 220 } }}
           />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {t('Auto-fills repository level labels from that instance\'s actual OU level names.')}
+            {t(
+              'Selecting an instance rebuilds the mapping table from that instance\'s org-unit levels and uses its level names as the default labels.',
+            )}
           </Text>
         </DefaultInstanceRow>
+      )}
+
+      {defaultInstanceId != null && templateRows.length > 0 ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t(
+            'Loaded %s hierarchy level(s) from the selected instance. Remove any levels you do not need, then adjust mappings as required.',
+            templateRows.length,
+          )}
+        </Text>
+      ) : instances.length > 1 ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t(
+            'Choose a template instance above to generate the repository mapping table from its organisation-unit hierarchy.',
+          )}
+        </Text>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t(
+            'Detected hierarchy levels will appear here once organisation-unit metadata finishes loading. You can still add rows manually if needed.',
+          )}
+        </Text>
       )}
 
       <TableCard data-test="dhis2-level-mapping">
@@ -388,6 +533,8 @@ export default function StepLevelMapping({
                     onChange={(val: unknown) =>
                       handleInstanceLevelChange(idx, inst.id, String(val ?? ''))
                     }
+                    getPopupContainer={getSelectPopupContainer}
+                    dropdownStyle={SELECT_DROPDOWN_STYLE}
                   />
                 </InstanceCell>
               );

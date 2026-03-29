@@ -103,9 +103,7 @@ const StyledHeaderWithIcon = styled.div`
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
-  > *:first-child {
-    margin-right: ${({ theme }) => theme.sizeUnit}px;
-  }
+  column-gap: ${({ theme }) => theme.sizeUnit}px;
 `;
 
 const HeaderExtension = extensionsRegistry.get('alertsreports.header.icon');

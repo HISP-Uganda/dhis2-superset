@@ -1486,7 +1486,7 @@ export default function WizardStepDataElements({
               aria-label={t('Configured Connection')}
               mode="multiple"
               allowClear
-              maxTagCount="responsive"
+              maxTagCount={2}
               onChange={value =>
                 applyFilterUpdates({ connectionFilterIds: value as number[] })
               }

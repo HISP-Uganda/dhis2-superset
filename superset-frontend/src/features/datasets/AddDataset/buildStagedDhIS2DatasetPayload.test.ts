@@ -18,7 +18,7 @@
  */
 import buildStagedDhIS2DatasetPayload from './buildStagedDhIS2DatasetPayload';
 
-test('targets the staging table while persisting the serving destination metadata', () => {
+test('targets the logical database while persisting the serving destination metadata', () => {
   const payload = buildStagedDhIS2DatasetPayload({
     datasetName: 'ANC Coverage',
     stagingTableRef: 'dhis2_staging.ds_1_anc_coverage',
@@ -32,9 +32,10 @@ test('targets the staging table while persisting the serving destination metadat
     selectedInstanceNames: ['HMIS-Test', 'Non Routine'],
   });
 
-  expect(payload.database).toBe(13);
+  expect(payload.database).toBe(9);
   expect(payload.is_sqllab_view).toBe(true);
-  expect(payload.sql).toBe('SELECT * FROM dhis2_staging.ds_1_anc_coverage');
+  expect(payload.dataset_role).toBe('METADATA');
+  expect(payload.sql).toBe('SELECT * FROM dhis2_serving.sv_1_anc_coverage');
   expect(JSON.parse(payload.extra)).toMatchObject({
     dhis2_staged_local: true,
     dhis2_staged_dataset_id: 41,
@@ -54,6 +55,7 @@ test('falls back to the source database when no local serving database is return
 
   expect(payload.database).toBe(9);
   expect(payload.is_sqllab_view).toBe(true);
+  expect(payload.dataset_role).toBe('METADATA');
   expect(JSON.parse(payload.extra)).toMatchObject({
     dhis2_source_database_id: 9,
     dhis2_serving_database_id: 9,

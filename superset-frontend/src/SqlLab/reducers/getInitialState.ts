@@ -29,6 +29,11 @@ import {
   QueryEditorVersion,
 } from 'src/SqlLab/types';
 
+function coerceDbId(value: unknown): number | undefined {
+  const dbId = Number(value);
+  return Number.isFinite(dbId) && dbId > 0 ? dbId : undefined;
+}
+
 export function dedupeTabHistory(tabHistory: string[]) {
   return tabHistory.reduce<string[]>(
     (result, tabId) =>
@@ -44,7 +49,7 @@ export default function getInitialState({
   databases,
   queries: queries_,
   ...otherBootstrapData
-}: BootstrapData & Partial<InitialState>) {
+  }: BootstrapData & Partial<InitialState>) {
   /**
    * Before YYYY-MM-DD, the state for SQL Lab was stored exclusively in the
    * browser's localStorage. The feature flag `SQLLAB_BACKEND_PERSISTENCE`
@@ -54,6 +59,19 @@ export default function getInitialState({
    * of the backend state (if any) with the browser state (if any).
    */
   let queryEditors: Record<string, QueryEditor> = {};
+  const availableDatabases = Array.isArray(databases)
+    ? databases
+    : Object.values(databases || {});
+  const availableDatabaseIds = new Set(
+    availableDatabases
+      .map(database => coerceDbId((database as { id?: unknown })?.id))
+      .filter((dbId): dbId is number => dbId !== undefined),
+  );
+  const fallbackDbId =
+    coerceDbId(common.conf.SQLLAB_DEFAULT_DBID) ??
+    availableDatabases
+      .map(database => coerceDbId((database as { id?: unknown })?.id))
+      .find((dbId): dbId is number => dbId !== undefined);
   const defaultQueryEditor = {
     version: LatestQueryEditorVersion,
     immutableId: nanoid(11),
@@ -62,7 +80,7 @@ export default function getInitialState({
     sql: '',
     latestQueryId: null,
     autorun: false,
-    dbId: common.conf.SQLLAB_DEFAULT_DBID,
+    dbId: fallbackDbId,
     queryLimit: common.conf.DEFAULT_SQLLAB_LIMIT,
     hideLeftBar: false,
     remoteId: null,
@@ -77,6 +95,7 @@ export default function getInitialState({
   tabStateIds.forEach(({ id, label }) => {
     let queryEditor: QueryEditor;
     if (activeTab && activeTab.id === id) {
+      const activeTabDbId = coerceDbId(activeTab.database_id);
       queryEditor = {
         version: activeTab.extra_json?.version ?? QueryEditorVersion.V1,
         id: id.toString(),
@@ -91,7 +110,10 @@ export default function getInitialState({
         remoteId: activeTab.saved_query?.id || null,
         autorun: Boolean(activeTab.autorun),
         templateParams: activeTab.template_params || undefined,
-        dbId: activeTab.database_id,
+        dbId:
+          activeTabDbId && availableDatabaseIds.has(activeTabDbId)
+            ? activeTabDbId
+            : fallbackDbId,
         catalog: activeTab.catalog,
         schema: activeTab.schema,
         queryLimit: activeTab.query_limit,

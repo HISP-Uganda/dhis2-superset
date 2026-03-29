@@ -288,10 +288,16 @@ export interface DHIS2MetadataStatus {
 
 export interface DHIS2StagedDatasetStats {
   total_rows: number;
+  staging_total_rows?: number | null;
+  serving_total_rows?: number | null;
+  available_total_rows?: number | null;
   rows_per_instance: Record<string, number>;
   min_synced_at?: string | null;
   max_synced_at?: string | null;
   table_size_bytes?: number | null;
+  row_source?: string | null;
+  staging_error?: string | null;
+  serving_error?: string | null;
 }
 
 export interface DHIS2StagedDatasetSummary {

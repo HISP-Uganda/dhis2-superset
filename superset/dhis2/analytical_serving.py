@@ -47,6 +47,12 @@ _DHIS2_LEGEND_EXTRA_KEY = "dhis2_legend"
 # Category Option Combo dimension columns (opt-in disaggregation-as-dimension)
 _DHIS2_COC_EXTRA_KEY = "dhis2_is_coc"
 _DHIS2_COC_UID_EXTRA_KEY = "dhis2_is_coc_uid"
+_DHIS2_AOC_EXTRA_KEY = "dhis2_is_aoc"
+_DHIS2_AOC_UID_EXTRA_KEY = "dhis2_is_aoc_uid"
+_DHIS2_CATEGORY_DIMENSION_EXTRA_KEY = "dhis2_is_category_dimension"
+_DHIS2_CATEGORY_DIMENSION_KEY_EXTRA_KEY = "dhis2_category_dimension_key"
+_DHIS2_CATEGORY_DIMENSION_SOURCE_EXTRA_KEY = "dhis2_category_dimension_source"
+_DHIS2_CATEGORY_DIMENSION_TYPE_EXTRA_KEY = "dhis2_category_dimension_type"
 _DHIS2_OU_LEVEL_COLUMN_EXTRA_KEY = "dhis2_is_ou_level"
 # Bumped whenever the serving manifest structure or CASE-predicate logic changes.
 # A change here triggers a rebuild of any serving table that was materialized
@@ -55,7 +61,9 @@ _DHIS2_OU_LEVEL_COLUMN_EXTRA_KEY = "dhis2_is_ou_level"
 # v2 → v3: added staged_dataset_id to CASE predicates
 # v3 → v4: added dhis2_is_indicator to column extra
 # v4 → v5: added dhis2_is_ou_level to ou_level column
-_MANIFEST_BUILD_VERSION: int = 5
+# v5 → v6: repository-enabled org unit groups/group sets and level filtering
+# v6 → v7: added CoC/AoC/category dimension serving columns
+_MANIFEST_BUILD_VERSION: int = 7
 _DHIS2_TERMINAL_PERIOD_KEYS = (
     "period_year",
     "period_half",
@@ -152,6 +160,20 @@ def _load_snapshot(
         return None
 
 
+def _snapshot_result(
+    database_id: int,
+    namespace: str,
+    instance_id: int | None,
+) -> list[dict[str, Any]]:
+    snapshot = _load_snapshot(database_id, namespace, instance_id)
+    if not isinstance(snapshot, dict) or snapshot.get("status") != "success":
+        return []
+    result = snapshot.get("result")
+    if not isinstance(result, list):
+        return []
+    return [item for item in result if isinstance(item, dict)]
+
+
 def _dataset_variables(dataset: DHIS2StagedDataset) -> list[DHIS2DatasetVariable]:
     variables = list(getattr(dataset, "variables", []) or [])
     if variables:
@@ -162,6 +184,60 @@ def _dataset_variables(dataset: DHIS2StagedDataset) -> list[DHIS2DatasetVariable
         .order_by(DHIS2DatasetVariable.id.asc())
         .all()
     )
+
+
+def _variable_dimension_availability(variable: Any) -> list[dict[str, Any]]:
+    getter = getattr(variable, "get_dimension_availability", None)
+    if callable(getter):
+        try:
+            result = getter()
+        except Exception:  # pylint: disable=broad-except
+            result = []
+        return [item for item in result if isinstance(item, dict)]
+
+    raw_value = getattr(variable, "dimension_availability", None)
+    if isinstance(raw_value, list):
+        return [item for item in raw_value if isinstance(item, dict)]
+    if isinstance(raw_value, str) and raw_value.strip():
+        try:
+            parsed = json.loads(raw_value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _should_include_category_dimensions(
+    dataset: DHIS2StagedDataset,
+    dataset_config: dict[str, Any],
+    variables: Sequence[Any],
+) -> bool:
+    explicit = dataset_config.get("preserve_category_dimensions")
+    if explicit is None:
+        explicit = dataset_config.get("include_disaggregation_dimension")
+    if explicit is None:
+        explicit = getattr(dataset, "preserve_category_dimensions", None)
+    if explicit is not None:
+        return bool(explicit)
+
+    for variable in variables:
+        if _variable_dimension_availability(variable):
+            return True
+        extra_params_getter = getattr(variable, "get_extra_params", None)
+        extra_params = (
+            extra_params_getter() if callable(extra_params_getter) else {}
+        )
+        if not isinstance(extra_params, dict):
+            continue
+        disaggregation = str(extra_params.get("disaggregation") or "").strip().lower()
+        if disaggregation in {"all", "selected"}:
+            return True
+        if isinstance(extra_params.get("selected_coc_uids"), list) and extra_params.get(
+            "selected_coc_uids"
+        ):
+            return True
+    return False
 
 
 def _config_value(item: dict[str, Any], *keys: str) -> Any:
@@ -199,6 +275,15 @@ def _detail_source_id(detail: dict[str, Any]) -> str | None:
     return None
 
 
+def _detail_structure_id(detail: dict[str, Any]) -> str | None:
+    has_lineage = isinstance(_config_value(detail, "lineage"), list)
+    if has_lineage:
+        candidate = _config_value(detail, "selection_key", "selectionKey", "repository_key", "id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return _detail_source_id(detail) or _detail_selection_key(detail)
+
+
 def _detail_selection_key(detail: dict[str, Any]) -> str | None:
     candidate = _config_value(detail, "selection_key", "selectionKey", "id")
     if isinstance(candidate, str) and candidate.strip():
@@ -230,18 +315,18 @@ def _detail_is_descendant_of(
     descendant_detail: dict[str, Any],
     ancestor_detail: dict[str, Any],
 ) -> bool:
-    ancestor_source_id = _detail_source_id(ancestor_detail)
-    descendant_source_id = _detail_source_id(descendant_detail)
-    if not ancestor_source_id or not descendant_source_id:
+    ancestor_structure_id = _detail_structure_id(ancestor_detail)
+    descendant_structure_id = _detail_structure_id(descendant_detail)
+    if not ancestor_structure_id or not descendant_structure_id:
         return False
-    if ancestor_source_id == descendant_source_id:
+    if ancestor_structure_id == descendant_structure_id:
         return False
     if not _details_share_instance_scope(ancestor_detail, descendant_detail):
         return False
 
     path_parts = _detail_path_parts(descendant_detail)
     if path_parts:
-        return ancestor_source_id in path_parts[:-1]
+        return ancestor_structure_id in path_parts[:-1]
 
     return False
 
@@ -663,6 +748,315 @@ def _load_distinct_cocs_for_variable(
         return []
 
 
+def _normalize_combo_display_name(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _split_combo_display_name(value: Any) -> list[str]:
+    normalized = _normalize_combo_display_name(value)
+    if not normalized:
+        return []
+    return [part.strip() for part in normalized.split(",") if part and part.strip()]
+
+
+def _build_category_combo_context(
+    database_id: int,
+    instance_id: int,
+) -> dict[str, dict[str, Any]]:
+    category_combo_items = _snapshot_result(
+        database_id,
+        "dhis2_snapshot:categoryCombos",
+        instance_id,
+    )
+    combo_option_items = _snapshot_result(
+        database_id,
+        "dhis2_snapshot:categoryOptionCombos",
+        instance_id,
+    )
+
+    option_meta_by_id: dict[str, dict[str, Any]] = {}
+    combo_category_ids: dict[str, list[str]] = {}
+    for combo in category_combo_items:
+        combo_id = str(combo.get("id") or "").strip()
+        if not combo_id:
+            continue
+        ordered_category_ids: list[str] = []
+        for category in list(combo.get("categories") or []):
+            if not isinstance(category, dict):
+                continue
+            category_id = str(category.get("id") or "").strip()
+            if not category_id:
+                continue
+            ordered_category_ids.append(category_id)
+            category_label = str(
+                category.get("displayName")
+                or category.get("name")
+                or category_id
+            ).strip() or category_id
+            for option in list(category.get("categoryOptions") or []):
+                if not isinstance(option, dict):
+                    continue
+                option_id = str(option.get("id") or "").strip()
+                if not option_id:
+                    continue
+                option_meta_by_id[option_id] = {
+                    "option_id": option_id,
+                    "display_name": str(
+                        option.get("displayName")
+                        or option.get("name")
+                        or option_id
+                    ).strip()
+                    or option_id,
+                    "category_id": category_id,
+                    "category_name": category_label,
+                }
+        combo_category_ids[combo_id] = ordered_category_ids
+
+    combo_context: dict[str, dict[str, Any]] = {}
+    for combo_item in combo_option_items:
+        combo_uid = str(combo_item.get("id") or "").strip()
+        if not combo_uid:
+            continue
+        raw_combo = combo_item.get("categoryCombo") or {}
+        category_combo_id = str(raw_combo.get("id") or "").strip() or None
+        option_ids = [
+            str(option.get("id") or "").strip()
+            for option in list(combo_item.get("categoryOptions") or [])
+            if isinstance(option, dict) and str(option.get("id") or "").strip()
+        ]
+        ordered_options: list[dict[str, Any]] = []
+        ordered_category_ids = combo_category_ids.get(category_combo_id or "", [])
+        for index, option_id in enumerate(option_ids):
+            option_meta = dict(option_meta_by_id.get(option_id) or {})
+            if (
+                not option_meta.get("category_id")
+                and index < len(ordered_category_ids)
+            ):
+                option_meta["category_id"] = ordered_category_ids[index]
+            if not option_meta:
+                option_meta = {
+                    "option_id": option_id,
+                    "display_name": option_id,
+                    "category_id": ordered_category_ids[index]
+                    if index < len(ordered_category_ids)
+                    else None,
+                    "category_name": None,
+                }
+            ordered_options.append(option_meta)
+
+        combo_context[combo_uid] = {
+            "combo_uid": combo_uid,
+            "display_name": _normalize_combo_display_name(
+                combo_item.get("displayName") or combo_item.get("name") or combo_uid
+            ),
+            "category_combo_id": category_combo_id,
+            "ordered_options": ordered_options,
+        }
+
+    return combo_context
+
+
+def _resolve_category_dimension_value(
+    mapping: dict[str, Any],
+    *,
+    combo_display_name: str | None,
+    combo_context: dict[str, Any] | None = None,
+) -> str | None:
+    mapping_combo_id = str(mapping.get("category_combo_id") or "").strip() or None
+    if (
+        mapping_combo_id
+        and isinstance(combo_context, dict)
+        and str(combo_context.get("category_combo_id") or "").strip()
+        and str(combo_context.get("category_combo_id") or "").strip() != mapping_combo_id
+    ):
+        return None
+
+    ordered_options = list((combo_context or {}).get("ordered_options") or [])
+    category_id = str(mapping.get("category_id") or "").strip() or None
+    if category_id:
+        for option in ordered_options:
+            if str(option.get("category_id") or "").strip() == category_id:
+                option_name = _normalize_combo_display_name(option.get("display_name"))
+                if option_name:
+                    return option_name
+
+    display_order = mapping.get("display_order")
+    try:
+        display_index = int(display_order) - 1 if display_order is not None else None
+    except (TypeError, ValueError):
+        display_index = None
+    if display_index is not None and 0 <= display_index < len(ordered_options):
+        option_name = _normalize_combo_display_name(
+            ordered_options[display_index].get("display_name")
+        )
+        if option_name:
+            return option_name
+
+    display_name = _normalize_combo_display_name(
+        combo_display_name or (combo_context or {}).get("display_name")
+    )
+    if not display_name:
+        return None
+
+    parts = _split_combo_display_name(display_name)
+    options = list(mapping.get("options") or [])
+    if options and parts:
+        part_map = {part.lower(): part for part in parts}
+        for option in options:
+            option_name = _normalize_combo_display_name(
+                option.get("displayName") or option.get("name") or option.get("id")
+            )
+            if option_name and option_name.lower() in part_map:
+                return part_map[option_name.lower()]
+
+    if display_index is not None and 0 <= display_index < len(parts):
+        return parts[display_index]
+    if len(options) == 1:
+        return display_name
+    return None
+
+
+def _build_category_dimension_context(
+    dataset: DHIS2StagedDataset,
+    variables: Sequence[Any],
+    used_identifiers: set[str],
+) -> dict[str, Any]:
+    category_columns: list[dict[str, Any]] = []
+    variable_dimension_lookup: defaultdict[tuple[int | None, str], list[dict[str, Any]]] = (
+        defaultdict(list)
+    )
+    category_column_identities: dict[str, str] = {}
+    co_category_column_names: list[str] = []
+    aoc_category_column_names: list[str] = []
+
+    for variable in variables:
+        variable_id = str(getattr(variable, "variable_id", "") or "").strip()
+        if not variable_id:
+            continue
+        instance_id = getattr(variable, "instance_id", None)
+        try:
+            normalized_instance_id = int(instance_id) if instance_id is not None else None
+        except (TypeError, ValueError):
+            normalized_instance_id = None
+        for dimension in _variable_dimension_availability(variable):
+            label = str(
+                dimension.get("dimension_label")
+                or dimension.get("category_name")
+                or dimension.get("dimension_key")
+                or ""
+            ).strip()
+            if not label:
+                continue
+            source_kind = (
+                "aoc"
+                if str(dimension.get("data_dimension_type") or "").strip().upper()
+                == "ATTRIBUTE"
+                else "co"
+            )
+            identity = f"{source_kind}:{sanitize_serving_identifier(label)}"
+            column_name = category_column_identities.get(identity)
+            if column_name is None:
+                column_name = _dedupe_identifier(label, used_identifiers)
+                category_column_identities[identity] = column_name
+                category_columns.append(
+                    {
+                        "column_name": column_name,
+                        "verbose_name": label,
+                        "type": "STRING",
+                        "sql_type": "TEXT",
+                        "is_dttm": False,
+                        "is_dimension": True,
+                        "extra": {
+                            _DHIS2_CATEGORY_DIMENSION_EXTRA_KEY: True,
+                            _DHIS2_CATEGORY_DIMENSION_KEY_EXTRA_KEY: str(
+                                dimension.get("dimension_key") or label
+                            ).strip(),
+                            _DHIS2_CATEGORY_DIMENSION_SOURCE_EXTRA_KEY: source_kind,
+                            _DHIS2_CATEGORY_DIMENSION_TYPE_EXTRA_KEY: str(
+                                dimension.get("data_dimension_type") or ""
+                            ).strip()
+                            or "DISAGGREGATION",
+                        },
+                    }
+                )
+                if source_kind == "co":
+                    co_category_column_names.append(column_name)
+                else:
+                    aoc_category_column_names.append(column_name)
+
+            variable_dimension_lookup[(normalized_instance_id, variable_id)].append(
+                {
+                    "column_name": column_name,
+                    "category_id": str(dimension.get("category_id") or "").strip()
+                    or None,
+                    "category_combo_id": str(
+                        dimension.get("category_combo_id") or ""
+                    ).strip()
+                    or None,
+                    "display_order": dimension.get("display_order"),
+                    "dimension_key": str(dimension.get("dimension_key") or "").strip()
+                    or None,
+                    "source_kind": source_kind,
+                    "options": [
+                        option
+                        for option in list(dimension.get("options") or [])
+                        if isinstance(option, dict)
+                    ],
+                }
+            )
+
+    combo_name_lookup: dict[tuple[str, int, str], str] = {}
+    combo_dimension_lookup: dict[tuple[str, int, str], dict[str, Any]] = {}
+    instance_ids = sorted(
+        {
+            instance_id
+            for instance_id, _ in variable_dimension_lookup.keys()
+            if instance_id is not None
+        }
+    )
+    for instance_id in instance_ids:
+        combo_context = _build_category_combo_context(dataset.database_id, instance_id)
+        mappings_for_instance = [
+            mapping
+            for (mapping_instance_id, _), items in variable_dimension_lookup.items()
+            if mapping_instance_id == instance_id
+            for mapping in items
+        ]
+        if not mappings_for_instance:
+            continue
+        for combo_uid, combo_item in combo_context.items():
+            display_name = _normalize_combo_display_name(combo_item.get("display_name"))
+            if display_name:
+                combo_name_lookup[("co", instance_id, combo_uid)] = display_name
+                combo_name_lookup[("aoc", instance_id, combo_uid)] = display_name
+            for mapping in mappings_for_instance:
+                resolved_value = _resolve_category_dimension_value(
+                    mapping,
+                    combo_display_name=display_name,
+                    combo_context=combo_item,
+                )
+                if resolved_value is None:
+                    continue
+                lookup_key = (
+                    str(mapping.get("source_kind") or "co"),
+                    instance_id,
+                    combo_uid,
+                )
+                combo_dimension_lookup.setdefault(lookup_key, {})[
+                    str(mapping.get("column_name") or "")
+                ] = resolved_value
+
+    return {
+        "columns": category_columns,
+        "variable_dimension_lookup": dict(variable_dimension_lookup),
+        "combo_name_lookup": combo_name_lookup,
+        "combo_dimension_lookup": combo_dimension_lookup,
+        "co_category_column_names": co_category_column_names,
+        "aoc_category_column_names": aoc_category_column_names,
+    }
+
+
 def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     variables = _dataset_variables(dataset)
     dataset_config = dataset.get_dataset_config()
@@ -682,6 +1076,10 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
     dimension_column_names: list[str] = []
     org_unit_service = OrgUnitHierarchyService(dataset.database_id)
     period_service = PeriodHierarchyService()
+    repository_config = None
+    database = getattr(dataset, "database", None)
+    if database is not None:
+        repository_config = getattr(database, "repository_org_unit_config", None)
 
     if include_instance_name:
         instance_column_name = _dedupe_identifier("dhis2_instance", used_identifiers)
@@ -705,11 +1103,11 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         dataset_config,
         selected_instance_ids,
         used_identifiers,
+        repository_config=repository_config,
     )
     hierarchy_columns = list(org_unit_context.hierarchy_columns)
     if hierarchy_columns:
         columns.extend(hierarchy_columns)
-        dimension_column_names.extend(org_unit_context.dimension_column_names)
     elif org_unit_context.fallback_org_unit_column:
         columns.append(
             {
@@ -722,6 +1120,13 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
                 "is_org_unit_fallback": True,
             }
         )
+    if org_unit_context.attribute_columns:
+        columns.extend(org_unit_context.attribute_columns)
+    if (
+        hierarchy_columns
+        or org_unit_context.fallback_org_unit_column
+        or org_unit_context.attribute_columns
+    ):
         dimension_column_names.extend(org_unit_context.dimension_column_names)
 
     period_context = period_service.augment_serving_schema(
@@ -764,14 +1169,24 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         if column["column_name"] != period_context.primary_period_column
     )
 
-    # ── Disaggregation dimension (opt-in) ─────────────────────────────────────
-    # When ``include_disaggregation_dimension`` is true the staging co_uid / co_name
-    # fields are promoted to first-class dimension columns so users can group and
-    # filter charts by Category Option Combo without pivoting variables.
-    include_coc_dimension = bool(dataset_config.get("include_disaggregation_dimension"))
+    include_category_dimensions = _should_include_category_dimensions(
+        dataset,
+        dataset_config,
+        variables,
+    )
     coc_uid_column_name: str | None = None
     coc_name_column_name: str | None = None
-    if include_coc_dimension:
+    aoc_uid_column_name: str | None = None
+    aoc_name_column_name: str | None = None
+    category_dimension_context: dict[str, Any] = {
+        "columns": [],
+        "variable_dimension_lookup": {},
+        "combo_name_lookup": {},
+        "combo_dimension_lookup": {},
+        "co_category_column_names": [],
+        "aoc_category_column_names": [],
+    }
+    if include_category_dimensions:
         coc_uid_column_name = _dedupe_identifier("co_uid", used_identifiers)
         columns.append(
             {
@@ -799,6 +1214,45 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
             }
         )
         dimension_column_names.append(coc_name_column_name)
+
+        aoc_uid_column_name = _dedupe_identifier("aoc_uid", used_identifiers)
+        columns.append(
+            {
+                "column_name": aoc_uid_column_name,
+                "verbose_name": "Attribute Option Combo (UID)",
+                "type": "STRING",
+                "sql_type": "TEXT",
+                "is_dttm": False,
+                "is_dimension": True,
+                "extra": {_DHIS2_AOC_UID_EXTRA_KEY: True},
+            }
+        )
+        dimension_column_names.append(aoc_uid_column_name)
+
+        aoc_name_column_name = _dedupe_identifier("attribute_option_combo", used_identifiers)
+        columns.append(
+            {
+                "column_name": aoc_name_column_name,
+                "verbose_name": "Attribute Option Combo",
+                "type": "STRING",
+                "sql_type": "TEXT",
+                "is_dttm": False,
+                "is_dimension": True,
+                "extra": {_DHIS2_AOC_EXTRA_KEY: True},
+            }
+        )
+        dimension_column_names.append(aoc_name_column_name)
+
+        category_dimension_context = _build_category_dimension_context(
+            dataset,
+            variables,
+            used_identifiers,
+        )
+        columns.extend(category_dimension_context["columns"])
+        dimension_column_names.extend(
+            column["column_name"]
+            for column in category_dimension_context["columns"]
+        )
 
     label_counts = Counter(
         (
@@ -933,6 +1387,21 @@ def build_serving_manifest(dataset: DHIS2StagedDataset) -> dict[str, Any]:
         "ou_level_column_name": ou_level_column_name,
         "coc_uid_column_name": coc_uid_column_name,
         "coc_name_column_name": coc_name_column_name,
+        "aoc_uid_column_name": aoc_uid_column_name,
+        "aoc_name_column_name": aoc_name_column_name,
+        "category_dimension_variable_lookup": category_dimension_context[
+            "variable_dimension_lookup"
+        ],
+        "combo_name_lookup": category_dimension_context["combo_name_lookup"],
+        "combo_dimension_lookup": category_dimension_context[
+            "combo_dimension_lookup"
+        ],
+        "co_category_column_names": category_dimension_context[
+            "co_category_column_names"
+        ],
+        "aoc_category_column_names": category_dimension_context[
+            "aoc_category_column_names"
+        ],
         "org_unit_hierarchy_diagnostics": org_unit_context.diagnostics,
         "period_hierarchy_diagnostics": period_context.diagnostics,
         "manifest_build_version": _MANIFEST_BUILD_VERSION,
@@ -953,11 +1422,21 @@ def materialize_serving_rows(
     fallback_org_unit_column = manifest.get("fallback_org_unit_column")
     period_column_name = str(manifest["period_column_name"])
     period_column_names_by_key = dict(manifest.get("period_column_names_by_key") or {})
+    category_dimension_variable_lookup = dict(
+        manifest.get("category_dimension_variable_lookup") or {}
+    )
+    combo_name_lookup = dict(manifest.get("combo_name_lookup") or {})
+    combo_dimension_lookup = dict(manifest.get("combo_dimension_lookup") or {})
     period_service = PeriodHierarchyService()
 
     grouped_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
     for raw_row in raw_rows:
         row_values: dict[str, Any] = {}
+        row_inst_id: int | None
+        try:
+            row_inst_id = int(raw_row.get("source_instance_id") or 0) or None
+        except (TypeError, ValueError):
+            row_inst_id = None
 
         if include_instance_name:
             instance_column_name = dimension_column_names[0]
@@ -995,7 +1474,71 @@ def materialize_serving_rows(
         if coc_uid_col:
             row_values[coc_uid_col] = raw_row.get("co_uid") or None
         if coc_name_col:
-            row_values[coc_name_col] = raw_row.get("co_name") or None
+            co_uid = str(raw_row.get("co_uid") or "").strip()
+            combo_name = raw_row.get("co_name") or (
+                combo_name_lookup.get(("co", row_inst_id, co_uid))
+                if row_inst_id is not None
+                else None
+            )
+            row_values[coc_name_col] = combo_name or None
+        aoc_uid_col = manifest.get("aoc_uid_column_name")
+        aoc_name_col = manifest.get("aoc_name_column_name")
+        if aoc_uid_col:
+            row_values[aoc_uid_col] = raw_row.get("aoc_uid") or None
+        if aoc_name_col:
+            aoc_uid = str(raw_row.get("aoc_uid") or "").strip()
+            combo_name = raw_row.get("aoc_name") or (
+                combo_name_lookup.get(("aoc", row_inst_id, aoc_uid))
+                if row_inst_id is not None
+                else None
+            )
+            row_values[aoc_name_col] = combo_name or None
+
+        co_uid = str(raw_row.get("co_uid") or "").strip()
+        aoc_uid = str(raw_row.get("aoc_uid") or "").strip()
+        if row_inst_id is not None and co_uid:
+            row_values.update(
+                combo_dimension_lookup.get(("co", row_inst_id, co_uid), {})
+            )
+        if row_inst_id is not None and aoc_uid:
+            row_values.update(
+                combo_dimension_lookup.get(("aoc", row_inst_id, aoc_uid), {})
+            )
+
+        dx_uid_key = str(raw_row.get("dx_uid") or "")
+        dimension_mappings = (
+            category_dimension_variable_lookup.get((row_inst_id, dx_uid_key), [])
+            or category_dimension_variable_lookup.get((None, dx_uid_key), [])
+        )
+        for mapping in dimension_mappings:
+            column_name = str(mapping.get("column_name") or "").strip()
+            if not column_name or row_values.get(column_name):
+                continue
+            source_kind = str(mapping.get("source_kind") or "co").strip().lower()
+            combo_display_name = (
+                raw_row.get("aoc_name")
+                if source_kind == "aoc"
+                else raw_row.get("co_name")
+            )
+            combo_context = None
+            if row_inst_id is not None:
+                combo_uid = (
+                    str(raw_row.get("aoc_uid") or "").strip()
+                    if source_kind == "aoc"
+                    else str(raw_row.get("co_uid") or "").strip()
+                )
+                combo_context = {
+                    "display_name": combo_name_lookup.get(
+                        (source_kind, row_inst_id, combo_uid)
+                    ),
+                }
+            resolved_dimension_value = _resolve_category_dimension_value(
+                mapping,
+                combo_display_name=combo_display_name,
+                combo_context=combo_context,
+            )
+            if resolved_dimension_value is not None:
+                row_values[column_name] = resolved_dimension_value
 
         key = tuple(row_values.get(column_name) for column_name in dimension_column_names)
         current = grouped_rows.setdefault(
@@ -1007,17 +1550,7 @@ def materialize_serving_rows(
         )
         current.update(row_values)
 
-        dx_uid_key = str(raw_row.get("dx_uid") or "")
         co_uid_key = raw_row.get("co_uid") or None
-        # Determine the source instance for this row so we use the correct column.
-        # Without instance scoping, two DHIS2 connections sharing the same dx_uid
-        # would both populate the same serving column, producing incorrect aggregates.
-        row_inst_id: int | None
-        try:
-            row_inst_id = int(raw_row.get("source_instance_id") or 0) or None
-        except (TypeError, ValueError):
-            row_inst_id = None
-
         # Try exact (inst, dx_uid, co_uid) first; fall back to (inst, dx_uid, None)
         # for total rows, then retry without instance scoping for manifest built
         # before instance-scoped keys were introduced.

@@ -47,10 +47,7 @@ const HoverStyleOverrides = styled.div`
     flex-direction: column;
     justify-content: center;
     align-items: center;
-  }
-
-  .hover-menu--left > :nth-child(n):not(:only-child):not(:last-child) {
-    margin-bottom: ${({ theme }) => theme.sizeUnit * 3}px;
+    row-gap: ${({ theme }) => theme.sizeUnit * 3}px;
   }
 
   .hover-menu--top {

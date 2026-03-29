@@ -119,8 +119,139 @@ def test_post_with_uuid(
     payload = response.json
     assert payload["result"]["uuid"] == "7c1b7880-a59d-47cd-8bf1-f1eb8d2863cb"
 
-    database = session.query(Database).one()
-    assert database.uuid == UUID("7c1b7880-a59d-47cd-8bf1-f1eb8d2863cb")
+
+def test_get_database_includes_repository_org_unit_lineage(
+    session: Session,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    from superset.databases.api import DatabaseRestApi
+    from superset.dhis2.models import DHIS2Instance
+    from superset.models.core import (
+        Database,
+        DatabaseRepositoryOrgUnit,
+        DatabaseRepositoryOrgUnitLineage,
+    )
+
+    DatabaseRestApi.datamodel._session = session
+    Database.metadata.create_all(session.get_bind())  # pylint: disable=no-member
+
+    session.execute(
+        Database.__table__.insert().values(
+            id=303,
+            database_name="repository_db",
+            sqlalchemy_uri="sqlite://",
+            repository_reporting_unit_approach="map_merge",
+            lowest_data_level_to_use=2,
+            repository_data_scope="children",
+            repository_org_unit_status="ready",
+            repository_org_unit_config_json=json.dumps(
+                {
+                    "selected_org_units": ["OU_A_ROOT", "OU_B_ROOT"],
+                    "repository_org_units": [{"repository_key": "1:uganda"}],
+                }
+            ),
+        )
+    )
+    session.execute(
+        DHIS2Instance.__table__.insert(),
+        [
+            {
+                "id": 101,
+                "database_id": 303,
+                "name": "National eHMIS",
+                "url": "https://a.example.org",
+                "auth_type": "basic",
+                "is_active": True,
+                "display_order": 1,
+            },
+            {
+                "id": 102,
+                "database_id": 303,
+                "name": "Non Routine",
+                "url": "https://b.example.org",
+                "auth_type": "basic",
+                "is_active": True,
+                "display_order": 2,
+            },
+        ],
+    )
+    session.execute(
+        DatabaseRepositoryOrgUnit.__table__.insert().values(
+            id=401,
+            database_id=303,
+            repository_key="1:uganda",
+            display_name="Uganda",
+            level=1,
+            hierarchy_path="1:uganda",
+            selection_key="OU_A_ROOT",
+            strategy="map_merge",
+            source_lineage_label="A,B",
+            is_conflicted=False,
+            is_unmatched=False,
+            provenance_json=json.dumps({"sourceSelectionKeys": ["OU_A_ROOT", "OU_B_ROOT"]}),
+        )
+    )
+    session.execute(
+        DatabaseRepositoryOrgUnitLineage.__table__.insert(),
+        [
+            {
+                "repository_org_unit_id": 401,
+                "database_id": 303,
+                "instance_id": 101,
+                "source_instance_code": "A",
+                "source_org_unit_uid": "OU_A_ROOT",
+                "source_org_unit_name": "Uganda",
+                "source_path": "/OU_A_ROOT",
+                "source_level": 1,
+                "provenance_json": json.dumps({"selectionKey": "OU_A_ROOT"}),
+            },
+            {
+                "repository_org_unit_id": 401,
+                "database_id": 303,
+                "instance_id": 102,
+                "source_instance_code": "B",
+                "source_org_unit_uid": "OU_B_ROOT",
+                "source_org_unit_name": "Uganda",
+                "source_path": "/OU_B_ROOT",
+                "source_level": 1,
+                "provenance_json": json.dumps({"selectionKey": "OU_B_ROOT"}),
+            },
+        ],
+    )
+    session.commit()
+
+    response = client.get("/api/v1/database/303/connection")
+    assert response.status_code == 200
+
+    payload = response.json["result"]
+    assert payload["repository_reporting_unit_approach"] == "map_merge"
+    assert payload["lowest_data_level_to_use"] == 2
+    assert payload["repository_data_scope"] == "children"
+    assert payload["repository_org_unit_status"] == "ready"
+    assert payload["repository_org_unit_status_message"] is None
+    assert payload["repository_org_unit_task_id"] is None
+    assert payload["repository_org_unit_last_finalized_at"] is None
+    assert payload["repository_org_unit_summary"] == {
+        "approach": "map_merge",
+        "lowest_data_level_to_use": 2,
+        "primary_instance_id": None,
+        "data_scope": "children",
+        "status": "ready",
+        "status_message": None,
+        "task_id": None,
+        "last_finalized_at": None,
+        "total_repository_org_units": 1,
+        "source_lineage_counts": {"A,B": 1},
+        "conflicted_count": 0,
+        "unmatched_count": 0,
+        "enabled_level_dimensions": 0,
+        "enabled_group_dimensions": 0,
+        "enabled_group_set_dimensions": 0,
+    }
+    assert payload["repository_org_units"][0]["repository_key"] == "1:uganda"
+    assert payload["repository_org_units"][0]["lineage"][0]["source_org_unit_uid"] == "OU_A_ROOT"
+    assert payload["repository_org_units"][0]["lineage"][1]["source_org_unit_uid"] == "OU_B_ROOT"
 
 
 def test_password_mask(
@@ -307,6 +438,33 @@ def test_database_connection(
                 },
                 "type": "object",
             },
+            "repository_reporting_unit_approach": None,
+            "lowest_data_level_to_use": None,
+            "primary_instance_id": None,
+            "repository_data_scope": None,
+            "repository_org_unit_config": {},
+            "repository_org_units": [],
+            "repository_org_unit_status": "not_configured",
+            "repository_org_unit_status_message": None,
+            "repository_org_unit_task_id": None,
+            "repository_org_unit_last_finalized_at": None,
+            "repository_org_unit_summary": {
+                "approach": None,
+                "lowest_data_level_to_use": None,
+                "primary_instance_id": None,
+                "data_scope": None,
+                "status": "not_configured",
+                "status_message": None,
+                "task_id": None,
+                "last_finalized_at": None,
+                "total_repository_org_units": 0,
+                "source_lineage_counts": {},
+                "conflicted_count": 0,
+                "unmatched_count": 0,
+                "enabled_level_dimensions": 0,
+                "enabled_group_dimensions": 0,
+                "enabled_group_set_dimensions": 0,
+            },
             "server_cert": None,
             "sqlalchemy_uri": "gsheets://",
             "uuid": "02feae18-2dd6-4bb4-a9c0-49e9d4f29d58",
@@ -338,6 +496,33 @@ def test_database_connection(
             "id": 1,
             "impersonate_user": False,
             "is_managed_externally": False,
+            "repository_reporting_unit_approach": None,
+            "lowest_data_level_to_use": None,
+            "primary_instance_id": None,
+            "repository_data_scope": None,
+            "repository_org_unit_config": {},
+            "repository_org_units": [],
+            "repository_org_unit_status": "not_configured",
+            "repository_org_unit_status_message": None,
+            "repository_org_unit_task_id": None,
+            "repository_org_unit_last_finalized_at": None,
+            "repository_org_unit_summary": {
+                "approach": None,
+                "lowest_data_level_to_use": None,
+                "primary_instance_id": None,
+                "data_scope": None,
+                "status": "not_configured",
+                "status_message": None,
+                "task_id": None,
+                "last_finalized_at": None,
+                "total_repository_org_units": 0,
+                "source_lineage_counts": {},
+                "conflicted_count": 0,
+                "unmatched_count": 0,
+                "enabled_level_dimensions": 0,
+                "enabled_group_dimensions": 0,
+                "enabled_group_set_dimensions": 0,
+            },
             "uuid": "02feae18-2dd6-4bb4-a9c0-49e9d4f29d58",
         },
     }
@@ -1964,6 +2149,72 @@ def test_table_metadata_happy_path(
     )
 
 
+def test_table_metadata_uses_sqla_table_metadata_for_dhis2_mart(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    """
+    Test the `table_metadata` endpoint for DHIS2 staged local MART datasets.
+    """
+    database = mocker.MagicMock()
+    sqla_table = SimpleNamespace(
+        id=10,
+        extra_dict={"dhis2_staged_local": True},
+        schema="MARTs",
+        table_name="Malaria MART",
+        sql="SELECT * FROM dhis2_serving.sv_4_malaria_routine_monthly_datasets_mart",
+        description="Malaria routine monthly mart",
+        columns=[
+            SimpleNamespace(
+                column_name="dx_uid",
+                type="String",
+                is_dttm=False,
+                description="Data element UID",
+                get_extra_dict=lambda: {},
+            ),
+            SimpleNamespace(
+                column_name="_internal_period_sort",
+                type="UInt32",
+                is_dttm=False,
+                description="Internal period sort key",
+                get_extra_dict=lambda: {"dhis2_is_internal": True},
+            ),
+        ],
+    )
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+    mocker.patch(
+        "superset.databases.api._resolve_requested_table",
+        return_value=(sqla_table, Table("ignored", "ignored")),
+    )
+    mocker.patch("superset.databases.api.security_manager.raise_for_access")
+
+    response = client.get(
+        "/api/v1/database/1/table_metadata/"
+        "?name=sv_4_malaria_routine_monthly_datasets_mart&schema=dhis2_serving"
+    )
+
+    assert response.status_code == 200
+    assert response.json == {
+        "comment": "Malaria routine monthly mart",
+        "columns": [
+            {
+                "comment": "Data element UID",
+                "is_dttm": False,
+                "longType": "String",
+                "name": "dx_uid",
+                "type": "String",
+            }
+        ],
+        "foreignKeys": [],
+        "indexes": [],
+        "name": "sv_4_malaria_routine_monthly_datasets_mart",
+        "primaryKey": [],
+        "selectStar": "SELECT * FROM dhis2_serving.sv_4_malaria_routine_monthly_datasets_mart",
+    }
+    database.db_engine_spec.get_table_metadata.assert_not_called()
+
+
 def test_table_metadata_no_table(
     mocker: MockerFixture,
     client: Any,
@@ -2340,12 +2591,9 @@ def test_schemas(
     """
     Test the `schemas` endpoint.
     """
-    from superset.databases.api import DatabaseRestApi
-
     database = mocker.MagicMock()
     database.get_all_schema_names.return_value = {"schema1", "schema2"}
-    datamodel = mocker.patch.object(DatabaseRestApi, "datamodel")
-    datamodel.get.return_value = database
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
 
     security_manager = mocker.patch(
         "superset.databases.api.security_manager",
@@ -2398,16 +2646,13 @@ def test_schemas_with_oauth2(
     """
     Test the `schemas` endpoint when OAuth2 is needed.
     """
-    from superset.databases.api import DatabaseRestApi
-
     database = mocker.MagicMock()
     database.get_all_schema_names.side_effect = OAuth2RedirectError(
         "url",
         "tab_id",
         "redirect_uri",
     )
-    datamodel = mocker.patch.object(DatabaseRestApi, "datamodel")
-    datamodel.get.return_value = database
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
 
     security_manager = mocker.patch(
         "superset.databases.api.security_manager",
@@ -3341,6 +3586,7 @@ def test_resolve_public_dhis2_chart_allows_guest_access_via_linked_dashboard(
     )
     query = mocker.Mock()
     query.filter.return_value.one_or_none.return_value = chart
+    query.scalar.return_value = False
     mocker.patch("superset.databases.api.db.session.query", return_value=query)
     mocker.patch("superset.databases.api.security_manager.is_guest_user", return_value=True)
     has_guest_access = mocker.patch(
@@ -3417,3 +3663,86 @@ def test_dhis2_metadata_resolves_source_context_for_staged_local_chart(
         parent_ids=[],
         allow_live_fallback=False,
     )
+
+
+@freeze_time("2026-03-28")
+def test_dhis2_chart_data_expands_last_12_months(
+    mocker: MockerFixture,
+    client: Any,
+    full_api_access: None,
+) -> None:
+    connection = mocker.MagicMock()
+    connection.base_url = "https://dhis2.example.com"
+    connection.auth = ("user", "pass")
+    connection.fetch_analytics_data.return_value = {
+        "rows": [{"pe": "202603", "ou": "ou1", "de1": "7"}]
+    }
+
+    engine = mocker.MagicMock()
+    engine.raw_connection.return_value = connection
+
+    engine_context = mocker.MagicMock()
+    engine_context.__enter__.return_value = engine
+    engine_context.__exit__.return_value = None
+
+    database = mocker.MagicMock()
+    database.backend = "dhis2"
+    database.get_sqla_engine.return_value = engine_context
+
+    mocker.patch("superset.databases.api.DatabaseDAO.find_by_id", return_value=database)
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.fetch_org_unit_level_names",
+        return_value={1: "National"},
+    )
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.fetch_dx_display_names",
+        return_value={"de1": "Test Metric"},
+    )
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.fetch_org_units_with_ancestors",
+        return_value=({"ou1": "Uganda"}, {"ou1": 1}, {"ou1": None}),
+    )
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.build_ou_dimension_with_levels",
+        return_value="ou:ou1",
+    )
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.build_ou_hierarchy",
+        return_value={"ou1": {"ancestors_by_level": {1: "ou1"}}},
+    )
+    mocker.patch(
+        "superset.databases.dhis2_preview_utils.calculate_level_range",
+        return_value=(1, 1),
+    )
+
+    response = client.post(
+        "/api/v1/database/1/dhis2_chart_data/",
+        json={
+            "sql": (
+                "/* DHIS2: table=analytics&dx=de1&pe=LAST_12_MONTHS"
+                "&ou=ou1&ouMode=SELECTED */"
+            ),
+            "columns": [],
+            "limit": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json["total"] == 1
+    assert response.json["data"] == [
+        {"Period": "202603", "National": "Uganda", "Test_Metric": 7.0}
+    ]
+    assert connection.fetch_analytics_data.call_args.kwargs["period_ids"] == [
+        "202603",
+        "202602",
+        "202601",
+        "202512",
+        "202511",
+        "202510",
+        "202509",
+        "202508",
+        "202507",
+        "202506",
+        "202505",
+        "202504",
+    ]

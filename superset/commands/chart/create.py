@@ -41,6 +41,25 @@ from superset.utils.decorators import on_error, transaction
 logger = logging.getLogger(__name__)
 
 
+def _resolve_chart_datasource_name(datasource: Any) -> str:
+    extra: dict[str, Any] = {}
+    if hasattr(datasource, "get_extra_dict"):
+        try:
+            extra = datasource.get_extra_dict() or {}
+        except Exception:  # pylint: disable=broad-except
+            extra = {}
+    elif hasattr(datasource, "extra_dict"):
+        try:
+            extra = datasource.extra_dict or {}
+        except Exception:  # pylint: disable=broad-except
+            extra = {}
+
+    display_name = str(extra.get("dhis2_dataset_display_name") or "").strip()
+    if display_name:
+        return display_name
+    return datasource.name
+
+
 class CreateChartCommand(CreateMixin, BaseCommand):
     def __init__(self, data: dict[str, Any]):
         self._properties = data.copy()
@@ -62,13 +81,18 @@ class CreateChartCommand(CreateMixin, BaseCommand):
         # Validate/Populate datasource
         try:
             datasource = get_datasource_by_id(datasource_id, datasource_type)
-            self._properties["datasource_name"] = datasource.name
+            self._properties["datasource_name"] = _resolve_chart_datasource_name(
+                datasource
+            )
 
             # Validate dataset role
             if hasattr(datasource, "dataset_role") and datasource.dataset_role:
                 try:
                     role = DatasetRole(datasource.dataset_role)
-                    if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.CHART):
+                    if not DatasetEligibilityPolicy.is_dataset_eligible(
+                        datasource,
+                        DatasetContext.CHART,
+                    ):
                         exceptions.append(ChartInvalidDatasetRoleError(role))
                 except ValueError:
                     pass  # Ignore invalid role strings, handled elsewhere or treated as permissible

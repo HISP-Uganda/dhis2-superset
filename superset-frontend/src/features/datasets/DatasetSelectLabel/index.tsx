@@ -18,6 +18,7 @@
  */
 import { Tooltip } from '@superset-ui/core/components';
 import { styled, t } from '@superset-ui/core';
+import { getDatasetDisplayName } from 'src/utils/dhis2DatasetDisplay';
 
 type Database = {
   database_name: string;
@@ -29,6 +30,7 @@ export type Dataset = {
   datasource_type?: string;
   schema: string;
   database: Database;
+  extra?: string | Record<string, any> | null;
 };
 
 const TooltipContent = styled.div`
@@ -89,43 +91,47 @@ const StyledLabelDetail = styled.span`
 const isValidValue = (value: string): boolean =>
   !['null', 'none'].includes(value.toLowerCase()) && value.trim() !== '';
 
-export const DatasetSelectLabel = (item: Dataset) => (
-  <Tooltip
-    mouseEnterDelay={0.2}
-    placement="right"
-    title={
-      <TooltipContent>
-        <div className="tooltip-header">
-          {item.table_name && isValidValue(item.table_name)
-            ? item.table_name
-            : t('Not defined')}
-        </div>
-        <div className="tooltip-description">
-          <div>
-            {t('Database')}: {item.database.database_name}
-          </div>
-          <div>
-            {t('Schema')}:{' '}
-            {item.schema && isValidValue(item.schema)
-              ? item.schema
+export const DatasetSelectLabel = (item: Dataset) => {
+  const displayName = getDatasetDisplayName(item);
+
+  return (
+    <Tooltip
+      mouseEnterDelay={0.2}
+      placement="right"
+      title={
+        <TooltipContent>
+          <div className="tooltip-header">
+            {displayName && isValidValue(displayName)
+              ? displayName
               : t('Not defined')}
           </div>
-        </div>
-      </TooltipContent>
-    }
-  >
-    <StyledLabelContainer>
-      <StyledLabel>
-        {item.table_name && isValidValue(item.table_name)
-          ? item.table_name
-          : item.database.database_name}
-      </StyledLabel>
-      <StyledDetailWrapper>
-        <StyledLabelDetail>{item.database.database_name}</StyledLabelDetail>
-        {item.schema && isValidValue(item.schema) && (
-          <StyledLabelDetail>&nbsp;- {item.schema}</StyledLabelDetail>
-        )}
-      </StyledDetailWrapper>
-    </StyledLabelContainer>
-  </Tooltip>
-);
+          <div className="tooltip-description">
+            <div>
+              {t('Database')}: {item.database.database_name}
+            </div>
+            <div>
+              {t('Schema')}:{' '}
+              {item.schema && isValidValue(item.schema)
+                ? item.schema
+                : t('Not defined')}
+            </div>
+          </div>
+        </TooltipContent>
+      }
+    >
+      <StyledLabelContainer>
+        <StyledLabel>
+          {displayName && isValidValue(displayName)
+            ? displayName
+            : item.database.database_name}
+        </StyledLabel>
+        <StyledDetailWrapper>
+          <StyledLabelDetail>{item.database.database_name}</StyledLabelDetail>
+          {item.schema && isValidValue(item.schema) && (
+            <StyledLabelDetail>&nbsp;- {item.schema}</StyledLabelDetail>
+          )}
+        </StyledDetailWrapper>
+      </StyledLabelContainer>
+    </Tooltip>
+  );
+};

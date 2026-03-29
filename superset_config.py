@@ -2,6 +2,7 @@
 import os
 from datetime import timedelta
 from celery.schedules import crontab
+from cachelib import FileSystemCache
 
 # ============================================================================
 # TIMEOUT CONFIGURATION FOR DHIS2
@@ -80,11 +81,82 @@ FEATURE_FLAGS = {
     "DASHBOARD_RBAC": True,
     "DASHBOARD_NATIVE_FILTERS": True,
     "ENABLE_TEMPLATE_PROCESSING": True,
+    "AI_INSIGHTS": True,
     # Enable drill-down interactions on charts and dashboards.
     # DrillBy lets users pivot on a different dimension from the context menu.
     # DrillToDetail opens a row-level data modal for any data point.
     "DrillBy": True,
     "DrillToDetail": True,
+}
+
+_AI_INSIGHTS_PROVIDERS = {}
+
+if os.environ.get("OPENAI_API_KEY"):
+    _AI_INSIGHTS_PROVIDERS["openai"] = {
+        "enabled": True,
+        "type": "openai_compatible",
+        "label": "OpenAI",
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "api_key_env": "OPENAI_API_KEY",
+        "models": [
+            model.strip()
+            for model in os.environ.get("OPENAI_MODELS", "gpt-4.1-mini").split(",")
+            if model.strip()
+        ],
+        "default_model": os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"),
+        "is_local": False,
+    }
+
+ollama_base_url = os.environ.get("OLLAMA_BASE_URL") or os.environ.get(
+    "OLLAMA_HOST",
+)
+if ollama_base_url:
+    _AI_INSIGHTS_PROVIDERS["ollama"] = {
+        "enabled": True,
+        "type": "ollama",
+        "label": "Ollama",
+        "base_url": ollama_base_url,
+        "models": [
+            model.strip()
+            for model in os.environ.get("OLLAMA_MODELS", "llama3.1:8b").split(",")
+            if model.strip()
+        ],
+        "default_model": os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"),
+        "is_local": True,
+    }
+
+# Local fallback so the AI controls stay visible and testable even before
+# a remote provider is configured for this workspace.
+if not _AI_INSIGHTS_PROVIDERS and os.environ.get("AI_INSIGHTS_ENABLE_MOCK", "1") == "1":
+    _AI_INSIGHTS_PROVIDERS["mock"] = {
+        "enabled": True,
+        "type": "mock",
+        "label": "Mock AI (local)",
+        "models": ["mock-1"],
+        "default_model": "mock-1",
+        "is_local": True,
+    }
+
+AI_INSIGHTS_CONFIG = {
+    "enabled": True,
+    "allow_sql_execution": False,
+    "max_context_rows": 20,
+    "max_context_columns": 25,
+    "max_dashboard_charts": 12,
+    "max_follow_up_messages": 6,
+    "max_generated_sql_rows": 200,
+    "request_timeout_seconds": 30,
+    "max_tokens": 1200,
+    "temperature": 0.1,
+    "default_provider": next(iter(_AI_INSIGHTS_PROVIDERS), None),
+    "default_model": None,
+    "allowed_roles": [],
+    "mode_roles": {
+        "chart": [],
+        "dashboard": [],
+        "sql": [],
+    },
+    "providers": _AI_INSIGHTS_PROVIDERS,
 }
 
 # Guest token configuration for embedded dashboards
@@ -340,6 +412,21 @@ DATA_CACHE_CONFIG = {
     'CACHE_REDIS_URL': 'redis://localhost:6379/1'
 }
 
+# Async SQL Lab queries need a results backend even in local development.
+# Use a filesystem cache so MART previews and any remaining async paths work
+# without requiring Redis/Celery setup in this workspace.
+_RESULTS_BACKEND_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "superset_home",
+    "sqllab_results",
+)
+os.makedirs(_RESULTS_BACKEND_DIR, exist_ok=True)
+RESULTS_BACKEND = FileSystemCache(
+    cache_dir=_RESULTS_BACKEND_DIR,
+    default_timeout=SQLLAB_ASYNC_TIME_LIMIT_SEC,
+    threshold=5000,
+)
+
 # Celery configuration for background tasks
 class CeleryConfig:
     broker_url = 'redis://localhost:6379/2'
@@ -356,6 +443,7 @@ class CeleryConfig:
         'superset.tasks.dhis2_sync.*': {'queue': 'dhis2'},
         'superset.tasks.dhis2_cache.*': {'queue': 'dhis2'},
         'superset.tasks.dhis2_metadata.*': {'queue': 'dhis2'},
+        'dhis2.finalize_repository_org_units': {'queue': 'dhis2'},
     }
 
     # Beat schedule — must use celery.schedules.crontab objects, not raw dicts.

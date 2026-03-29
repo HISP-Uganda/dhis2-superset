@@ -19,6 +19,15 @@ import {
 
 import { DHIS2WizardState } from '../index';
 import StepLevelMapping from './StepLevelMapping';
+import type {
+  DatabaseRepositoryEnabledDimensions,
+  DatabaseRepositoryOrgUnitConfig,
+  DatabaseObject,
+  RepositoryLevelMappingConfig,
+  RepositoryOrgUnitLineage,
+  RepositoryOrgUnitRecord,
+  RepositoryReportingUnitApproach,
+} from 'src/features/databases/types';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -28,25 +37,40 @@ const USER_SCOPE_IDS = new Set([
   'USER_ORGUNIT_GRANDCHILDREN',
 ]);
 
+const SELECT_DROPDOWN_STYLE = {
+  maxHeight: 320,
+  overflow: 'auto' as const,
+};
+
+function getSelectPopupContainer(triggerNode: HTMLElement): HTMLElement {
+  return (
+    (triggerNode.closest('.ant-modal-content') as HTMLElement | null) ||
+    triggerNode.parentElement ||
+    document.body
+  );
+}
+
 const StepContainer = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  max-width: 1200px;
+  gap: 20px;
+  max-width: 1120px;
+  width: 100%;
+  margin: 0 auto;
 `;
 
 const ContentSection = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 `;
 
-const OptionsContainer = styled.div`
-  ${({ theme }) => `
-    background: ${theme.colorBgElevated};
-    border: 1px solid ${theme.colorBorder};
-    border-radius: ${theme.borderRadius}px;
-    padding: 16px;
+const OptionsContainer = styled.div<{ $flat?: boolean }>`
+  ${({ theme, $flat }) => `
+    background: ${$flat ? 'transparent' : theme.colorBgContainer};
+    border: ${$flat ? 'none' : `1px solid ${theme.colorBorder}`};
+    border-radius: ${$flat ? 0 : theme.borderRadius * 2}px;
+    padding: ${$flat ? 0 : `${theme.sizeUnit * 4}px ${theme.sizeUnit * 5}px`};
   `}
 `;
 
@@ -56,14 +80,14 @@ const CheckboxGroup = styled.div`
   gap: 12px;
 `;
 
-const TreeContainer = styled.div`
-  ${({ theme }) => `
-    background: ${theme.colorBgElevated};
-    border: 1px solid ${theme.colorBorder};
-    border-radius: ${theme.borderRadius}px;
+const TreeContainer = styled.div<{ $flat?: boolean }>`
+  ${({ theme, $flat }) => `
+    background: ${$flat ? 'transparent' : theme.colorBgContainer};
+    border: 1px solid ${$flat ? theme.colorBorderSecondary : theme.colorBorder};
+    border-radius: ${$flat ? theme.borderRadius : theme.borderRadius * 2}px;
     max-height: 500px;
     overflow-y: auto;
-    padding: 8px;
+    padding: ${$flat ? theme.sizeUnit * 3 : theme.sizeUnit * 2}px;
   `}
 `;
 
@@ -78,13 +102,16 @@ const SectionTitle = styled.h4`
   color: ${({ theme }) => theme.colorTextBase};
 `;
 
-const SelectedSummary = styled.div`
-  ${({ theme }) => `
-    background: ${theme.colorBgElevated};
-    border: 1px solid ${theme.colorBorder};
-    border-radius: ${theme.borderRadius}px;
-    padding: 16px;
-    margin-top: 24px;
+const SelectedSummary = styled.div<{ $flat?: boolean }>`
+  ${({ theme, $flat }) => `
+    background: ${$flat ? 'transparent' : theme.colorBgContainer};
+    border: ${$flat ? 'none' : `1px solid ${theme.colorBorder}`};
+    border-top: ${
+      $flat ? `1px solid ${theme.colorBorderSecondary}` : `1px solid ${theme.colorBorder}`
+    };
+    border-radius: ${$flat ? 0 : theme.borderRadius * 2}px;
+    padding: ${$flat ? `${theme.sizeUnit * 3}px 0 0` : `${theme.sizeUnit * 4}px`};
+    margin-top: ${theme.sizeUnit * 2}px;
   `}
 `;
 
@@ -99,12 +126,51 @@ const ErrorText = styled.div`
   `}
 `;
 
+const DataScopeOptions = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const DataScopeOption = styled.div<{ $flat?: boolean }>`
+  ${({ theme, $flat }) => `
+    padding: ${$flat ? `0 0 ${theme.sizeUnit * 3}px` : '12px'};
+    background: ${$flat ? 'transparent' : theme.colorBgContainer};
+    border-radius: ${$flat ? 0 : theme.borderRadius}px;
+    border-bottom: ${
+      $flat ? `1px solid ${theme.colorBorderSecondary}` : 'none'
+    };
+
+    &:last-child {
+      padding-bottom: ${$flat ? 0 : '12px'};
+      border-bottom: none;
+    }
+  `}
+`;
+
 interface StepOrgUnitsProps {
   wizardState: DHIS2WizardState;
   updateState: (updates: Partial<DHIS2WizardState>) => void;
   errors: Record<string, string>;
   databaseId?: number;
   instances?: InstanceOption[];
+  metadataMode?: 'dhis2' | 'repository';
+  hideSourceModeSelector?: boolean;
+  hideSourceModeConfiguration?: boolean;
+  forceSourceMode?: OrgUnitSourceMode;
+  hideAutoDetect?: boolean;
+  hideUserScopeOptions?: boolean;
+  hideGroupFilter?: boolean;
+  includeAncestorsScope?: boolean;
+  lockedDataScope?: DataLevelScope | null;
+  dataScopeLockedMessage?: string | null;
+  lowestDataLevelOptions?: Array<{
+    value: string;
+    label: string;
+  }>;
+  flatSections?: boolean;
+  labels?: StepOrgUnitsLabels;
+  onMetadataLoaded?: (metadata: StepOrgUnitsMetadataPayload) => void;
 }
 
 interface InstanceOption {
@@ -113,9 +179,13 @@ interface InstanceOption {
   is_active: boolean;
 }
 
-type OrgUnitSourceMode = 'primary' | 'repository' | 'per_instance' | 'federated';
+export type OrgUnitSourceMode =
+  | 'primary'
+  | 'repository'
+  | 'per_instance'
+  | 'federated';
 
-interface OrgUnit {
+export interface OrgUnit {
   id: string;
   selectionKey: string;
   sourceOrgUnitId: string;
@@ -127,9 +197,14 @@ interface OrgUnit {
   sourceInstanceNames: string[];
   repositoryLevel?: number;
   repositoryLevelName?: string;
+  repositoryKey?: string;
+  sourceLineageLabel?: string | null;
+  strategy?: RepositoryReportingUnitApproach | string | null;
+  lineage?: RepositoryOrgUnitLineage[];
+  provenance?: Record<string, unknown> | null;
 }
 
-interface OrgUnitLevel {
+export interface OrgUnitLevel {
   level: number;
   displayName: string;
   name?: string;
@@ -140,10 +215,23 @@ interface OrgUnitLevel {
   instanceLevelNames?: Record<number, string>;
 }
 
-interface OrgUnitGroup {
+export interface OrgUnitGroup {
   id: string;
   displayName: string;
   organisationUnits?: OrgUnit[];
+}
+
+export interface OrgUnitGroupSetMember {
+  id: string;
+  displayName: string;
+}
+
+export interface OrgUnitGroupSet {
+  id: string;
+  displayName: string;
+  organisationUnitGroups?: OrgUnitGroupSetMember[];
+  sourceInstanceIds?: number[];
+  sourceInstanceNames?: string[];
 }
 
 interface FederatedInstanceResult {
@@ -154,7 +242,37 @@ interface FederatedInstanceResult {
   error?: string | null;
 }
 
-type DataLevelScope = 'selected' | 'children' | 'grandchildren' | 'all_levels';
+export type DataLevelScope =
+  | 'selected'
+  | 'children'
+  | 'grandchildren'
+  | 'ancestors'
+  | 'all_levels';
+
+export interface StepOrgUnitsLabels {
+  title?: string;
+  description?: string;
+  sourcePolicyTitle?: string;
+  sourcePolicyDescription?: string;
+  userOptionsTitle?: string;
+  dataScopeTitle?: string;
+  dataScopeDescription?: string;
+  lowestDataLevelTitle?: string;
+  lowestDataLevelDescription?: string;
+}
+
+export interface StepOrgUnitsMetadataPayload {
+  orgUnits: OrgUnit[];
+  orgUnitLevels: OrgUnitLevel[];
+  orgUnitGroups: OrgUnitGroup[];
+  orgUnitGroupSets: OrgUnitGroupSet[];
+  instances: InstanceOption[];
+  repositoryConfig?: DatabaseRepositoryOrgUnitConfig | null;
+  repositoryEnabledDimensions?: DatabaseRepositoryEnabledDimensions | null;
+  repositoryApproach?: RepositoryReportingUnitApproach | null;
+  repositoryDataScope?: DataLevelScope | null;
+  repositoryLowestDataLevelToUse?: number | null;
+}
 
 interface ScopedSelectionPruneResult {
   validKeys: string[];
@@ -231,6 +349,319 @@ function getInstanceTaggedLabel(label: string, instanceName: string | null): str
 
 function buildRepositoryLevelNameMap(levels: OrgUnitLevel[]): Map<number, string> {
   return new Map(levels.map(level => [level.level, level.displayName] as const));
+}
+
+function sortOrgUnitLevelsAscending(levels: OrgUnitLevel[]): OrgUnitLevel[] {
+  return levels.slice().sort((left, right) => left.level - right.level);
+}
+
+function sortLevelSelectOptionsAscending<T extends { value: string; label: unknown }>(
+  options: T[],
+): T[] {
+  return options.slice().sort((left, right) => {
+    const leftLevel = Number.parseInt(left.value, 10);
+    const rightLevel = Number.parseInt(right.value, 10);
+    const leftIsNumeric = Number.isFinite(leftLevel);
+    const rightIsNumeric = Number.isFinite(rightLevel);
+
+    if (leftIsNumeric && rightIsNumeric && leftLevel !== rightLevel) {
+      return leftLevel - rightLevel;
+    }
+    if (leftIsNumeric !== rightIsNumeric) {
+      return leftIsNumeric ? -1 : 1;
+    }
+    return String(left.label || '').localeCompare(String(right.label || ''));
+  });
+}
+
+function isGenericRepositoryLevelLabel(
+  label: string | null | undefined,
+  level?: number | null,
+): boolean {
+  if (typeof label !== 'string' || !label.trim()) {
+    return true;
+  }
+  const normalized = label.trim();
+  const numericSuffix =
+    typeof level === 'number' && Number.isFinite(level) ? `\\s*${level}` : '\\s*\\d+';
+  return new RegExp(`^(?:Repository\\s+level|Level)${numericSuffix}$`, 'i').test(
+    normalized,
+  );
+}
+
+function getOrgUnitLevelName(
+  orgUnitLevels: OrgUnitLevel[],
+  level: number | null | undefined,
+  instanceId?: number | null,
+): string | null {
+  if (typeof level !== 'number' || !Number.isFinite(level)) {
+    return null;
+  }
+  const matchingLevel = orgUnitLevels.find(item => item.level === level);
+  if (!matchingLevel) {
+    return null;
+  }
+  const instanceSpecificName =
+    typeof instanceId === 'number'
+      ? matchingLevel.instanceLevelNames?.[instanceId]
+      : null;
+  const resolvedName =
+    instanceSpecificName ||
+    matchingLevel.displayName ||
+    matchingLevel.name ||
+    matchingLevel.aliases?.find(
+      alias => typeof alias === 'string' && !isGenericRepositoryLevelLabel(alias),
+    );
+  if (!resolvedName || isGenericRepositoryLevelLabel(resolvedName, level)) {
+    return null;
+  }
+  return resolvedName.trim();
+}
+
+function resolveRepositoryLevelLabel(params: {
+  mergedLevel: number;
+  savedLabel?: string | null;
+  instanceLevels?: Record<string, number | null>;
+  orgUnitLevels?: OrgUnitLevel[];
+  repositoryRecords?: RepositoryOrgUnitRecord[];
+}): string {
+  const {
+    mergedLevel,
+    savedLabel,
+    instanceLevels = {},
+    orgUnitLevels = [],
+    repositoryRecords = [],
+  } = params;
+
+  if (
+    typeof savedLabel === 'string' &&
+    savedLabel.trim() &&
+    !isGenericRepositoryLevelLabel(savedLabel, mergedLevel)
+  ) {
+    return savedLabel.trim();
+  }
+
+  const candidateLabels = Object.entries(instanceLevels)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([instanceId, sourceLevel]) =>
+      getOrgUnitLevelName(
+        orgUnitLevels,
+        sourceLevel,
+        Number.isFinite(Number(instanceId)) ? Number(instanceId) : null,
+      ),
+    )
+    .filter((value): value is string => !!value);
+
+  if (candidateLabels.length > 0) {
+    return candidateLabels[0];
+  }
+
+  const repositoryProvenanceLabel = repositoryRecords.find(
+    record =>
+      record.level === mergedLevel &&
+      typeof record.provenance?.repositoryLevelName === 'string' &&
+      record.provenance.repositoryLevelName.trim().length > 0,
+  )?.provenance?.repositoryLevelName;
+  if (
+    typeof repositoryProvenanceLabel === 'string' &&
+    repositoryProvenanceLabel.trim() &&
+    !isGenericRepositoryLevelLabel(repositoryProvenanceLabel, mergedLevel)
+  ) {
+    return repositoryProvenanceLabel.trim();
+  }
+
+  const lineageProvenanceLabel = repositoryRecords
+    .filter(record => record.level === mergedLevel)
+    .flatMap(record => record.lineage || [])
+    .find(
+      lineage =>
+        typeof lineage?.provenance?.repositoryLevelName === 'string' &&
+        String(lineage.provenance.repositoryLevelName).trim().length > 0,
+    )?.provenance?.repositoryLevelName;
+  if (
+    typeof lineageProvenanceLabel === 'string' &&
+    lineageProvenanceLabel.trim() &&
+    !isGenericRepositoryLevelLabel(lineageProvenanceLabel, mergedLevel)
+  ) {
+    return lineageProvenanceLabel.trim();
+  }
+
+  const directLevelName = getOrgUnitLevelName(orgUnitLevels, mergedLevel);
+  if (directLevelName) {
+    return directLevelName;
+  }
+
+  return t('Repository level %s', mergedLevel);
+}
+
+function normalizeRepositoryLevelMapping(
+  payload: unknown,
+): RepositoryLevelMappingConfig | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  if (candidate.enabled !== true || !Array.isArray(candidate.rows)) {
+    return null;
+  }
+
+  const rows = candidate.rows
+    .map(item => {
+      const row = item as Record<string, unknown>;
+      const mergedLevel =
+        typeof row.merged_level === 'number'
+          ? row.merged_level
+          : typeof row.merged_level === 'string'
+            ? Number(row.merged_level)
+            : NaN;
+      if (!Number.isFinite(mergedLevel)) {
+        return null;
+      }
+      return {
+        merged_level: mergedLevel,
+        label:
+          typeof row.label === 'string' && row.label.trim()
+            ? row.label.trim()
+            : `Repository level ${mergedLevel}`,
+        instance_levels:
+          row.instance_levels && typeof row.instance_levels === 'object'
+            ? (row.instance_levels as Record<string, number | null>)
+            : {},
+      };
+    })
+    .filter(
+      (
+        row,
+      ): row is NonNullable<RepositoryLevelMappingConfig>['rows'][number] => row !== null,
+    );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    rows,
+  };
+}
+
+function normalizeRepositoryOrgUnitLevels(
+  records: RepositoryOrgUnitRecord[],
+  levelMapping: RepositoryLevelMappingConfig | null,
+  sourceOrgUnitLevels: OrgUnitLevel[] = [],
+): OrgUnitLevel[] {
+  if (levelMapping?.enabled) {
+    return levelMapping.rows
+      .slice()
+      .sort((left, right) => left.merged_level - right.merged_level)
+      .map(row => ({
+        level: row.merged_level,
+        displayName: resolveRepositoryLevelLabel({
+          mergedLevel: row.merged_level,
+          savedLabel: row.label,
+          instanceLevels: row.instance_levels,
+          orgUnitLevels: sourceOrgUnitLevels,
+          repositoryRecords: records,
+        }),
+      }));
+  }
+
+  const levels = new Map<number, string>();
+  records.forEach(record => {
+    if (typeof record.level !== 'number') {
+      return;
+    }
+    const lineageEntries = Array.isArray(record.lineage) ? record.lineage : [];
+    const lineageLevelLabel = lineageEntries.find(
+      lineage =>
+        typeof lineage?.provenance?.repositoryLevelName === 'string' &&
+        String(lineage.provenance.repositoryLevelName).trim().length > 0,
+    )?.provenance?.repositoryLevelName;
+    const label =
+      typeof lineageLevelLabel === 'string' && lineageLevelLabel.trim()
+        ? lineageLevelLabel.trim()
+        : resolveRepositoryLevelLabel({
+            mergedLevel: record.level,
+            savedLabel: `Repository level ${record.level}`,
+            orgUnitLevels: sourceOrgUnitLevels,
+            repositoryRecords: records,
+          });
+    if (!levels.has(record.level)) {
+      levels.set(record.level, label);
+    }
+  });
+
+  return Array.from(levels.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([level, displayName]) => ({
+      level,
+      displayName,
+    }));
+}
+
+function normalizeRepositoryOrgUnits(
+  payload: unknown,
+  repositoryLevelNames: Map<number, string>,
+  instanceNames: Map<number, string>,
+): OrgUnit[] {
+  const records = Array.isArray(payload)
+    ? payload.filter(
+        (item): item is RepositoryOrgUnitRecord =>
+          !!item && typeof item === 'object' && typeof (item as RepositoryOrgUnitRecord).repository_key === 'string',
+      )
+    : [];
+
+  return records
+    .map(record => {
+      const sourceInstanceIds = Array.from(
+        new Set(
+          (record.lineage || [])
+            .map(lineage =>
+              typeof lineage.instance_id === 'number' ? lineage.instance_id : NaN,
+            )
+            .filter(value => Number.isFinite(value)),
+        ),
+      );
+      return {
+        id: record.repository_key,
+        repositoryKey: record.repository_key,
+        selectionKey: record.repository_key,
+        sourceOrgUnitId: record.repository_key,
+        displayName: record.display_name,
+        parentId: record.parent_repository_key || undefined,
+        level:
+          typeof record.level === 'number'
+            ? record.level
+            : undefined,
+        path: record.hierarchy_path || undefined,
+        sourceInstanceIds,
+        sourceInstanceNames: sourceInstanceIds
+          .map(instanceId => instanceNames.get(instanceId))
+          .filter((value): value is string => !!value),
+        repositoryLevel:
+          typeof record.level === 'number'
+            ? record.level
+            : undefined,
+        repositoryLevelName:
+          typeof record.level === 'number'
+            ? repositoryLevelNames.get(record.level)
+            : undefined,
+        sourceLineageLabel: record.source_lineage_label || null,
+        strategy: record.strategy || null,
+        lineage: Array.isArray(record.lineage) ? record.lineage : [],
+        provenance:
+          record.provenance && typeof record.provenance === 'object'
+            ? record.provenance
+            : null,
+      } satisfies OrgUnit;
+    })
+    .sort((left, right) => {
+      if ((left.level ?? Number.MAX_SAFE_INTEGER) !== (right.level ?? Number.MAX_SAFE_INTEGER)) {
+        return (left.level ?? Number.MAX_SAFE_INTEGER) - (right.level ?? Number.MAX_SAFE_INTEGER);
+      }
+      return left.displayName.localeCompare(right.displayName);
+    });
 }
 
 function normalizeOrgUnits(
@@ -586,6 +1017,357 @@ function normalizeOrgUnitGroups(
   );
 }
 
+function normalizeOrgUnitGroupSets(
+  payload: unknown,
+  sourceMode: OrgUnitSourceMode = 'repository',
+): OrgUnitGroupSet[] {
+  const normalizedMode = normalizeOrgUnitSourceMode(sourceMode);
+  const merged = new Map<string, OrgUnitGroupSet>();
+
+  (Array.isArray(payload) ? payload : []).forEach(item => {
+    const candidate = item as Record<string, unknown>;
+    const id =
+      typeof candidate.id === 'string'
+        ? candidate.id
+        : typeof candidate.displayName === 'string'
+          ? candidate.displayName
+          : null;
+    if (!id) {
+      return;
+    }
+
+    const displayName =
+      typeof candidate.displayName === 'string'
+        ? candidate.displayName
+        : typeof candidate.name === 'string'
+          ? candidate.name
+          : id;
+    const sourceInstanceId =
+      typeof candidate.source_instance_id === 'number'
+        ? candidate.source_instance_id
+        : null;
+    const sourceInstanceName =
+      typeof candidate.source_instance_name === 'string'
+        ? candidate.source_instance_name
+        : null;
+    const groupSetKey =
+      normalizedMode === 'per_instance' && sourceInstanceId !== null
+        ? `${sourceInstanceId}::${id}`
+        : id;
+    const members = Array.isArray(candidate.organisationUnitGroups)
+      ? candidate.organisationUnitGroups
+          .map(member => {
+            const memberCandidate = member as Record<string, unknown>;
+            const memberId =
+              typeof memberCandidate.id === 'string'
+                ? memberCandidate.id
+                : null;
+            if (!memberId) {
+              return null;
+            }
+            return {
+              id: memberId,
+              displayName:
+                typeof memberCandidate.displayName === 'string'
+                  ? memberCandidate.displayName
+                  : typeof memberCandidate.name === 'string'
+                    ? memberCandidate.name
+                    : memberId,
+            } satisfies OrgUnitGroupSetMember;
+          })
+          .filter(
+            (member): member is OrgUnitGroupSetMember => member !== null,
+          )
+      : [];
+
+    const current = merged.get(groupSetKey);
+    if (!current) {
+      merged.set(groupSetKey, {
+        id: groupSetKey,
+        displayName:
+          normalizedMode === 'per_instance'
+            ? getInstanceTaggedLabel(displayName, sourceInstanceName)
+            : displayName,
+        organisationUnitGroups: members,
+        sourceInstanceIds: sourceInstanceId ? [sourceInstanceId] : [],
+        sourceInstanceNames: sourceInstanceName ? [sourceInstanceName] : [],
+      });
+      return;
+    }
+
+    current.organisationUnitGroups = Array.from(
+      new Map(
+        [...(current.organisationUnitGroups || []), ...members].map(member => [
+          member.id,
+          member,
+        ]),
+      ).values(),
+    ).sort((left, right) => left.displayName.localeCompare(right.displayName));
+    if (
+      sourceInstanceId &&
+      !(current.sourceInstanceIds || []).includes(sourceInstanceId)
+    ) {
+      current.sourceInstanceIds = [
+        ...(current.sourceInstanceIds || []),
+        sourceInstanceId,
+      ];
+    }
+    if (
+      sourceInstanceName &&
+      !(current.sourceInstanceNames || []).includes(sourceInstanceName)
+    ) {
+      current.sourceInstanceNames = [
+        ...(current.sourceInstanceNames || []),
+        sourceInstanceName,
+      ];
+    }
+  });
+
+  return Array.from(merged.values()).sort((left, right) =>
+    left.displayName.localeCompare(right.displayName),
+  );
+}
+
+function buildRepositoryLineageLookup(
+  repositoryOrgUnits: OrgUnit[],
+): Map<string, OrgUnit[]> {
+  const lookup = new Map<string, OrgUnit[]>();
+
+  repositoryOrgUnits.forEach(orgUnit => {
+    (orgUnit.lineage || []).forEach(lineage => {
+      if (
+        typeof lineage.instance_id !== 'number' ||
+        typeof lineage.source_org_unit_uid !== 'string' ||
+        !lineage.source_org_unit_uid
+      ) {
+        return;
+      }
+      const key = `${lineage.instance_id}::${lineage.source_org_unit_uid}`;
+      const current = lookup.get(key) || [];
+      current.push(orgUnit);
+      lookup.set(key, current);
+    });
+  });
+
+  return lookup;
+}
+
+function buildRepositoryLevelDimensions(
+  orgUnitLevels: OrgUnitLevel[],
+  enabledDimensions: DatabaseRepositoryEnabledDimensions | null,
+): OrgUnitLevel[] {
+  const enabledLevels = enabledDimensions?.levels;
+  if (!Array.isArray(enabledLevels)) {
+    return orgUnitLevels;
+  }
+  if (enabledLevels.length === 0) {
+    return [];
+  }
+
+  const levelLookup = new Map(orgUnitLevels.map(level => [level.level, level] as const));
+
+  return enabledLevels
+    .map(item => {
+      const current = levelLookup.get(item.repository_level);
+      const sourceInstanceIds = Array.from(
+        new Set([
+          ...(current?.sourceInstanceIds || []),
+          ...((item.source_refs || [])
+            .map(ref => ref.instance_id)
+            .filter((value): value is number => typeof value === 'number')),
+        ]),
+      );
+      const sourceInstanceNames = Array.from(
+        new Set([
+          ...(current?.sourceInstanceNames || []),
+          ...((item.source_refs || [])
+            .map(ref => ref.source_instance_name || '')
+            .filter(Boolean)),
+        ]),
+      );
+      const resolvedLabel = resolveRepositoryLevelLabel({
+        mergedLevel: item.repository_level,
+        savedLabel: item.label,
+        orgUnitLevels,
+      });
+      return {
+        level: item.repository_level,
+        displayName: resolvedLabel,
+        name: current?.name,
+        aliases: Array.from(
+          new Set(
+            [resolvedLabel, current?.displayName, ...(current?.aliases || [])].filter(
+              Boolean,
+            ),
+          ),
+        ),
+        sourceInstanceIds,
+        sourceInstanceNames,
+        instanceLevelNames: current?.instanceLevelNames,
+      } satisfies OrgUnitLevel;
+    })
+    .sort((left, right) => left.level - right.level);
+}
+
+function buildRepositoryGroupsFromSourceMetadata(
+  payload: unknown,
+  repositoryOrgUnits: OrgUnit[],
+  enabledDimensions: DatabaseRepositoryEnabledDimensions | null,
+): OrgUnitGroup[] {
+  const enabledGroups = enabledDimensions?.groups;
+  const enabledGroupMap = new Map(
+    (enabledGroups || []).map(item => [item.key, item] as const),
+  );
+  const filterToEnabledGroups = Array.isArray(enabledGroups);
+  const lineageLookup = buildRepositoryLineageLookup(repositoryOrgUnits);
+  const groups = new Map<string, OrgUnitGroup>();
+
+  (Array.isArray(payload) ? payload : []).forEach(item => {
+    const candidate = item as Record<string, unknown>;
+    const groupId =
+      typeof candidate.id === 'string'
+        ? candidate.id
+        : typeof candidate.displayName === 'string'
+          ? candidate.displayName
+          : null;
+    if (!groupId) {
+      return;
+    }
+    if (filterToEnabledGroups && !enabledGroupMap.has(groupId)) {
+      return;
+    }
+
+    const configuredGroup = enabledGroupMap.get(groupId);
+    const groupDisplayName =
+      configuredGroup?.label ||
+      (typeof candidate.displayName === 'string'
+        ? candidate.displayName
+        : typeof candidate.name === 'string'
+          ? candidate.name
+          : groupId);
+    const sourceInstanceId =
+      typeof candidate.source_instance_id === 'number'
+        ? candidate.source_instance_id
+        : null;
+
+    const repositoryMembers = new Map<string, OrgUnit>();
+    (Array.isArray(candidate.organisationUnits)
+      ? (candidate.organisationUnits as Array<Record<string, unknown>>)
+      : []
+    ).forEach(member => {
+      const sourceOrgUnitId =
+        typeof member.id === 'string' ? member.id : null;
+      const memberInstanceId =
+        typeof member.source_instance_id === 'number'
+          ? member.source_instance_id
+          : sourceInstanceId;
+      if (!sourceOrgUnitId || memberInstanceId == null) {
+        return;
+      }
+      (lineageLookup.get(`${memberInstanceId}::${sourceOrgUnitId}`) || []).forEach(
+        repositoryUnit => {
+          repositoryMembers.set(repositoryUnit.selectionKey, repositoryUnit);
+        },
+      );
+    });
+
+    const current = groups.get(groupId);
+    if (!current) {
+      groups.set(groupId, {
+        id: groupId,
+        displayName: groupDisplayName,
+        organisationUnits: Array.from(repositoryMembers.values()).sort((left, right) =>
+          left.displayName.localeCompare(right.displayName),
+        ),
+      });
+      return;
+    }
+
+    current.displayName = current.displayName || groupDisplayName;
+    current.organisationUnits = Array.from(
+      new Map(
+        [...(current.organisationUnits || []), ...Array.from(repositoryMembers.values())].map(
+          orgUnit => [orgUnit.selectionKey, orgUnit] as const,
+        ),
+      ).values(),
+    ).sort((left, right) => left.displayName.localeCompare(right.displayName));
+  });
+
+  if (filterToEnabledGroups) {
+    enabledGroupMap.forEach((group, groupId) => {
+      if (groups.has(groupId)) {
+        return;
+      }
+      groups.set(groupId, {
+        id: groupId,
+        displayName: group.label,
+        organisationUnits: [],
+      });
+    });
+  }
+
+  return Array.from(groups.values()).sort((left, right) =>
+    left.displayName.localeCompare(right.displayName),
+  );
+}
+
+function buildRepositoryGroupSetsFromSourceMetadata(
+  payload: unknown,
+  enabledDimensions: DatabaseRepositoryEnabledDimensions | null,
+): OrgUnitGroupSet[] {
+  const enabledGroupSets = enabledDimensions?.group_sets;
+  const enabledGroupSetMap = new Map(
+    (enabledGroupSets || []).map(item => [item.key, item] as const),
+  );
+  const filterToEnabledGroupSets = Array.isArray(enabledGroupSets);
+  const normalized = normalizeOrgUnitGroupSets(payload, 'repository');
+  const groupSets = new Map(
+    normalized.map(item => [item.id, item] as const),
+  );
+
+  if (!filterToEnabledGroupSets) {
+    return normalized;
+  }
+
+  enabledGroupSetMap.forEach((groupSet, groupSetId) => {
+    const current = groupSets.get(groupSetId);
+    if (current) {
+      current.displayName = groupSet.label || current.displayName;
+      if ((!current.organisationUnitGroups || current.organisationUnitGroups.length === 0) &&
+        Array.isArray(groupSet.member_group_keys)
+      ) {
+        current.organisationUnitGroups = (groupSet.member_group_keys || []).map(
+          (memberId, index) => ({
+            id: memberId,
+            displayName: groupSet.member_group_labels?.[index] || memberId,
+          }),
+        );
+      }
+      return;
+    }
+    groupSets.set(groupSetId, {
+      id: groupSetId,
+      displayName: groupSet.label,
+      organisationUnitGroups: (groupSet.member_group_keys || []).map(
+        (memberId, index) => ({
+          id: memberId,
+          displayName: groupSet.member_group_labels?.[index] || memberId,
+        }),
+      ),
+      sourceInstanceIds: (groupSet.source_refs || [])
+        .map(ref => ref.instance_id)
+        .filter((value): value is number => typeof value === 'number'),
+      sourceInstanceNames: (groupSet.source_refs || [])
+        .map(ref => ref.source_instance_name || '')
+        .filter(Boolean),
+    });
+  });
+
+  return Array.from(groupSets.values())
+    .filter(groupSet => enabledGroupSetMap.has(groupSet.id))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName));
+}
+
 function mergeInstanceResults(payloads: unknown[]): FederatedInstanceResult[] {
   const merged = new Map<number, FederatedInstanceResult>();
 
@@ -727,6 +1509,9 @@ function pruneScopedOrgUnitSelections(
   const uniqueKeys = Array.from(new Set(selectedKeys)).filter(key =>
     lookup.has(key),
   );
+  if (!['children', 'grandchildren', 'all_levels'].includes(scope)) {
+    return { validKeys: uniqueKeys, pruned: [] };
+  }
   if (uniqueKeys.length <= 1) {
     return { validKeys: uniqueKeys, pruned: [] };
   }
@@ -790,7 +1575,11 @@ function buildBlockedOrgUnitSelectionKeys(
   units: OrgUnit[],
   selectedKeys: string[],
   lookup: Map<string, OrgUnit>,
+  scope: DataLevelScope,
 ): Set<string> {
+  if (!['children', 'grandchildren', 'all_levels'].includes(scope)) {
+    return new Set<string>();
+  }
   const selectedSet = new Set(selectedKeys);
   const blocked = new Set<string>();
 
@@ -812,12 +1601,90 @@ function buildBlockedOrgUnitSelectionKeys(
   return blocked;
 }
 
+function simplifyLowestLevelLabel(label: string): string {
+  return label.replace(
+    /\s+\((?:Level|Repository level)\s+\d+\)\s*$/i,
+    '',
+  );
+}
+
+function deriveRepositorySelectionKeys(
+  selectedDetails: DHIS2WizardState['selectedOrgUnitDetails'],
+  repositoryOrgUnits: OrgUnit[],
+): string[] {
+  if (!Array.isArray(selectedDetails) || selectedDetails.length === 0) {
+    return [];
+  }
+
+  const repositoryLookup = new Map(
+    repositoryOrgUnits.map(unit => [unit.selectionKey, unit] as const),
+  );
+  const resolved = new Set<string>();
+
+  selectedDetails.forEach(detail => {
+    if (!detail || typeof detail !== 'object') {
+      return;
+    }
+
+    const directKey =
+      typeof detail.selectionKey === 'string' && detail.selectionKey.trim()
+        ? detail.selectionKey.trim()
+        : typeof detail.id === 'string' && detail.id.trim()
+          ? detail.id.trim()
+          : null;
+    if (directKey && repositoryLookup.has(directKey)) {
+      resolved.add(directKey);
+      return;
+    }
+
+    const candidateSourceOrgUnitId =
+      typeof detail.sourceOrgUnitId === 'string' && detail.sourceOrgUnitId.trim()
+        ? detail.sourceOrgUnitId.trim()
+        : typeof detail.id === 'string' && detail.id.trim()
+          ? detail.id.trim()
+          : null;
+    const candidateInstanceIds = Array.isArray(detail.sourceInstanceIds)
+      ? detail.sourceInstanceIds
+      : [];
+
+    repositoryOrgUnits.some(unit => {
+      const matchesLineage = (unit.lineage || []).some(lineage => {
+        const sameInstance =
+          candidateInstanceIds.length === 0 ||
+          candidateInstanceIds.includes(lineage.instance_id);
+        return sameInstance && lineage.source_org_unit_uid === candidateSourceOrgUnitId;
+      });
+      if (!matchesLineage) {
+        return false;
+      }
+      resolved.add(unit.selectionKey);
+      return true;
+    });
+  });
+
+  return Array.from(resolved);
+}
+
 export default function WizardStepOrgUnits({
   wizardState,
   updateState,
   errors,
   databaseId,
   instances: providedInstances = [],
+  metadataMode = 'dhis2',
+  hideSourceModeSelector = false,
+  hideSourceModeConfiguration = false,
+  forceSourceMode,
+  hideAutoDetect = false,
+  hideUserScopeOptions = false,
+  hideGroupFilter = false,
+  includeAncestorsScope = false,
+  lockedDataScope = null,
+  dataScopeLockedMessage = null,
+  lowestDataLevelOptions,
+  flatSections = false,
+  labels,
+  onMetadataLoaded,
 }: StepOrgUnitsProps) {
   const theme = useTheme();
   const [loading, setLoading] = useState(false);
@@ -834,15 +1701,28 @@ export default function WizardStepOrgUnits({
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [orgUnitLevels, setOrgUnitLevels] = useState<OrgUnitLevel[]>([]);
   const [orgUnitGroups, setOrgUnitGroups] = useState<OrgUnitGroup[]>([]);
+  const [orgUnitGroupSets, setOrgUnitGroupSets] = useState<OrgUnitGroupSet[]>([]);
+  const [repositoryConfig, setRepositoryConfig] =
+    useState<DatabaseRepositoryOrgUnitConfig | null>(null);
+  const [repositoryEnabledDimensions, setRepositoryEnabledDimensions] =
+    useState<DatabaseRepositoryEnabledDimensions | null>(null);
+  const [repositoryApproach, setRepositoryApproach] =
+    useState<RepositoryReportingUnitApproach | null>(null);
+  const [repositoryDataScope, setRepositoryDataScope] =
+    useState<DataLevelScope | null>(null);
+  const [repositoryLowestDataLevelToUse, setRepositoryLowestDataLevelToUse] =
+    useState<number | null>(null);
   const [searchText, setSearchText] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<string | null>(null);
+  const [selectedGroupSet, setSelectedGroupSet] = useState<string | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [userOrgUnit, setUserOrgUnit] = useState(false);
   const [userSubUnits, setUserSubUnits] = useState(false);
   const [userSubX2Units, setUserSubX2Units] = useState(false);
   const requestIdRef = useRef(0);
   const instancesRequestIdRef = useRef(0);
+  const repositoryDefaultsAppliedRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
 
   useEffect(
@@ -860,6 +1740,18 @@ export default function WizardStepOrgUnits({
         ? providedInstances.filter(instance => instance.is_active)
         : loadedInstances.filter(instance => instance.is_active),
     [loadedInstances, providedInstances],
+  );
+
+  useEffect(() => {
+    repositoryDefaultsAppliedRef.current = null;
+  }, [databaseId, metadataMode]);
+
+  const instanceNameMap = useMemo(
+    () =>
+      new Map(
+        activeInstances.map(instance => [instance.id, instance.name] as const),
+      ),
+    [activeInstances],
   );
 
   useEffect(() => {
@@ -918,19 +1810,40 @@ export default function WizardStepOrgUnits({
     if (activeInstances.length === 0) {
       return wizardState.selectedInstanceIds;
     }
-    const activeIds = new Set(activeInstances.map(instance => instance.id));
-    return wizardState.selectedInstanceIds.filter(id => activeIds.has(id));
+    const activeIds = activeInstances.map(instance => instance.id);
+    const activeIdSet = new Set(activeIds);
+    const filteredSelectedIds = wizardState.selectedInstanceIds.filter(id =>
+      activeIdSet.has(id),
+    );
+
+    if (filteredSelectedIds.length > 0) {
+      return filteredSelectedIds;
+    }
+
+    return activeIds;
   }, [activeInstances, wizardState.selectedInstanceIds]);
 
   const selectedConnectionCount = selectedConnectionIds.length;
-  const effectiveOrgUnitSourceMode = normalizeOrgUnitSourceMode(
+  const inferredOrgUnitSourceMode = normalizeOrgUnitSourceMode(
     selectedConnectionCount > 1
       ? wizardState.orgUnitSourceMode || 'repository'
       : 'primary',
   );
+  const effectiveOrgUnitSourceMode =
+    forceSourceMode && forceSourceMode !== 'federated'
+      ? forceSourceMode
+      : inferredOrgUnitSourceMode;
   const primaryInstanceId = useMemo(() => {
     if (selectedConnectionCount === 0) {
-      return null;
+      if (
+        wizardState.primaryOrgUnitInstanceId &&
+        activeInstances.some(
+          instance => instance.id === wizardState.primaryOrgUnitInstanceId,
+        )
+      ) {
+        return wizardState.primaryOrgUnitInstanceId;
+      }
+      return activeInstances[0]?.id || null;
     }
     if (selectedConnectionCount === 1) {
       return selectedConnectionIds[0];
@@ -951,6 +1864,8 @@ export default function WizardStepOrgUnits({
     () => wizardState.orgUnits.filter(id => USER_SCOPE_IDS.has(id)),
     [wizardState.orgUnits],
   );
+  const effectiveDataLevelScope =
+    lockedDataScope || wizardState.dataLevelScope || 'selected';
   const concreteSelectedOrgUnitKeys = useMemo(
     () => wizardState.orgUnits.filter(id => !USER_SCOPE_IDS.has(id)),
     [wizardState.orgUnits],
@@ -962,6 +1877,57 @@ export default function WizardStepOrgUnits({
       updateState({ primaryOrgUnitInstanceId: primaryInstanceId });
     }
   }, [primaryInstanceId, updateState, wizardState.primaryOrgUnitInstanceId]);
+
+  useEffect(() => {
+    if (!lockedDataScope) {
+      return;
+    }
+    const includeChildren = !['selected', 'ancestors'].includes(lockedDataScope);
+    if (
+      wizardState.dataLevelScope !== lockedDataScope ||
+      wizardState.includeChildren !== includeChildren
+    ) {
+      updateState({
+        dataLevelScope: lockedDataScope,
+        includeChildren,
+      });
+    }
+  }, [
+    lockedDataScope,
+    updateState,
+    wizardState.dataLevelScope,
+    wizardState.includeChildren,
+  ]);
+
+  useEffect(() => {
+    if (!onMetadataLoaded) {
+      return;
+    }
+    onMetadataLoaded({
+      orgUnits,
+      orgUnitLevels,
+      orgUnitGroups,
+      orgUnitGroupSets,
+      instances: activeInstances,
+      repositoryConfig,
+      repositoryEnabledDimensions,
+      repositoryApproach,
+      repositoryDataScope,
+      repositoryLowestDataLevelToUse,
+    });
+  }, [
+    activeInstances,
+    onMetadataLoaded,
+    orgUnitGroups,
+    orgUnitGroupSets,
+    orgUnitLevels,
+    orgUnits,
+    repositoryApproach,
+    repositoryConfig,
+    repositoryDataScope,
+    repositoryEnabledDimensions,
+    repositoryLowestDataLevelToUse,
+  ]);
 
   const syncSelectedOrgUnits = useCallback((
     concreteOrgUnitIds: string[],
@@ -981,6 +1947,11 @@ export default function WizardStepOrgUnits({
         sourceInstanceNames: unit.sourceInstanceNames,
         repositoryLevel: unit.repositoryLevel,
         repositoryLevelName: unit.repositoryLevelName,
+        repositoryKey: unit.repositoryKey,
+        sourceLineageLabel: unit.sourceLineageLabel,
+        strategy: unit.strategy,
+        lineage: unit.lineage,
+        provenance: unit.provenance,
       }));
 
     updateState({
@@ -990,6 +1961,211 @@ export default function WizardStepOrgUnits({
   }, [orgUnits, updateState, userScopeSelections]);
 
   const refreshOrgUnitMetadata = async () => {
+    if (metadataMode === 'repository') {
+      if (!databaseId) {
+        setOrgUnits([]);
+        setOrgUnitLevels([]);
+        setOrgUnitGroups([]);
+        setOrgUnitGroupSets([]);
+        setRepositoryConfig(null);
+        setRepositoryEnabledDimensions(null);
+        setRepositoryApproach(null);
+        setRepositoryDataScope(null);
+        setRepositoryLowestDataLevelToUse(null);
+        setWarningMessages([]);
+        setInstanceResults([]);
+        setLoadError(null);
+        setStatusMessage(null);
+        setLoadStatus('idle');
+        return;
+      }
+
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      if (!isMountedRef.current) {
+        return;
+      }
+      setLoading(true);
+      setLoadError(null);
+      setStatusMessage(null);
+      setLoadStatus('loading');
+
+      try {
+        const response = await SupersetClient.get({
+          endpoint: `/api/v1/database/${databaseId}`,
+        });
+        if (!isMountedRef.current || requestId !== requestIdRef.current) {
+          return;
+        }
+
+        const database = (response.json as { result?: DatabaseObject })?.result;
+        const repositoryRecords = Array.isArray(database?.repository_org_units)
+          ? database.repository_org_units
+          : [];
+        const repositoryConfig =
+          database?.repository_org_unit_config &&
+          typeof database.repository_org_unit_config === 'object'
+            ? database.repository_org_unit_config
+            : null;
+        let sourceOrgUnitLevels: OrgUnitLevel[] = [];
+        let sourceOrgUnitGroupsPayload: unknown[] = [];
+        let sourceOrgUnitGroupSetsPayload: unknown[] = [];
+        const repositoryInstanceIds = activeInstances.map(instance => instance.id);
+        if (repositoryInstanceIds.length > 0) {
+          try {
+            const [
+              sourceLevelsResponse,
+              sourceGroupsResponse,
+              sourceGroupSetsResponse,
+            ] = await Promise.allSettled([
+              SupersetClient.get({
+                endpoint: buildMetadataEndpoint(
+                  databaseId,
+                  'organisationUnitLevels',
+                  repositoryInstanceIds,
+                  { orgUnitSourceMode: 'per_instance' },
+                ),
+              }),
+              SupersetClient.get({
+                endpoint: buildMetadataEndpoint(
+                  databaseId,
+                  'organisationUnitGroups',
+                  repositoryInstanceIds,
+                  { orgUnitSourceMode: 'per_instance' },
+                ),
+              }),
+              SupersetClient.get({
+                endpoint: buildMetadataEndpoint(
+                  databaseId,
+                  'organisationUnitGroupSets',
+                  repositoryInstanceIds,
+                  { orgUnitSourceMode: 'per_instance' },
+                ),
+              }),
+            ]);
+            if (!isMountedRef.current || requestId !== requestIdRef.current) {
+              return;
+            }
+            if (sourceLevelsResponse.status === 'fulfilled') {
+              sourceOrgUnitLevels = normalizeOrgUnitLevels(
+                (sourceLevelsResponse.value.json as { result?: unknown[] })?.result,
+              );
+            }
+            if (sourceGroupsResponse.status === 'fulfilled') {
+              sourceOrgUnitGroupsPayload =
+                (sourceGroupsResponse.value.json as { result?: unknown[] })?.result ||
+                [];
+            }
+            if (sourceGroupSetsResponse.status === 'fulfilled') {
+              sourceOrgUnitGroupSetsPayload =
+                (sourceGroupSetsResponse.value.json as { result?: unknown[] })?.result ||
+                [];
+            }
+          } catch {
+            sourceOrgUnitLevels = [];
+            sourceOrgUnitGroupsPayload = [];
+            sourceOrgUnitGroupSetsPayload = [];
+          }
+        }
+        const repositoryLevelMapping = normalizeRepositoryLevelMapping(
+          repositoryConfig?.level_mapping,
+        );
+        const rawRepositoryLevels = normalizeRepositoryOrgUnitLevels(
+          repositoryRecords,
+          repositoryLevelMapping,
+          sourceOrgUnitLevels,
+        );
+        const nextLevels = buildRepositoryLevelDimensions(
+          rawRepositoryLevels,
+          repositoryConfig?.enabled_dimensions || null,
+        );
+        const repositoryLevelNames = buildRepositoryLevelNameMap(nextLevels);
+        const nextOrgUnits = normalizeRepositoryOrgUnits(
+          repositoryRecords,
+          repositoryLevelNames,
+          instanceNameMap,
+        );
+        const nextGroups = buildRepositoryGroupsFromSourceMetadata(
+          sourceOrgUnitGroupsPayload,
+          nextOrgUnits,
+          repositoryConfig?.enabled_dimensions || null,
+        );
+        const nextGroupSets = buildRepositoryGroupSetsFromSourceMetadata(
+          sourceOrgUnitGroupSetsPayload,
+          repositoryConfig?.enabled_dimensions || null,
+        );
+
+        setOrgUnitLevels(nextLevels);
+        setOrgUnits(nextOrgUnits);
+        setOrgUnitGroups(nextGroups);
+        setOrgUnitGroupSets(nextGroupSets);
+        setRepositoryConfig(repositoryConfig);
+        setRepositoryEnabledDimensions(
+          repositoryConfig?.enabled_dimensions || null,
+        );
+        setRepositoryApproach(
+          database?.repository_reporting_unit_approach || null,
+        );
+        setRepositoryDataScope(
+          (database?.repository_data_scope as DataLevelScope | null) || null,
+        );
+        setRepositoryLowestDataLevelToUse(
+          typeof database?.lowest_data_level_to_use === 'number'
+            ? database.lowest_data_level_to_use
+            : null,
+        );
+        setWarningMessages([]);
+        setInstanceResults(
+          activeInstances.map(instance => ({
+            id: instance.id,
+            name: instance.name,
+            status: 'success',
+            count: nextOrgUnits.filter(unit =>
+              unit.sourceInstanceIds.includes(instance.id),
+            ).length,
+          })),
+        );
+        setLoadStatus('success');
+        setStatusMessage(
+          nextOrgUnits.length === 0
+            ? t(
+                'No repository organisation units have been saved for this Database yet.',
+              )
+            : null,
+        );
+      } catch (error) {
+        if (!isMountedRef.current || requestId !== requestIdRef.current) {
+          return;
+        }
+        setOrgUnits([]);
+        setOrgUnitLevels([]);
+        setOrgUnitGroups([]);
+        setOrgUnitGroupSets([]);
+        setRepositoryConfig(null);
+        setRepositoryEnabledDimensions(null);
+        setRepositoryApproach(null);
+        setRepositoryDataScope(null);
+        setRepositoryLowestDataLevelToUse(null);
+        setWarningMessages([]);
+        setInstanceResults([]);
+        setStatusMessage(null);
+        setLoadStatus('failed');
+        setLoadError(
+          getErrorMessage(
+            error,
+            t(
+              'Failed to load repository organisation units from the selected Database.',
+            ),
+          ),
+        );
+      } finally {
+        if (isMountedRef.current && requestId === requestIdRef.current) {
+          setLoading(false);
+        }
+      }
+      return;
+    }
+
     const metadataInstanceIds =
       effectiveOrgUnitSourceMode === 'primary' && primaryInstanceId
         ? [primaryInstanceId]
@@ -1001,6 +2177,12 @@ export default function WizardStepOrgUnits({
       setOrgUnits([]);
       setOrgUnitLevels([]);
       setOrgUnitGroups([]);
+      setOrgUnitGroupSets([]);
+      setRepositoryConfig(null);
+      setRepositoryEnabledDimensions(null);
+      setRepositoryApproach(null);
+      setRepositoryDataScope(null);
+      setRepositoryLowestDataLevelToUse(null);
       setWarningMessages([]);
       setInstanceResults([]);
       setLoadError(null);
@@ -1049,12 +2231,24 @@ export default function WizardStepOrgUnits({
         primaryInstanceId,
       },
     );
+    const orgUnitGroupSetsEndpoint = buildMetadataEndpoint(
+      databaseId,
+      'organisationUnitGroupSets',
+      metadataInstanceIds,
+      {
+        federated: useFederatedMode,
+        orgUnitSourceMode: effectiveOrgUnitSourceMode,
+        primaryInstanceId,
+      },
+    );
 
     try {
-      const [orgUnitsResult, levelsResult, groupsResult] = await Promise.allSettled([
+      const [orgUnitsResult, levelsResult, groupsResult, groupSetsResult] =
+        await Promise.allSettled([
         SupersetClient.get({ endpoint: orgUnitsEndpoint }),
         SupersetClient.get({ endpoint: orgUnitLevelsEndpoint }),
         SupersetClient.get({ endpoint: orgUnitGroupsEndpoint }),
+        SupersetClient.get({ endpoint: orgUnitGroupSetsEndpoint }),
       ]);
 
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
@@ -1135,6 +2329,25 @@ export default function WizardStepOrgUnits({
         );
       }
 
+      if (groupSetsResult.status === 'fulfilled') {
+        const payload = groupSetsResult.value.json as { result?: unknown[] };
+        payloads.push(payload);
+        setOrgUnitGroupSets(
+          normalizeOrgUnitGroupSets(payload.result, effectiveOrgUnitSourceMode),
+        );
+      } else {
+        setOrgUnitGroupSets([]);
+        rejectedMessages.push(
+          t('Organisation unit group sets are unavailable right now.'),
+        );
+      }
+
+      setRepositoryConfig(null);
+      setRepositoryEnabledDimensions(null);
+      setRepositoryApproach(null);
+      setRepositoryDataScope(null);
+      setRepositoryLowestDataLevelToUse(null);
+
       const normalizedResults = mergeInstanceResults(payloads);
       setInstanceResults(normalizedResults);
       setWarningMessages(collectWarningMessages(payloads, rejectedMessages));
@@ -1150,6 +2363,7 @@ export default function WizardStepOrgUnits({
     void refreshOrgUnitMetadata();
   }, [
     databaseId,
+    metadataMode,
     effectiveOrgUnitSourceMode,
     primaryInstanceId,
     selectedConnectionIds.join(','),
@@ -1166,6 +2380,7 @@ export default function WizardStepOrgUnits({
 
   useEffect(() => {
     if (
+      metadataMode === 'repository' ||
       !databaseId ||
       selectedConnectionIds.length === 0 ||
       !(
@@ -1186,6 +2401,7 @@ export default function WizardStepOrgUnits({
     pendingConnections.length,
     refreshOrgUnitMetadata,
     selectedConnectionIds.length,
+    metadataMode,
   ]);
 
   useEffect(() => {
@@ -1211,9 +2427,9 @@ export default function WizardStepOrgUnits({
       pruneScopedOrgUnitSelections(
         concreteSelectedOrgUnitKeys,
         orgUnitLookup,
-        wizardState.dataLevelScope || 'selected',
+        effectiveDataLevelScope,
       ),
-    [concreteSelectedOrgUnitKeys, orgUnitLookup, wizardState.dataLevelScope],
+    [concreteSelectedOrgUnitKeys, effectiveDataLevelScope, orgUnitLookup],
   );
 
   const blockedSelectionKeys = useMemo(
@@ -1222,9 +2438,159 @@ export default function WizardStepOrgUnits({
         orgUnits,
         scopedSelectionState.validKeys,
         orgUnitLookup,
+        effectiveDataLevelScope,
       ),
-    [orgUnits, orgUnitLookup, scopedSelectionState.validKeys],
+    [
+      effectiveDataLevelScope,
+      orgUnits,
+      orgUnitLookup,
+      scopedSelectionState.validKeys,
+    ],
   );
+
+  useEffect(() => {
+    if (
+      metadataMode !== 'repository' ||
+      orgUnits.length === 0 ||
+      concreteSelectedOrgUnitKeys.length === 0
+    ) {
+      return;
+    }
+
+    const currentValidKeys = concreteSelectedOrgUnitKeys.filter(key =>
+      orgUnitLookup.has(key),
+    );
+    if (currentValidKeys.length === concreteSelectedOrgUnitKeys.length) {
+      return;
+    }
+
+    const resolvedRepositoryKeys = deriveRepositorySelectionKeys(
+      wizardState.selectedOrgUnitDetails,
+      orgUnits,
+    );
+    if (resolvedRepositoryKeys.length === 0) {
+      return;
+    }
+
+    const nextKeys = Array.from(
+      new Set([...currentValidKeys, ...resolvedRepositoryKeys]),
+    );
+    if (
+      nextKeys.length === concreteSelectedOrgUnitKeys.length &&
+      nextKeys.every(key => concreteSelectedOrgUnitKeys.includes(key))
+    ) {
+      return;
+    }
+
+    syncSelectedOrgUnits(nextKeys);
+  }, [
+    concreteSelectedOrgUnitKeys,
+    metadataMode,
+    orgUnitLookup,
+    orgUnits,
+    syncSelectedOrgUnits,
+    wizardState.selectedOrgUnitDetails,
+  ]);
+
+  useEffect(() => {
+    if (
+      metadataMode !== 'repository' ||
+      !databaseId ||
+      loadStatus !== 'success'
+    ) {
+      return;
+    }
+
+    const defaultsKey = `${databaseId}`;
+    if (repositoryDefaultsAppliedRef.current === defaultsKey) {
+      return;
+    }
+
+    const nextUpdates: Partial<DHIS2WizardState> = {};
+    if (!wizardState.orgUnitsAutoDetect && wizardState.orgUnits.length === 0) {
+      const configuredSelectionKeys = Array.isArray(
+        repositoryConfig?.selected_org_units,
+      )
+        ? repositoryConfig.selected_org_units.filter(
+            (value): value is string =>
+              typeof value === 'string' && orgUnitLookup.has(value),
+          )
+        : [];
+      const derivedSelectionKeys = deriveRepositorySelectionKeys(
+        (repositoryConfig?.selected_org_unit_details as
+          | DHIS2WizardState['selectedOrgUnitDetails']
+          | undefined) || [],
+        orgUnits,
+      );
+      const nextSelectionKeys = Array.from(
+        new Set([...configuredSelectionKeys, ...derivedSelectionKeys]),
+      );
+
+      if (nextSelectionKeys.length > 0) {
+        nextUpdates.orgUnits = nextSelectionKeys;
+        nextUpdates.selectedOrgUnitDetails = orgUnits
+          .filter(unit => nextSelectionKeys.includes(unit.selectionKey))
+          .map(unit => ({
+            id: unit.id,
+            selectionKey: unit.selectionKey,
+            sourceOrgUnitId: unit.sourceOrgUnitId,
+            displayName: unit.displayName,
+            parentId: unit.parentId,
+            level: unit.level,
+            path: unit.path,
+            sourceInstanceIds: unit.sourceInstanceIds,
+            sourceInstanceNames: unit.sourceInstanceNames,
+            repositoryLevel: unit.repositoryLevel,
+            repositoryLevelName: unit.repositoryLevelName,
+            repositoryKey: unit.repositoryKey,
+            sourceLineageLabel: unit.sourceLineageLabel,
+            strategy: unit.strategy,
+            lineage: unit.lineage,
+            provenance: unit.provenance,
+          }));
+      }
+    }
+
+    if (
+      !lockedDataScope &&
+      repositoryDataScope &&
+      wizardState.dataLevelScope === 'selected' &&
+      wizardState.includeChildren === false
+    ) {
+      nextUpdates.dataLevelScope = repositoryDataScope;
+      nextUpdates.includeChildren = !['selected', 'ancestors'].includes(
+        repositoryDataScope,
+      );
+    }
+
+    if (
+      wizardState.maxOrgUnitLevel == null &&
+      repositoryLowestDataLevelToUse != null
+    ) {
+      nextUpdates.maxOrgUnitLevel = repositoryLowestDataLevelToUse;
+    }
+
+    repositoryDefaultsAppliedRef.current = defaultsKey;
+    if (Object.keys(nextUpdates).length > 0) {
+      updateState(nextUpdates);
+    }
+  }, [
+    databaseId,
+    loadStatus,
+    lockedDataScope,
+    metadataMode,
+    orgUnitLookup,
+    orgUnits,
+    repositoryConfig,
+    repositoryDataScope,
+    repositoryLowestDataLevelToUse,
+    updateState,
+    wizardState.dataLevelScope,
+    wizardState.includeChildren,
+    wizardState.maxOrgUnitLevel,
+    wizardState.orgUnits,
+    wizardState.orgUnitsAutoDetect,
+  ]);
 
   useEffect(() => {
     if (orgUnits.length === 0) {
@@ -1339,7 +2705,31 @@ export default function WizardStepOrgUnits({
   const filteredUnits = useMemo(() => {
     let filtered = orgUnits;
 
-    if (selectedGroup) {
+    const selectedGroupSetDefinition = selectedGroupSet
+      ? orgUnitGroupSets.find(item => item.id === selectedGroupSet)
+      : null;
+    const selectedGroupSetMemberIds = new Set(
+      (selectedGroupSetDefinition?.organisationUnitGroups || []).map(
+        member => member.id,
+      ),
+    );
+
+    if (!hideGroupFilter && selectedGroupSetMemberIds.size > 0 && !selectedGroup) {
+      const memberSelectionKeys = new Set(
+        orgUnitGroups
+          .filter(group => selectedGroupSetMemberIds.has(group.id))
+          .flatMap(group =>
+            (group.organisationUnits || []).map(unit => unit.selectionKey),
+          ),
+      );
+      if (memberSelectionKeys.size > 0) {
+        filtered = filtered.filter(unit =>
+          memberSelectionKeys.has(unit.selectionKey),
+        );
+      }
+    }
+
+    if (!hideGroupFilter && selectedGroup) {
       const group = orgUnitGroups.find(item => item.id === selectedGroup);
       const memberIds = new Set(
         (group?.organisationUnits || []).map(unit => unit.selectionKey),
@@ -1362,7 +2752,16 @@ export default function WizardStepOrgUnits({
     }
 
     return filtered;
-  }, [orgUnitGroups, orgUnits, searchText, selectedGroup, selectedLevel]);
+  }, [
+    hideGroupFilter,
+    orgUnitGroups,
+    orgUnitGroupSets,
+    orgUnits,
+    searchText,
+    selectedGroupSet,
+    selectedGroup,
+    selectedLevel,
+  ]);
 
   const treeData = useMemo(
     () => buildTreeData(filteredUnits),
@@ -1371,32 +2770,129 @@ export default function WizardStepOrgUnits({
 
   const levelOptions = useMemo(
     () =>
-      orgUnitLevels.map(level => ({
+      sortOrgUnitLevelsAscending(orgUnitLevels).map(level => ({
         value: level.level.toString(),
-        label: level.displayName,
+        label: resolveRepositoryLevelLabel({
+          mergedLevel: level.level,
+          savedLabel: level.displayName,
+          orgUnitLevels,
+        }),
       })),
     [orgUnitLevels],
   );
 
+  const groupSetOptions = useMemo(
+    () =>
+      orgUnitGroupSets.map(groupSet => ({
+        value: groupSet.id,
+        label: groupSet.displayName,
+      })),
+    [orgUnitGroupSets],
+  );
+
+  const visibleGroupOptions = useMemo(() => {
+    if (!selectedGroupSet) {
+      return orgUnitGroups;
+    }
+    const groupSet = orgUnitGroupSets.find(item => item.id === selectedGroupSet);
+    if (!groupSet || !Array.isArray(groupSet.organisationUnitGroups)) {
+      return orgUnitGroups;
+    }
+    const memberGroupIds = new Set(
+      groupSet.organisationUnitGroups.map(member => member.id),
+    );
+    return orgUnitGroups.filter(group => memberGroupIds.has(group.id));
+  }, [orgUnitGroupSets, orgUnitGroups, selectedGroupSet]);
+
+  const effectiveLowestDataLevelOptions = useMemo(
+    () =>
+      sortLevelSelectOptionsAscending(
+        lowestDataLevelOptions
+          ? lowestDataLevelOptions.map(option => {
+              const level = Number.parseInt(String(option.value), 10);
+              const resolvedLabel = Number.isFinite(level)
+                ? resolveRepositoryLevelLabel({
+                    mergedLevel: level,
+                    savedLabel: String(option.label || ''),
+                    orgUnitLevels,
+                  })
+                : String(option.label || '');
+              return {
+                ...option,
+                label: Number.isFinite(level)
+                  ? `${resolvedLabel} (Level ${level})`
+                  : resolvedLabel,
+              };
+            })
+          : sortOrgUnitLevelsAscending(orgUnitLevels).map(level => ({
+              value: level.level.toString(),
+              label: `${resolveRepositoryLevelLabel({
+                mergedLevel: level.level,
+                savedLabel: level.displayName,
+                orgUnitLevels,
+              })} (Level ${level.level})`,
+            })),
+      ),
+    [lowestDataLevelOptions, orgUnitLevels],
+  );
+  const selectedLowestDataLevelLabel = useMemo(() => {
+    if (wizardState.maxOrgUnitLevel == null) {
+      return null;
+    }
+    const selectedOption = effectiveLowestDataLevelOptions.find(
+      option => option.value === String(wizardState.maxOrgUnitLevel),
+    );
+    return selectedOption
+      ? simplifyLowestLevelLabel(String(selectedOption.label))
+      : null;
+  }, [effectiveLowestDataLevelOptions, wizardState.maxOrgUnitLevel]);
+  const allLevelsScopeLabel = selectedLowestDataLevelLabel
+    ? t('All levels (down to %s)', selectedLowestDataLevelLabel)
+    : t('All levels (down to the lowest level available)');
+  const allLevelsScopeDescription = selectedLowestDataLevelLabel
+    ? t(
+        'Includes all descendants down to %s. Org units below that selected lowest data level are excluded.',
+        selectedLowestDataLevelLabel,
+      )
+    : t(
+        'Includes all descendants down to the lowest level available in the hierarchy.',
+      );
+
   const groupOptions = useMemo(
     () =>
-      orgUnitGroups.map(group => ({
+      visibleGroupOptions.map(group => ({
         value: group.id,
         label: group.displayName,
       })),
-    [orgUnitGroups],
+    [visibleGroupOptions],
   );
+
+  useEffect(() => {
+    if (!selectedGroup) {
+      return;
+    }
+    if (!visibleGroupOptions.some(group => group.id === selectedGroup)) {
+      setSelectedGroup(null);
+    }
+  }, [selectedGroup, visibleGroupOptions]);
+
+  const showSourceModeConfiguration =
+    !hideSourceModeConfiguration &&
+    selectedConnectionCount > 1 && (!hideSourceModeSelector || !!forceSourceMode);
+  const showSourceModeSelector =
+    showSourceModeConfiguration && !hideSourceModeSelector;
 
   return (
     <StepContainer>
       <div>
         <Title level={4} style={{ margin: 0, marginBottom: 8 }}>
-          {t('Organisation Units')}
+          {labels?.title || t('Organisation Units')}
         </Title>
         <Paragraph style={{ margin: 0 }}>
-          {t(
-            'Choose which organisation units to sync. Leaving the selection empty uses the current user\'s assigned org units. Organisation units and periods are optional — users can filter by any org unit or period directly in charts.',
-          )}
+          {labels?.description ||
+            t(
+              'Choose which organisation units to sync. Leaving the selection empty uses the current user\'s assigned org units. Organisation units and periods are optional — users can filter by any org unit or period directly in charts.',
+            )}
         </Paragraph>
         {selectedConnectionCount > 0 ? (
           <Text type="secondary">
@@ -1418,7 +2914,8 @@ export default function WizardStepOrgUnits({
       </div>
 
       {/* Auto-detect / no restriction option */}
-      <div>
+      {!hideAutoDetect && (
+        <div>
         <Checkbox
           checked={!!wizardState.orgUnitsAutoDetect}
           onChange={e => {
@@ -1461,7 +2958,8 @@ export default function WizardStepOrgUnits({
             )}
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       <div
         style={
@@ -1553,43 +3051,48 @@ export default function WizardStepOrgUnits({
         />
       ) : null}
 
-      {selectedConnectionCount > 1 ? (
-        <OptionsContainer>
-          <SectionTitle>{t('Organisation-unit source policy')}</SectionTitle>
+      {showSourceModeConfiguration ? (
+        <OptionsContainer $flat={flatSections}>
+          <SectionTitle>
+            {labels?.sourcePolicyTitle || t('Organisation-unit source policy')}
+          </SectionTitle>
           <Paragraph style={{ margin: '0 0 12px 0' }}>
-            {t(
-              'Use a single primary configured connection when one hierarchy is authoritative, merge selected connections into a repository org-unit structure, or keep each connection hierarchy separate in local staging.',
-            )}
+            {labels?.sourcePolicyDescription ||
+              t(
+                'Use a single primary configured connection when one hierarchy is authoritative, merge selected connections into a repository org-unit structure, or keep each connection hierarchy separate in local staging.',
+              )}
           </Paragraph>
-          <Radio.Group
-            value={effectiveOrgUnitSourceMode}
-            onChange={event => {
-              const nextMode = event.target.value as
-                | 'primary'
-                | 'repository'
-                | 'per_instance';
-              updateState({
-                orgUnitSourceMode: nextMode,
-                primaryOrgUnitInstanceId:
-                  nextMode === 'primary' ? primaryInstanceId : null,
-                orgUnits: userScopeSelections,
-                selectedOrgUnitDetails: [],
-              });
-              setSelectedGroup(null);
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <Radio value="primary">
-                <Text strong>{t('Use a primary configured connection')}</Text>
-              </Radio>
-              <Radio value="repository">
-                <Text strong>{t('Build a repository org-unit structure')}</Text>
-              </Radio>
-              <Radio value="per_instance">
-                <Text strong>{t('Keep each configured connection separate')}</Text>
-              </Radio>
-            </div>
-          </Radio.Group>
+          {showSourceModeSelector ? (
+            <Radio.Group
+              value={effectiveOrgUnitSourceMode}
+              onChange={event => {
+                const nextMode = event.target.value as
+                  | 'primary'
+                  | 'repository'
+                  | 'per_instance';
+                updateState({
+                  orgUnitSourceMode: nextMode,
+                  primaryOrgUnitInstanceId:
+                    nextMode === 'primary' ? primaryInstanceId : null,
+                  orgUnits: userScopeSelections,
+                  selectedOrgUnitDetails: [],
+                });
+                setSelectedGroup(null);
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <Radio value="primary">
+                  <Text strong>{t('Use a primary configured connection')}</Text>
+                </Radio>
+                <Radio value="repository">
+                  <Text strong>{t('Build a repository org-unit structure')}</Text>
+                </Radio>
+                <Radio value="per_instance">
+                  <Text strong>{t('Keep each configured connection separate')}</Text>
+                </Radio>
+              </div>
+            </Radio.Group>
+          ) : null}
           {effectiveOrgUnitSourceMode === 'primary' ? (
             <div style={{ marginTop: 16 }}>
               <SectionTitle>{t('Primary configured connection')}</SectionTitle>
@@ -1608,6 +3111,8 @@ export default function WizardStepOrgUnits({
                     value: instance.id,
                     label: instance.name,
                   }))}
+                getPopupContainer={getSelectPopupContainer}
+                dropdownStyle={SELECT_DROPDOWN_STYLE}
                 styles={{ root: { width: '100%' } }}
               />
             </div>
@@ -1636,8 +3141,11 @@ export default function WizardStepOrgUnits({
         </OptionsContainer>
       ) : null}
 
-      <OptionsContainer>
-        <SectionTitle>{t('User organisation unit options')}</SectionTitle>
+      {!hideUserScopeOptions && (
+        <OptionsContainer $flat={flatSections}>
+          <SectionTitle>
+            {labels?.userOptionsTitle || t('User organisation unit options')}
+          </SectionTitle>
         <CheckboxGroup>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Checkbox
@@ -1714,10 +3222,80 @@ export default function WizardStepOrgUnits({
             <Text>{t('User sub-x2-units')}</Text>
           </div>
         </CheckboxGroup>
-      </OptionsContainer>
+        </OptionsContainer>
+      )}
 
-      <OptionsContainer>
-        <SectionTitle>{t('Data scope')}</SectionTitle>
+      {(orgUnitLevels.length > 0 || lowestDataLevelOptions !== undefined) && (
+        <OptionsContainer $flat={flatSections}>
+          <SectionTitle>
+            {labels?.lowestDataLevelTitle || t('Lowest data level to use')}
+          </SectionTitle>
+          <Paragraph style={{ margin: '0 0 12px 0' }}>
+            {labels?.lowestDataLevelDescription ||
+              t(
+                'Set the deepest hierarchy level to include in extraction. ' +
+                  'Org units below this level are excluded. ' +
+                  'Leave empty to include all descendants (down to the lowest level in the hierarchy).',
+              )}
+          </Paragraph>
+          <Select
+            allowClear
+            disabled={effectiveLowestDataLevelOptions.length === 0}
+            placeholder={
+              lowestDataLevelOptions !== undefined
+                ? t('Include all mapped levels (no lower limit)')
+                : t('Include all levels (no lower limit)')
+            }
+            value={
+              wizardState.maxOrgUnitLevel != null
+                ? String(wizardState.maxOrgUnitLevel)
+                : undefined
+            }
+            onChange={value => {
+              updateState({
+                maxOrgUnitLevel:
+                  value != null ? parseInt(String(value), 10) : null,
+              });
+            }}
+            options={effectiveLowestDataLevelOptions}
+            showSearch
+            filterOption={(input, option) =>
+              String(option?.label || '')
+                .toLowerCase()
+                .includes(input.toLowerCase())
+            }
+            getPopupContainer={getSelectPopupContainer}
+            dropdownStyle={SELECT_DROPDOWN_STYLE}
+            styles={{ root: { width: '100%', maxWidth: 400 } }}
+          />
+          {lowestDataLevelOptions !== undefined &&
+          effectiveLowestDataLevelOptions.length === 0 ? (
+            <Alert
+              style={{ marginTop: 12 }}
+              type="warning"
+              showIcon
+              message={t('Complete the repository level mapping first')}
+              description={t(
+                'Map repository levels before choosing the lowest data level to use for the merged hierarchy.',
+              )}
+            />
+          ) : null}
+          {wizardState.maxOrgUnitLevel != null &&
+            effectiveDataLevelScope === 'selected' && (
+              <Alert
+                style={{ marginTop: 12 }}
+                type="warning"
+                showIcon
+                message={t(
+                  'Lower level limit is most effective when "Data Level Scope" is set to include descendants (children, grandchildren, or all levels).',
+                )}
+              />
+            )}
+        </OptionsContainer>
+      )}
+
+      <OptionsContainer $flat={flatSections}>
+        <SectionTitle>{labels?.dataScopeTitle || t('Data scope')}</SectionTitle>
         <Paragraph
           style={{
             margin: '0 0 12px 0',
@@ -1725,32 +3303,29 @@ export default function WizardStepOrgUnits({
             color: theme.colorTextSecondary,
           }}
         >
-          {t(
-            'Choose which organisation unit levels to include in the staged data refresh.',
-          )}
+          {labels?.dataScopeDescription ||
+            t(
+              'Choose which organisation unit levels to include in the staged data refresh.',
+            )}
         </Paragraph>
         <Radio.Group
-          value={wizardState.dataLevelScope || 'selected'}
+          value={effectiveDataLevelScope}
+          disabled={!!lockedDataScope}
           onChange={event => {
             const scope = event.target.value as
               | 'selected'
               | 'children'
               | 'grandchildren'
+              | 'ancestors'
               | 'all_levels';
             updateState({
               dataLevelScope: scope,
-              includeChildren: scope !== 'selected',
+              includeChildren: !['selected', 'ancestors'].includes(scope),
             });
           }}
         >
-          <div
-            style={{
-              marginBottom: 16,
-              padding: '12px',
-              backgroundColor: theme.colorBgContainer,
-              borderRadius: 4,
-            }}
-          >
+          <DataScopeOptions>
+            <DataScopeOption $flat={flatSections}>
             <Radio value="selected">
               <Text style={{ fontWeight: 500 }}>
                 {t('Selected units only (current level only)')}
@@ -1766,16 +3341,31 @@ export default function WizardStepOrgUnits({
             >
               {t('Shows data for the exact organisation units you select.')}
             </div>
-          </div>
+            </DataScopeOption>
 
-          <div
-            style={{
-              marginBottom: 16,
-              padding: '12px',
-              backgroundColor: theme.colorBgContainer,
-              borderRadius: 4,
-            }}
-          >
+            {includeAncestorsScope && (
+              <DataScopeOption $flat={flatSections}>
+              <Radio value="ancestors">
+                <Text style={{ fontWeight: 500 }}>
+                  {t('Include ancestors (parents and grandparents)')}
+                </Text>
+              </Radio>
+              <div
+                style={{
+                  marginLeft: 24,
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: theme.colorTextSecondary,
+                }}
+                >
+                  {t(
+                    'Includes higher reporting units above the selected organisation units where they exist.',
+                  )}
+                </div>
+              </DataScopeOption>
+            )}
+
+            <DataScopeOption $flat={flatSections}>
             <Radio value="children">
               <Text style={{ fontWeight: 500 }}>
                 {t('Include children (one level down)')}
@@ -1789,20 +3379,13 @@ export default function WizardStepOrgUnits({
                 color: theme.colorTextSecondary,
               }}
             >
-              {t(
-                'Includes all direct children of selected units, for example Districts when you select a Region.',
-              )}
-            </div>
-          </div>
+                {t(
+                  'Includes all direct children of selected units, for example Districts when you select a Region.',
+                )}
+              </div>
+            </DataScopeOption>
 
-          <div
-            style={{
-              marginBottom: 16,
-              padding: '12px',
-              backgroundColor: theme.colorBgContainer,
-              borderRadius: 4,
-            }}
-          >
+            <DataScopeOption $flat={flatSections}>
             <Radio value="grandchildren">
               <Text style={{ fontWeight: 500 }}>
                 {t('Include grandchildren (two levels down)')}
@@ -1815,25 +3398,16 @@ export default function WizardStepOrgUnits({
                 fontSize: 12,
                 color: theme.colorTextSecondary,
               }}
-            >
-              {t(
-                'Includes descendants up to two levels below the selected units.',
-              )}
-            </div>
-          </div>
+              >
+                {t(
+                  'Includes descendants up to two levels below the selected units.',
+                )}
+              </div>
+            </DataScopeOption>
 
-          <div
-            style={{
-              marginBottom: 0,
-              padding: '12px',
-              backgroundColor: theme.colorBgContainer,
-              borderRadius: 4,
-            }}
-          >
+            <DataScopeOption $flat={flatSections}>
             <Radio value="all_levels">
-              <Text style={{ fontWeight: 500 }}>
-                {t('All levels (facility level)')}
-              </Text>
+              <Text style={{ fontWeight: 500 }}>{allLevelsScopeLabel}</Text>
             </Radio>
             <div
               style={{
@@ -1843,72 +3417,27 @@ export default function WizardStepOrgUnits({
                 color: theme.colorTextSecondary,
               }}
             >
-              {t(
-                'Includes all descendants down to the lowest level, such as all Health Facilities.',
-              )}
+              {allLevelsScopeDescription}
             </div>
-          </div>
+            </DataScopeOption>
+          </DataScopeOptions>
         </Radio.Group>
-        {scopeSelectionMessage ? (
+        {dataScopeLockedMessage || scopeSelectionMessage ? (
           <Alert
             style={{ marginTop: 16 }}
             type="info"
             showIcon
-            message={t('Selection scope is enforced')}
-            description={scopeSelectionMessage}
+            message={
+              lockedDataScope
+                ? t('Data scope is managed automatically')
+                : t('Selection scope is enforced')
+            }
+            description={[dataScopeLockedMessage, scopeSelectionMessage]
+              .filter(Boolean)
+              .join(' ')}
           />
         ) : null}
       </OptionsContainer>
-
-      {orgUnitLevels.length > 0 && (
-        <OptionsContainer>
-          <SectionTitle>{t('Lower Data OrgUnit Level')}</SectionTitle>
-          <Paragraph style={{ margin: '0 0 12px 0' }}>
-            {t(
-              'Set the deepest hierarchy level to include in extraction. ' +
-                'Org units below this level are excluded. ' +
-                'Leave empty to include all descendants (down to the lowest level in the hierarchy).',
-            )}
-          </Paragraph>
-          <Select
-            allowClear
-            placeholder={t('Include all levels (no lower limit)')}
-            value={
-              wizardState.maxOrgUnitLevel != null
-                ? String(wizardState.maxOrgUnitLevel)
-                : undefined
-            }
-            onChange={value => {
-              updateState({
-                maxOrgUnitLevel:
-                  value != null ? parseInt(String(value), 10) : null,
-              });
-            }}
-            options={orgUnitLevels.map(level => ({
-              value: level.level.toString(),
-              label: `${level.displayName} (Level ${level.level})`,
-            }))}
-            showSearch
-            filterOption={(input, option) =>
-              String(option?.label || '')
-                .toLowerCase()
-                .includes(input.toLowerCase())
-            }
-            styles={{ root: { width: '100%', maxWidth: 400 } }}
-          />
-          {wizardState.maxOrgUnitLevel != null &&
-            wizardState.dataLevelScope === 'selected' && (
-              <Alert
-                style={{ marginTop: 12 }}
-                type="warning"
-                showIcon
-                message={t(
-                  'Lower level limit is most effective when "Data Level Scope" is set to include descendants (children, grandchildren, or all levels).',
-                )}
-              />
-            )}
-        </OptionsContainer>
-      )}
 
       <ContentSection>
         <div>
@@ -1924,7 +3453,7 @@ export default function WizardStepOrgUnits({
         </div>
 
         <FiltersRow gutter={[16, 16]}>
-          <Col xs={24} sm={12}>
+          <Col xs={24} sm={!hideGroupFilter ? 8 : 12}>
             <div>
               <SectionTitle>{t('Filter by level')}</SectionTitle>
               <Select
@@ -1939,29 +3468,62 @@ export default function WizardStepOrgUnits({
                     .toLowerCase()
                     .includes(input.toLowerCase())
                 }
+                getPopupContainer={getSelectPopupContainer}
+                dropdownStyle={SELECT_DROPDOWN_STYLE}
                 styles={{ root: { width: '100%' } }}
               />
             </div>
           </Col>
-          <Col xs={24} sm={12}>
-            <div>
-              <SectionTitle>{t('Filter by group')}</SectionTitle>
-              <Select
-                allowClear
-                placeholder={t('Select a group')}
-                value={selectedGroup}
-                onChange={value => setSelectedGroup(value as string | null)}
-                options={groupOptions}
-                showSearch
-                filterOption={(input, option) =>
-                  String(option?.label || '')
-                    .toLowerCase()
-                    .includes(input.toLowerCase())
-                }
-                styles={{ root: { width: '100%' } }}
-              />
-            </div>
-          </Col>
+          {!hideGroupFilter && (
+            <Col xs={24} sm={8}>
+              <div>
+                <SectionTitle>{t('Filter by group set')}</SectionTitle>
+                <Select
+                  allowClear
+                  placeholder={t('Select a group set')}
+                  value={selectedGroupSet}
+                  onChange={value => setSelectedGroupSet(value as string | null)}
+                  options={groupSetOptions}
+                  showSearch
+                  filterOption={(input, option) =>
+                    String(option?.label || '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                  getPopupContainer={getSelectPopupContainer}
+                  dropdownStyle={SELECT_DROPDOWN_STYLE}
+                  styles={{ root: { width: '100%' } }}
+                />
+              </div>
+            </Col>
+          )}
+          {!hideGroupFilter && (
+            <Col xs={24} sm={8}>
+              <div>
+                <SectionTitle>{t('Filter by group')}</SectionTitle>
+                <Select
+                  allowClear
+                  placeholder={
+                    selectedGroupSet
+                      ? t('Select a group from this group set')
+                      : t('Select a group')
+                  }
+                  value={selectedGroup}
+                  onChange={value => setSelectedGroup(value as string | null)}
+                  options={groupOptions}
+                  showSearch
+                  filterOption={(input, option) =>
+                    String(option?.label || '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                  getPopupContainer={getSelectPopupContainer}
+                  dropdownStyle={SELECT_DROPDOWN_STYLE}
+                  styles={{ root: { width: '100%' } }}
+                />
+              </div>
+            </Col>
+          )}
         </FiltersRow>
 
         {errors.orgUnits && <ErrorText>{errors.orgUnits}</ErrorText>}
@@ -1988,7 +3550,7 @@ export default function WizardStepOrgUnits({
             style={{ marginTop: 40 }}
           />
         ) : (
-          <TreeContainer>
+          <TreeContainer $flat={flatSections}>
             <Tree
               treeData={treeData}
               expandedKeys={expandedKeys}
@@ -2009,7 +3571,7 @@ export default function WizardStepOrgUnits({
       </ContentSection>
 
       {wizardState.orgUnits.length > 0 && (
-        <SelectedSummary>
+        <SelectedSummary $flat={flatSections}>
           <div style={{ marginBottom: 16 }}>
             <div style={{ marginBottom: 12 }}>
               <Text strong>
@@ -2091,12 +3653,16 @@ export default function WizardStepOrgUnits({
           >
             <Text>
               <strong>{t('Data scope')}:</strong>{' '}
-              {wizardState.dataLevelScope === 'children'
+              {lockedDataScope
+                ? t('Automatic from mapped hierarchy')
+                : effectiveDataLevelScope === 'children'
                 ? t('Include children (one level down)')
-                : wizardState.dataLevelScope === 'grandchildren'
+                : effectiveDataLevelScope === 'grandchildren'
                   ? t('Include grandchildren (two levels down)')
-                  : wizardState.dataLevelScope === 'all_levels'
-                    ? t('All levels (facility level)')
+                  : effectiveDataLevelScope === 'ancestors'
+                    ? t('Include ancestors (parents and grandparents)')
+                    : effectiveDataLevelScope === 'all_levels'
+                    ? allLevelsScopeLabel
                     : t('Selected units only')}
             </Text>
           </div>

@@ -52,6 +52,26 @@ function alterUnsavedQueryEditorState(state, updatedState, id, silent = false) {
   };
 }
 
+function hydrateDatabase(db) {
+  let extraJson = db.extra_json;
+  if (extraJson === undefined) {
+    if (!db.extra) {
+      extraJson = {};
+    } else {
+      try {
+        extraJson = JSON.parse(db.extra);
+      } catch {
+        extraJson = {};
+      }
+    }
+  }
+
+  return {
+    ...db,
+    extra_json: extraJson ?? {},
+  };
+}
+
 export default function sqlLabReducer(state = {}, action) {
   const actionHandlers = {
     [actions.ADD_QUERY_EDITOR]() {
@@ -670,11 +690,11 @@ export default function sqlLabReducer(state = {}, action) {
       };
     },
     [actions.SET_DATABASES]() {
-      const databases = {};
-      action.databases.forEach(db => {
+      const databases = { ...state.databases };
+      (action.databases || []).forEach(db => {
         databases[db.id] = {
-          ...db,
-          extra_json: JSON.parse(db.extra || ''),
+          ...databases[db.id],
+          ...hydrateDatabase(db),
         };
       });
       return { ...state, databases };

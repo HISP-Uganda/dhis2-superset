@@ -48,6 +48,7 @@ import { extendedDayjs } from '@superset-ui/core/utils/dates';
 // DHIS2 data caching for faster chart loading
 import { getDHIS2DataCache } from 'src/dhis2/dataCache';
 import { dhis2DataPreloader } from 'src/utils/dhis2DataPreloader';
+import { isDirectDhis2Datasource } from 'src/utils/dhis2Datasource';
 
 const isPublicChartExploreView = () =>
   typeof window !== 'undefined' &&
@@ -171,28 +172,13 @@ const legacyChartDataRequest = async (
  * Check if a datasource is DHIS2 based on the form data
  */
 const isDHIS2Datasource = formData => {
-  // Check datasource string for DHIS2 indicators
-  const datasource = formData?.datasource || '';
-  if (
-    typeof datasource === 'string' &&
-    datasource.toLowerCase().includes('dhis2')
-  ) {
-    return true;
-  }
-
-  // Check database backend if available
-  const dbBackend = formData?.database?.backend?.toLowerCase() || '';
-  if (dbBackend.includes('dhis2')) {
-    return true;
-  }
-
-  // Check database name
-  const dbName = formData?.database?.name?.toLowerCase() || '';
-  if (dbName.includes('dhis2')) {
-    return true;
-  }
-
-  return false;
+  return isDirectDhis2Datasource({
+    database: formData?.database,
+    extra:
+      formData?.extra ??
+      formData?.datasource_extra ??
+      formData?.dataset_extra,
+  });
 };
 
 async function v1ChartDataRequestUncached(
@@ -321,6 +307,12 @@ const v1ChartDataRequest = async (
           },
         };
       }
+    }
+  } else {
+    const [dsId] = (datasource || '').split('__');
+    const datasetId = parseInt(dsId, 10);
+    if (datasetId) {
+      dhis2DataPreloader.clearCache(datasetId);
     }
   }
 

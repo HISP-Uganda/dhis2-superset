@@ -101,6 +101,7 @@ from superset.databases.schemas import (
     DatabaseFunctionNamesResponse,
     DatabasePostSchema,
     DatabasePutSchema,
+    DatabaseRepositoryOrgUnitSchema,
     DatabaseRelatedObjectsResponse,
     DatabaseSchemaAccessForFileUploadResponse,
     DatabaseTablesResponse,
@@ -157,6 +158,90 @@ from superset.views.error_handling import handle_api_exception, json_error_respo
 from superset.views.filters import BaseFilterRelatedUsers, FilterRelatedOwners
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_optional_schema_name(schema_name: str | None) -> str | None:
+    normalized = str(schema_name or "").strip()
+    return normalized or None
+
+
+def _resolve_sqla_table_table_ref(sqla_table: Any) -> tuple[str | None, str]:
+    from superset.connectors.sqla.models import _resolve_dhis2_staged_local_table_ref
+
+    resolved_schema = _normalize_optional_schema_name(getattr(sqla_table, "schema", None))
+    resolved_table_name = str(getattr(sqla_table, "table_name", "") or "").strip()
+    extra = getattr(sqla_table, "extra_dict", {})
+    if extra.get("dhis2_staged_local") or extra.get("dhis2StagedLocal"):
+        if table_ref := _resolve_dhis2_staged_local_table_ref(
+            extra,
+            getattr(sqla_table, "sql", None),
+        ):
+            resolved_schema, resolved_table_name = table_ref
+    return resolved_schema, resolved_table_name
+
+
+def _find_matching_sqla_table(
+    database_id: int,
+    table_name: str,
+    schema_name: str | None,
+) -> Any | None:
+    from superset.connectors.sqla.models import SqlaTable
+
+    normalized_schema = _normalize_optional_schema_name(schema_name)
+    exact_matches = (
+        db.session.query(SqlaTable)
+        .filter(
+            SqlaTable.database_id == database_id,
+            SqlaTable.table_name == table_name,
+        )
+        .all()
+    )
+    for candidate in exact_matches:
+        candidate_schema, _ = _resolve_sqla_table_table_ref(candidate)
+        if (
+            normalized_schema is None
+            or candidate_schema == normalized_schema
+            or _normalize_optional_schema_name(candidate.schema) == normalized_schema
+        ):
+            return candidate
+
+    physical_matches = (
+        db.session.query(SqlaTable)
+        .filter(
+            SqlaTable.database_id == database_id,
+            SqlaTable.sql.like(f"%{table_name}%"),
+        )
+        .all()
+    )
+    for candidate in physical_matches:
+        candidate_schema, candidate_table_name = _resolve_sqla_table_table_ref(candidate)
+        if candidate_table_name != table_name:
+            continue
+        if normalized_schema is None or candidate_schema == normalized_schema:
+            return candidate
+
+    if normalized_schema is None and exact_matches:
+        return exact_matches[0]
+    return None
+
+
+def _resolve_requested_table(
+    database_id: int,
+    table_name: str,
+    schema_name: str | None,
+    catalog_name: str | None,
+) -> tuple[Any | None, Table]:
+    normalized_schema = _normalize_optional_schema_name(schema_name)
+    sqla_table = _find_matching_sqla_table(database_id, table_name, normalized_schema)
+    if sqla_table is None:
+        return None, Table(table_name, normalized_schema, catalog_name)
+
+    resolved_schema, resolved_table_name = _resolve_sqla_table_table_ref(sqla_table)
+    return sqla_table, Table(
+        resolved_table_name,
+        resolved_schema or normalized_schema,
+        catalog_name,
+    )
 
 
 def compress_response_if_supported(response_data: dict) -> Response:
@@ -265,6 +350,17 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "impersonate_user",
         "is_managed_externally",
         "engine_information",
+        "repository_reporting_unit_approach",
+        "lowest_data_level_to_use",
+        "primary_instance_id",
+        "repository_data_scope",
+        "repository_org_unit_config",
+        "repository_org_units",
+        "repository_org_unit_status",
+        "repository_org_unit_status_message",
+        "repository_org_unit_task_id",
+        "repository_org_unit_last_finalized_at",
+        "repository_org_unit_summary",
     ]
     list_columns = [
         "allow_file_upload",
@@ -293,6 +389,12 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "disable_drill_to_detail",
         "allow_multi_catalog",
         "engine_information",
+        "repository_reporting_unit_approach",
+        "lowest_data_level_to_use",
+        "primary_instance_id",
+        "repository_data_scope",
+        "repository_org_unit_status",
+        "repository_org_unit_last_finalized_at",
     ]
     add_columns = [
         "database_name",
@@ -310,6 +412,12 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "extra",
         "encrypted_extra",
         "server_cert",
+        "repository_reporting_unit_approach",
+        "lowest_data_level_to_use",
+        "primary_instance_id",
+        "repository_data_scope",
+        "repository_org_unit_config",
+        "repository_org_units",
     ]
 
     edit_columns = add_columns
@@ -355,6 +463,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         CatalogsResponseSchema,
         DatabaseConnectionSchema,
         DatabaseFunctionNamesResponse,
+        DatabaseRepositoryOrgUnitSchema,
         DatabaseSchemaAccessForFileUploadResponse,
         DatabaseRelatedObjectsResponse,
         DatabaseTablesResponse,
@@ -841,7 +950,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             500:
               $ref: '#/components/responses/500'
         """
-        database = self.datamodel.get(pk, self._base_filters)
+        database = DatabaseDAO.find_by_id(pk)
         if not database:
             return self.response_404()
         try:
@@ -1142,62 +1251,46 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         except ValidationError as ex:
             raise InvalidPayloadSchemaError(ex) from ex
 
-        table = Table(parameters["name"], parameters["schema"], parameters["catalog"])
+        requested_schema = _normalize_optional_schema_name(parameters.get("schema"))
+        sqla_table, table = _resolve_requested_table(
+            pk,
+            parameters["name"],
+            requested_schema,
+            parameters.get("catalog"),
+        )
         try:
             security_manager.raise_for_access(database=database, table=table)
         except SupersetSecurityException as ex:
             # instead of raising 403, raise 404 to hide table existence
             raise TableNotFoundException("No such table") from ex
 
-        # DHIS2 MART Column Exfiltration:
-        # If this is a physical table that matches a DHIS2 MART dataset registered in Superset,
-        # we prefer the Superset metadata (SqlaTable/TableColumn) over database introspection.
-        # This ensures all MART columns are available for SQL Lab analysis even if they are 
-        # virtual or the DB driver cannot introspect them correctly.
-        from superset.connectors.sqla.models import SqlaTable
-        from superset import db as superset_db
-
-        # Try to find a matching SqlaTable in this database.
-        # Physical tables have schema and table_name.
-        sqla_table = (
-            superset_db.session.query(SqlaTable)
-            .filter(
-                SqlaTable.database_id == pk,
-                SqlaTable.schema == table.schema,
-                SqlaTable.table_name == table.table,
-            )
-            .first()
-        )
-        
-        # If not found by exact schema.table, try matching by physical table name 
-        # in virtual datasets (where table_name is the friendly name and sql points to the table).
-        if not sqla_table:
-            # MART tables usually have a pattern like `sv_1_..._mart` or similar
-            # Search virtual datasets where the SQL contains the table name
-            pattern = f"%{table.table}%"
-            sqla_table = (
-                superset_db.session.query(SqlaTable)
-                .filter(
-                    SqlaTable.database_id == pk,
-                    SqlaTable.sql.like(pattern),
-                )
-                .first()
-            )
-
         # Only use Superset columns if it's explicitly marked as a DHIS2 staged local dataset
         if sqla_table:
             extra_dict = sqla_table.extra_dict
             if extra_dict.get("dhis2_staged_local") or extra_dict.get("dhis2StagedLocal"):
+                resolved_schema, resolved_table_name = _resolve_sqla_table_table_ref(
+                    sqla_table,
+                )
+                physical_table_ref = (
+                    f"{resolved_schema}.{resolved_table_name}"
+                    if resolved_schema
+                    else resolved_table_name
+                )
                 logger.info(
                     "table_metadata: using Superset metadata for DHIS2 MART table %s (SqlaTable id=%d)",
-                    table.table, sqla_table.id
+                    physical_table_ref,
+                    sqla_table.id,
                 )
-                # Use the SQL expression from SqlaTable if it's a virtual dataset, 
+                # Use the SQL expression from SqlaTable if it's a virtual dataset,
                 # otherwise default to SELECT * FROM table.
-                select_star = sqla_table.sql if sqla_table.sql else f"SELECT * FROM {table.table}"
-                
+                select_star = (
+                    sqla_table.sql
+                    if sqla_table.sql
+                    else f"SELECT * FROM {physical_table_ref}"
+                )
+
                 payload = {
-                    "name": table.table,
+                    "name": resolved_table_name,
                     "columns": [
                         {
                             "name": col.column_name,
@@ -1207,7 +1300,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                             "comment": col.description,
                         }
                         for col in sqla_table.columns
-                        if not col.extra_dict.get("dhis2_is_internal")
+                        if not col.get_extra_dict().get("dhis2_is_internal")
                     ],
                     "selectStar": select_star,
                     "primaryKey": [],
@@ -1290,7 +1383,12 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         except ValidationError as ex:
             raise InvalidPayloadSchemaError(ex) from ex
 
-        table = Table(parameters["name"], parameters["schema"], parameters["catalog"])
+        _, table = _resolve_requested_table(
+            pk,
+            parameters["name"],
+            parameters.get("schema"),
+            parameters.get("catalog"),
+        )
         try:
             security_manager.raise_for_access(database=database, table=table)
         except SupersetSecurityException as ex:
@@ -2648,7 +2746,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         # Special case for DHIS2 Map: if it's a DHIS2 Map and we're in a public context,
         # be more permissive as these often need boundaries to even show anything.
-        if chart.viz_type == "dhis2_map":
+        if getattr(chart, "viz_type", None) == "dhis2_map":
             # If we're on a public landing page or similar, allow it
             if "/superset/public/" in (request.referrer or ""):
                 return chart
@@ -5339,6 +5437,13 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 return None
             
             def expand_monthly_period(period_id):
+                if period_id == "LAST_12_MONTHS":
+                    result = []
+                    for i in range(12):
+                        target_date = datetime.now() - relativedelta(months=i)
+                        period_code = target_date.strftime("%Y%m")
+                        result.append(period_code)
+                    return result
                 if period_id == "THIS_YEAR":
                     result = []
                     for m in range(1, 13):
@@ -5786,21 +5891,57 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 return self.response_400(message="Missing required DHIS2 parameters (dx, pe, ou)")
 
             # Expand relative periods
-            def expand_period(period_id):
+            def expand_yearly_period(period_id):
                 current_year = datetime.now().year
                 if period_id == "LAST_5_YEARS":
                     return [str(current_year - i) for i in range(5)]
                 elif period_id == "LAST_3_YEARS":
                     return [str(current_year - i) for i in range(3)]
+                elif period_id == "LAST_10_YEARS":
+                    return [str(current_year - i) for i in range(10)]
                 elif period_id == "THIS_YEAR":
                     return [str(current_year)]
                 elif period_id == "LAST_YEAR":
                     return [str(current_year - 1)]
-                return [period_id]
+                return None
+
+            def expand_monthly_period(period_id):
+                if period_id == "LAST_12_MONTHS":
+                    return [
+                        (datetime.now() - relativedelta(months=i)).strftime("%Y%m")
+                        for i in range(12)
+                    ]
+                elif period_id == "THIS_MONTH":
+                    return [datetime.now().strftime("%Y%m")]
+                elif period_id == "LAST_MONTH":
+                    return [
+                        (datetime.now() - relativedelta(months=1)).strftime("%Y%m")
+                    ]
+                elif period_id == "LAST_3_MONTHS":
+                    return [
+                        (datetime.now() - relativedelta(months=i)).strftime("%Y%m")
+                        for i in range(3)
+                    ]
+                elif period_id == "LAST_6_MONTHS":
+                    return [
+                        (datetime.now() - relativedelta(months=i)).strftime("%Y%m")
+                        for i in range(6)
+                    ]
+                return None
 
             period_ids = []
             for p in period_ids_raw:
-                period_ids.extend(expand_period(p))
+                yearly_expanded = expand_yearly_period(p)
+                if yearly_expanded:
+                    period_ids.extend(yearly_expanded)
+                    continue
+
+                monthly_expanded = expand_monthly_period(p)
+                if monthly_expanded:
+                    period_ids.extend(monthly_expanded)
+                    continue
+
+                period_ids.append(p)
 
             logger.info(f"[DHIS2 Chart Data] Expanded periods: {period_ids}")
 

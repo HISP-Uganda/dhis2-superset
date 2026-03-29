@@ -41,15 +41,21 @@ const datasourceData = {
   type: datasource.type,
   uid: datasource.id,
 };
+const chartDatasourceRow = {
+  ...mockDatasource['7__table'],
+  table_name: 'sv_7_mal_routine_ehmis_indicators_mart',
+  extra: JSON.stringify({
+    dhis2_dataset_display_name: 'MAL - Routine eHMIS Indicators [MART]',
+  }),
+};
 
-const DATASOURCES_ENDPOINT =
-  'glob:*/api/v1/dataset/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page:0,page_size:25)';
+const DATASOURCES_ENDPOINT = 'glob:*/api/v1/dataset/?q=*';
 const DATASOURCE_ENDPOINT = `glob:*/api/v1/dataset/${datasourceData.id}`;
 const DATASOURCE_PAYLOAD = { new: 'data' };
 
 const INFO_ENDPOINT = 'glob:*/api/v1/dataset/_info?*';
 
-fetchMock.get(DATASOURCES_ENDPOINT, { result: [mockDatasource['7__table']] });
+fetchMock.get(DATASOURCES_ENDPOINT, { result: [chartDatasourceRow] });
 fetchMock.get(DATASOURCE_ENDPOINT, DATASOURCE_PAYLOAD);
 fetchMock.get(INFO_ENDPOINT, {});
 
@@ -78,6 +84,13 @@ test('renders confirmation message', async () => {
   const confirmLink = await findByTestId('datasource-link');
   fireEvent.click(confirmLink);
   expect(getByRole('button', { name: 'Proceed' })).toBeInTheDocument();
+});
+
+test('renders MART rows using the saved display name', async () => {
+  const { findByText } = setup();
+  expect(
+    await findByText('MAL - Routine eHMIS Indicators [MART]'),
+  ).toBeInTheDocument();
 });
 
 test('changes the datasource', async () => {

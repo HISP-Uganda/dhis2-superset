@@ -1151,7 +1151,7 @@ describe('async actions', () => {
         sqlLab: {
           ...initialState.sqlLab,
           databases: {
-            1: { disable_data_preview: false },
+            1: { disable_data_preview: false, allow_run_async: true },
           },
         },
       });
@@ -1191,6 +1191,22 @@ describe('async actions', () => {
         });
       });
 
+      test('runs data preview queries synchronously even when async is enabled', () => {
+        expect.assertions(1);
+
+        const request = actions.runTablePreviewQuery({
+          dbId: 1,
+          name: tableName,
+          catalog: catalogName,
+          schema: schemaName,
+          selectStar: 'SELECT * FROM schema.table',
+        });
+        return request(store.dispatch, store.getState).then(() => {
+          const [, options] = fetchMock.calls(runQueryEndpoint)[0];
+          expect(JSON.parse(options.body).runAsync).toBe(false);
+        });
+      });
+
       test('runs data preview query only', () => {
         const expectedActionTypes = [
           actions.START_QUERY, // runQuery (data preview)
@@ -1221,7 +1237,7 @@ describe('async actions', () => {
       test('updates the table schema state in the backend', () => {
         expect.assertions(2);
 
-        const table = { id: 1 };
+        const table = { id: 1, initialized: true };
         const store = mockStore({});
         const expectedActions = [
           {
@@ -1234,6 +1250,23 @@ describe('async actions', () => {
           expect(fetchMock.calls(updateTableSchemaEndpoint)).toHaveLength(1);
         });
       });
+
+      test('updates local state without persisting temporary table ids', () => {
+        expect.assertions(2);
+
+        const table = { id: 'VJBIn5ignQy', initialized: false };
+        const store = mockStore({});
+        const expectedActions = [
+          {
+            type: actions.EXPAND_TABLE,
+            table,
+          },
+        ];
+        return store.dispatch(actions.expandTable(table)).then(() => {
+          expect(store.getActions()).toEqual(expectedActions);
+          expect(fetchMock.calls(updateTableSchemaEndpoint)).toHaveLength(0);
+        });
+      });
     });
 
     // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
@@ -1241,7 +1274,7 @@ describe('async actions', () => {
       test('updates the table schema state in the backend', () => {
         expect.assertions(2);
 
-        const table = { id: 1 };
+        const table = { id: 1, initialized: true };
         const store = mockStore({});
         const expectedActions = [
           {
@@ -1252,6 +1285,23 @@ describe('async actions', () => {
         return store.dispatch(actions.collapseTable(table)).then(() => {
           expect(store.getActions()).toEqual(expectedActions);
           expect(fetchMock.calls(updateTableSchemaEndpoint)).toHaveLength(1);
+        });
+      });
+
+      test('updates local state without persisting temporary table ids', () => {
+        expect.assertions(2);
+
+        const table = { id: 'VJBIn5ignQy', initialized: false };
+        const store = mockStore({});
+        const expectedActions = [
+          {
+            type: actions.COLLAPSE_TABLE,
+            table,
+          },
+        ];
+        return store.dispatch(actions.collapseTable(table)).then(() => {
+          expect(store.getActions()).toEqual(expectedActions);
+          expect(fetchMock.calls(updateTableSchemaEndpoint)).toHaveLength(0);
         });
       });
     });

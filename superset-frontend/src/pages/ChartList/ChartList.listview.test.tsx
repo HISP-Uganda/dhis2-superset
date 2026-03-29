@@ -172,6 +172,42 @@ describe('ChartList - List View Tests', () => {
     expect(dotsLink).toHaveTextContent('table.with.dots');
   });
 
+  test('preserves saved DHIS2 MART dataset display names', async () => {
+    const customMockCharts = [
+      {
+        ...mockCharts[0],
+        id: 103,
+        slice_name: 'DHIS2 MART Chart',
+        datasource_name_text: 'MAL - Routine eHMIS Indicators [MART]',
+      },
+    ];
+
+    fetchMock.reset();
+    setupMocks();
+    fetchMock.get(
+      'glob:*/api/v1/chart/?*',
+      {
+        result: customMockCharts,
+        chart_count: customMockCharts.length,
+      },
+      { overwriteRoutes: true },
+    );
+
+    renderChartList(mockUser);
+
+    await waitFor(() => {
+      expect(screen.getByText('DHIS2 MART Chart')).toBeInTheDocument();
+    });
+
+    const row = screen.getByText('DHIS2 MART Chart').closest('tr');
+    expect(row).toBeInTheDocument();
+    const martLink = within(row!).getByRole('link', {
+      name: /MAL - Routine eHMIS Indicators \[MART\]/i,
+    });
+    expect(martLink).toBeInTheDocument();
+    expect(martLink).toHaveTextContent('MAL - Routine eHMIS Indicators [MART]');
+  });
+
   test('switches from list view to card view', async () => {
     renderChartList(mockUser);
 

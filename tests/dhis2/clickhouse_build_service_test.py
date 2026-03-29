@@ -63,6 +63,10 @@ def test_generate_serving_sql_basic():
         ou_cols,
         pe_map_table,
         pe_cols,
+        "",
+        set(),
+        "",
+        set(),
     )
 
     assert "FROM `staging`.`ds_1` s" in sql
@@ -109,6 +113,7 @@ def test_generate_serving_sql_incremental():
         engine,
         manifest,
         "", set(), "", set(),
+        "", set(), "", set(),
         refresh_scope=["202301", "202302"]
     )
 
@@ -146,7 +151,7 @@ def test_generate_serving_sql_cross_instance_isolation():
     }
 
     sql = _generate_serving_sql(
-        MagicMock(), engine, manifest, "", set(), "", set()
+        MagicMock(), engine, manifest, "", set(), "", set(), "", set(), "", set()
     )
 
     # Both columns must carry the same dataset guard
@@ -189,8 +194,73 @@ def test_generate_serving_sql_manifest_build_version_sentinel():
     }
 
     sql = _generate_serving_sql(
-        MagicMock(), engine, manifest, "", set(), "", set()
+        MagicMock(), engine, manifest, "", set(), "", set(), "", set(), "", set()
     )
 
     assert f"`_manifest_build_v{_MANIFEST_BUILD_VERSION}`" in sql
     assert f"toUInt8({_MANIFEST_BUILD_VERSION})" in sql
+
+
+def test_build_specialized_marts_groups_by_all_manifest_dimensions():
+    engine = MagicMock()
+    engine._serving_database = "dhis2_serving"
+
+    manifest = {
+        "columns": [
+            {"column_name": "period", "is_dimension": True},
+            {"column_name": "ou_level", "is_dimension": True},
+            {"column_name": "region", "is_dimension": True},
+            {"column_name": "ownership", "is_dimension": True},
+            {"column_name": "co_uid", "is_dimension": True},
+            {"column_name": "disaggregation", "is_dimension": True},
+            {"column_name": "aoc_uid", "is_dimension": True},
+            {"column_name": "attribute_option_combo", "is_dimension": True},
+            {"column_name": "sex", "is_dimension": True},
+            {
+                "column_name": "period_year",
+                "is_dimension": True,
+                "extra": {"dhis2_is_period_hierarchy": True},
+            },
+            {
+                "column_name": "malaria_cases",
+                "type": "FLOAT",
+                "variable_id": "de_cases",
+            },
+            {
+                "column_name": "positivity_rate",
+                "type": "FLOAT",
+                "variable_id": "ind_rate",
+                "extra": {"dhis2_is_indicator": True},
+            },
+        ],
+        "dimension_column_names": [
+            "period",
+            "ou_level",
+            "region",
+            "ownership",
+            "co_uid",
+            "disaggregation",
+            "aoc_uid",
+            "attribute_option_combo",
+            "sex",
+        ],
+        "period_column_name": "period",
+        "ou_level_column_name": "ou_level",
+    }
+
+    built = _build_specialized_marts(MagicMock(), engine, "sv_1_dataset", manifest)
+
+    assert built == ["sv_1_dataset_mart"]
+    create_stmt = next(
+        stmt.args[0]
+        for stmt in engine._cmd.call_args_list
+        if "CREATE TABLE `dhis2_serving`.`sv_1_dataset_mart`" in stmt.args[0]
+    )
+    assert "`region`" in create_stmt
+    assert "`ownership`" in create_stmt
+    assert "`co_uid`" in create_stmt
+    assert "`disaggregation`" in create_stmt
+    assert "`aoc_uid`" in create_stmt
+    assert "`attribute_option_combo`" in create_stmt
+    assert "`sex`" in create_stmt
+    assert "`period_year`" in create_stmt

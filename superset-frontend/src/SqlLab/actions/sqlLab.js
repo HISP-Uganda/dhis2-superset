@@ -950,7 +950,15 @@ export function mergeTable(table, query, prepend) {
   return { type: MERGE_TABLE, table, query, prepend };
 }
 
-export function addTable(queryEditor, tableName, catalogName, schemaName, tableType, datasetId) {
+export function addTable(
+  queryEditor,
+  tableName,
+  catalogName,
+  schemaName,
+  tableType,
+  datasetId,
+  label,
+) {
   return function (dispatch, getState) {
     const { dbId } = getUpToDateQuery(getState(), queryEditor, queryEditor.id);
     const table = {
@@ -959,6 +967,7 @@ export function addTable(queryEditor, tableName, catalogName, schemaName, tableT
       catalog: catalogName,
       schema: schemaName,
       name: tableName,
+      label,
       type: tableType,
       datasetId,
     };
@@ -990,7 +999,7 @@ export function runTablePreviewQuery(newTable, runPreviewOnly) {
         tableName: newTable.name,
         sqlEditorId: null,
         tab: '',
-        runAsync: database.allow_run_async,
+        runAsync: false,
         ctas: false,
         isDataPreview: true,
       };
@@ -1053,6 +1062,12 @@ export function syncTable(table, tableMetadata, finalQueryEditorId) {
   };
 }
 
+function hasPersistedTableState(table) {
+  return Boolean(
+    table?.initialized && table?.id !== undefined && !Number.isNaN(Number(table.id)),
+  );
+}
+
 export function changeDataPreviewId(oldQueryId, newQuery) {
   return { type: CHANGE_DATA_PREVIEW_ID, oldQueryId, newQuery };
 }
@@ -1078,7 +1093,9 @@ export function reFetchQueryResults(query) {
 
 export function expandTable(table) {
   return function (dispatch) {
-    const sync = isFeatureEnabled(FeatureFlag.SqllabBackendPersistence)
+    const sync =
+      isFeatureEnabled(FeatureFlag.SqllabBackendPersistence) &&
+      hasPersistedTableState(table)
       ? SupersetClient.post({
           endpoint: encodeURI(`/tableschemaview/${table.id}/expanded`),
           postPayload: { expanded: true },
@@ -1102,7 +1119,9 @@ export function expandTable(table) {
 
 export function collapseTable(table) {
   return function (dispatch) {
-    const sync = isFeatureEnabled(FeatureFlag.SqllabBackendPersistence)
+    const sync =
+      isFeatureEnabled(FeatureFlag.SqllabBackendPersistence) &&
+      hasPersistedTableState(table)
       ? SupersetClient.post({
           endpoint: encodeURI(`/tableschemaview/${table.id}/expanded`),
           postPayload: { expanded: false },
@@ -1130,7 +1149,7 @@ export function removeTables(tables) {
     const sync = isFeatureEnabled(FeatureFlag.SqllabBackendPersistence)
       ? Promise.all(
           tablesToRemove.map(table =>
-            table.initialized
+            hasPersistedTableState(table)
               ? SupersetClient.delete({
                   endpoint: encodeURI(`/tableschemaview/${table.id}`),
                 })

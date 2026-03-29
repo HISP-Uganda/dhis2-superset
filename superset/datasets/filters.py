@@ -20,7 +20,7 @@ from sqlalchemy import and_, not_, or_
 from sqlalchemy.orm.query import Query
 
 from superset.connectors.sqla.models import SqlaTable
-from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy
+from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
 from superset.views.base import BaseFilter
 
 
@@ -67,17 +67,22 @@ class DatasetContextFilter(BaseFilter):  # pylint: disable=too-few-public-method
 
         allowed_roles = DatasetEligibilityPolicy.get_allowed_roles(context)
         role_values = [r.value for r in allowed_roles]
-        
-        # Backwards compatibility for NULL role
-        from superset.datasets.policy import DatasetRole
-        if DatasetRole.METADATA in allowed_roles:
-            return query.filter(
+        query = query.filter(SqlaTable.dataset_role.in_(role_values))
+        if context in {
+            DatasetContext.CHART,
+            DatasetContext.DASHBOARD,
+            DatasetContext.EXPLORE,
+            DatasetContext.ANALYSIS,
+        }:
+            staged_local_metadata_clause = and_(
+                SqlaTable.dataset_role == DatasetRole.METADATA.value,
                 or_(
-                    SqlaTable.dataset_role.in_(role_values),
-                    SqlaTable.dataset_role.is_(None),
-                )
+                    SqlaTable.extra.like('%"dhis2_staged_local": true%'),
+                    SqlaTable.extra.like('%"dhis2_staged_local":true%'),
+                ),
             )
-        return query.filter(SqlaTable.dataset_role.in_(role_values))
+            query = query.filter(not_(staged_local_metadata_clause))
+        return query
 
 
 class DatasetRoleDefaultFilter(BaseFilter):
@@ -92,6 +97,7 @@ class DatasetRoleDefaultFilter(BaseFilter):
         if request.view_args and "pk" in request.view_args:
             return query
 
+        explicit_dataset_role_filter = False
         q = request.args.get("q", "")
         if q:
             try:
@@ -99,18 +105,17 @@ class DatasetRoleDefaultFilter(BaseFilter):
                 filters = q_dict.get("filters", [])
                 for f in filters:
                     if f.get("col") == "dataset_role":
-                        # If the request explicitly filters by dataset_role, don't apply the default
-                        return query
+                        explicit_dataset_role_filter = True
+                        break
             except Exception:
                 pass
 
-        # Default dataset management list shows ONLY METADATA datasets.
-        # System-generated marts (MART) are hidden from this view.
-        from superset.datasets.policy import DatasetRole
+        if explicit_dataset_role_filter:
+            return query
 
+        # Default dataset management list shows only editable METADATA datasets.
+        # Analytical MART/source registrations are hidden unless explicitly
+        # requested by role/dataset_context.
         return query.filter(
-            or_(
-                SqlaTable.dataset_role == DatasetRole.METADATA.value,
-                SqlaTable.dataset_role.is_(None), # legacy datasets are treated as METADATA
-            )
+            SqlaTable.dataset_role == DatasetRole.METADATA.value
         )

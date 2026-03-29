@@ -36,6 +36,44 @@ function parseDatasourceExtra(
   return undefined;
 }
 
+function isStagedLocalDatasource(
+  datasource: Record<string, any> | undefined,
+): boolean {
+  const extra = parseDatasourceExtra(datasource?.extra);
+  return (
+    extra?.dhis2_staged_local === true ||
+    extra?.dhis2_staged_local === 'true' ||
+    extra?.dhis2StagedLocal === true ||
+    extra?.dhis2StagedLocal === 'true'
+  );
+}
+
+export function isDirectDhis2Datasource(
+  datasource: Record<string, any> | undefined,
+): boolean {
+  if (!datasource || isStagedLocalDatasource(datasource)) {
+    return false;
+  }
+
+  const databaseBackend = String(
+    datasource?.database?.backend || datasource?.database?.engine || '',
+  )
+    .trim()
+    .toLowerCase();
+  if (databaseBackend.includes('dhis2')) {
+    return true;
+  }
+
+  const uri = String(
+    datasource?.database?.sqlalchemy_uri ||
+      datasource?.database?.sqlalchemy_uri_decrypted ||
+      '',
+  )
+    .trim()
+    .toLowerCase();
+  return uri.includes('dhis2://');
+}
+
 export function getDhis2LegendSetDatabaseId(
   datasource: Record<string, any> | undefined,
 ): number | undefined {

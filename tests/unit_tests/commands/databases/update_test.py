@@ -17,10 +17,13 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+from marshmallow import ValidationError
 from pytest_mock import MockerFixture
 
 from superset import db
 from superset.commands.database.update import UpdateDatabaseCommand
+from superset.commands.database.exceptions import DatabaseInvalidError
 from superset.extensions import security_manager
 from superset.utils import json
 from tests.conftest import with_config
@@ -192,10 +195,14 @@ def test_update_dhis2_database_queues_metadata_refresh(
     schedule_refresh = mocker.patch(
         "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
     )
+    schedule_repository_finalization = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
 
     UpdateDatabaseCommand(42, {"database_name": "Updated DHIS2"}).run()
 
     schedule_refresh.assert_called_once_with(42, reason="database_updated")
+    schedule_repository_finalization.assert_not_called()
 
 
 def test_update_dhis2_shell_database_skips_live_connection_work(
@@ -218,11 +225,15 @@ def test_update_dhis2_shell_database_skips_live_connection_work(
     schedule_refresh = mocker.patch(
         "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
     )
+    schedule_repository_finalization = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
 
     UpdateDatabaseCommand(44, {"database_name": "Updated DHIS2"}).run()
 
     sync_permissions.assert_not_called()
     schedule_refresh.assert_called_once_with(44, reason="database_updated")
+    schedule_repository_finalization.assert_not_called()
 
 
 def test_update_non_dhis2_database_does_not_queue_metadata_refresh(
@@ -243,10 +254,245 @@ def test_update_non_dhis2_database_does_not_queue_metadata_refresh(
     schedule_refresh = mocker.patch(
         "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
     )
+    schedule_repository_finalization = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
 
     UpdateDatabaseCommand(43, {"database_name": "Updated SQLite"}).run()
 
     schedule_refresh.assert_not_called()
+    schedule_repository_finalization.assert_not_called()
+
+
+def test_update_dhis2_database_persists_auto_merge_repository_reporting_units(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 49
+    database_without_catalog.backend = "dhis2"
+    database_without_catalog.repository_reporting_unit_approach = "auto_merge"
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    repository_service = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.validate_and_stage"
+    )
+    mocker.patch("superset.commands.database.update.get_username")
+    mocker.patch("superset.security_manager.get_user_by_username")
+    mocker.patch("superset.commands.database.update.SyncPermissionsCommand")
+    mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+    schedule_repository_finalization = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
+
+    UpdateDatabaseCommand(
+        49,
+        {
+            "database_name": "Updated DHIS2",
+            "repository_reporting_unit_approach": "auto_merge",
+            "lowest_data_level_to_use": 3,
+            "repository_data_scope": "all_levels",
+            "repository_org_unit_config": {
+                "auto_merge": {
+                    "fallback_behavior": "preserve_unmatched",
+                    "unresolved_conflicts": "preserve_for_review",
+                }
+            },
+            "repository_org_units": [
+                {
+                    "repository_key": "1:uganda/2:kampala",
+                    "display_name": "Kampala",
+                    "level": 2,
+                    "is_unmatched": False,
+                    "lineage": [
+                        {
+                            "instance_id": 101,
+                            "source_instance_code": "A",
+                            "source_org_unit_uid": "OU_A",
+                            "source_level": 2,
+                        },
+                        {
+                            "instance_id": 102,
+                            "source_instance_code": "B",
+                            "source_org_unit_uid": "OU_B",
+                            "source_level": 2,
+                        },
+                    ],
+                }
+            ],
+        },
+    ).run()
+
+    _, payload = repository_service.call_args[0]
+    assert payload.repository_reporting_unit_approach == "auto_merge"
+    assert payload.lowest_data_level_to_use == 3
+    assert payload.repository_data_scope == "all_levels"
+    assert (
+        payload.repository_org_unit_config["auto_merge"]["fallback_behavior"]
+        == "preserve_unmatched"
+    )
+    assert {
+        lineage["source_instance_code"]
+        for lineage in payload.repository_org_unit_config["repository_org_units"][0][
+            "lineage"
+        ]
+    } == {"A", "B"}
+    schedule_repository_finalization.assert_called_once_with(49)
+
+
+def test_update_dhis2_database_persists_separate_repository_reporting_units(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 50
+    database_without_catalog.backend = "dhis2"
+    database_without_catalog.repository_reporting_unit_approach = "separate"
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    repository_service = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.validate_and_stage"
+    )
+    mocker.patch("superset.commands.database.update.get_username")
+    mocker.patch("superset.security_manager.get_user_by_username")
+    mocker.patch("superset.commands.database.update.SyncPermissionsCommand")
+    mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+    schedule_repository_finalization = mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
+
+    UpdateDatabaseCommand(
+        50,
+        {
+            "database_name": "Updated DHIS2",
+            "repository_reporting_unit_approach": "separate",
+            "repository_org_unit_config": {
+                "separate_instance_configs": [
+                    {
+                        "instance_id": 101,
+                        "data_scope": "children",
+                        "lowest_data_level_to_use": 2,
+                        "selected_org_units": ["101::OU_ROOT"],
+                        "selected_org_unit_details": [
+                            {
+                                "selectionKey": "101::OU_ROOT",
+                                "sourceOrgUnitId": "OU_ROOT",
+                                "displayName": "Uganda",
+                                "level": 1,
+                                "path": "/OU_ROOT",
+                                "sourceInstanceIds": [101],
+                            }
+                        ],
+                    },
+                    {
+                        "instance_id": 102,
+                        "data_scope": "ancestors",
+                        "lowest_data_level_to_use": 2,
+                        "selected_org_units": ["102::OU_ROOT"],
+                        "selected_org_unit_details": [
+                            {
+                                "selectionKey": "102::OU_ROOT",
+                                "sourceOrgUnitId": "OU_ROOT",
+                                "displayName": "Uganda",
+                                "level": 1,
+                                "path": "/OU_ROOT",
+                                "sourceInstanceIds": [102],
+                            }
+                        ],
+                    },
+                ]
+            },
+            "repository_org_units": [
+                {
+                    "repository_key": "I101::OU_ROOT",
+                    "display_name": "Uganda",
+                    "level": 1,
+                    "lineage": [
+                        {
+                            "instance_id": 101,
+                            "source_instance_code": "A",
+                            "source_org_unit_uid": "OU_ROOT",
+                            "source_level": 1,
+                        }
+                    ],
+                },
+                {
+                    "repository_key": "I102::OU_ROOT",
+                    "display_name": "Uganda",
+                    "level": 1,
+                    "lineage": [
+                        {
+                            "instance_id": 102,
+                            "source_instance_code": "B",
+                            "source_org_unit_uid": "OU_ROOT",
+                            "source_level": 1,
+                        }
+                    ],
+                },
+            ],
+        },
+    ).run()
+
+    _, payload = repository_service.call_args[0]
+    assert payload.repository_reporting_unit_approach == "separate"
+    assert payload.repository_data_scope is None
+    assert len(payload.repository_org_unit_config["separate_instance_configs"]) == 2
+    assert {
+        unit["lineage"][0]["instance_id"]
+        for unit in payload.repository_org_unit_config["repository_org_units"]
+    } == {101, 102}
+    schedule_repository_finalization.assert_called_once_with(50)
+
+
+def test_update_database_raises_invalid_error_on_repository_validation_failure(
+    mocker: MockerFixture,
+    database_without_catalog: MagicMock,
+) -> None:
+    database_without_catalog.id = 51
+    database_without_catalog.backend = "dhis2"
+    database_dao = mocker.patch("superset.commands.database.update.DatabaseDAO")
+    database_dao.find_by_id.return_value = database_without_catalog
+    database_dao.update.return_value = database_without_catalog
+    mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.validate_and_stage",
+        side_effect=ValidationError(
+            {"lowest_data_level_to_use": ["Repository lineage is too deep."]}
+        ),
+    )
+    mocker.patch("superset.commands.database.update.get_username")
+    mocker.patch("superset.security_manager.get_user_by_username")
+    mocker.patch("superset.commands.database.update.SyncPermissionsCommand")
+    mocker.patch(
+        "superset.commands.database.update.schedule_database_metadata_refresh_after_commit"
+    )
+    mocker.patch(
+        "superset.commands.database.update.DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit"
+    )
+
+    with pytest.raises(DatabaseInvalidError):
+        UpdateDatabaseCommand(
+            51,
+            {
+                "database_name": "Updated DHIS2",
+                "repository_reporting_unit_approach": "primary_instance",
+                "repository_org_units": [
+                    {
+                        "repository_key": "OU_ROOT",
+                        "display_name": "Uganda",
+                        "lineage": [
+                            {
+                                "instance_id": 101,
+                                "source_org_unit_uid": "OU_ROOT",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ).run()
 
 
 def test_rename_with_catalog(

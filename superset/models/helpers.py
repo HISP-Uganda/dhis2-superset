@@ -2102,17 +2102,25 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
                 preferred_terminal_hierarchy_column = (
                     normalized_explicit_selected_org_unit_column
                 )
+        has_selected_hierarchy_context = bool(
+            preferred_terminal_hierarchy_column
+            or any(
+                candidate in dhis2_hierarchy_column_names
+                for candidate in selected_hierarchy_candidates
+            )
+        )
         selected_terminal_hierarchy_column = (
             resolve_terminal_hierarchy_column(
                 selected_hierarchy_candidates,
                 dhis2_hierarchy_column_names,
                 preferred_selected_column=preferred_terminal_hierarchy_column,
             )
-            if resolve_terminal_hierarchy_column
+            if resolve_terminal_hierarchy_column and has_selected_hierarchy_context
             else None
         )
         if (
             selected_terminal_hierarchy_column is None
+            and has_selected_hierarchy_context
             and dhis2_hierarchy_column_names
         ):
             selected_terminal_hierarchy_column = dhis2_hierarchy_column_names[-1]

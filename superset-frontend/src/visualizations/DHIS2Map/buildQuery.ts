@@ -259,8 +259,13 @@ export default function buildQuery(formData: QueryFormData) {
     });
 
     // Build columns array - request all needed columns as dimensions
-    const isLatestAggregation =
-      String(aggregation_method || '').toLowerCase() === 'latest';
+    const normalizedAggregationMethod = String(
+      aggregation_method || '',
+    ).toLowerCase();
+    const isLatestAggregation = normalizedAggregationMethod === 'latest';
+    const usesRawMetricRows =
+      normalizedAggregationMethod === 'latest' ||
+      normalizedAggregationMethod === 'none';
 
     const columns: string[] = [];
     const addColumn = (columnName?: string) => {
@@ -297,10 +302,7 @@ export default function buildQuery(formData: QueryFormData) {
     }
 
     const aggregateFunction = (() => {
-      const method = String(aggregation_method || '').toLowerCase();
-      switch (method) {
-        case 'none':
-          return null; // Special case: no aggregate wrapper
+      switch (normalizedAggregationMethod) {
         case 'average':
           return 'AVG';
         case 'max':
@@ -323,7 +325,7 @@ export default function buildQuery(formData: QueryFormData) {
           : sanitizedMetric
         : undefined);
     const aggregatedMetric =
-      sanitizedMetric && !isLatestAggregation
+      sanitizedMetric && !usesRawMetricRows
         ? {
             expressionType: 'SQL' as const,
             sqlExpression: aggregateFunction
@@ -340,18 +342,18 @@ export default function buildQuery(formData: QueryFormData) {
     // Fallback metric so the backend never receives an empty metrics array
     // (which causes a 500). When no user metric is selected we aggregate
     // a non-null constant so the GROUP BY still returns one row per OU.
-    // For latest aggregation the backend returns raw rows (no aggregate);
-    // the client resolves the most-recent value. Use an empty metrics array
-    // so the GROUP BY returns one row per unique column combination.
+    // For latest / none aggregation the backend returns raw rows (no aggregate);
+    // the client resolves the displayed value. Use an empty metrics array so the
+    // GROUP BY returns one row per unique column combination.
     const safeMetrics = aggregatedMetric
       ? [aggregatedMetric]
-      : isLatestAggregation
+      : usesRawMetricRows
         ? []
         : [{ expressionType: 'SQL' as const, sqlExpression: 'COUNT(*)', label: '__count' }];
 
-    if (isLatestAggregation) {
-      // Latest needs the raw metric rows so the map can resolve the final
-      // value client-side after the focused-parent filter is applied.
+    if (usesRawMetricRows) {
+      // Latest / none need the raw metric rows so the map can resolve the
+      // displayed value client-side after the focused-parent filter is applied.
       addColumn(sanitizedMetric);
     }
 

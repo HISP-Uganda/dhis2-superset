@@ -48,13 +48,29 @@ def build_serving_table_clickhouse(
     
     ou_map_table = ""
     pe_map_table = ""
+    co_map_table = ""
+    aoc_map_table = ""
     ou_cols: set[str] = set()
     pe_cols: set[str] = set()
+    co_cols: set[str] = set()
+    aoc_cols: set[str] = set()
 
     try:
         # 1. Prepare Hierarchy Maps
         ou_map_table, ou_cols = _upload_org_unit_map(dataset, resolved_engine, manifest, build_id)
         pe_map_table, pe_cols = _upload_period_map(dataset, resolved_engine, manifest, build_id)
+        co_map_table, co_cols = _upload_combo_map(
+            resolved_engine,
+            manifest,
+            build_id,
+            "co",
+        )
+        aoc_map_table, aoc_cols = _upload_combo_map(
+            resolved_engine,
+            manifest,
+            build_id,
+            "aoc",
+        )
 
         # 1.5 Prune empty columns from maps
         active_ou_cols = _prune_empty_columns(resolved_engine, ou_map_table, ou_cols)
@@ -77,6 +93,10 @@ def build_serving_table_clickhouse(
             active_ou_cols,
             pe_map_table,
             pe_cols,
+            co_map_table,
+            co_cols,
+            aoc_map_table,
+            aoc_cols,
             refresh_scope=refresh_scope,
         )
 
@@ -133,6 +153,10 @@ def build_serving_table_clickhouse(
             resolved_engine.drop_temp_table(ou_map_table.split(".")[-1].strip("`"))
         if pe_map_table:
             resolved_engine.drop_temp_table(pe_map_table.split(".")[-1].strip("`"))
+        if co_map_table:
+            resolved_engine.drop_temp_table(co_map_table.split(".")[-1].strip("`"))
+        if aoc_map_table:
+            resolved_engine.drop_temp_table(aoc_map_table.split(".")[-1].strip("`"))
 
 
 def _execute_incremental_build(
@@ -226,7 +250,16 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
     period_col = manifest.get("period_column_name")
     instance_col = (manifest.get("dimension_column_names") or [None])[0] if manifest.get("include_instance_name") else None
 
-    # Find period hierarchy columns (year, quarter, etc.)
+    # Keep every manifest dimension column in the mart, including repository
+    # levels, groups, group sets, raw CoC/AoC dimensions, and derived category
+    # columns. Period hierarchy columns are added separately because they are
+    # dimension columns but not part of dimension_column_names.
+    base_dimension_cols = [
+        f"`{column_name}`"
+        for column_name in list(manifest.get("dimension_column_names") or [])
+        if column_name
+    ]
+
     period_hierarchy_cols = []
     for c in manifest["columns"]:
         extra = c.get("extra") or {}
@@ -238,48 +271,12 @@ def _build_specialized_marts(dataset: Any, engine: Any, serving_name: str, manif
         if extra.get("dhis2_is_period_hierarchy"):
             period_hierarchy_cols.append(f"`{c['column_name']}`")
 
-    common_group_cols = []
-    if instance_col:
-        common_group_cols.append(f"`{instance_col}`")
-    if period_col:
-        common_group_cols.append(f"`{period_col}`")
-    # Add hierarchy levels to grouping to allow trend analysis at different grains
-    common_group_cols.extend(period_hierarchy_cols)
-
-    # Find OU hierarchy columns (full geographic breakdown)
-    ou_hierarchy_cols = []
-    for c in manifest["columns"]:
-        extra = c.get("extra") or {}
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra)
-            except Exception:  # pylint: disable=broad-except
-                extra = {}
-        if extra.get("dhis2_is_ou_hierarchy"):
-            ou_hierarchy_cols.append(f"`{c['column_name']}`")
-
-    # Add OU level column if present in manifest
     ou_level_col = manifest.get("ou_level_column_name")
-    if ou_level_col:
-        ou_hierarchy_cols.append(f"`{ou_level_col}`")
-
-    # Include COC (Category Option Combo) dimension columns in the mart when the
-    # manifest exposes them.  This preserves disaggregation grain so users can
-    # group and filter charts by disaggregation without losing row fidelity.
-    # When no COC columns are present the mart collapses across all COCs,
-    # which is the correct total-only behaviour for "total" disaggregation mode.
-    coc_dimension_cols: list[str] = []
-    coc_uid_col = manifest.get("coc_uid_column_name")
-    coc_name_col = manifest.get("coc_name_column_name")
-    if coc_uid_col:
-        coc_dimension_cols.append(f"`{coc_uid_col}`")
-    if coc_name_col:
-        coc_dimension_cols.append(f"`{coc_name_col}`")
 
     # Single consolidated mart: instance + period + full OU hierarchy + COC (opt-in)
     # This is a superset of the old KPI grouping and includes geographic dimensions
     # needed for maps, KPI charts, pivots, and dashboard filters.
-    mart_group_cols = list(dict.fromkeys(common_group_cols + ou_hierarchy_cols + coc_dimension_cols))
+    mart_group_cols = list(dict.fromkeys(base_dimension_cols + period_hierarchy_cols))
     if not mart_group_cols:
         if ou_level_col:
             mart_group_cols = [f"`{ou_level_col}`"]
@@ -424,6 +421,70 @@ def _upload_period_map(
     return f"`{engine._serving_database}`.`{table_name}`", target_cols
 
 
+def _upload_combo_map(
+    engine: Any,
+    manifest: dict[str, Any],
+    build_id: str,
+    source_kind: str,
+) -> tuple[str, set[str]]:
+    combo_name_lookup = manifest.get("combo_name_lookup") or {}
+    combo_dimension_lookup = manifest.get("combo_dimension_lookup") or {}
+
+    raw_name_col = (
+        manifest.get("coc_name_column_name")
+        if source_kind == "co"
+        else manifest.get("aoc_name_column_name")
+    )
+    category_cols = set(
+        manifest.get("co_category_column_names" if source_kind == "co" else "aoc_category_column_names")
+        or []
+    )
+    target_cols = set(category_cols)
+    if raw_name_col:
+        target_cols.add(str(raw_name_col))
+    if not target_cols:
+        return "", set()
+
+    combo_keys: set[tuple[int, str]] = set()
+    for key in combo_name_lookup:
+        if not isinstance(key, tuple) or len(key) != 3 or key[0] != source_kind:
+            continue
+        _, instance_id, combo_uid = key
+        combo_keys.add((int(instance_id), str(combo_uid)))
+    for key in combo_dimension_lookup:
+        if not isinstance(key, tuple) or len(key) != 3 or key[0] != source_kind:
+            continue
+        _, instance_id, combo_uid = key
+        combo_keys.add((int(instance_id), str(combo_uid)))
+    if not combo_keys:
+        return "", set()
+
+    table_name = f"tmp_{source_kind}_map_{build_id}"
+    columns_ddl = {
+        "source_instance_id": "Int32",
+        "combo_uid": "String",
+    }
+    for col in sorted(target_cols):
+        columns_ddl[col] = "Nullable(String)"
+
+    engine.create_temp_table(table_name, columns_ddl)
+    rows = []
+    for instance_id, combo_uid in sorted(combo_keys):
+        row = {
+            "source_instance_id": instance_id,
+            "combo_uid": combo_uid,
+        }
+        display_name = combo_name_lookup.get((source_kind, instance_id, combo_uid))
+        if raw_name_col and display_name:
+            row[str(raw_name_col)] = display_name
+        row.update(combo_dimension_lookup.get((source_kind, instance_id, combo_uid), {}))
+        rows.append(row)
+
+    col_names = ["source_instance_id", "combo_uid"] + sorted(target_cols)
+    engine.insert_temp_rows(table_name, rows, col_names)
+    return f"`{engine._serving_database}`.`{table_name}`", target_cols
+
+
 def _generate_serving_sql(
     dataset: Any,
     engine: Any,
@@ -432,6 +493,10 @@ def _generate_serving_sql(
     ou_cols: set[str],
     pe_map_table: str,
     pe_cols: set[str],
+    co_map_table: str,
+    co_cols: set[str],
+    aoc_map_table: str,
+    aoc_cols: set[str],
     refresh_scope: Iterable[str] | None = None,
 ) -> str:
     staging_ref = engine.get_superset_sql_table_ref(dataset)
@@ -497,8 +562,19 @@ def _generate_serving_sql(
                 expr = "s.ou_level"
         elif col_name == manifest.get("coc_uid_column_name"):
             expr = "s.co_uid"
+        elif col_name == manifest.get("aoc_uid_column_name"):
+            expr = "s.aoc_uid"
         elif col_name == manifest.get("coc_name_column_name"):
-            expr = "s.co_name"
+            if co_map_table and col_name in co_cols:
+                expr = f"coalesce(co_map.`{col_name}`, s.co_name)"
+            else:
+                expr = "s.co_name"
+        elif col_name == manifest.get("aoc_name_column_name"):
+            expr = f"aoc_map.`{col_name}`" if aoc_map_table and col_name in aoc_cols else "NULL"
+        elif co_map_table and col_name in co_cols:
+            expr = f"co_map.`{col_name}`"
+        elif aoc_map_table and col_name in aoc_cols:
+            expr = f"aoc_map.`{col_name}`"
         elif isinstance(col.get("extra"), dict) and col["extra"].get("dhis2_manifest_build_version"):
             # Sentinel column: stores the manifest build version as a constant.
             # Its column *name* encodes the version so _serving_table_needs_rebuild
@@ -516,6 +592,16 @@ def _generate_serving_sql(
         joins.append(f"LEFT JOIN {ou_map_table} ou_map ON s.source_instance_id = ou_map.source_instance_id AND s.ou = ou_map.org_unit_id")
     if pe_map_table:
         joins.append(f"LEFT JOIN {pe_map_table} pe_map ON s.pe = pe_map.pe")
+    if co_map_table:
+        joins.append(
+            f"LEFT JOIN {co_map_table} co_map ON s.source_instance_id = co_map.source_instance_id "
+            f"AND s.co_uid = co_map.combo_uid"
+        )
+    if aoc_map_table:
+        joins.append(
+            f"LEFT JOIN {aoc_map_table} aoc_map ON s.source_instance_id = aoc_map.source_instance_id "
+            f"AND s.aoc_uid = aoc_map.combo_uid"
+        )
 
     where_parts = []
     if refresh_scope:

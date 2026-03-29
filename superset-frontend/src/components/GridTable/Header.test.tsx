@@ -48,17 +48,44 @@ class MockApi extends EventTarget {
   }
 }
 
+class MockColumn extends EventTarget {
+  private currentSort: string | null;
+
+  constructor(sort: string | null = null) {
+    super();
+    this.currentSort = sort;
+  }
+
+  getColId() {
+    return '123';
+  }
+
+  isPinnedLeft() {
+    return true;
+  }
+
+  isPinnedRight() {
+    return false;
+  }
+
+  getSort() {
+    return this.currentSort;
+  }
+
+  setSortValue(sort: string | null) {
+    this.currentSort = sort;
+  }
+
+  getSortIndex() {
+    return null;
+  }
+}
+
 const mockedProps = {
   displayName: 'test column',
   setSort: jest.fn(),
   enableSorting: true,
-  column: {
-    getColId: () => '123',
-    isPinnedLeft: () => true,
-    isPinnedRight: () => false,
-    getSort: () => 'asc',
-    getSortIndex: () => null,
-  } as any as Column,
+  column: new MockColumn() as any as Column,
   api: new MockApi() as any as GridApi,
 };
 
@@ -82,9 +109,13 @@ test('sorts by clicking a column header', () => {
 });
 
 test('synchronizes the current sort when sortChanged event occured', async () => {
-  const { findByTestId } = render(<Header {...mockedProps} />);
+  const column = new MockColumn() as any as Column;
+  const { findByTestId } = render(
+    <Header {...mockedProps} column={column} />,
+  );
   act(() => {
-    mockedProps.api.dispatchEvent(new Event('sortChanged'));
+    (column as any as MockColumn).setSortValue('asc');
+    column.dispatchEvent(new Event('sortChanged'));
   });
   const sortAsc = await findByTestId('mock-sort-asc');
   expect(sortAsc).toBeInTheDocument();
@@ -99,17 +130,12 @@ test('disable menu when enableFilterButton is false', () => {
 });
 
 test('hide display name for PIVOT_COL_ID', () => {
+  const pivotColumn = new MockColumn();
+  pivotColumn.getColId = () => PIVOT_COL_ID;
   const { queryByText } = render(
     <Header
       {...mockedProps}
-      column={
-        {
-          getColId: () => PIVOT_COL_ID,
-          isPinnedLeft: () => true,
-          isPinnedRight: () => false,
-          getSortIndex: () => null,
-        } as any as Column
-      }
+      column={pivotColumn as any as Column}
     />,
   );
   expect(queryByText(mockedProps.displayName)).not.toBeInTheDocument();

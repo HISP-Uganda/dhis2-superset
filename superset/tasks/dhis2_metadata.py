@@ -88,3 +88,18 @@ def refresh_all_dhis2_metadata(
         metadata_types=metadata_types,
         reason=reason or "celery_scheduled_refresh",
     )
+
+
+@shared_task(name="dhis2.finalize_repository_org_units", bind=True)
+def finalize_database_repository_org_units(
+    self: Any,
+    database_id: int,
+) -> dict[str, Any]:
+    from superset.dhis2.database_repository_org_unit_service import (
+        DatabaseRepositoryOrgUnitService,
+    )
+
+    return DatabaseRepositoryOrgUnitService.finalize_database(
+        database_id,
+        task_id=getattr(self.request, "id", None),
+    )

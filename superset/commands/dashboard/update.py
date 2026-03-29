@@ -139,7 +139,10 @@ class UpdateDashboardCommand(UpdateMixin, BaseCommand):
                             if hasattr(ds, "dataset_role") and ds.dataset_role:
                                 try:
                                     role = DatasetRole(ds.dataset_role)
-                                    if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.DASHBOARD):
+                                    if not DatasetEligibilityPolicy.is_dataset_eligible(
+                                        ds,
+                                        DatasetContext.DASHBOARD,
+                                    ):
                                         exceptions.append(ChartInvalidDatasetRoleError(role))
                                 except ValueError:
                                     pass

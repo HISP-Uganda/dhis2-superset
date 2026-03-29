@@ -827,10 +827,13 @@ export const OuSelector: React.FC<OuSelectorProps> = ({
                 allowClear
                 value={filterLevel}
                 onChange={setFilterLevel}
-                options={orgUnitLevels.map(l => ({
-                  value: l.level,
-                  label: `${l.level}. ${l.displayName}`,
-                }))}
+                options={orgUnitLevels
+                  .slice()
+                  .sort((left, right) => left.level - right.level)
+                  .map(l => ({
+                    value: l.level,
+                    label: `${l.level}. ${l.displayName}`,
+                  }))}
                 size="middle"
               />
             </FilterSection>

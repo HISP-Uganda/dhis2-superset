@@ -107,8 +107,14 @@ def test_dataset_to_dict_includes_local_serving_database():
         "superset.dhis2.staged_dataset_api.svc.get_serving_columns",
         return_value=[],
     ), patch(
-        "superset.dhis2.staged_dataset_api.svc.get_staging_stats",
-        return_value={"total_rows": 11},
+        "superset.dhis2.staged_dataset_api.svc.get_local_data_stats",
+        return_value={
+            "total_rows": 11,
+            "staging_total_rows": 11,
+            "serving_total_rows": 42,
+            "available_total_rows": 42,
+            "row_source": "staging",
+        },
     ):
         payload = DHIS2StagedDatasetApi()._dataset_to_dict(5, include_stats=True)
 
@@ -131,7 +137,13 @@ def test_dataset_to_dict_includes_local_serving_database():
         ],
         "serving_database_id": 13,
         "serving_database_name": "main",
-        "stats": {"total_rows": 11},
+        "stats": {
+            "total_rows": 11,
+            "staging_total_rows": 11,
+            "serving_total_rows": 42,
+            "available_total_rows": 42,
+            "row_source": "staging",
+        },
     }
 
 
@@ -240,6 +252,8 @@ def test_list_datasets_returns_lightweight_payload_without_dataset_config():
         "/api/v1/dhis2/staged-datasets/?database_id=9&include_stats=true",
         method="GET",
     ), patch(
+        "superset.dhis2.staged_dataset_api.reset_stale_running_jobs",
+    ) as reset_stale, patch(
         "superset.dhis2.staged_dataset_api.svc.list_staged_datasets",
         return_value=[dataset],
     ), patch.object(
@@ -255,8 +269,31 @@ def test_list_datasets_returns_lightweight_payload_without_dataset_config():
         include_dataset_config=False,
         include_serving_definition=False,
     )
+    reset_stale.assert_called_once_with()
     assert response.status_code == 200
     assert response.get_json()["result"][0]["stats"]["total_rows"] == 11
+
+
+def test_get_dataset_resets_stale_running_state_before_serializing():
+    from superset.dhis2.staged_dataset_api import DHIS2StagedDatasetApi
+
+    app = _make_test_app()
+
+    with app.test_request_context(
+        "/api/v1/dhis2/staged-datasets/5",
+        method="GET",
+    ), patch(
+        "superset.dhis2.staged_dataset_api.reset_stale_running_jobs",
+    ) as reset_stale, patch.object(
+        DHIS2StagedDatasetApi,
+        "_dataset_to_dict",
+        return_value={"id": 5, "name": "ANC"},
+    ):
+        response = DHIS2StagedDatasetApi().get_dataset(5)
+
+    reset_stale.assert_called_once_with(dataset_id=5)
+    assert response.status_code == 200
+    assert response.get_json()["result"] == {"id": 5, "name": "ANC"}
 
 
 def test_create_dataset_returns_400_for_non_serializable_dataset_config():

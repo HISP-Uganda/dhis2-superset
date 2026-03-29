@@ -36,6 +36,7 @@ from typing import Any
 
 import requests
 from flask import current_app, has_app_context
+from sqlalchemy import event
 
 from superset import db
 from superset.dhis2.models import (
@@ -117,6 +118,7 @@ _ORG_UNIT_SCOPE_CHILDREN = "children"
 _ORG_UNIT_SCOPE_GRANDCHILDREN = "grandchildren"
 _ORG_UNIT_SCOPE_ALL_LEVELS = "all_levels"
 _ORG_UNIT_HIERARCHY_NAMESPACE = "dhis2_snapshot:orgUnitHierarchy"
+_STOCK_OUT_INDICATOR_RE = re.compile(r"\bstock\s*out\b", re.IGNORECASE)
 _VARIABLE_TYPE_TO_METADATA_TYPE = {
     "dataelement": "dataElements",
     "dataelements": "dataElements",
@@ -871,6 +873,81 @@ def _source_org_unit_id(detail: dict[str, Any]) -> str | None:
     return candidate if isinstance(candidate, str) and candidate else None
 
 
+def _detail_lineage(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_lineage = _config_value(detail, "lineage")
+    if not isinstance(raw_lineage, list):
+        return []
+    return [
+        item
+        for item in raw_lineage
+        if isinstance(item, dict)
+    ]
+
+
+def _detail_instance_ids(detail: dict[str, Any]) -> list[int]:
+    raw_ids = _config_value(detail, "source_instance_ids", "sourceInstanceIds") or []
+    instance_ids: list[int] = []
+    if isinstance(raw_ids, list):
+        for item in raw_ids:
+            try:
+                instance_ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+    if instance_ids:
+        return list(dict.fromkeys(instance_ids))
+
+    for lineage in _detail_lineage(detail):
+        try:
+            instance_ids.append(int(lineage.get("instance_id")))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(instance_ids))
+
+
+def _resolve_selected_detail_for_instance(
+    detail: dict[str, Any],
+    instance_id: int,
+) -> dict[str, Any] | None:
+    lineages = _detail_lineage(detail)
+    if not lineages:
+        return detail
+
+    for lineage in lineages:
+        try:
+            lineage_instance_id = int(lineage.get("instance_id"))
+        except (TypeError, ValueError):
+            continue
+        if lineage_instance_id != instance_id:
+            continue
+
+        source_org_unit_uid = str(lineage.get("source_org_unit_uid") or "").strip()
+        if not source_org_unit_uid:
+            continue
+
+        resolved = dict(detail)
+        resolved["source_org_unit_id"] = source_org_unit_uid
+        resolved["sourceOrgUnitId"] = source_org_unit_uid
+        resolved["source_instance_ids"] = [instance_id]
+        resolved["sourceInstanceIds"] = [instance_id]
+
+        source_parent_uid = str(lineage.get("source_parent_uid") or "").strip()
+        if source_parent_uid:
+            resolved["parent_id"] = source_parent_uid
+            resolved["parentId"] = source_parent_uid
+
+        source_path = str(lineage.get("source_path") or "").strip()
+        if source_path:
+            resolved["path"] = source_path
+
+        source_level = lineage.get("source_level")
+        if source_level is not None:
+            resolved["level"] = source_level
+
+        return resolved
+
+    return None
+
+
 def _selected_org_unit_depth(detail: dict[str, Any]) -> int:
     level = _config_value(detail, "level", "repositoryLevel")
     try:
@@ -1089,9 +1166,57 @@ class DHIS2SyncService:
         # Populated by _fetch_analytics_batch; consumed by _fetch_from_instance
         # to surface bad-slice counts in instance_results.
         self._skipped_slices: list[dict[str, Any]] = []
+        # Cache of org units that have already been isolated as persistent
+        # DHIS2-side 500s for a given variable family during the current sync
+        # run.  This prevents the same toxic OU slice from being rediscovered
+        # repeatedly for each stock-out indicator in the same dataset.
+        self._known_bad_analytics_ou_families: defaultdict[tuple[int, str], set[str]] = (
+            defaultdict(set)
+        )
         # Monotonically increasing counter to assign request_seq values
         # across multiple flush calls within one sync run.
         self._request_seq_offset: int = 0
+
+    @staticmethod
+    def _base_variable_id(dx_id: str) -> str:
+        return str(dx_id or "").split(".", 1)[0]
+
+    def _variable_skip_families(
+        self,
+        variable: DHIS2DatasetVariable | None,
+    ) -> set[str]:
+        if variable is None:
+            return set()
+
+        variable_id = str(getattr(variable, "variable_id", "") or "").strip()
+        if not variable_id:
+            return set()
+
+        families = {f"var:{variable_id}"}
+        variable_type = str(getattr(variable, "variable_type", "") or "").strip().lower()
+        variable_name = str(getattr(variable, "variable_name", "") or "").strip()
+        if variable_type == "indicator" and _STOCK_OUT_INDICATOR_RE.search(variable_name):
+            families.add("family:indicator_stock_out")
+        return families
+
+    def _shared_batch_skip_families(
+        self,
+        batch: list[str],
+        variable_map: dict[str, DHIS2DatasetVariable],
+    ) -> set[str]:
+        shared_families: set[str] | None = None
+        for dx_id in batch:
+            variable = variable_map.get(self._base_variable_id(dx_id))
+            variable_families = self._variable_skip_families(variable)
+            if not variable_families:
+                continue
+            if shared_families is None:
+                shared_families = set(variable_families)
+            else:
+                shared_families &= variable_families
+            if not shared_families:
+                return set()
+        return shared_families or set()
 
     # ------------------------------------------------------------------
     # Public entrypoint
@@ -1281,11 +1406,33 @@ class DHIS2SyncService:
         org_units: list[str],
         variable_map: dict[str, DHIS2DatasetVariable],
         page_size: int,
+        include_combo_dimensions: bool = False,
         job_id: int | None = None,
     ) -> list[dict[str, Any]]:
         batch_started_at = datetime.utcnow()
         batch_start_mono = time.monotonic()
         pages_fetched = 0
+
+        shared_skip_families = self._shared_batch_skip_families(batch, variable_map)
+        known_bad_ous: set[str] = set()
+        for family in shared_skip_families:
+            known_bad_ous.update(
+                self._known_bad_analytics_ou_families.get((instance.id, family), set())
+            )
+        if known_bad_ous:
+            filtered_org_units = [ou for ou in org_units if ou not in known_bad_ous]
+            if len(filtered_org_units) != len(org_units):
+                logger.info(
+                    "Sync: pre-skipping %d known bad org unit(s) for instance '%s' "
+                    "batch_size=%d families=%s",
+                    len(org_units) - len(filtered_org_units),
+                    instance.name,
+                    len(batch),
+                    sorted(shared_skip_families),
+                )
+            if not filtered_org_units:
+                return []
+            org_units = filtered_org_units
 
         # Write a 'running' row immediately so the UI shows this request
         # before the HTTP call returns (which can take up to 300 s).
@@ -1306,6 +1453,7 @@ class DHIS2SyncService:
                     org_units=org_units,
                     page=page,
                     page_size=page_size,
+                    include_combo_dimensions=include_combo_dimensions,
                 )
                 batch_rows = self._normalize_analytics_response(
                     raw,
@@ -1392,6 +1540,7 @@ class DHIS2SyncService:
                             org_units=org_units,
                             variable_map=variable_map,
                             page_size=page_size,
+                            include_combo_dimensions=include_combo_dimensions,
                             job_id=job_id,
                         )
                     except (requests.Timeout, requests.ConnectionError):
@@ -1428,6 +1577,7 @@ class DHIS2SyncService:
                                 org_units=ou_half,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                include_combo_dimensions=include_combo_dimensions,
                                 job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
@@ -1465,6 +1615,7 @@ class DHIS2SyncService:
                             org_units=org_units,
                             variable_map=variable_map,
                             page_size=reduced_page_size,
+                            include_combo_dimensions=include_combo_dimensions,
                             job_id=job_id,
                         )
                     except Exception as pg_exc:  # pylint: disable=broad-except
@@ -1499,6 +1650,7 @@ class DHIS2SyncService:
                                 org_units=org_units,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                include_combo_dimensions=include_combo_dimensions,
                                 job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
@@ -1540,6 +1692,7 @@ class DHIS2SyncService:
                                 org_units=ou_half,
                                 variable_map=variable_map,
                                 page_size=page_size,
+                                include_combo_dimensions=include_combo_dimensions,
                                 job_id=job_id,
                             ))
                         except Exception as sub_exc:  # pylint: disable=broad-except
@@ -1569,6 +1722,11 @@ class DHIS2SyncService:
                     _bad_ou,
                     instance.name,
                 )
+                _bad_variable = variable_map.get(self._base_variable_id(_bad_var))
+                for family in self._variable_skip_families(_bad_variable):
+                    self._known_bad_analytics_ou_families[(instance.id, family)].add(
+                        _bad_ou
+                    )
                 self._skipped_slices.append({
                     "instance_id": instance.id,
                     "instance_name": instance.name,
@@ -1881,6 +2039,41 @@ class DHIS2SyncService:
             raise ValueError(
                 f"DHIS2StagedDataset with id={staged_dataset_id} not found"
             )
+
+        needs_definition_repair = not bool(
+            _read_model_attr(dataset, "staging_table_name")
+        )
+        preview_config = dataset.get_dataset_config()
+        if not needs_definition_repair and not _normalize_instance_ids(
+            preview_config.get("configured_connection_ids")
+        ):
+            needs_definition_repair = True
+        if not needs_definition_repair:
+            needs_definition_repair = (
+                db.session.query(DHIS2DatasetVariable.id)
+                .filter_by(staged_dataset_id=staged_dataset_id)
+                .first()
+                is None
+            )
+        if needs_definition_repair:
+            try:
+                from superset.dhis2.staged_dataset_service import (
+                    repair_staged_dataset_definition,
+                )
+
+                repair_staged_dataset_definition(staged_dataset_id)
+                dataset = (
+                    db.session.query(DHIS2StagedDataset)
+                    .filter_by(id=staged_dataset_id)
+                    .first()
+                    or dataset
+                )
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "Sync: staged dataset definition repair failed for dataset id=%s",
+                    staged_dataset_id,
+                    exc_info=True,
+                )
 
         _assign_model_attr(dataset, "last_sync_status", "running")
         _assign_model_attr(dataset, "last_sync_rows", 0)
@@ -2698,6 +2891,11 @@ class DHIS2SyncService:
             else:
                 dx_ids.append(var.variable_id)
 
+        include_combo_dimensions = self._should_include_combo_dimensions(
+            dataset_config,
+            variables,
+        )
+
         all_rows: list[dict[str, Any]] = []
 
         # Chunk org units to avoid sending too many OUs in a single request.
@@ -2737,6 +2935,7 @@ class DHIS2SyncService:
                         org_units=ou_chunk,
                         variable_map=variable_map,
                         page_size=analytics_page_size,
+                        include_combo_dimensions=include_combo_dimensions,
                         job_id=job_id,
                     )
                     chunk_rows.extend(batch_rows)
@@ -2818,6 +3017,30 @@ class DHIS2SyncService:
         return max_level, allowed_levels
 
     @staticmethod
+    def _should_include_combo_dimensions(
+        dataset_config: dict[str, Any],
+        variables: list[DHIS2DatasetVariable],
+    ) -> bool:
+        explicit = dataset_config.get("preserve_category_dimensions")
+        if explicit is None:
+            explicit = dataset_config.get("include_disaggregation_dimension")
+        if explicit is not None:
+            return bool(explicit)
+
+        for variable in variables:
+            getter = getattr(variable, "get_extra_params", None)
+            extra_params = getter() if callable(getter) else {}
+            if not isinstance(extra_params, dict):
+                continue
+            disaggregation = str(extra_params.get("disaggregation") or "").strip().lower()
+            if disaggregation in {"all", "selected"}:
+                return True
+            selected_coc_uids = extra_params.get("selected_coc_uids")
+            if isinstance(selected_coc_uids, list) and selected_coc_uids:
+                return True
+        return False
+
+    @staticmethod
     def _resolve_org_units_for_instance(
         instance: DHIS2Instance,
         dataset_config: dict[str, Any],
@@ -2862,17 +3085,26 @@ class DHIS2SyncService:
             if unit not in set(user_scope_units)
         ]
         selected_detail_map: dict[str, dict[str, Any]] = {}
+        resolved_detail_map: dict[str, dict[str, Any]] = {}
         for item in selected_details:
             if not isinstance(item, dict):
                 continue
             selection_key = _config_value(item, "selection_key", "selectionKey", "id")
             if isinstance(selection_key, str) and selection_key:
                 selected_detail_map[selection_key] = item
+                resolved_item = _resolve_selected_detail_for_instance(item, instance.id)
+                if isinstance(resolved_item, dict):
+                    resolved_detail_map[selection_key] = resolved_item
+
+        scoped_detail_map = {
+            **selected_detail_map,
+            **resolved_detail_map,
+        }
 
         if org_unit_source_mode == _ORG_UNIT_SOURCE_MODE_PRIMARY:
             primary_units = [
                 str(_config_value(item, "source_org_unit_id", "sourceOrgUnitId", "id"))
-                for key, item in selected_detail_map.items()
+                for key, item in scoped_detail_map.items()
                 if key in concrete_units
                 and isinstance(
                     _config_value(item, "source_org_unit_id", "sourceOrgUnitId", "id"),
@@ -2885,7 +3117,7 @@ class DHIS2SyncService:
             if org_unit_scope != _ORG_UNIT_SCOPE_SELECTED:
                 primary_units = _prune_ancestor_org_units(
                     primary_units,
-                    selected_detail_map,
+                    scoped_detail_map,
                     prefer_roots=True,
                 )
             scoped_units = _expand_org_units_for_scope(
@@ -2899,7 +3131,7 @@ class DHIS2SyncService:
 
         allowed_units: list[str] = []
         for selection_key in concrete_units:
-            item = selected_detail_map.get(selection_key)
+            item = scoped_detail_map.get(selection_key)
             if not isinstance(item, dict):
                 continue
             source_org_unit_id = _config_value(
@@ -2911,12 +3143,8 @@ class DHIS2SyncService:
             if not isinstance(source_org_unit_id, str):
                 continue
 
-            source_instance_ids = _config_value(
-                item,
-                "source_instance_ids",
-                "sourceInstanceIds",
-            ) or []
-            if not isinstance(source_instance_ids, list) or not source_instance_ids:
+            source_instance_ids = _detail_instance_ids(item)
+            if not source_instance_ids:
                 allowed_units.append(source_org_unit_id)
                 continue
 
@@ -2927,17 +3155,17 @@ class DHIS2SyncService:
             allowed_units = [
                 str(
                     _config_value(
-                        selected_detail_map[key],
+                        scoped_detail_map[key],
                         "source_org_unit_id",
                         "sourceOrgUnitId",
                         "id",
                     )
                 )
                 for key in concrete_units
-                if isinstance(selected_detail_map.get(key), dict)
+                if isinstance(scoped_detail_map.get(key), dict)
                 and isinstance(
                     _config_value(
-                        selected_detail_map[key],
+                        scoped_detail_map[key],
                         "source_org_unit_id",
                         "sourceOrgUnitId",
                         "id",
@@ -2947,6 +3175,28 @@ class DHIS2SyncService:
             ]
             if not allowed_units:
                 allowed_units = [
+                    str(
+                        _config_value(
+                            selected_detail_map[key],
+                            "source_org_unit_id",
+                            "sourceOrgUnitId",
+                            "id",
+                        )
+                    )
+                    for key in concrete_units
+                    if isinstance(selected_detail_map.get(key), dict)
+                    and isinstance(
+                        _config_value(
+                            selected_detail_map[key],
+                            "source_org_unit_id",
+                            "sourceOrgUnitId",
+                            "id",
+                        ),
+                        str,
+                    )
+                ]
+            if not allowed_units and org_unit_source_mode != _ORG_UNIT_SOURCE_MODE_REPOSITORY:
+                allowed_units = [
                     key.split("::", 1)[1] if "::" in key else key
                     for key in concrete_units
                 ]
@@ -2955,7 +3205,7 @@ class DHIS2SyncService:
         if org_unit_scope != _ORG_UNIT_SCOPE_SELECTED:
             allowed_units = _prune_ancestor_org_units(
                 allowed_units,
-                selected_detail_map,
+                scoped_detail_map,
                 prefer_roots=True,
             )
         scoped_units = _expand_org_units_for_scope(
@@ -2975,6 +3225,7 @@ class DHIS2SyncService:
         org_units: list[str],
         page: int = 1,
         page_size: int = _ANALYTICS_PAGE_SIZE,
+        include_combo_dimensions: bool = False,
     ) -> dict[str, Any]:
         """Execute a single ``GET /api/analytics`` request against *instance*.
 
@@ -3019,6 +3270,13 @@ class DHIS2SyncService:
             ("page", str(page)),
             ("pageSize", str(page_size)),
         ]
+        if include_combo_dimensions:
+            params.extend(
+                [
+                    ("dimension", "co"),
+                    ("dimension", "ao"),
+                ]
+            )
 
         auth_headers = instance.get_auth_headers()
 
@@ -3159,7 +3417,7 @@ class DHIS2SyncService:
         ou_col = col_index.get("ou")
         value_col = col_index.get("value")
         co_col = col_index.get("co")
-        aoc_col = col_index.get("aoc")
+        aoc_col = col_index.get("aoc", col_index.get("ao"))
 
         result: list[dict[str, Any]] = []
 
@@ -3217,6 +3475,8 @@ class DHIS2SyncService:
             co_name = co_meta.get("name")
 
             aoc_uid = _get(aoc_col) or ""
+            aoc_meta = meta_items.get(aoc_uid or "", {})
+            aoc_name = aoc_meta.get("name")
 
             result.append(
                 {
@@ -3233,6 +3493,7 @@ class DHIS2SyncService:
                     "co_uid": co_uid,
                     "co_name": co_name,
                     "aoc_uid": aoc_uid,
+                    "aoc_name": aoc_name,
                 }
             )
 
@@ -3623,6 +3884,48 @@ def schedule_staged_dataset_sync(
         "task_id": None,
         "status": "running",
     }
+
+
+def schedule_staged_dataset_sync_after_commit(
+    staged_dataset_id: int,
+    *,
+    job_type: str = "manual",
+    incremental: bool = False,
+    prefer_immediate: bool = False,
+) -> None:
+    session = db.session()
+
+    def _fire() -> None:
+        schedule_staged_dataset_sync(
+            staged_dataset_id,
+            job_type=job_type,
+            incremental=incremental,
+            prefer_immediate=prefer_immediate,
+        )
+
+    def _remove_listener(event_name: str, callback: Any) -> None:
+        try:
+            event.remove(session, event_name, callback)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _after_commit(_session: Any) -> None:
+        try:
+            _fire()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Deferred staged dataset sync scheduling failed for dataset id=%s",
+                staged_dataset_id,
+                exc_info=True,
+            )
+        finally:
+            _remove_listener("after_rollback", _after_rollback)
+
+    def _after_rollback(_session: Any) -> None:
+        _remove_listener("after_commit", _after_commit)
+
+    event.listen(session, "after_commit", _after_commit, once=True)
+    event.listen(session, "after_rollback", _after_rollback, once=True)
 
 
 def _run_sync_job_thread(

@@ -40,7 +40,10 @@ import {
   Tooltip,
   List,
   Loading,
+  Modal,
+  Tag,
 } from '@superset-ui/core/components';
+import Tree, { TreeDataNode } from '@superset-ui/core/components/Tree';
 import {
   ModifiedInfo,
   ListView,
@@ -58,7 +61,17 @@ import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import type { MenuObjectProps } from 'src/types/bootstrapTypes';
 import DatabaseModal from 'src/features/databases/DatabaseModal';
 import UploadDataModal from 'src/features/databases/UploadDataModel';
-import { DatabaseObject } from 'src/features/databases/types';
+import {
+  DatabaseObject,
+  DatabaseRepositoryOrgUnitConfig,
+  DatabaseRepositoryEnabledDimensions,
+  RepositoryDataScope,
+  RepositoryLevelMappingRow,
+  RepositoryOrgUnitRecord,
+  RepositoryReportingUnitApproach,
+  RepositorySeparateInstanceConfig,
+} from 'src/features/databases/types';
+import type { DHIS2Instance } from 'src/features/dhis2/types';
 import { QueryObjectColumns } from 'src/views/CRUD/types';
 import { WIDER_DROPDOWN_WIDTH } from 'src/components/ListView/utils';
 import { ModalTitleWithIcon } from 'src/components/ModalTitleWithIcon';
@@ -97,12 +110,541 @@ const Actions = styled.div`
   }
 `;
 
+const RepositoryViewerBody = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+`;
+
+const RepositoryViewerSection = styled.section`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+`;
+
+const RepositoryViewerCard = styled.div`
+  ${({ theme }) => `
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.sizeUnit * 1.5}px;
+    padding: ${theme.sizeUnit * 2}px;
+    border: 1px solid ${theme.colorBorder};
+    border-radius: ${theme.borderRadius * 2}px;
+    background: ${theme.colorBgContainer};
+  `}
+`;
+
+const RepositoryViewerGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+
+  @media (max-width: 960px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const RepositoryViewerItem = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+`;
+
+const RepositoryViewerTagRow = styled.div`
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const RepositoryViewerList = styled.div`
+  ${({ theme }) => `
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.sizeUnit}px;
+  `}
+`;
+
+const RepositoryViewerListItem = styled.div`
+  ${({ theme }) => `
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.sizeUnit * 0.75}px;
+    padding: ${theme.sizeUnit * 1.5}px;
+    border: 1px solid ${theme.colorBorderSecondary};
+    border-radius: ${theme.borderRadius * 1.5}px;
+    background: ${theme.colorFillAlter};
+  `}
+`;
+
+const RepositoryViewerSubtleText = styled(Typography.Text)`
+  display: block;
+`;
+
+const RepositoryHierarchyList = styled.div`
+  ${({ theme }) => `
+    border: 1px solid ${theme.colorBorder};
+    border-radius: ${theme.borderRadius * 2}px;
+    background: ${theme.colorBgContainer};
+    padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 1.5}px;
+    max-height: 520px;
+    overflow: auto;
+  `}
+`;
+
+const RepositoryHierarchyTree = styled(Tree)`
+  ${({ theme }) => `
+    background: transparent;
+
+    .ant-tree-list-holder-inner {
+      gap: 0;
+    }
+
+    .ant-tree-switcher {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      align-self: stretch;
+      width: ${theme.sizeUnit * 3}px;
+      min-width: ${theme.sizeUnit * 3}px;
+      color: ${theme.colorTextSecondary};
+    }
+
+    .ant-tree-indent-unit {
+      width: ${theme.sizeUnit * 3}px;
+    }
+
+    .ant-tree-node-content-wrapper {
+      flex: 1;
+      width: calc(100% - ${theme.sizeUnit * 4}px);
+      min-height: auto;
+      padding: 0;
+      border-radius: ${theme.borderRadius * 1.5}px;
+    }
+
+    .ant-tree-node-content-wrapper:hover,
+    .ant-tree-node-content-wrapper.ant-tree-node-selected {
+      background: ${theme.colorFillTertiary};
+    }
+
+    .ant-tree-treenode {
+      align-items: flex-start;
+      width: 100%;
+      padding: 0;
+    }
+
+    .ant-tree-title {
+      display: block;
+      width: 100%;
+    }
+
+    .ant-tree-show-line .ant-tree-indent-unit::before {
+      border-inline-end: 1px solid ${theme.colorBorderSecondary};
+    }
+
+    .ant-tree-switcher-line-icon {
+      color: ${theme.colorBorder};
+    }
+  `}
+`;
+
+const RepositoryTreeNode = styled.div`
+  ${({ theme }) => `
+    display: flex;
+    align-items: flex-start;
+    gap: ${theme.sizeUnit * 1.5}px;
+    width: 100%;
+    padding: ${theme.sizeUnit * 1.25}px ${theme.sizeUnit * 1.5}px;
+    border-radius: ${theme.borderRadius * 1.5}px;
+    border: 1px solid transparent;
+    background: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+
+    .ant-tree-node-content-wrapper:hover &,
+    .ant-tree-node-content-wrapper.ant-tree-node-selected & {
+      background: ${theme.colorBgElevated};
+      border-color: ${theme.colorBorderSecondary};
+    }
+  `}
+`;
+
+const RepositoryTreeNodeHeader = styled.div`
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+`;
+
+const RepositoryTreeNodeMeta = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+`;
+
+const RepositoryTreeNodeName = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const RepositoryTreeNodeChips = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+`;
+
+const RepositoryTreeCount = styled.span`
+  ${({ theme }) => `
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: ${theme.sizeUnit * 3}px;
+    padding: 0 ${theme.sizeUnit}px;
+    height: ${theme.sizeUnit * 3}px;
+    border-radius: 999px;
+    background: ${theme.colorPrimaryBg};
+    color: ${theme.colorPrimary};
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  `}
+`;
+
 function BooleanDisplay({ value }: { value: Boolean }) {
   return value ? (
     <Icons.CheckOutlined iconSize="s" />
   ) : (
     <Icons.CloseOutlined iconSize="s" />
   );
+}
+
+function getEnabledDimensions(
+  database: DatabaseObject | null,
+): DatabaseRepositoryEnabledDimensions | null {
+  const enabledDimensions =
+    database?.repository_org_unit_config &&
+    typeof database.repository_org_unit_config === 'object'
+      ? database.repository_org_unit_config.enabled_dimensions
+      : null;
+  return enabledDimensions && typeof enabledDimensions === 'object'
+    ? enabledDimensions
+    : null;
+}
+
+function getRepositoryConfig(
+  database: DatabaseObject | null,
+): DatabaseRepositoryOrgUnitConfig | null {
+  const repositoryConfig =
+    database?.repository_org_unit_config &&
+    typeof database.repository_org_unit_config === 'object'
+      ? database.repository_org_unit_config
+      : null;
+  return repositoryConfig && typeof repositoryConfig === 'object'
+    ? repositoryConfig
+    : null;
+}
+
+function sortRepositoryOrgUnits(
+  repositoryOrgUnits: RepositoryOrgUnitRecord[] = [],
+): RepositoryOrgUnitRecord[] {
+  return repositoryOrgUnits.slice().sort((left, right) => {
+    const leftPath = left.hierarchy_path || left.repository_key;
+    const rightPath = right.hierarchy_path || right.repository_key;
+    if (leftPath !== rightPath) {
+      return leftPath.localeCompare(rightPath);
+    }
+    return left.display_name.localeCompare(right.display_name);
+  });
+}
+
+function getRepositoryHierarchyParentKey(
+  record: RepositoryOrgUnitRecord,
+  knownKeys: Set<string>,
+): string | null {
+  if (
+    record.parent_repository_key &&
+    knownKeys.has(record.parent_repository_key)
+  ) {
+    return record.parent_repository_key;
+  }
+
+  const hierarchyPath = record.hierarchy_path || record.repository_key;
+  if (!hierarchyPath.includes('/')) {
+    return null;
+  }
+
+  const fallbackParentKey = hierarchyPath.split('/').slice(0, -1).join('/');
+  return knownKeys.has(fallbackParentKey) ? fallbackParentKey : null;
+}
+
+function buildRepositoryTreeTitle(
+  record: RepositoryOrgUnitRecord,
+  childCount: number,
+) {
+  return (
+    <RepositoryTreeNode>
+      <RepositoryTreeNodeHeader>
+        <RepositoryTreeNodeMeta>
+          <RepositoryTreeNodeName>
+            <Icons.ApartmentOutlined iconSize="s" />
+            <Typography.Text strong>{record.display_name}</Typography.Text>
+            {childCount > 0 ? (
+              <RepositoryTreeCount title={t('%s direct children', childCount)}>
+                #{childCount}
+              </RepositoryTreeCount>
+            ) : null}
+          </RepositoryTreeNodeName>
+          <RepositoryTreeNodeChips>
+            {record.level != null ? (
+              <Tag color="default">{t('Level %s', record.level)}</Tag>
+            ) : null}
+            {record.source_lineage_label ? (
+              <Tag color="purple">{record.source_lineage_label}</Tag>
+            ) : null}
+            {record.is_conflicted ? (
+              <Tag color="red">{t('Conflict')}</Tag>
+            ) : null}
+            {record.is_unmatched ? (
+              <Tag color="gold">{t('Unmatched')}</Tag>
+            ) : null}
+          </RepositoryTreeNodeChips>
+          <Typography.Text type="secondary">
+            {record.hierarchy_path || record.repository_key}
+          </Typography.Text>
+          {record.lineage?.length ? (
+            <Typography.Text type="secondary">
+              {t(
+                'Source references: %s',
+                record.lineage
+                  .map(
+                    lineage =>
+                      lineage.source_org_unit_name || lineage.source_org_unit_uid,
+                  )
+                  .join(', '),
+              )}
+            </Typography.Text>
+          ) : null}
+        </RepositoryTreeNodeMeta>
+      </RepositoryTreeNodeHeader>
+    </RepositoryTreeNode>
+  );
+}
+
+function buildRepositoryHierarchyTree(
+  repositoryOrgUnits: RepositoryOrgUnitRecord[] = [],
+): TreeDataNode[] {
+  const sortedRecords = sortRepositoryOrgUnits(repositoryOrgUnits);
+  const knownKeys = new Set(sortedRecords.map(record => record.repository_key));
+  const nodeMap = new Map<
+    string,
+    TreeDataNode & { children: TreeDataNode[]; record: RepositoryOrgUnitRecord }
+  >();
+  const roots: Array<
+    TreeDataNode & { children: TreeDataNode[]; record: RepositoryOrgUnitRecord }
+  > = [];
+
+  sortedRecords.forEach(record => {
+    nodeMap.set(record.repository_key, {
+      key: record.repository_key,
+      title: null,
+      children: [],
+      selectable: false,
+      record,
+    });
+  });
+
+  sortedRecords.forEach(record => {
+    const node = nodeMap.get(record.repository_key);
+    if (!node) {
+      return;
+    }
+
+    const parentKey = getRepositoryHierarchyParentKey(record, knownKeys);
+    if (parentKey) {
+      const parentNode = nodeMap.get(parentKey);
+      if (parentNode) {
+        parentNode.children.push(node);
+        return;
+      }
+    }
+
+    roots.push(node);
+  });
+
+  const finalizeNode = (
+    node: TreeDataNode & { children: TreeDataNode[]; record: RepositoryOrgUnitRecord },
+  ): TreeDataNode => ({
+    ...node,
+    title: buildRepositoryTreeTitle(node.record, node.children.length),
+    children: node.children.map(child =>
+      finalizeNode(
+        child as TreeDataNode & {
+          children: TreeDataNode[];
+          record: RepositoryOrgUnitRecord;
+        },
+      ),
+    ),
+  });
+
+  return roots.map(finalizeNode);
+}
+
+function formatRepositoryStatusLabel(status?: string | null): string {
+  switch (status) {
+    case 'queued':
+      return t('Queued');
+    case 'running':
+      return t('Finalizing');
+    case 'ready':
+      return t('Ready');
+    case 'failed':
+      return t('Failed');
+    default:
+      return t('Not configured');
+  }
+}
+
+function formatRepositoryApproachLabel(
+  approach?: RepositoryReportingUnitApproach | null,
+): string {
+  switch (approach) {
+    case 'primary_instance':
+      return t('Use a primary instance');
+    case 'map_merge':
+      return t('Map and merge reporting units');
+    case 'auto_merge':
+      return t('Auto merge reporting units');
+    case 'separate':
+      return t('Keep reporting units separate');
+    default:
+      return t('Not configured');
+  }
+}
+
+function formatRepositoryDataScopeLabel(
+  scope?: RepositoryDataScope | null,
+): string {
+  switch (scope) {
+    case 'children':
+      return t('Include children');
+    case 'grandchildren':
+      return t('Include grandchildren');
+    case 'ancestors':
+      return t('Include ancestors');
+    case 'all_levels':
+      return t('All levels');
+    case 'selected':
+      return t('Selected units only');
+    default:
+      return t('Not configured');
+  }
+}
+
+function formatAutoMergeFallbackLabel(
+  value?: 'preserve_unmatched' | 'drop_unmatched' | null,
+): string {
+  switch (value) {
+    case 'preserve_unmatched':
+      return t('Preserve unmatched units');
+    case 'drop_unmatched':
+      return t('Drop unmatched units');
+    default:
+      return t('Not configured');
+  }
+}
+
+function formatAutoMergeConflictLabel(
+  value?: 'preserve_for_review' | 'drop' | null,
+): string {
+  switch (value) {
+    case 'preserve_for_review':
+      return t('Preserve for review');
+    case 'drop':
+      return t('Drop unresolved conflicts');
+    default:
+      return t('Not configured');
+  }
+}
+
+function formatRepositoryLevelLabel(
+  level: number,
+  repositoryConfig: DatabaseRepositoryOrgUnitConfig | null,
+  repositoryOrgUnits: RepositoryOrgUnitRecord[],
+): string {
+  const mappedRow = repositoryConfig?.level_mapping?.rows?.find(
+    row => row.merged_level === level,
+  );
+  if (mappedRow?.label?.trim()) {
+    return `${mappedRow.label.trim()} (${t('Repository level %s', level)})`;
+  }
+  const enabledLevel = repositoryConfig?.enabled_dimensions?.levels?.find(
+    item => item.repository_level === level,
+  );
+  if (enabledLevel?.label?.trim()) {
+    return `${enabledLevel.label.trim()} (${t('Repository level %s', level)})`;
+  }
+  const repositoryUnit = repositoryOrgUnits.find(
+    unit => unit.level === level && unit.provenance?.repositoryLevelName,
+  );
+  if (
+    typeof repositoryUnit?.provenance?.repositoryLevelName === 'string' &&
+    repositoryUnit.provenance.repositoryLevelName.trim()
+  ) {
+    return `${repositoryUnit.provenance.repositoryLevelName.trim()} (${t(
+      'Repository level %s',
+      level,
+    )})`;
+  }
+  return t('Repository level %s', level);
+}
+
+function formatLowestDataLevelLabel(
+  level: number | null | undefined,
+  repositoryConfig: DatabaseRepositoryOrgUnitConfig | null,
+  repositoryOrgUnits: RepositoryOrgUnitRecord[],
+  approach?: RepositoryReportingUnitApproach | null,
+): string {
+  if (level == null) {
+    return approach === 'separate'
+      ? t('Configured per instance')
+      : t('All available levels');
+  }
+  return formatRepositoryLevelLabel(level, repositoryConfig, repositoryOrgUnits);
+}
+
+function getInstanceName(
+  instanceId: number | null | undefined,
+  instanceMap: Map<number, DHIS2Instance>,
+): string {
+  if (instanceId == null) {
+    return t('Not configured');
+  }
+  return (
+    instanceMap.get(instanceId)?.name ||
+    t('Configured connection %s', instanceId)
+  );
+}
+
+function getSelectedOrgUnitLabels(
+  selectedOrgUnitDetails: Array<{ displayName?: string; id?: string }> = [],
+  selectedOrgUnits: string[] = [],
+): string[] {
+  const detailLabels = selectedOrgUnitDetails
+    .map(detail => detail.displayName?.trim() || detail.id?.trim() || '')
+    .filter(Boolean);
+  if (detailLabels.length > 0) {
+    return Array.from(new Set(detailLabels));
+  }
+  return Array.from(new Set(selectedOrgUnits.filter(Boolean)));
+}
+
+function formatInstanceLevelLabel(level: number | null): string {
+  return level == null ? t('Not mapped') : t('Level %s', level);
 }
 
 function DatabaseList({
@@ -145,6 +687,17 @@ function DatabaseList({
   const [currentDatabase, setCurrentDatabase] = useState<DatabaseObject | null>(
     null,
   );
+  const [repositoryViewerOpen, setRepositoryViewerOpen] =
+    useState<boolean>(false);
+  const [repositoryViewerLoading, setRepositoryViewerLoading] =
+    useState<boolean>(false);
+  const [repositoryViewerDatabase, setRepositoryViewerDatabase] =
+    useState<DatabaseObject | null>(null);
+  const [repositoryViewerInstances, setRepositoryViewerInstances] = useState<
+    DHIS2Instance[]
+  >([]);
+  const [repositoryViewerExpandedKeys, setRepositoryViewerExpandedKeys] =
+    useState<string[]>([]);
   const [csvUploadDataModalOpen, setCsvUploadDataModalOpen] =
     useState<boolean>(false);
   const [excelUploadDataModalOpen, setExcelUploadDataModalOpen] =
@@ -228,10 +781,62 @@ function DatabaseList({
     setDatabaseModalOpen(modalOpen);
   }
 
+  function handleRepositoryViewerClose() {
+    setRepositoryViewerOpen(false);
+    setRepositoryViewerLoading(false);
+    setRepositoryViewerDatabase(null);
+    setRepositoryViewerInstances([]);
+    setRepositoryViewerExpandedKeys([]);
+  }
+
+  function handleRepositoryViewerOpen(database: DatabaseObject) {
+    setRepositoryViewerOpen(true);
+    setRepositoryViewerLoading(true);
+    setRepositoryViewerDatabase(null);
+    setRepositoryViewerInstances([]);
+    Promise.allSettled([
+      SupersetClient.get({
+        endpoint: `/api/v1/database/${database.id}`,
+      }),
+      SupersetClient.get({
+        endpoint: `/api/v1/dhis2/instances/?database_id=${database.id}&include_inactive=true`,
+      }),
+    ]).then(results => {
+      const [databaseResult, instancesResult] = results;
+
+      if (databaseResult.status === 'fulfilled') {
+        setRepositoryViewerDatabase(
+          (databaseResult.value.json as { result?: DatabaseObject }).result ||
+            null,
+        );
+      } else {
+        createErrorHandler(errMsg => {
+          addDangerToast(
+            t(
+              'An error occurred while loading repository organisation units for %s: %s',
+              database.database_name,
+              errMsg,
+            ),
+          );
+        })(databaseResult.reason);
+      }
+
+      if (instancesResult.status === 'fulfilled') {
+        setRepositoryViewerInstances(
+          ((instancesResult.value.json as { result?: DHIS2Instance[] }).result ||
+            []) as DHIS2Instance[],
+        );
+      }
+
+      setRepositoryViewerLoading(false);
+    });
+  }
+
   const canCreate = hasPerm('can_write');
   const canEdit = hasPerm('can_write');
   const canDelete = hasPerm('can_write');
   const canExport = hasPerm('can_export');
+  const canViewRepository = hasPerm('can_read');
 
   const { canUploadCSV, canUploadColumnar, canUploadExcel } = uploadUserPerms(
     roles,
@@ -485,7 +1090,13 @@ function DatabaseList({
           const handleDelete = () => openDatabaseDeleteModal(original);
           const handleExport = () => handleDatabaseExport(original);
           const handleSync = () => handleDatabasePermSync(original);
-          if (!canEdit && !canDelete && !canExport) {
+          const handleViewRepository = () => handleRepositoryViewerOpen(original);
+          if (
+            !canEdit &&
+            !canDelete &&
+            !canExport &&
+            !(canViewRepository && original.backend === 'dhis2')
+          ) {
             return null;
           }
           return (
@@ -520,6 +1131,23 @@ function DatabaseList({
                     onClick={handleExport}
                   >
                     <Icons.UploadOutlined iconSize="l" />
+                  </span>
+                </Tooltip>
+              )}
+              {canViewRepository && original.backend === 'dhis2' && (
+                <Tooltip
+                  id="view-repository-action-tooltip"
+                  title={t('View repository organisation units')}
+                  placement="bottom"
+                >
+                  <span
+                    role="button"
+                    data-test="database-view-repository"
+                    tabIndex={0}
+                    className="action-button"
+                    onClick={handleViewRepository}
+                  >
+                    <Icons.ApartmentOutlined iconSize="l" />
                   </span>
                 </Tooltip>
               )}
@@ -562,7 +1190,7 @@ function DatabaseList({
         },
         Header: t('Actions'),
         id: 'actions',
-        hidden: !canEdit && !canDelete,
+        hidden: !canEdit && !canDelete && !canViewRepository,
         disableSortBy: true,
       },
       {
@@ -571,7 +1199,7 @@ function DatabaseList({
         id: QueryObjectColumns.ChangedBy,
       },
     ],
-    [canDelete, canEdit, canExport],
+    [canDelete, canEdit, canExport, canViewRepository],
   );
 
   const filters: ListViewFilters = useMemo(
@@ -639,6 +1267,103 @@ function DatabaseList({
     ],
     [],
   );
+  const repositoryViewerEnabledDimensions = useMemo(
+    () => getEnabledDimensions(repositoryViewerDatabase),
+    [repositoryViewerDatabase],
+  );
+  const repositoryViewerConfig = useMemo(
+    () => getRepositoryConfig(repositoryViewerDatabase),
+    [repositoryViewerDatabase],
+  );
+  const repositoryViewerOrgUnits = useMemo(
+    () => sortRepositoryOrgUnits(repositoryViewerDatabase?.repository_org_units || []),
+    [repositoryViewerDatabase],
+  );
+  const repositoryViewerTreeData = useMemo(
+    () =>
+      buildRepositoryHierarchyTree(
+        repositoryViewerDatabase?.repository_org_units || [],
+      ),
+    [repositoryViewerDatabase],
+  );
+  const repositoryViewerRootKeys = useMemo(
+    () => repositoryViewerTreeData.map(node => String(node.key)),
+    [repositoryViewerTreeData],
+  );
+  const repositoryViewerApproach =
+    repositoryViewerDatabase?.repository_org_unit_summary?.approach ||
+    repositoryViewerDatabase?.repository_reporting_unit_approach ||
+    null;
+  const repositoryViewerUnitCount =
+    repositoryViewerDatabase?.repository_org_unit_summary
+      ?.total_repository_org_units ||
+    repositoryViewerDatabase?.repository_org_units?.length ||
+    0;
+  const repositoryViewerStatus =
+    repositoryViewerDatabase?.repository_org_unit_summary?.status ||
+    repositoryViewerDatabase?.repository_org_unit_status ||
+    null;
+  const repositoryViewerStatusMessage =
+    repositoryViewerDatabase?.repository_org_unit_summary?.status_message ||
+    repositoryViewerDatabase?.repository_org_unit_status_message ||
+    null;
+  const repositoryViewerInstanceMap = useMemo(
+    () =>
+      new Map(repositoryViewerInstances.map(instance => [instance.id, instance])),
+    [repositoryViewerInstances],
+  );
+  const repositoryViewerActiveInstanceIds = useMemo(() => {
+    const configuredIds =
+      repositoryViewerConfig?.filters?.active_instance_ids || [];
+    if (Array.isArray(configuredIds) && configuredIds.length > 0) {
+      return configuredIds
+        .map(value => Number(value))
+        .filter(value => Number.isFinite(value));
+    }
+    return repositoryViewerInstances
+      .filter(instance => instance.is_active)
+      .map(instance => instance.id);
+  }, [repositoryViewerConfig, repositoryViewerInstances]);
+  const repositoryViewerSelectedOrgUnitLabels = useMemo(
+    () =>
+      getSelectedOrgUnitLabels(
+        repositoryViewerConfig?.selected_org_unit_details || [],
+        repositoryViewerConfig?.selected_org_units || [],
+      ),
+    [repositoryViewerConfig],
+  );
+  const repositoryViewerLevelMappingRows = useMemo(
+    () => repositoryViewerConfig?.level_mapping?.rows || [],
+    [repositoryViewerConfig],
+  );
+  const repositoryViewerSeparateConfigs = useMemo(
+    () => repositoryViewerConfig?.separate_instance_configs || [],
+    [repositoryViewerConfig],
+  );
+  const repositoryViewerLowestLevel =
+    repositoryViewerDatabase?.repository_org_unit_summary
+      ?.lowest_data_level_to_use ??
+    repositoryViewerDatabase?.lowest_data_level_to_use ??
+    null;
+  const repositoryViewerDataScope =
+    repositoryViewerDatabase?.repository_org_unit_summary?.data_scope ||
+    repositoryViewerDatabase?.repository_data_scope ||
+    null;
+  const repositoryViewerPrimaryInstanceId =
+    repositoryViewerDatabase?.repository_org_unit_summary?.primary_instance_id ??
+    repositoryViewerDatabase?.primary_instance_id ??
+    null;
+  const repositoryViewerLastFinalizedAt =
+    repositoryViewerDatabase?.repository_org_unit_summary?.last_finalized_at ||
+    repositoryViewerDatabase?.repository_org_unit_last_finalized_at ||
+    null;
+
+  useEffect(() => {
+    if (!repositoryViewerOpen) {
+      return;
+    }
+    setRepositoryViewerExpandedKeys(repositoryViewerRootKeys);
+  }, [repositoryViewerOpen, repositoryViewerRootKeys]);
 
   return (
     <>
@@ -651,6 +1376,405 @@ function DatabaseList({
           refreshData();
         }}
       />
+      <Modal
+        open={repositoryViewerOpen}
+        onCancel={handleRepositoryViewerClose}
+        onOk={handleRepositoryViewerClose}
+        okText={t('Close')}
+        cancelButtonProps={{ style: { display: 'none' } }}
+        width={900}
+        title={
+          <ModalTitleWithIcon
+            title={t('Repository Organisation Units')}
+            subtitle={repositoryViewerDatabase?.database_name || t('Loading...')}
+          />
+        }
+      >
+        {repositoryViewerLoading ? (
+          <Loading position="normal" />
+        ) : (
+          <RepositoryViewerBody>
+            <RepositoryViewerSection>
+              <RepositoryViewerCard>
+                <Typography.Text strong>
+                  {t('Repository configuration summary')}
+                </Typography.Text>
+                <RepositoryViewerGrid>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Approach')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {formatRepositoryApproachLabel(repositoryViewerApproach)}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Total repository units')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {repositoryViewerUnitCount}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Primary DHIS2 instance')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {repositoryViewerApproach === 'primary_instance'
+                        ? getInstanceName(
+                            repositoryViewerPrimaryInstanceId,
+                            repositoryViewerInstanceMap,
+                          )
+                        : t('Not applicable')}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Lowest data level to use')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {formatLowestDataLevelLabel(
+                        repositoryViewerLowestLevel,
+                        repositoryViewerConfig,
+                        repositoryViewerOrgUnits,
+                        repositoryViewerApproach,
+                      )}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Selected data scope')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {repositoryViewerApproach === 'separate'
+                        ? t('Configured per instance')
+                        : repositoryViewerApproach === 'map_merge'
+                          ? t('Automatic from mapped hierarchy')
+                          : formatRepositoryDataScopeLabel(
+                              repositoryViewerDataScope,
+                            )}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Finalization status')}
+                    </Typography.Text>
+                    <div>
+                      <Tag
+                        color={
+                          repositoryViewerStatus === 'failed'
+                            ? 'red'
+                            : repositoryViewerStatus === 'ready'
+                              ? 'green'
+                              : repositoryViewerStatus === 'queued' ||
+                                  repositoryViewerStatus === 'running'
+                                ? 'blue'
+                                : 'default'
+                        }
+                      >
+                        {formatRepositoryStatusLabel(repositoryViewerStatus)}
+                      </Tag>
+                    </div>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Finalization message')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {repositoryViewerStatusMessage || t('None')}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Last finalized')}
+                    </Typography.Text>
+                    <Typography.Text strong>
+                      {repositoryViewerLastFinalizedAt || t('Not available')}
+                    </Typography.Text>
+                  </RepositoryViewerItem>
+                </RepositoryViewerGrid>
+              </RepositoryViewerCard>
+            </RepositoryViewerSection>
+
+            <RepositoryViewerSection>
+              <RepositoryViewerCard>
+                <Typography.Text strong>
+                  {t('Step 4 configuration applied')}
+                </Typography.Text>
+                <RepositoryViewerGrid>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Selected child instances')}
+                    </Typography.Text>
+                    <RepositoryViewerTagRow>
+                      {repositoryViewerActiveInstanceIds.length > 0 ? (
+                        repositoryViewerActiveInstanceIds.map(instanceId => (
+                          <Tag key={instanceId} color="default">
+                            {getInstanceName(
+                              instanceId,
+                              repositoryViewerInstanceMap,
+                            )}
+                          </Tag>
+                        ))
+                      ) : (
+                        <Typography.Text type="secondary">
+                          {t('None saved')}
+                        </Typography.Text>
+                      )}
+                    </RepositoryViewerTagRow>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Selected repository roots')}
+                    </Typography.Text>
+                    <RepositoryViewerTagRow>
+                      {repositoryViewerSelectedOrgUnitLabels.length > 0 ? (
+                        repositoryViewerSelectedOrgUnitLabels.map(label => (
+                          <Tag key={label} color="processing">
+                            {label}
+                          </Tag>
+                        ))
+                      ) : (
+                        <Typography.Text type="secondary">
+                          {t('None saved')}
+                        </Typography.Text>
+                      )}
+                    </RepositoryViewerTagRow>
+                  </RepositoryViewerItem>
+                </RepositoryViewerGrid>
+
+                {repositoryViewerLevelMappingRows.length > 0 ? (
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Mapped repository levels')}
+                    </Typography.Text>
+                    <RepositoryViewerList>
+                      {repositoryViewerLevelMappingRows.map(
+                        (row: RepositoryLevelMappingRow) => (
+                          <RepositoryViewerListItem
+                            key={`${row.merged_level}-${row.label}`}
+                          >
+                            <Typography.Text strong>
+                              {row.label || t('Repository level %s', row.merged_level)}
+                            </Typography.Text>
+                            <RepositoryViewerSubtleText type="secondary">
+                              {t('Repository level %s', row.merged_level)}
+                            </RepositoryViewerSubtleText>
+                            <RepositoryViewerTagRow>
+                              {Object.entries(row.instance_levels || {}).map(
+                                ([instanceId, sourceLevel]) => (
+                                  <Tag
+                                    key={`${row.merged_level}-${instanceId}`}
+                                    color="default"
+                                  >
+                                    {`${getInstanceName(
+                                      Number(instanceId),
+                                      repositoryViewerInstanceMap,
+                                    )}: ${formatInstanceLevelLabel(
+                                      sourceLevel,
+                                    )}`}
+                                  </Tag>
+                                ),
+                              )}
+                            </RepositoryViewerTagRow>
+                          </RepositoryViewerListItem>
+                        ),
+                      )}
+                    </RepositoryViewerList>
+                  </RepositoryViewerItem>
+                ) : null}
+
+                {repositoryViewerApproach === 'auto_merge' ? (
+                  <RepositoryViewerGrid>
+                    <RepositoryViewerItem>
+                      <Typography.Text type="secondary">
+                        {t('Fallback behavior for unmatched units')}
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {formatAutoMergeFallbackLabel(
+                          repositoryViewerConfig?.auto_merge?.fallback_behavior ||
+                            null,
+                        )}
+                      </Typography.Text>
+                    </RepositoryViewerItem>
+                    <RepositoryViewerItem>
+                      <Typography.Text type="secondary">
+                        {t('Fallback behavior for unresolved conflicts')}
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {formatAutoMergeConflictLabel(
+                          repositoryViewerConfig?.auto_merge
+                            ?.unresolved_conflicts || null,
+                        )}
+                      </Typography.Text>
+                    </RepositoryViewerItem>
+                  </RepositoryViewerGrid>
+                ) : null}
+
+                {repositoryViewerApproach === 'separate' &&
+                repositoryViewerSeparateConfigs.length > 0 ? (
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Per-instance repository settings')}
+                    </Typography.Text>
+                    <RepositoryViewerList>
+                      {repositoryViewerSeparateConfigs.map(
+                        (config: RepositorySeparateInstanceConfig) => (
+                          <RepositoryViewerListItem key={config.instance_id}>
+                            <Typography.Text strong>
+                              {getInstanceName(
+                                config.instance_id,
+                                repositoryViewerInstanceMap,
+                              )}
+                            </Typography.Text>
+                            <RepositoryViewerSubtleText type="secondary">
+                              {`${t('Data scope')}: ${formatRepositoryDataScopeLabel(
+                                config.data_scope,
+                              )}`}
+                            </RepositoryViewerSubtleText>
+                            <RepositoryViewerSubtleText type="secondary">
+                              {`${t('Lowest data level to use')}: ${formatLowestDataLevelLabel(
+                                config.lowest_data_level_to_use,
+                                repositoryViewerConfig,
+                                repositoryViewerOrgUnits,
+                                repositoryViewerApproach,
+                              )}`}
+                            </RepositoryViewerSubtleText>
+                            <RepositoryViewerTagRow>
+                              {getSelectedOrgUnitLabels(
+                                config.selected_org_unit_details || [],
+                                config.selected_org_units || [],
+                              ).map(label => (
+                                <Tag key={`${config.instance_id}-${label}`}>
+                                  {label}
+                                </Tag>
+                              ))}
+                            </RepositoryViewerTagRow>
+                          </RepositoryViewerListItem>
+                        ),
+                      )}
+                    </RepositoryViewerList>
+                  </RepositoryViewerItem>
+                ) : null}
+              </RepositoryViewerCard>
+            </RepositoryViewerSection>
+
+            <RepositoryViewerSection>
+              <RepositoryViewerCard>
+                <Typography.Text strong>
+                  {t('Enabled analysis dimensions')}
+                </Typography.Text>
+                <RepositoryViewerList>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Levels')}
+                    </Typography.Text>
+                    <RepositoryViewerTagRow>
+                      {(repositoryViewerEnabledDimensions?.levels || []).length >
+                      0 ? (
+                        repositoryViewerEnabledDimensions?.levels?.map(item => (
+                          <Tag key={item.key} color="blue">
+                            {item.label}
+                          </Tag>
+                        ))
+                      ) : (
+                        <Typography.Text type="secondary">
+                          {t('None enabled')}
+                        </Typography.Text>
+                      )}
+                    </RepositoryViewerTagRow>
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Group sets')}
+                    </Typography.Text>
+                    {(repositoryViewerEnabledDimensions?.group_sets || []).length >
+                    0 ? (
+                      <RepositoryViewerList>
+                        {repositoryViewerEnabledDimensions?.group_sets?.map(item => (
+                          <RepositoryViewerListItem key={item.key}>
+                            <Typography.Text strong>{item.label}</Typography.Text>
+                            <RepositoryViewerSubtleText type="secondary">
+                              {item.member_group_labels?.length
+                                ? t(
+                                    'Member groups: %s',
+                                    item.member_group_labels.join(', '),
+                                  )
+                                : t('No saved member groups')}
+                            </RepositoryViewerSubtleText>
+                          </RepositoryViewerListItem>
+                        ))}
+                      </RepositoryViewerList>
+                    ) : (
+                      <Typography.Text type="secondary">
+                        {t('None enabled')}
+                      </Typography.Text>
+                    )}
+                  </RepositoryViewerItem>
+                  <RepositoryViewerItem>
+                    <Typography.Text type="secondary">
+                      {t('Groups')}
+                    </Typography.Text>
+                    <RepositoryViewerTagRow>
+                      {(repositoryViewerEnabledDimensions?.groups || []).length >
+                      0 ? (
+                        repositoryViewerEnabledDimensions?.groups?.map(item => (
+                          <Tag key={item.key} color="green">
+                            {item.label}
+                          </Tag>
+                        ))
+                      ) : (
+                        <Typography.Text type="secondary">
+                          {t('None enabled')}
+                        </Typography.Text>
+                      )}
+                    </RepositoryViewerTagRow>
+                  </RepositoryViewerItem>
+                </RepositoryViewerList>
+              </RepositoryViewerCard>
+            </RepositoryViewerSection>
+
+            <RepositoryViewerSection>
+              <RepositoryViewerCard>
+                <Typography.Text strong>
+                  {t('Repository hierarchy')}
+                </Typography.Text>
+                <RepositoryHierarchyList>
+                  {repositoryViewerOrgUnits.length > 0 ? (
+                    <RepositoryHierarchyTree
+                      blockNode
+                      showIcon={false}
+                      showLine={{ showLeafIcon: false }}
+                      selectable={false}
+                      expandedKeys={repositoryViewerExpandedKeys}
+                      onExpand={keys =>
+                        setRepositoryViewerExpandedKeys(keys as string[])
+                      }
+                      switcherIcon={({ expanded, isLeaf }: any) =>
+                        isLeaf ? null : expanded ? (
+                          <Icons.DownOutlined iconSize="s" />
+                        ) : (
+                          <Icons.RightOutlined iconSize="s" />
+                        )
+                      }
+                      treeData={repositoryViewerTreeData}
+                    />
+                  ) : (
+                    <div style={{ padding: '16px 20px' }}>
+                      <Typography.Text type="secondary">
+                        {t(
+                          'No repository organisation units have been saved on this database yet.',
+                        )}
+                      </Typography.Text>
+                    </div>
+                  )}
+                </RepositoryHierarchyList>
+              </RepositoryViewerCard>
+            </RepositoryViewerSection>
+          </RepositoryViewerBody>
+        )}
+      </Modal>
       <UploadDataModal
         addDangerToast={addDangerToast}
         addSuccessToast={addSuccessToast}

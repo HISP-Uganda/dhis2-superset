@@ -676,6 +676,20 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         if flask_app_mutator := self.config["FLASK_APP_MUTATOR"]:
             flask_app_mutator(self.superset_app)
 
+        # Repair known local metadata-schema drift before any ORM-backed
+        # database reads hit newly-added DHIS2 repository fields.
+        try:
+            from superset.dhis2.backfill import (  # pylint: disable=import-outside-toplevel
+                ensure_metadata_schema_compatibility,
+            )
+
+            ensure_metadata_schema_compatibility()
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "DHIS2 metadata schema compatibility repair failed — non-fatal",
+                exc_info=True,
+            )
+
         # Sync configuration to database (themes, etc.)
         # This can be called separately in multi-tenant environments
         self.superset_app.sync_config_to_db()

@@ -282,13 +282,15 @@ const TablePreview: FC<Props> = ({ dbId, catalog, schema, tableName }) => {
         flex-direction: column;
       `}
     >
-      <Breadcrumb separator=">">
-        <Breadcrumb.Item>{backend}</Breadcrumb.Item>
-        <Breadcrumb.Item>{databaseName}</Breadcrumb.Item>
-        {catalog && <Breadcrumb.Item>{catalog}</Breadcrumb.Item>}
-        {schema && <Breadcrumb.Item>{schema}</Breadcrumb.Item>}
-        <Breadcrumb.Item> </Breadcrumb.Item>
-      </Breadcrumb>
+      <Breadcrumb
+        separator=">"
+        items={[
+          { title: backend },
+          { title: databaseName },
+          ...(catalog ? [{ title: catalog }] : []),
+          ...(schema ? [{ title: schema }] : []),
+        ]}
+      />
       <div style={{ display: 'none' }}>
         <CopyToClipboard
           copyNode={

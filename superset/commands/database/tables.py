@@ -27,7 +27,10 @@ from superset.commands.database.exceptions import (
     DatabaseNotFoundError,
     DatabaseTablesUnexpectedError,
 )
-from superset.connectors.sqla.models import SqlaTable
+from superset.connectors.sqla.models import (
+    SqlaTable,
+    _resolve_dhis2_staged_local_table_ref,
+)
 from superset.daos.database import DatabaseDAO
 from superset.exceptions import SupersetException
 from superset.extensions import db, security_manager
@@ -35,6 +38,23 @@ from superset.models.core import Database
 from superset.utils.core import DatasourceName
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_schema_name(schema_name: str | None) -> str | None:
+    normalized = str(schema_name or "").strip()
+    return normalized or None
+
+
+def _resolve_dataset_table_ref(dataset: SqlaTable) -> tuple[str | None, str]:
+    schema_name = _normalize_schema_name(dataset.schema)
+    table_name = str(dataset.table_name or "").strip()
+
+    extra = dataset.extra_dict
+    if extra.get("dhis2_staged_local") or extra.get("dhis2StagedLocal"):
+        if table_ref := _resolve_dhis2_staged_local_table_ref(extra, dataset.sql):
+            schema_name, table_name = table_ref
+
+    return schema_name, table_name
 
 
 class TablesDatabaseCommand(BaseCommand):
@@ -55,6 +75,7 @@ class TablesDatabaseCommand(BaseCommand):
     def run(self) -> dict[str, Any]:
         self.validate()
         self._catalog_name = self._catalog_name or self._model.get_default_catalog()
+        requested_schema = _normalize_schema_name(self._schema_name)
         try:
             tables = security_manager.get_datasources_accessible_by_user(
                 database=self._model,
@@ -135,58 +156,62 @@ class TablesDatabaseCommand(BaseCommand):
             # Filter by catalog and schema if provided
             if self._catalog_name:
                 datasets_query = datasets_query.filter(SqlaTable.catalog == self._catalog_name)
-            if self._schema_name:
-                datasets_query = datasets_query.filter(SqlaTable.schema == self._schema_name)
-            
+
             datasets = datasets_query.all()
-            
-            extra_dict_by_name = {
-                table.table_name: table.extra_dict
-                for table in datasets
-            }
 
             # Map virtual datasets to options
             dataset_options = [
                 {
                     "id": ds.id,
-                    "value": ds.table_name,
+                    "label": ds.table_name,
+                    "value": _resolve_dataset_table_ref(ds)[1],
                     "type": "dataset",
                     "extra": ds.extra_dict,
                     "sql": ds.sql,
                 }
                 for ds in datasets
-                if ds.sql  # Only include virtual datasets here; physical ones are handled by the DB driver below
+                if ds.sql
+                and (
+                    requested_schema is None
+                    or _resolve_dataset_table_ref(ds)[0] == requested_schema
+                )
             ]
 
-            options = sorted(
-                dataset_options
-                + [
+            options_by_value: dict[str, dict[str, Any]] = {}
+            for table in tables:
+                options_by_value.setdefault(
+                    table.table,
                     {
                         "value": table.table,
                         "type": "table",
-                        "extra": extra_dict_by_name.get(table.table, None),
-                    }
-                    for table in tables
-                ]
-                + [
+                    },
+                )
+            for view in views:
+                options_by_value.setdefault(
+                    view.table,
                     {
                         "value": view.table,
                         "type": "view",
-                    }
-                    for view in views
-                ]
-                + [
+                    },
+                )
+            for mv in materialized_views:
+                options_by_value.setdefault(
+                    mv.table,
                     {
                         "value": mv.table,
                         "type": "materialized_view",
-                    }
-                    for mv in materialized_views
-                ],
-                key=lambda item: item["value"],
+                    },
+                )
+            for dataset_option in dataset_options:
+                options_by_value[dataset_option["value"]] = dataset_option
+
+            options = sorted(
+                options_by_value.values(),
+                key=lambda item: str(item.get("label") or item["value"]).lower(),
             )
 
             payload = {
-                "count": len(tables) + len(views) + len(materialized_views),
+                "count": len(options),
                 "result": options,
             }
             return payload

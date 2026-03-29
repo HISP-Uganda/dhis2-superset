@@ -38,26 +38,35 @@ export const marginBottom = (theme: SupersetTheme) => css`
 `;
 
 export const StyledFormHeader = styled.header`
-  padding: ${({ theme }) => theme.sizeUnit * 2}px
-    ${({ theme }) => theme.sizeUnit * 4}px;
-  line-height: ${({ theme }) => theme.sizeUnit * 6}px;
+  display: flex;
+  flex-direction: column;
+  gap: ${({ theme }) => theme.sizeUnit * 1.5}px;
+  padding: ${({ theme }) => theme.sizeUnit * 2.5}px
+    ${({ theme }) => theme.sizeUnit * 4}px
+    ${({ theme }) => theme.sizeUnit * 2}px;
+  line-height: 1.4;
 
   .helper-top {
-    padding-bottom: 0;
-    color: ${({ theme }) => theme.colorText};
+    color: ${({ theme }) => theme.colorTextTertiary};
     font-size: ${({ theme }) => theme.fontSizeSM}px;
     margin: 0;
+    font-weight: ${({ theme }) => theme.fontWeightStrong};
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .subheader-text {
-    line-height: ${({ theme }) => theme.sizeUnit * 4.25}px;
+    color: ${({ theme }) => theme.colorTextSecondary};
+    line-height: 1.5;
+    margin: 0;
   }
 
   .helper-bottom {
-    padding-top: 0;
-    color: ${({ theme }) => theme.colorText};
+    color: ${({ theme }) => theme.colorTextSecondary};
     font-size: ${({ theme }) => theme.fontSizeSM}px;
     margin: 0;
+    line-height: 1.5;
+    max-width: 720px;
   }
 
   h4 {
@@ -65,7 +74,7 @@ export const StyledFormHeader = styled.header`
     font-size: ${({ theme }) => theme.fontSizeLG}px;
     margin: 0;
     padding: 0;
-    line-height: ${({ theme }) => theme.sizeUnit * 8}px;
+    line-height: 1.3;
   }
 
   .select-db {
@@ -114,7 +123,8 @@ export const toggleStyle = (theme: SupersetTheme) => css`
 `;
 
 export const formScrollableStyles = (theme: SupersetTheme) => css`
-  padding: ${theme.sizeUnit * 4}px ${theme.sizeUnit * 4}px 0;
+  padding: ${theme.sizeUnit * 4}px ${theme.sizeUnit * 4}px
+    ${theme.sizeUnit * 2}px;
 `;
 
 export const antDModalStyles = (theme: SupersetTheme) => css`
@@ -319,7 +329,7 @@ export const StyledExpandableForm = styled.div`
 
 export const StyledAlignment = styled.div`
   padding: 0 ${({ theme }) => theme.sizeUnit * 4}px;
-  margin-top: ${({ theme }) => theme.sizeUnit * 6}px;
+  margin-top: ${({ theme }) => theme.sizeUnit * 4}px;
 `;
 
 export const buttonLinkStyles = (theme: SupersetTheme) => css`
@@ -475,7 +485,8 @@ export const StyledStickyHeader = styled.div`
   position: sticky;
   top: 0;
   z-index: ${({ theme }) => theme.zIndexPopupBase};
-  background: ${({ theme }) => theme.colorBgLayout};
+  background: ${({ theme }) => theme.colorBgContainer};
+  border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   height: auto;
 `;
 

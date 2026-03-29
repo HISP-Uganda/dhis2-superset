@@ -16,11 +16,13 @@
 # under the License.
 
 import uuid
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 from parameterized import parameterized
 
+from superset.connectors.sqla.models import SqlaTable
 from superset.models.slice import id_or_uuid_filter, Slice
 
 
@@ -85,3 +87,60 @@ class TestSlice:
         """Test id_or_uuid_filter returns correct BinaryExpression."""
         result = id_or_uuid_filter(input_value)
         assert result is not None
+
+    def test_datasource_name_text_prefers_saved_dhis2_display_name(self):
+        slice_obj = Slice(
+            datasource_id=19,
+            datasource_type="table",
+            slice_name="DHIS2 MART chart",
+        )
+        slice_obj.table = SqlaTable(
+            id=19,
+            table_name="sv_7_mal_routine_ehmis_indicators_mart",
+            schema="dhis2_serving",
+            extra='{"dhis2_dataset_display_name": "MAL - Routine eHMIS Indicators [MART]"}',
+        )
+
+        assert (
+            slice_obj.datasource_name_text()
+            == "MAL - Routine eHMIS Indicators [MART]"
+        )
+
+    def test_datasource_name_text_falls_back_to_schema_and_name(self):
+        slice_obj = Slice(
+            datasource_id=19,
+            datasource_type="table",
+            slice_name="Regular chart",
+        )
+        slice_obj.table = SqlaTable(
+            id=19,
+            table_name="orders",
+            schema="public",
+            extra=None,
+        )
+
+        assert slice_obj.datasource_name_text() == "public.orders"
+
+    def test_slice_data_uses_saved_dhis2_display_name_for_datasource(self):
+        slice_obj = Slice(
+            id=11,
+            datasource_id=19,
+            datasource_type="table",
+            datasource_name="dhis2_serving.sv_7_mal_routine_ehmis_indicators_mart",
+            slice_name="DHIS2 MART chart",
+            params="{}",
+            description="",
+        )
+        slice_obj.table = SqlaTable(
+            id=19,
+            table_name="sv_7_mal_routine_ehmis_indicators_mart",
+            schema="dhis2_serving",
+            extra='{"dhis2_dataset_display_name": "MAL - Routine eHMIS Indicators [MART]"}',
+        )
+        slice_obj.changed_on = datetime(2026, 3, 29, 6, 0)
+        slice_obj.owners = []
+
+        assert (
+            slice_obj.data["datasource"]
+            == "MAL - Routine eHMIS Indicators [MART]"
+        )

@@ -352,6 +352,29 @@ test('does not call syncTable for already initialized tables', async () => {
   syncTableSpy.mockRestore();
 });
 
+test('renders MART dataset controls without crashing', async () => {
+  const datasetTable = {
+    ...table,
+    initialized: true,
+    type: 'dataset',
+    datasetId: 42,
+    label: 'Admissions MART',
+  };
+
+  const { getAllByTestId, getByText } = render(
+    <TableElement table={datasetTable} activeKey={[datasetTable.id]} />,
+    {
+      useRedux: true,
+      initialState,
+    },
+  );
+
+  await waitFor(() =>
+    expect(getAllByTestId('mock-icon-tooltip')).toHaveLength(7),
+  );
+  expect(getByText('Explore this dataset')).toBeInTheDocument();
+});
+
 test('calls syncTable after query editor is migrated from localStorage', async () => {
   const syncTableSpy = setupSyncTableTest();
   const testTable = {

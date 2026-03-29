@@ -287,6 +287,42 @@ describe('sqlLabReducer', () => {
       expect(newState.destroyedQueryEditors).toEqual({});
     });
   });
+
+  test('should merge fetched databases into the existing database map', () => {
+    const existingDatabase = {
+      id: 4,
+      database_name: 'DHIS2 Serving (ClickHouse)',
+      expose_in_sqllab: true,
+      extra_json: {},
+    };
+    const nextDatabase = {
+      id: 7,
+      database_name: 'Examples',
+      expose_in_sqllab: true,
+      extra: '{}',
+    };
+
+    const newState = sqlLabReducer(
+      {
+        ...initialState,
+        databases: {
+          [existingDatabase.id]: existingDatabase,
+        },
+      },
+      {
+        type: actions.SET_DATABASES,
+        databases: [nextDatabase],
+      },
+    );
+
+    expect(newState.databases[existingDatabase.id]).toEqual(existingDatabase);
+    expect(newState.databases[nextDatabase.id]).toEqual(
+      expect.objectContaining({
+        id: nextDatabase.id,
+        database_name: nextDatabase.database_name,
+      }),
+    );
+  });
   // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
   describe('Tables', () => {
     let newState;

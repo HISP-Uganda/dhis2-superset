@@ -29,6 +29,7 @@ import {
   Input,
   Progress,
   Radio,
+  Select,
   Space,
   Steps,
   Tabs,
@@ -37,6 +38,13 @@ import {
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import type { DatabaseObject } from 'src/components';
+import type {
+  DatabaseRepositoryEnabledDimensions,
+  RepositoryEnabledGroupDimension,
+  RepositoryEnabledGroupSetDimension,
+  RepositoryEnabledLevelDimension,
+  RepositoryOrgUnitLineage,
+} from 'src/features/databases/types';
 import type {
   DHIS2MetadataRefreshFamilyProgress,
   DHIS2MetadataRefreshInstanceProgress,
@@ -51,7 +59,9 @@ import {
 import TableSelector from 'src/components/TableSelector';
 import WizardStepDataElements from '../DHIS2DatasetWizard/steps/StepDataElements';
 import WizardStepPeriods from '../DHIS2DatasetWizard/steps/StepPeriods';
-import WizardStepOrgUnits from '../DHIS2DatasetWizard/steps/StepOrgUnits';
+import WizardStepOrgUnits, {
+  type StepOrgUnitsMetadataPayload,
+} from '../DHIS2DatasetWizard/steps/StepOrgUnits';
 import WizardStepSchedule, {
   type ScheduleConfig,
 } from '../DHIS2DatasetWizard/steps/StepSchedule';
@@ -67,6 +77,15 @@ type DatasetType = 'dhis2' | 'database';
 type DatabaseSourceMode = 'table' | 'sql';
 type DataLevelScope = 'selected' | 'children' | 'grandchildren' | 'all_levels';
 type OrgUnitSourceMode = 'primary' | 'repository' | 'per_instance' | 'federated';
+type RepositoryDimensionKeys = {
+  levels: string[];
+  groups: string[];
+  group_sets: string[];
+};
+type RepositoryDimensionOption = {
+  value: string;
+  label: string;
+};
 
 interface SelectedOrgUnitDetail {
   id: string;
@@ -80,6 +99,11 @@ interface SelectedOrgUnitDetail {
   sourceInstanceNames?: string[];
   repositoryLevel?: number;
   repositoryLevelName?: string;
+  repositoryKey?: string;
+  sourceLineageLabel?: string | null;
+  strategy?: string | null;
+  lineage?: RepositoryOrgUnitLineage[];
+  provenance?: Record<string, unknown> | null;
 }
 
 interface StagingCapabilities {
@@ -159,6 +183,8 @@ interface WorkflowState {
   levelMapping?: LevelMappingConfig;
   /** Lowest hierarchy level to include (1=national, N=facility). */
   maxOrgUnitLevel?: number | null;
+  repositoryDimensionKeys: RepositoryDimensionKeys;
+  repositoryDimensionKeysConfigured: boolean;
   /** When true, co_uid/co_name disaggregation columns are promoted to first-class dimensions. */
   includeDisaggregationDimension?: boolean;
   datasetSettings: {
@@ -317,6 +343,12 @@ export const initialWorkflowState: WorkflowState = {
   dataLevelScope: 'selected',
   levelMapping: undefined,
   maxOrgUnitLevel: null,
+  repositoryDimensionKeys: {
+    levels: [],
+    groups: [],
+    group_sets: [],
+  },
+  repositoryDimensionKeysConfigured: false,
   includeDisaggregationDimension: false,
   datasetSettings: {
     name: '',
@@ -346,6 +378,79 @@ function buildFallbackCapabilities(database: DatabaseObject | null): StagingCapa
     supports_connection_scoping: sourceType === 'dhis2',
     database_name: database?.database_name,
   };
+}
+
+function normalizeRepositoryDimensionKeys(
+  payload: unknown,
+): RepositoryDimensionKeys {
+  const candidate =
+    payload && typeof payload === 'object'
+      ? (payload as Record<string, unknown>)
+      : {};
+  const normalizeList = (value: unknown) =>
+    Array.isArray(value)
+      ? value.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : [];
+  return {
+    levels: normalizeList(candidate.levels),
+    groups: normalizeList(candidate.groups),
+    group_sets: normalizeList(candidate.group_sets),
+  };
+}
+
+function buildRepositoryLevelDimensionOptions(
+  enabledDimensions: DatabaseRepositoryEnabledDimensions | null | undefined,
+  metadata: StepOrgUnitsMetadataPayload | null,
+): RepositoryDimensionOption[] {
+  const enabledDimensionsConfigured =
+    metadata?.repositoryConfig?.enabled_dimensions &&
+    Object.prototype.hasOwnProperty.call(
+      metadata.repositoryConfig.enabled_dimensions,
+      'levels',
+    );
+  const configuredLevels = Array.isArray(enabledDimensions?.levels)
+    ? enabledDimensions.levels
+    : [];
+  if (enabledDimensionsConfigured) {
+    return configuredLevels.map((item: RepositoryEnabledLevelDimension) => ({
+      value: item.key,
+      label: item.label,
+    }));
+  }
+  return (metadata?.orgUnitLevels || []).map(level => ({
+    value: `level:${level.level}`,
+    label: level.displayName,
+  }));
+}
+
+function buildRepositoryNamedDimensionOptions(
+  items:
+    | RepositoryEnabledGroupDimension[]
+    | RepositoryEnabledGroupSetDimension[]
+    | null
+    | undefined,
+): RepositoryDimensionOption[] {
+  return Array.isArray(items)
+    ? items.map(item => ({
+        value: item.key,
+        label: item.label,
+      }))
+    : [];
+}
+
+function mergeRepositoryDimensionOptions(
+  options: RepositoryDimensionOption[],
+  selectedKeys: string[],
+): RepositoryDimensionOption[] {
+  const merged = new Map(options.map(option => [option.value, option] as const));
+  selectedKeys.forEach(key => {
+    if (!merged.has(key)) {
+      merged.set(key, { value: key, label: key });
+    }
+  });
+  return Array.from(merged.values());
 }
 
 export function resetForDatasetType(datasetType: DatasetType | null): WorkflowState {
@@ -554,6 +659,17 @@ export function workflowReducer(
           action.payload.maxOrgUnitLevel !== undefined
             ? (action.payload.maxOrgUnitLevel as number | null)
             : state.maxOrgUnitLevel,
+        repositoryDimensionKeys:
+          action.payload.repositoryDimensionKeys !== undefined
+            ? normalizeRepositoryDimensionKeys(action.payload.repositoryDimensionKeys)
+            : state.repositoryDimensionKeys,
+        repositoryDimensionKeysConfigured:
+          action.payload.repositoryDimensionKeys !== undefined
+            ? (action.payload.repositoryDimensionKeysConfigured as boolean | undefined) ??
+              true
+            : action.payload.repositoryDimensionKeysConfigured !== undefined
+              ? (action.payload.repositoryDimensionKeysConfigured as boolean)
+              : state.repositoryDimensionKeysConfigured,
         includeDisaggregationDimension:
           (action.payload.includeDisaggregationDimension as boolean | undefined) ??
           state.includeDisaggregationDimension,
@@ -1256,6 +1372,8 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
   const [instancesLoading, setInstancesLoading] = useState(false);
   const [instancesError, setInstancesError] = useState<string | null>(null);
   const [instances, setInstances] = useState<DHIS2InstanceInfo[]>([]);
+  const [repositoryOrgUnitMetadata, setRepositoryOrgUnitMetadata] =
+    useState<StepOrgUnitsMetadataPayload | null>(null);
   const [instanceTestStatus, setInstanceTestStatus] = useState<
     Record<number, 'idle' | 'testing' | 'success' | 'failed'>
   >({});
@@ -1272,6 +1390,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
   const sourceRequestIdRef = useRef(0);
   const metadataStatusRequestIdRef = useRef(0);
   const instancesRequestIdRef = useRef(0);
+  const repositoryDimensionDefaultsAppliedRef = useRef<string | null>(null);
   const selectedInstanceIdsRef = useRef(state.selectedInstanceIds);
   const configuredConnectionsTouchedRef = useRef(
     state.configuredConnectionsTouched,
@@ -1284,6 +1403,11 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     selectedInstanceIdsRef.current = state.selectedInstanceIds;
     configuredConnectionsTouchedRef.current = state.configuredConnectionsTouched;
   }, [state.configuredConnectionsTouched, state.selectedInstanceIds]);
+
+  useEffect(() => {
+    setRepositoryOrgUnitMetadata(null);
+    repositoryDimensionDefaultsAppliedRef.current = null;
+  }, [state.databaseId]);
 
   useEffect(
     () => () => {
@@ -1392,6 +1516,13 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                 : undefined,
             maxOrgUnitLevel:
               typeof sd.max_orgunit_level === 'number' ? sd.max_orgunit_level : null,
+            repositoryDimensionKeys: normalizeRepositoryDimensionKeys(
+              cfg.repository_enabled_dimensions,
+            ),
+            repositoryDimensionKeysConfigured: Object.prototype.hasOwnProperty.call(
+              cfg,
+              'repository_enabled_dimensions',
+            ),
             includeDisaggregationDimension:
               cfg.include_disaggregation_dimension === true,
           },
@@ -1888,6 +2019,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     if (updates.maxOrgUnitLevel !== undefined) {
       nextPayload.maxOrgUnitLevel = updates.maxOrgUnitLevel;
     }
+    if (updates.repositoryDimensionKeys !== undefined) {
+      nextPayload.repositoryDimensionKeys = updates.repositoryDimensionKeys;
+    }
     if (updates.includeDisaggregationDimension !== undefined) {
       nextPayload.includeDisaggregationDimension = updates.includeDisaggregationDimension;
     }
@@ -1925,6 +2059,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       dataLevelScope: state.dataLevelScope,
       levelMapping: state.levelMapping,
       maxOrgUnitLevel: state.maxOrgUnitLevel,
+      repositoryDimensionKeys: state.repositoryDimensionKeys,
       includeDisaggregationDimension: state.includeDisaggregationDimension,
       columns: [],
       previewData: [],
@@ -1932,6 +2067,106 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     }),
     [state],
   );
+
+  const repositoryEnabledDimensions = useMemo(
+    () => repositoryOrgUnitMetadata?.repositoryEnabledDimensions || null,
+    [repositoryOrgUnitMetadata],
+  );
+  const repositoryLevelDimensionOptions = useMemo(
+    () =>
+      mergeRepositoryDimensionOptions(
+        buildRepositoryLevelDimensionOptions(
+          repositoryEnabledDimensions,
+          repositoryOrgUnitMetadata,
+        ),
+        state.repositoryDimensionKeys.levels,
+      ),
+    [
+      repositoryEnabledDimensions,
+      repositoryOrgUnitMetadata,
+      state.repositoryDimensionKeys.levels,
+    ],
+  );
+  const repositoryGroupDimensionOptions = useMemo(
+    () =>
+      mergeRepositoryDimensionOptions(
+        buildRepositoryNamedDimensionOptions(
+          repositoryEnabledDimensions?.groups,
+        ),
+        state.repositoryDimensionKeys.groups,
+      ),
+    [
+      repositoryEnabledDimensions?.groups,
+      state.repositoryDimensionKeys.groups,
+    ],
+  );
+  const repositoryGroupSetDimensionOptions = useMemo(
+    () =>
+      mergeRepositoryDimensionOptions(
+        buildRepositoryNamedDimensionOptions(
+          repositoryEnabledDimensions?.group_sets,
+        ),
+        state.repositoryDimensionKeys.group_sets,
+      ),
+    [
+      repositoryEnabledDimensions?.group_sets,
+      state.repositoryDimensionKeys.group_sets,
+    ],
+  );
+
+  useEffect(() => {
+    if (!repositoryOrgUnitMetadata) {
+      return;
+    }
+
+    const defaultsKey = String(state.databaseId || '');
+    if (
+      defaultsKey &&
+      repositoryDimensionDefaultsAppliedRef.current === defaultsKey
+    ) {
+      return;
+    }
+
+    if (state.repositoryDimensionKeysConfigured) {
+      repositoryDimensionDefaultsAppliedRef.current = defaultsKey;
+      return;
+    }
+
+    const nextKeys = {
+      levels: buildRepositoryLevelDimensionOptions(
+        repositoryEnabledDimensions,
+        repositoryOrgUnitMetadata,
+      ).map(option => option.value),
+      groups: buildRepositoryNamedDimensionOptions(
+        repositoryEnabledDimensions?.groups,
+      ).map(option => option.value),
+      group_sets: buildRepositoryNamedDimensionOptions(
+        repositoryEnabledDimensions?.group_sets,
+      ).map(option => option.value),
+    };
+
+    if (
+      nextKeys.levels.length === 0 &&
+      nextKeys.groups.length === 0 &&
+      nextKeys.group_sets.length === 0
+    ) {
+      repositoryDimensionDefaultsAppliedRef.current = defaultsKey;
+      return;
+    }
+
+    repositoryDimensionDefaultsAppliedRef.current = defaultsKey;
+    dispatch({
+      type: 'PATCH_DHIS2_SELECTION',
+      payload: {
+        repositoryDimensionKeys: nextKeys,
+      },
+    });
+  }, [
+    repositoryEnabledDimensions,
+    repositoryOrgUnitMetadata,
+    state.databaseId,
+    state.repositoryDimensionKeysConfigured,
+  ]);
 
   const nextStep = () => {
     const nextErrors = getStepErrorsForCurrentState(state, instances, {
@@ -2048,6 +2283,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
+        repository_enabled_dimensions: state.repositoryDimensionKeys,
         include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
           state.orgUnitSourceMode === 'federated'
@@ -2188,6 +2424,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
+        repository_enabled_dimensions: state.repositoryDimensionKeys,
         include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
           state.orgUnitSourceMode === 'federated'
@@ -2973,13 +3210,143 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             key: 'org_units',
             label: t('Organisation Units'),
             children: (
-              <WizardStepOrgUnits
-                databaseId={state.databaseId ?? undefined}
-                errors={errors}
-                instances={activeInstances}
-                updateState={updateDhIS2State}
-                wizardState={dhis2WizardAdapterState}
-              />
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <WizardStepOrgUnits
+                  databaseId={state.databaseId ?? undefined}
+                  errors={errors}
+                  instances={activeInstances}
+                  metadataMode="repository"
+                  updateState={updateDhIS2State}
+                  wizardState={dhis2WizardAdapterState}
+                  forceSourceMode="repository"
+                  hideSourceModeSelector
+                  hideSourceModeConfiguration
+                  hideUserScopeOptions
+                  hideGroupFilter
+                  hideAutoDetect
+                  onMetadataLoaded={setRepositoryOrgUnitMetadata}
+                  labels={{
+                    title: t('Repository organisation units'),
+                    description: t(
+                      'Choose the saved repository organisation units for this Database. Repository lineage routes extraction back to the correct DHIS2 source instances automatically.',
+                    ),
+                    dataScopeDescription: t(
+                      'Choose how far below the selected repository organisation units the staged sync should load data.',
+                    ),
+                  }}
+                />
+                <Card className="section-card">
+                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <div>
+                      <Text strong>{t('Dataset org-unit dimensions')}</Text>
+                      <Paragraph className="section-subtitle" style={{ marginBottom: 0 }}>
+                        {t(
+                          'Start from the Database repository dimensions, then keep only the hierarchy levels, org unit groups, and group sets needed for this dataset.',
+                        )}
+                      </Paragraph>
+                    </div>
+                    {repositoryLevelDimensionOptions.length === 0 &&
+                    repositoryGroupDimensionOptions.length === 0 &&
+                    repositoryGroupSetDimensionOptions.length === 0 ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        message={t('No repository dimensions are available yet')}
+                        description={t(
+                          'Save repository reporting units and enabled dimensions on the Database first, then reopen this step to tailor dataset-specific org-unit dimensions.',
+                        )}
+                      />
+                    ) : (
+                      <SettingsGrid>
+                        <div>
+                          <Text strong>{t('Hierarchy levels')}</Text>
+                          <Select
+                            mode="multiple"
+                            value={state.repositoryDimensionKeys.levels}
+                            onChange={value =>
+                              updateDhIS2State({
+                                repositoryDimensionKeys: {
+                                  ...state.repositoryDimensionKeys,
+                                  levels: value as string[],
+                                },
+                              })
+                            }
+                            placeholder={t('Select hierarchy levels')}
+                            options={repositoryLevelDimensionOptions}
+                            optionFilterProp="label"
+                            style={{ width: '100%', marginTop: 8 }}
+                          />
+                        </div>
+                        <div>
+                          <Text strong>{t('Org unit groups')}</Text>
+                          <Select
+                            mode="multiple"
+                            value={state.repositoryDimensionKeys.groups}
+                            onChange={value =>
+                              updateDhIS2State({
+                                repositoryDimensionKeys: {
+                                  ...state.repositoryDimensionKeys,
+                                  groups: value as string[],
+                                },
+                              })
+                            }
+                            placeholder={t('Select org unit groups')}
+                            options={repositoryGroupDimensionOptions}
+                            optionFilterProp="label"
+                            style={{ width: '100%', marginTop: 8 }}
+                          />
+                        </div>
+                        <div>
+                          <Text strong>{t('Org unit group sets')}</Text>
+                          <Select
+                            mode="multiple"
+                            value={state.repositoryDimensionKeys.group_sets}
+                            onChange={value =>
+                              updateDhIS2State({
+                                repositoryDimensionKeys: {
+                                  ...state.repositoryDimensionKeys,
+                                  group_sets: value as string[],
+                                },
+                              })
+                            }
+                            placeholder={t('Select org unit group sets')}
+                            options={repositoryGroupSetDimensionOptions}
+                            optionFilterProp="label"
+                            style={{ width: '100%', marginTop: 8 }}
+                          />
+                        </div>
+                      </SettingsGrid>
+                    )}
+                    {state.repositoryDimensionKeys.levels.length > 0 ||
+                    state.repositoryDimensionKeys.groups.length > 0 ||
+                    state.repositoryDimensionKeys.group_sets.length > 0 ? (
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {state.repositoryDimensionKeys.levels.map(key => (
+                          <Tag key={`level-${key}`} color="blue">
+                            {repositoryLevelDimensionOptions.find(
+                              option => option.value === key,
+                            )?.label || key}
+                          </Tag>
+                        ))}
+                        {state.repositoryDimensionKeys.groups.map(key => (
+                          <Tag key={`group-${key}`} color="green">
+                            {repositoryGroupDimensionOptions.find(
+                              option => option.value === key,
+                            )?.label || key}
+                          </Tag>
+                        ))}
+                        {state.repositoryDimensionKeys.group_sets.map(key => (
+                          <Tag key={`group-set-${key}`} color="gold">
+                            {repositoryGroupSetDimensionOptions.find(
+                              option => option.value === key,
+                            )?.label || key}
+                          </Tag>
+                        ))}
+                      </div>
+                    ) : null}
+                  </Space>
+                </Card>
+              </Space>
             ),
           },
         ]}
@@ -3166,6 +3533,14 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             <Text>
               {t('Scope')}: {state.dataLevelScope}
             </Text>
+            <Text>
+              {t('Dataset org-unit dimensions')}: {t(
+                '%s levels, %s groups, %s group sets',
+                state.repositoryDimensionKeys.levels.length,
+                state.repositoryDimensionKeys.groups.length,
+                state.repositoryDimensionKeys.group_sets.length,
+              )}
+            </Text>
           </Space>
         </Card>
       ) : (
@@ -3260,6 +3635,22 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                 : state.orgUnitSourceMode === 'per_instance'
                   ? t('Keeping each configured connection hierarchy separate in local staging.')
                   : t('Merging selected configured connections into the repository org-unit structure.')}
+            </HelpNote>
+          </div>
+          <div className="summary-section">
+            <div className="summary-label">{t('Org-unit dimensions')}</div>
+            <div className="summary-value">
+              {state.repositoryDimensionKeys.levels.length +
+                state.repositoryDimensionKeys.groups.length +
+                state.repositoryDimensionKeys.group_sets.length}
+            </div>
+            <HelpNote style={{ marginTop: 8 }}>
+              {t(
+                '%s hierarchy levels, %s groups, %s group sets',
+                state.repositoryDimensionKeys.levels.length,
+                state.repositoryDimensionKeys.groups.length,
+                state.repositoryDimensionKeys.group_sets.length,
+              )}
             </HelpNote>
           </div>
         </>

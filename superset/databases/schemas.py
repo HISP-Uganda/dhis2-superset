@@ -451,6 +451,44 @@ class DatabaseSSHTunnel(Schema):
     private_key_password = fields.String(required=False)
 
 
+class DatabaseRepositoryOrgUnitLineageSchema(Schema):
+    instance_id = fields.Integer(required=True)
+    source_instance_role = fields.String(allow_none=True)
+    source_instance_code = fields.String(allow_none=True)
+    source_org_unit_uid = fields.String(required=True)
+    source_org_unit_name = fields.String(allow_none=True)
+    source_parent_uid = fields.String(allow_none=True)
+    source_path = fields.String(allow_none=True)
+    source_level = fields.Integer(allow_none=True)
+    provenance = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
+    )
+
+
+class DatabaseRepositoryOrgUnitSchema(Schema):
+    repository_key = fields.String(required=True)
+    display_name = fields.String(required=True)
+    parent_repository_key = fields.String(allow_none=True)
+    level = fields.Integer(allow_none=True)
+    hierarchy_path = fields.String(allow_none=True)
+    selection_key = fields.String(allow_none=True)
+    strategy = fields.String(allow_none=True)
+    source_lineage_label = fields.String(allow_none=True)
+    is_conflicted = fields.Boolean(allow_none=True)
+    is_unmatched = fields.Boolean(allow_none=True)
+    provenance = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
+    )
+    lineage = fields.List(
+        fields.Nested(DatabaseRepositoryOrgUnitLineageSchema),
+        allow_none=True,
+    )
+
+
 class DatabasePostSchema(DatabaseParametersSchemaMixin, Schema):
     class Meta:  # pylint: disable=too-few-public-methods
         unknown = EXCLUDE
@@ -506,6 +544,32 @@ class DatabasePostSchema(DatabaseParametersSchemaMixin, Schema):
     external_url = fields.String(allow_none=True)
     uuid = fields.String(required=False)
     ssh_tunnel = fields.Nested(DatabaseSSHTunnel, allow_none=True)
+    repository_reporting_unit_approach = fields.String(
+        allow_none=True,
+        validate=OneOf(
+            ["primary_instance", "map_merge", "auto_merge", "separate"]
+        ),
+    )
+    lowest_data_level_to_use = fields.Integer(
+        allow_none=True,
+        validate=Range(min=1),
+    )
+    primary_instance_id = fields.Integer(allow_none=True)
+    repository_data_scope = fields.String(
+        allow_none=True,
+        validate=OneOf(
+            ["selected", "children", "grandchildren", "ancestors", "all_levels"]
+        ),
+    )
+    repository_org_unit_config = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
+    )
+    repository_org_units = fields.List(
+        fields.Nested(DatabaseRepositoryOrgUnitSchema),
+        allow_none=True,
+    )
 
 
 class DatabasePutSchema(DatabaseParametersSchemaMixin, Schema):
@@ -563,6 +627,32 @@ class DatabasePutSchema(DatabaseParametersSchemaMixin, Schema):
     external_url = fields.String(allow_none=True)
     ssh_tunnel = fields.Nested(DatabaseSSHTunnel, allow_none=True)
     uuid = fields.String(required=False)
+    repository_reporting_unit_approach = fields.String(
+        allow_none=True,
+        validate=OneOf(
+            ["primary_instance", "map_merge", "auto_merge", "separate"]
+        ),
+    )
+    lowest_data_level_to_use = fields.Integer(
+        allow_none=True,
+        validate=Range(min=1),
+    )
+    primary_instance_id = fields.Integer(allow_none=True)
+    repository_data_scope = fields.String(
+        allow_none=True,
+        validate=OneOf(
+            ["selected", "children", "grandchildren", "ancestors", "all_levels"]
+        ),
+    )
+    repository_org_unit_config = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
+    )
+    repository_org_units = fields.List(
+        fields.Nested(DatabaseRepositoryOrgUnitSchema),
+        allow_none=True,
+    )
 
 
 class DatabaseTestConnectionSchema(DatabaseParametersSchemaMixin, Schema):
@@ -1062,6 +1152,31 @@ class DatabaseConnectionSchema(Schema):
     sqlalchemy_uri = fields.String(
         metadata={"description": sqlalchemy_uri_description},
         validate=[Length(1, 1024), sqlalchemy_uri_validator],
+    )
+    repository_reporting_unit_approach = fields.String(allow_none=True)
+    lowest_data_level_to_use = fields.Integer(allow_none=True)
+    primary_instance_id = fields.Integer(allow_none=True)
+    repository_data_scope = fields.String(allow_none=True)
+    repository_org_unit_config = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
+    )
+    repository_org_units = fields.List(
+        fields.Nested(DatabaseRepositoryOrgUnitSchema),
+        attribute="repository_org_units_data",
+    )
+    repository_org_unit_status = fields.String(
+        allow_none=True,
+        attribute="repository_org_unit_effective_status",
+    )
+    repository_org_unit_status_message = fields.String(allow_none=True)
+    repository_org_unit_task_id = fields.String(allow_none=True)
+    repository_org_unit_last_finalized_at = fields.String(allow_none=True)
+    repository_org_unit_summary = fields.Dict(
+        keys=fields.String(),
+        values=fields.Raw(allow_none=True),
+        allow_none=True,
     )
 
 

@@ -52,7 +52,11 @@ from flask_appbuilder.security.decorators import permission_name, protect
 from superset.dhis2 import staged_dataset_service as svc
 from superset.dhis2.staging_database_service import get_staging_database
 from superset.dhis2.staging_engine import DHIS2StagingEngine
-from superset.dhis2.sync_service import schedule_staged_dataset_sync, DHIS2SyncService
+from superset.dhis2.sync_service import (
+    schedule_staged_dataset_sync,
+    DHIS2SyncService,
+    reset_stale_running_jobs,
+)
 from superset.local_staging.engine_factory import get_active_staging_engine as _get_engine
 
 logger = logging.getLogger(__name__)
@@ -287,10 +291,10 @@ class DHIS2StagedDatasetApi(BaseApi):
 
         if include_stats:
             try:
-                payload["stats"] = svc.get_staging_stats(pk)
+                payload["stats"] = svc.get_local_data_stats(pk)
             except Exception:  # pylint: disable=broad-except
                 logger.exception(
-                    "Failed to retrieve staging stats for dataset id=%s", pk
+                    "Failed to retrieve local data stats for dataset id=%s", pk
                 )
                 payload["stats"] = None
 
@@ -351,6 +355,7 @@ class DHIS2StagedDatasetApi(BaseApi):
         include_stats_raw = request.args.get("include_stats", "false").lower()
         include_stats = include_stats_raw in ("true", "1", "yes")
 
+        reset_stale_running_jobs()
         datasets = svc.list_staged_datasets(
             database_id, include_inactive=include_inactive
         )
@@ -399,6 +404,7 @@ class DHIS2StagedDatasetApi(BaseApi):
             404:
               description: Dataset not found
         """
+        reset_stale_running_jobs(dataset_id=pk)
         payload = self._dataset_to_dict(
             pk, include_variables=True, include_stats=True
         )
@@ -1511,8 +1517,10 @@ class DHIS2StagedDatasetApi(BaseApi):
         """
         from superset.dhis2.staged_dataset_service import ensure_serving_table
         from superset.dhis2.superset_dataset_service import (
+            register_metadata_dataset_as_superset_dataset,
             register_serving_table_as_superset_dataset,
         )
+        from superset.datasets.policy import DatasetRole
         from superset.local_staging.engine_factory import get_active_staging_engine
 
         dataset = svc.get_staged_dataset(pk)
@@ -1533,13 +1541,22 @@ class DHIS2StagedDatasetApi(BaseApi):
             if not serving_db_id:
                 return self.response_500(message="Could not determine serving database")
 
-            sqla_id = register_serving_table_as_superset_dataset(
+            register_serving_table_as_superset_dataset(
                 dataset_id=pk,
                 dataset_name=dataset.name,
                 serving_table_ref=serving_table_ref,
                 serving_columns=serving_columns,
                 serving_database_id=serving_db_id,
                 source_database_id=dataset.database_id,
+                dataset_role=DatasetRole.SOURCE.value,
+            )
+            sqla_id = register_metadata_dataset_as_superset_dataset(
+                dataset_id=pk,
+                dataset_name=dataset.name,
+                serving_table_ref=serving_table_ref,
+                serving_columns=serving_columns,
+                source_database_id=dataset.database_id,
+                serving_database_id=serving_db_id,
             )
             if dataset.serving_superset_dataset_id != sqla_id:
                 dataset.serving_superset_dataset_id = sqla_id

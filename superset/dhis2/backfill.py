@@ -59,6 +59,7 @@ import re
 from typing import Any
 
 from sqlalchemy.exc import OperationalError as _SAOperationalError
+from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,669 @@ _OU_HIERARCHY_NAMES: frozenset[str] = frozenset({
 })
 _OU_LEVEL_NAMES: frozenset[str] = frozenset({"ou_level", "level"})
 _PERIOD_NAMES: frozenset[str] = frozenset({"period"})
-_INTERNAL_NAMES: frozenset[str] = frozenset({"dhis2_instance", "_manifest_build_v5"})
+_INTERNAL_NAMES: frozenset[str] = frozenset({"dhis2_instance", "_manifest_build_v6"})
+_REPOSITORY_SCHEMA_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("repository_reporting_unit_approach", "VARCHAR(50)"),
+    ("lowest_data_level_to_use", "INTEGER"),
+    ("primary_instance_id", "INTEGER"),
+    ("repository_data_scope", "VARCHAR(50)"),
+    ("repository_org_unit_config_json", "TEXT"),
+    ("repository_org_unit_status", "VARCHAR(20)"),
+    ("repository_org_unit_status_message", "TEXT"),
+    ("repository_org_unit_task_id", "VARCHAR(255)"),
+    ("repository_org_unit_last_finalized_at", "TIMESTAMP"),
+)
+
+
+def _legacy_dataset_display_name_from_table_name(table_name: str) -> str:
+    fallback_name = re.sub(r"^sv_\d+_", "", table_name, flags=re.IGNORECASE)
+    fallback_name = re.sub(r"_mart$", "", fallback_name, flags=re.IGNORECASE)
+    return fallback_name.replace("_", " ").title().strip()
+
+
+def _improved_dataset_display_name_from_table_name(table_name: str) -> str:
+    base_name = re.sub(r"^sv_\d+_", "", table_name, flags=re.IGNORECASE)
+    base_name = re.sub(r"_mart$", "", base_name, flags=re.IGNORECASE)
+    parts = [part for part in base_name.split("_") if part]
+    if not parts:
+        return ""
+
+    prefix = ""
+    if len(parts[0]) <= 3 and parts[0].isalpha():
+        prefix = parts.pop(0).upper()
+
+    acronym_map = {
+        "dhis2": "DHIS2",
+        "ehmis": "eHMIS",
+        "hmis": "HMIS",
+    }
+    words = [
+        acronym_map.get(part.lower(), part.capitalize())
+        for part in parts
+    ]
+    label = " ".join(words).strip()
+    if prefix and label:
+        return f"{prefix} - {label}"
+    return prefix or label
+
+
+def _table_exists(inspector: Any, table_name: str) -> bool:
+    return inspector.has_table(table_name)
+
+
+def _column_names(inspector: Any, table_name: str) -> set[str]:
+    if not _table_exists(inspector, table_name):
+        return set()
+    return {column["name"] for column in inspector.get_columns(table_name)}
+
+
+def _normalize_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _normalize_optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _normalize_dataset_name(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _loads_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _classify_dhis2_dataset_role(dataset: Any, extra: dict[str, Any]) -> str:
+    from superset.datasets.policy import DatasetRole  # pylint: disable=import-outside-toplevel
+
+    table_name = str(getattr(dataset, "table_name", "") or "")
+    if (
+        table_name.startswith("[KPI] ")
+        or table_name.startswith("[Map] ")
+        or table_name.endswith("_kpi")
+        or table_name.endswith("_map")
+        or table_name.endswith("_mart")
+    ):
+        return DatasetRole.MART.value
+
+    if (
+        bool(getattr(dataset, "sql", None))
+        and getattr(dataset, "schema", None) in (None, "")
+        and bool(extra.get("dhis2_staged_local"))
+    ):
+        return DatasetRole.METADATA.value
+
+    return DatasetRole.SOURCE.value
+
+
+def _dhis2_repair_sort_key(dataset: Any) -> tuple[int, str, int]:
+    extra = _loads_json_dict(getattr(dataset, "extra", None))
+    desired_role = _classify_dhis2_dataset_role(dataset, extra)
+    role_rank = 0
+    if desired_role == "MART":
+        role_rank = 1
+    elif desired_role == "METADATA":
+        role_rank = 2
+    return (
+        role_rank,
+        str(getattr(dataset, "table_name", "") or ""),
+        int(getattr(dataset, "id", 0) or 0),
+    )
+
+
+def _build_instance_code_map(instance_rows: list[dict[str, Any]]) -> dict[int, str]:
+    ordered = sorted(
+        instance_rows,
+        key=lambda row: (
+            _normalize_optional_int(row.get("display_order")) or 0,
+            str(row.get("name") or ""),
+            _normalize_optional_int(row.get("id")) or 0,
+        ),
+    )
+    code_map: dict[int, str] = {}
+    for index, row in enumerate(ordered):
+        instance_id = _normalize_optional_int(row.get("id"))
+        if instance_id is None:
+            continue
+        code_map[instance_id] = (
+            chr(ord("A") + index) if index < 26 else f"I{instance_id}"
+        )
+    return code_map
+
+
+def _infer_repository_backfill_payload(
+    instance_rows: list[dict[str, Any]],
+    dataset_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not instance_rows or not dataset_rows:
+        return None
+
+    primary_instance_ids: set[int] = set()
+    scopes: set[str] = set()
+    dataset_ids: list[int] = []
+    selection_details: dict[str, dict[str, Any]] = {}
+
+    for row in dataset_rows:
+        dataset_id = _normalize_optional_int(row.get("id"))
+        if dataset_id is not None:
+            dataset_ids.append(dataset_id)
+        dataset_config = _loads_json_dict(row.get("dataset_config"))
+        source_mode = _normalize_optional_str(
+            dataset_config.get("org_unit_source_mode") or row.get("org_unit_source_mode")
+        )
+        if source_mode not in (None, "primary"):
+            return None
+        primary_instance_id = _normalize_optional_int(
+            row.get("primary_instance_id") or dataset_config.get("primary_instance_id")
+        )
+        if primary_instance_id is not None:
+            primary_instance_ids.add(primary_instance_id)
+        scope = _normalize_optional_str(
+            row.get("org_unit_scope") or dataset_config.get("org_unit_scope")
+        )
+        if scope:
+            scopes.add(scope)
+        for raw_detail in _normalize_list(dataset_config.get("org_unit_details")):
+            if not isinstance(raw_detail, dict):
+                continue
+            selection_key = _normalize_optional_str(
+                raw_detail.get("selectionKey")
+                or raw_detail.get("id")
+                or raw_detail.get("sourceOrgUnitId")
+            )
+            if not selection_key:
+                continue
+            selection_details.setdefault(selection_key, dict(raw_detail))
+
+    if len(primary_instance_ids) != 1 or not selection_details:
+        return None
+    if len(scopes) > 1:
+        return None
+
+    primary_instance_id = next(iter(primary_instance_ids))
+    code_map = _build_instance_code_map(instance_rows)
+    source_instance_code = code_map.get(primary_instance_id)
+    selected_org_unit_details: list[dict[str, Any]] = []
+    repository_org_units: list[dict[str, Any]] = []
+    for detail in selection_details.values():
+        selection_key = _normalize_optional_str(
+            detail.get("selectionKey") or detail.get("id") or detail.get("sourceOrgUnitId")
+        )
+        source_uid = _normalize_optional_str(
+            detail.get("sourceOrgUnitId") or detail.get("id")
+        )
+        display_name = _normalize_optional_str(
+            detail.get("displayName") or detail.get("name")
+        )
+        if not selection_key or not source_uid or not display_name:
+            continue
+        level = _normalize_optional_int(detail.get("level"))
+        repository_level = (
+            _normalize_optional_int(detail.get("repositoryLevel")) or level
+        )
+        path = _normalize_optional_str(detail.get("path")) or f"/{source_uid}"
+        selected_org_unit_details.append(
+            {
+                "id": selection_key,
+                "selectionKey": selection_key,
+                "sourceOrgUnitId": source_uid,
+                "displayName": display_name,
+                "level": level,
+                "path": path,
+                "sourceInstanceIds": [primary_instance_id],
+                "repositoryLevel": repository_level,
+                "repositoryLevelName": display_name,
+            }
+        )
+        repository_org_units.append(
+            {
+                "repository_key": selection_key,
+                "display_name": display_name,
+                "parent_repository_key": None,
+                "level": repository_level,
+                "hierarchy_path": selection_key,
+                "selection_key": selection_key,
+                "strategy": "primary_instance",
+                "is_conflicted": False,
+                "is_unmatched": False,
+                "provenance": {
+                    "inferred": True,
+                    "backfilled_from": "dhis2_staged_dataset_configs",
+                    "dataset_ids": dataset_ids,
+                },
+                "lineage": [
+                    {
+                        "instance_id": primary_instance_id,
+                        "source_instance_code": source_instance_code,
+                        "source_org_unit_uid": source_uid,
+                        "source_org_unit_name": display_name,
+                        "source_parent_uid": None,
+                        "source_path": path,
+                        "source_level": level,
+                        "provenance": {
+                            "backfilled_from": "dhis2_staged_dataset_configs",
+                            "dataset_ids": dataset_ids,
+                        },
+                    }
+                ],
+            }
+        )
+
+    if not repository_org_units:
+        return None
+
+    return {
+        "repository_reporting_unit_approach": "primary_instance",
+        "lowest_data_level_to_use": None,
+        "primary_instance_id": primary_instance_id,
+        "repository_data_scope": next(iter(scopes)) if scopes else "selected",
+        "repository_org_unit_config": {
+            "selected_org_units": sorted(selection_details.keys()),
+            "selected_org_unit_details": selected_org_unit_details,
+            "repository_org_units": repository_org_units,
+            "backfilled_from": "dhis2_staged_dataset_configs",
+            "backfilled_dataset_ids": dataset_ids,
+        },
+    }
+
+
+def ensure_metadata_schema_compatibility() -> None:
+    """Repair local metadata-schema drift for DHIS2 repository features.
+
+    Some local workspaces have drifted SQLite metadata DBs whose Alembic
+    revision marker does not match the actual physical schema. Repair the
+    small set of DHIS2 repository tables/columns needed by the UI so the app
+    can start and load repository-aware database records.
+    """
+    try:
+        from superset.extensions import db  # pylint: disable=import-outside-toplevel
+
+        with db.engine.begin() as connection:
+            inspector = inspect(connection)
+            if not _table_exists(inspector, "dbs"):
+                return
+
+            dbs_columns = _column_names(inspector, "dbs")
+            for column_name, column_type in _REPOSITORY_SCHEMA_COLUMNS:
+                if column_name not in dbs_columns:
+                    connection.execute(
+                        text(f"ALTER TABLE dbs ADD COLUMN {column_name} {column_type}")
+                    )
+
+            inspector = inspect(connection)
+            if not _table_exists(inspector, "dhis2_repository_org_units"):
+                connection.execute(
+                    text(
+                        """
+                        CREATE TABLE dhis2_repository_org_units (
+                            id INTEGER PRIMARY KEY,
+                            database_id INTEGER NOT NULL,
+                            repository_key VARCHAR(255) NOT NULL,
+                            display_name VARCHAR(255) NOT NULL,
+                            parent_repository_key VARCHAR(255),
+                            level INTEGER,
+                            hierarchy_path TEXT,
+                            selection_key VARCHAR(255),
+                            strategy VARCHAR(50),
+                            source_lineage_label VARCHAR(50),
+                            is_conflicted BOOLEAN NOT NULL DEFAULT 0,
+                            is_unmatched BOOLEAN NOT NULL DEFAULT 0,
+                            provenance_json TEXT,
+                            FOREIGN KEY(database_id) REFERENCES dbs(id) ON DELETE CASCADE
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE UNIQUE INDEX uq_dhis2_repository_org_units_db_key
+                        ON dhis2_repository_org_units (database_id, repository_key)
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX ix_dhis2_repository_org_units_database_id
+                        ON dhis2_repository_org_units (database_id)
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX ix_dhis2_repository_org_units_database_id_level
+                        ON dhis2_repository_org_units (database_id, level)
+                        """
+                    )
+                )
+
+            inspector = inspect(connection)
+            if not _table_exists(inspector, "dhis2_repository_org_unit_lineage"):
+                connection.execute(
+                    text(
+                        """
+                        CREATE TABLE dhis2_repository_org_unit_lineage (
+                            id INTEGER PRIMARY KEY,
+                            repository_org_unit_id INTEGER NOT NULL,
+                            database_id INTEGER NOT NULL,
+                            instance_id INTEGER NOT NULL,
+                            source_instance_role VARCHAR(50),
+                            source_instance_code VARCHAR(20),
+                            source_org_unit_uid VARCHAR(255) NOT NULL,
+                            source_org_unit_name VARCHAR(255),
+                            source_parent_uid VARCHAR(255),
+                            source_path TEXT,
+                            source_level INTEGER,
+                            provenance_json TEXT,
+                            FOREIGN KEY(repository_org_unit_id) REFERENCES dhis2_repository_org_units(id) ON DELETE CASCADE,
+                            FOREIGN KEY(database_id) REFERENCES dbs(id) ON DELETE CASCADE,
+                            FOREIGN KEY(instance_id) REFERENCES dhis2_instances(id) ON DELETE CASCADE
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE UNIQUE INDEX uq_dhis2_repository_org_unit_lineage
+                        ON dhis2_repository_org_unit_lineage (
+                            repository_org_unit_id,
+                            instance_id,
+                            source_org_unit_uid
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX ix_dhis2_repository_org_unit_lineage_database_id
+                        ON dhis2_repository_org_unit_lineage (database_id)
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX ix_dhis2_repository_org_unit_lineage_instance_id
+                        ON dhis2_repository_org_unit_lineage (instance_id)
+                        """
+                    )
+                )
+
+            database_rows = connection.execute(
+                text(
+                    """
+                    SELECT
+                      id,
+                      sqlalchemy_uri,
+                      repository_reporting_unit_approach,
+                      repository_org_unit_config_json
+                    FROM dbs
+                    """
+                )
+            ).mappings()
+            for database_row in database_rows:
+                database_id = _normalize_optional_int(database_row.get("id"))
+                if database_id is None:
+                    continue
+                sqlalchemy_uri = _normalize_optional_str(
+                    database_row.get("sqlalchemy_uri")
+                ) or ""
+                if not sqlalchemy_uri.startswith("dhis2://"):
+                    continue
+                if _normalize_optional_str(
+                    database_row.get("repository_reporting_unit_approach")
+                ) or _loads_json_dict(database_row.get("repository_org_unit_config_json")):
+                    continue
+                existing_repository_units = connection.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM dhis2_repository_org_units
+                        WHERE database_id = :database_id
+                        """
+                    ),
+                    {"database_id": database_id},
+                ).scalar_one()
+                if existing_repository_units:
+                    continue
+
+                instance_rows = list(
+                    connection.execute(
+                        text(
+                            """
+                            SELECT id, name, display_order
+                            FROM dhis2_instances
+                            WHERE database_id = :database_id
+                            ORDER BY display_order, name, id
+                            """
+                        ),
+                        {"database_id": database_id},
+                    ).mappings()
+                )
+                dataset_rows = list(
+                    connection.execute(
+                        text(
+                            """
+                            SELECT
+                              id,
+                              dataset_config,
+                              primary_instance_id,
+                              org_unit_source_mode,
+                              org_unit_scope
+                            FROM dhis2_staged_datasets
+                            WHERE database_id = :database_id
+                            ORDER BY id
+                            """
+                        ),
+                        {"database_id": database_id},
+                    ).mappings()
+                )
+                inferred = _infer_repository_backfill_payload(
+                    instance_rows=instance_rows,
+                    dataset_rows=dataset_rows,
+                )
+                if not inferred:
+                    continue
+
+                connection.execute(
+                    text(
+                        """
+                        UPDATE dbs
+                        SET
+                          repository_reporting_unit_approach = :approach,
+                          lowest_data_level_to_use = :lowest_level,
+                          primary_instance_id = :primary_instance_id,
+                          repository_data_scope = :data_scope,
+                          repository_org_unit_config_json = :config_json,
+                          repository_org_unit_status = :status,
+                          repository_org_unit_status_message = NULL,
+                          repository_org_unit_task_id = NULL,
+                          repository_org_unit_last_finalized_at = CURRENT_TIMESTAMP
+                        WHERE id = :database_id
+                        """
+                    ),
+                    {
+                        "database_id": database_id,
+                        "approach": inferred["repository_reporting_unit_approach"],
+                        "lowest_level": inferred["lowest_data_level_to_use"],
+                        "primary_instance_id": inferred["primary_instance_id"],
+                        "data_scope": inferred["repository_data_scope"],
+                        "config_json": json.dumps(
+                            inferred["repository_org_unit_config"],
+                            sort_keys=True,
+                        ),
+                        "status": "ready",
+                    },
+                )
+
+                instance_code_map = _build_instance_code_map(instance_rows)
+                for candidate in _normalize_list(
+                    inferred["repository_org_unit_config"].get("repository_org_units")
+                ):
+                    if not isinstance(candidate, dict):
+                        continue
+                    lineage_rows = [
+                        row
+                        for row in _normalize_list(candidate.get("lineage"))
+                        if isinstance(row, dict)
+                    ]
+                    source_codes = sorted(
+                        {
+                            _normalize_optional_str(lineage_row.get("source_instance_code"))
+                            or instance_code_map.get(
+                                _normalize_optional_int(lineage_row.get("instance_id")) or -1
+                            )
+                            for lineage_row in lineage_rows
+                        }
+                        - {None}
+                    )
+                    repository_result = connection.execute(
+                        text(
+                            """
+                            INSERT INTO dhis2_repository_org_units (
+                              database_id,
+                              repository_key,
+                              display_name,
+                              parent_repository_key,
+                              level,
+                              hierarchy_path,
+                              selection_key,
+                              strategy,
+                              source_lineage_label,
+                              is_conflicted,
+                              is_unmatched,
+                              provenance_json
+                            ) VALUES (
+                              :database_id,
+                              :repository_key,
+                              :display_name,
+                              :parent_repository_key,
+                              :level,
+                              :hierarchy_path,
+                              :selection_key,
+                              :strategy,
+                              :source_lineage_label,
+                              :is_conflicted,
+                              :is_unmatched,
+                              :provenance_json
+                            )
+                            """
+                        ),
+                        {
+                            "database_id": database_id,
+                            "repository_key": candidate.get("repository_key"),
+                            "display_name": candidate.get("display_name"),
+                            "parent_repository_key": candidate.get("parent_repository_key"),
+                            "level": candidate.get("level"),
+                            "hierarchy_path": candidate.get("hierarchy_path"),
+                            "selection_key": candidate.get("selection_key"),
+                            "strategy": candidate.get("strategy"),
+                            "source_lineage_label": ",".join(source_codes) or None,
+                            "is_conflicted": 1 if candidate.get("is_conflicted") else 0,
+                            "is_unmatched": 1 if candidate.get("is_unmatched") else 0,
+                            "provenance_json": json.dumps(
+                                candidate.get("provenance") or {},
+                                sort_keys=True,
+                            ),
+                        },
+                    )
+                    repository_org_unit_id = repository_result.lastrowid
+                    for lineage_row in lineage_rows:
+                        instance_id = _normalize_optional_int(lineage_row.get("instance_id"))
+                        source_org_unit_uid = _normalize_optional_str(
+                            lineage_row.get("source_org_unit_uid")
+                        )
+                        if instance_id is None or not source_org_unit_uid:
+                            continue
+                        connection.execute(
+                            text(
+                                """
+                                INSERT INTO dhis2_repository_org_unit_lineage (
+                                  repository_org_unit_id,
+                                  database_id,
+                                  instance_id,
+                                  source_instance_role,
+                                  source_instance_code,
+                                  source_org_unit_uid,
+                                  source_org_unit_name,
+                                  source_parent_uid,
+                                  source_path,
+                                  source_level,
+                                  provenance_json
+                                ) VALUES (
+                                  :repository_org_unit_id,
+                                  :database_id,
+                                  :instance_id,
+                                  :source_instance_role,
+                                  :source_instance_code,
+                                  :source_org_unit_uid,
+                                  :source_org_unit_name,
+                                  :source_parent_uid,
+                                  :source_path,
+                                  :source_level,
+                                  :provenance_json
+                                )
+                                """
+                            ),
+                            {
+                                "repository_org_unit_id": repository_org_unit_id,
+                                "database_id": database_id,
+                                "instance_id": instance_id,
+                                "source_instance_role": _normalize_optional_str(
+                                    lineage_row.get("source_instance_role")
+                                ),
+                                "source_instance_code": _normalize_optional_str(
+                                    lineage_row.get("source_instance_code")
+                                )
+                                or instance_code_map.get(instance_id),
+                                "source_org_unit_uid": source_org_unit_uid,
+                                "source_org_unit_name": _normalize_optional_str(
+                                    lineage_row.get("source_org_unit_name")
+                                ),
+                                "source_parent_uid": _normalize_optional_str(
+                                    lineage_row.get("source_parent_uid")
+                                ),
+                                "source_path": _normalize_optional_str(
+                                    lineage_row.get("source_path")
+                                ),
+                                "source_level": _normalize_optional_int(
+                                    lineage_row.get("source_level")
+                                ),
+                                "provenance_json": json.dumps(
+                                    lineage_row.get("provenance") or {},
+                                    sort_keys=True,
+                                ),
+                            },
+                        )
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "compat_backfill: metadata schema repair failed — continuing without repository repair",
+            exc_info=True,
+        )
 
 
 def _sanitize_for_column(value: str) -> str:
@@ -246,6 +909,7 @@ def _backfill_one_dataset(
     from superset.dhis2.analytical_serving import (  # pylint: disable=import-outside-toplevel
         dataset_columns_payload,
     )
+    from superset.datasets.policy import DatasetRole  # pylint: disable=import-outside-toplevel
     from superset.dhis2.superset_dataset_service import (  # pylint: disable=import-outside-toplevel
         register_serving_table_as_superset_dataset,
     )
@@ -302,6 +966,18 @@ def _backfill_one_dataset(
         )
         serving_cols = dataset_columns_payload(manifest_columns)
 
+        # Always repair the base `sv_*` source dataset as the hidden physical
+        # DHIS2 source dataset, even when a consolidated `_mart` table also exists.
+        register_serving_table_as_superset_dataset(
+            dataset_id=dataset.id,
+            dataset_name=dataset.name,
+            serving_table_ref=full_name,
+            serving_columns=serving_cols,
+            serving_database_id=serving_db_id,
+            source_database_id=dataset.database_id,
+            dataset_role=DatasetRole.SOURCE.value,
+        )
+
         # Derive mart table ref for this dataset
         mart_table_name = f"{table_name}_mart"
         has_mart = (
@@ -309,7 +985,6 @@ def _backfill_one_dataset(
             and engine.named_table_exists_in_serving(mart_table_name)
         )
         if has_mart:
-            # Register/update mart record (MART_DATASET role, sql → _mart table)
             register_specialized_marts_as_superset_datasets(
                 dataset_id=dataset.id,
                 dataset_name=dataset.name,
@@ -319,21 +994,162 @@ def _backfill_one_dataset(
                 engine=engine,
                 dataset=dataset,
             )
-        else:
-            # No mart yet — just register the base record without overwriting role
-            register_serving_table_as_superset_dataset(
-                dataset_id=dataset.id,
-                dataset_name=dataset.name,
-                serving_table_ref=full_name,
-                serving_columns=serving_cols,
-                serving_database_id=serving_db_id,
-            )
     except Exception:  # pylint: disable=broad-except
         logger.warning(
             "compat_backfill: SqlaTable re-registration failed for dataset id=%s",
             dataset.id,
             exc_info=True,
         )
+
+
+def repair_dhis2_dataset_roles() -> int:
+    """Restore the intended DHIS2 dataset role split on existing SqlaTable rows."""
+    from superset import db  # pylint: disable=import-outside-toplevel
+    from superset.connectors.sqla.models import SqlaTable  # pylint: disable=import-outside-toplevel
+    from superset.datasets.policy import DatasetRole  # pylint: disable=import-outside-toplevel
+    from superset.dhis2.models import DHIS2StagedDataset  # pylint: disable=import-outside-toplevel
+    from superset.dhis2.superset_dataset_service import (  # pylint: disable=import-outside-toplevel
+        register_metadata_dataset_as_superset_dataset,
+    )
+
+    candidates = (
+        db.session.query(SqlaTable)
+        .filter(
+            SqlaTable.extra.like('%"dhis2_staged_dataset_id":%')
+            | SqlaTable.extra.like('%"dhis2_staged_dataset_id": %')
+        )
+        .all()
+    )
+
+    repaired = 0
+    source_display_by_base_name: dict[str, str] = {}
+    metadata_registrations: list[dict[str, Any]] = []
+    candidates.sort(key=_dhis2_repair_sort_key)
+
+    for dataset in candidates:
+        table_name = str(getattr(dataset, "table_name", "") or "")
+        try:
+            extra = json.loads(getattr(dataset, "extra", None) or "{}")
+        except Exception:  # pylint: disable=broad-except
+            extra = {}
+        base_table_name = re.sub(r"_mart$", "", table_name, flags=re.IGNORECASE)
+        desired_role = _classify_dhis2_dataset_role(dataset, extra)
+
+        if getattr(dataset, "dataset_role", None) != desired_role:
+            dataset.dataset_role = desired_role
+            repaired += 1
+
+        staged_dataset_id = extra.get("dhis2_staged_dataset_id")
+        staged_dataset = (
+            db.session.get(DHIS2StagedDataset, staged_dataset_id)
+            if isinstance(staged_dataset_id, int)
+            else None
+        )
+        base_display_name = _normalize_optional_str(
+            getattr(staged_dataset, "name", None),
+        )
+        current_display_name = _normalize_optional_str(
+            extra.get("dhis2_dataset_display_name"),
+        )
+        legacy_display_name = _legacy_dataset_display_name_from_table_name(table_name)
+        sibling_source_display_name = _normalize_optional_str(
+            source_display_by_base_name.get(base_table_name),
+        )
+        if not base_display_name and sibling_source_display_name:
+            base_display_name = sibling_source_display_name
+        if not base_display_name and current_display_name:
+            normalized_current_display_name = re.sub(
+                r"\s+\[MART\]$",
+                "",
+                current_display_name,
+                flags=re.IGNORECASE,
+            )
+            if normalized_current_display_name != legacy_display_name:
+                base_display_name = normalized_current_display_name
+        if not base_display_name:
+            base_display_name = _improved_dataset_display_name_from_table_name(
+                table_name,
+            ) or None
+
+        if base_display_name:
+            desired_display_name = (
+                f"{base_display_name} [MART]"
+                if desired_role == DatasetRole.MART.value
+                else base_display_name
+            )
+            if extra.get("dhis2_dataset_display_name") != desired_display_name:
+                extra["dhis2_dataset_display_name"] = desired_display_name
+                dataset.extra = json.dumps(extra)
+                repaired += 1
+            if desired_role == DatasetRole.SOURCE.value:
+                source_display_by_base_name[base_table_name] = base_display_name
+                source_database_id = _normalize_optional_int(
+                    extra.get("dhis2_source_database_id"),
+                )
+                serving_database_id = _normalize_optional_int(
+                    extra.get("dhis2_serving_database_id"),
+                )
+                source_instance_ids = _normalize_list(
+                    extra.get("dhis2_source_instance_ids"),
+                )
+                if (
+                    isinstance(staged_dataset_id, int)
+                    and source_database_id is not None
+                    and serving_database_id is not None
+                    and extra.get("dhis2_serving_table_ref")
+                    and not getattr(dataset, "sql", None)
+                ):
+                    metadata_registrations.append(
+                        {
+                            "dataset_id": staged_dataset_id,
+                            "dataset_name": base_display_name,
+                            "serving_table_ref": str(
+                                extra.get("dhis2_serving_table_ref"),
+                            ),
+                            "source_database_id": source_database_id,
+                            "serving_database_id": serving_database_id,
+                            "source_instance_ids": source_instance_ids,
+                            "serving_columns": [
+                                {
+                                    "column_name": column.column_name,
+                                    "type": column.type,
+                                    "is_dttm": column.is_dttm,
+                                    "filterable": column.filterable,
+                                    "groupby": column.groupby,
+                                    "is_active": column.is_active,
+                                    "description": column.description,
+                                    "verbose_name": column.verbose_name,
+                                    "extra": column.extra,
+                                }
+                                for column in getattr(dataset, "columns", []) or []
+                            ],
+                        }
+                    )
+
+    if repaired:
+        db.session.commit()
+        logger.info("compat_backfill: repaired role/display metadata on %d DHIS2 datasets", repaired)
+
+    metadata_repaired = 0
+    for registration in metadata_registrations:
+        try:
+            register_metadata_dataset_as_superset_dataset(**registration)
+            metadata_repaired += 1
+        except Exception:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.warning(
+                "compat_backfill: metadata dataset repair failed for staged dataset id=%s",
+                registration.get("dataset_id"),
+                exc_info=True,
+            )
+
+    if metadata_repaired:
+        logger.info(
+            "compat_backfill: ensured %d DHIS2 metadata datasets",
+            metadata_repaired,
+        )
+
+    return repaired
 
 
 def run_compatibility_backfill() -> None:
@@ -344,10 +1160,19 @@ def run_compatibility_backfill() -> None:
     whose serving tables do not yet exist are skipped — they will be built
     correctly when the next sync runs.
     """
+    ensure_metadata_schema_compatibility()
+    try:
+        repair_dhis2_dataset_roles()
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("compat_backfill: dataset_role repair failed", exc_info=True)
     try:
         from superset import db  # pylint: disable=import-outside-toplevel
         from superset.dhis2.analytical_serving import (  # pylint: disable=import-outside-toplevel
             build_serving_manifest,
+        )
+        from superset.dhis2.staged_dataset_service import (  # pylint: disable=import-outside-toplevel
+            repair_staged_dataset_definition,
+            recover_missing_staged_datasets_from_sqla_tables,
         )
         from superset.dhis2.models import DHIS2StagedDataset  # pylint: disable=import-outside-toplevel
         from superset.local_staging.engine_factory import (  # pylint: disable=import-outside-toplevel
@@ -361,6 +1186,7 @@ def run_compatibility_backfill() -> None:
         except Exception:  # pylint: disable=broad-except
             pass
 
+        recover_missing_staged_datasets_from_sqla_tables()
         datasets = db.session.query(DHIS2StagedDataset).all()
     except _SAOperationalError as _oe:
         # ORM model references columns not yet added by a pending migration
@@ -394,6 +1220,8 @@ def run_compatibility_backfill() -> None:
 
     for dataset in datasets:
         try:
+            repair_staged_dataset_definition(dataset.id)
+            dataset = db.session.get(DHIS2StagedDataset, dataset.id) or dataset
             engine = get_active_staging_engine(dataset.database_id)
 
             if not engine.serving_table_exists(dataset):

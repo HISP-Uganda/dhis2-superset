@@ -51,6 +51,25 @@ def is_query_context_update(properties: dict[str, Any]) -> bool:
     )
 
 
+def _resolve_chart_datasource_name(datasource: Any) -> str:
+    extra: dict[str, Any] = {}
+    if hasattr(datasource, "get_extra_dict"):
+        try:
+            extra = datasource.get_extra_dict() or {}
+        except Exception:  # pylint: disable=broad-except
+            extra = {}
+    elif hasattr(datasource, "extra_dict"):
+        try:
+            extra = datasource.extra_dict or {}
+        except Exception:  # pylint: disable=broad-except
+            extra = {}
+
+    display_name = str(extra.get("dhis2_dataset_display_name") or "").strip()
+    if display_name:
+        return display_name
+    return datasource.name
+
+
 class UpdateChartCommand(UpdateMixin, BaseCommand):
     def __init__(self, model_id: int, data: dict[str, Any]):
         self._model_id = model_id
@@ -141,14 +160,19 @@ class UpdateChartCommand(UpdateMixin, BaseCommand):
         if datasource_id is not None:
             try:
                 datasource = get_datasource_by_id(datasource_id, datasource_type)
-                self._properties["datasource_name"] = datasource.name
+                self._properties["datasource_name"] = _resolve_chart_datasource_name(
+                    datasource
+                )
 
                 # Validate dataset role
                 if hasattr(datasource, "dataset_role") and datasource.dataset_role:
                     try:
                         from superset.datasets.policy import DatasetContext, DatasetEligibilityPolicy, DatasetRole
                         role = DatasetRole(datasource.dataset_role)
-                        if not DatasetEligibilityPolicy.is_eligible(role, DatasetContext.CHART):
+                        if not DatasetEligibilityPolicy.is_dataset_eligible(
+                            datasource,
+                            DatasetContext.CHART,
+                        ):
                             from superset.commands.chart.exceptions import ChartInvalidDatasetRoleError
                             exceptions.append(ChartInvalidDatasetRoleError(role))
                     except ValueError:

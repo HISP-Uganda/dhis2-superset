@@ -68,6 +68,44 @@ describe('getInitialState', () => {
     ).toBeUndefined();
   });
 
+  test('should fall back to the first available database when the active tab database is missing', () => {
+    const state = getInitialState({
+      ...apiDataWithTabState,
+      active_tab: {
+        ...apiDataWithTabState.active_tab,
+        database_id: 999,
+      },
+      databases: {
+        4: {
+          id: 4,
+          database_name: 'DHIS2 Serving (ClickHouse)',
+          expose_in_sqllab: true,
+        },
+      },
+    });
+
+    expect(state.sqlLab.queryEditors[0].dbId).toBe(4);
+  });
+
+  test('should use the first available database when the active tab has no database set', () => {
+    const state = getInitialState({
+      ...apiDataWithTabState,
+      active_tab: {
+        ...apiDataWithTabState.active_tab,
+        database_id: null,
+      },
+      databases: {
+        4: {
+          id: 4,
+          database_name: 'DHIS2 Serving (ClickHouse)',
+          expose_in_sqllab: true,
+        },
+      },
+    });
+
+    expect(state.sqlLab.queryEditors[0].dbId).toBe(4);
+  });
+
   // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
   describe('dedupeTabHistory', () => {
     test('should dedupe the tab history', () => {

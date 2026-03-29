@@ -930,7 +930,7 @@ export default function DHIS2ConfiguredConnectionsPanel({
 
       <Modal
         cancelText={t('Cancel')}
-        destroyOnClose
+        destroyOnHidden
         okButtonProps={{ loading: submitting }}
         okText={t('Save')}
         open={modalOpen}

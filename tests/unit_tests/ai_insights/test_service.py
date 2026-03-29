@@ -47,7 +47,7 @@ def test_generate_chart_insight_uses_mart_backed_chart(
         id=9,
         table_name="admissions_mart",
         schema="public",
-        dataset_role="MART_DATASET",
+        dataset_role="MART",
         database=SimpleNamespace(backend="postgresql"),
     )
     chart = SimpleNamespace(

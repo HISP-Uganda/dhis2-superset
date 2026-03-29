@@ -50,6 +50,7 @@ def database_with_catalog(mocker: MockerFixture) -> MagicMock:
         ["schema3", "schema4"],
     ]
     database.get_default_catalog.return_value = "catalog2"
+    database.repository_reporting_unit_approach = None
 
     return database
 
@@ -66,6 +67,7 @@ def database_without_catalog(mocker: MockerFixture) -> MagicMock:
     database.get_all_schema_names.return_value = ["schema1", "schema2"]
     database.is_oauth2_enabled.return_value = False
     database.db_engine_spec.needs_oauth2.return_value = False
+    database.repository_reporting_unit_approach = None
 
     return database
 
@@ -88,5 +90,6 @@ def database_needs_oauth2(mocker: MockerFixture) -> MagicMock:
     database.db_engine_spec.unmask_encrypted_extra = (
         BaseEngineSpec.unmask_encrypted_extra
     )
+    database.repository_reporting_unit_approach = None
 
     return database

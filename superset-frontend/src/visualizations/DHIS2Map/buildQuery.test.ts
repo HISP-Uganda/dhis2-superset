@@ -166,6 +166,33 @@ describe('DHIS2Map buildQuery', () => {
     ]);
   });
 
+  test('keeps raw metric rows for none aggregation', () => {
+    const queryContext = buildQuery({
+      datasource: '4__table',
+      viz_type: 'dhis2_map',
+      metric: 'c_105_ep01b_malaria_tested_b_s_rdt',
+      org_unit_column: 'district_city',
+      aggregation_method: 'none',
+      dhis2_staged_local_dataset: 'true',
+      dhis2_hierarchy_columns: [
+        'national',
+        'region',
+        'district_city',
+        'dlg_municipality_city_council',
+      ],
+    } as any);
+
+    const [query] = queryContext.queries;
+    expect(query.metrics).toEqual([]);
+    expect(query.groupby).toEqual([
+      'national',
+      'region',
+      'district_city',
+      'dlg_municipality_city_council',
+      'c_105_ep01b_malaria_tested_b_s_rdt',
+    ]);
+  });
+
   test('defaults unsaved legacy maps to the serving-table query path', () => {
     const queryContext = buildQuery({
       datasource: '4__table',

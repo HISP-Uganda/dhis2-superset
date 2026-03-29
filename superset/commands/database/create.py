@@ -43,6 +43,10 @@ from superset.commands.database.utils import add_permissions
 from superset.daos.database import DatabaseDAO
 from superset.databases.ssh_tunnel.models import SSHTunnel
 from superset.db_engine_specs.dhis2 import DHIS2EngineSpec
+from superset.dhis2.database_repository_org_unit_service import (
+    DatabaseRepositoryOrgUnitService,
+    extract_repository_reporting_unit_payload,
+)
 from superset.dhis2.metadata_staging_service import (
     schedule_database_metadata_refresh_after_commit,
 )
@@ -58,10 +62,14 @@ stats_logger = app.config["STATS_LOGGER"]
 class CreateDatabaseCommand(BaseCommand):
     def __init__(self, data: dict[str, Any]):
         self._properties = data.copy()
+        self._repository_reporting_unit_payload = (
+            extract_repository_reporting_unit_payload(self._properties)
+        )
 
     @transaction(on_error=partial(on_error, reraise=DatabaseCreateFailedError))
     def run(self) -> Model:
         self.validate()
+        database: Database | None = None
 
         try:
             # A logical DHIS2 database shell is only a container for child instances.
@@ -129,7 +137,11 @@ class CreateDatabaseCommand(BaseCommand):
         ) as ex:
             event_logger.log_with_context(
                 action=f"db_creation_failed.{ex.__class__.__name__}",
-                engine=database.db_engine_spec.__name__,
+                engine=(
+                    database.db_engine_spec.__name__
+                    if database is not None
+                    else self._properties.get("sqlalchemy_uri", "").split(":")[0]
+                ),
             )
             raise DatabaseCreateFailedError() from ex
 
@@ -171,8 +183,16 @@ class CreateDatabaseCommand(BaseCommand):
             "{}",
         )
 
-        database = DatabaseDAO.create(attributes=self._properties)
-        database.set_sqlalchemy_uri(database.sqlalchemy_uri)
+        try:
+            database = DatabaseDAO.create(attributes=self._properties)
+            database.set_sqlalchemy_uri(database.sqlalchemy_uri)
+            if self._repository_reporting_unit_payload:
+                DatabaseRepositoryOrgUnitService.validate_and_stage(
+                    database,
+                    self._repository_reporting_unit_payload,
+                )
+        except ValidationError as ex:
+            raise DatabaseInvalidError(exceptions=[ex]) from ex
         return database
 
     @staticmethod
@@ -183,3 +203,7 @@ class CreateDatabaseCommand(BaseCommand):
             database.id,
             reason="database_created",
         )
+        if database.repository_reporting_unit_approach:
+            DatabaseRepositoryOrgUnitService.schedule_finalization_after_commit(
+                database.id
+            )

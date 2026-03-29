@@ -7,11 +7,14 @@ from flask import current_app
 from sqlalchemy import and_
 
 from superset import db
-from superset.connectors.sqla.models import SqlaTable
+from superset.connectors.sqla.models import (
+    SqlaTable,
+    _resolve_dhis2_staged_local_table_ref,
+)
 from superset.models.core import Database
 from superset.sql.parse import SQLScript, Table
 
-MART_ROLE_MARKERS = {"MART", "SERVING_DATASET", "MART_DATASET", "SERVING"}
+MART_ROLE_MARKERS = {"MART"}
 LIMIT_RE = re.compile(r"\blimit\b", re.IGNORECASE)
 
 
@@ -19,20 +22,45 @@ class AISQLValidationError(Exception):
     pass
 
 
+def _normalize_schema_name(schema: str | None) -> str | None:
+    normalized = str(schema or "").strip()
+    return normalized or None
+
+
+def _resolve_dataset_table_ref(dataset: SqlaTable) -> tuple[str | None, str]:
+    schema_name = _normalize_schema_name(getattr(dataset, "schema", None))
+    table_name = str(getattr(dataset, "table_name", "") or "").strip()
+    if table_ref := _resolve_dhis2_staged_local_table_ref(
+        getattr(dataset, "extra_dict", {}),
+        getattr(dataset, "sql", None),
+    ):
+        schema_name, table_name = table_ref
+    return schema_name, table_name
+
+
 def is_mart_table(dataset: SqlaTable) -> bool:
     role = str(getattr(dataset, "dataset_role", "") or "").upper()
-    if role in MART_ROLE_MARKERS or "MART" in role or "SERVING" in role:
+    if role in MART_ROLE_MARKERS:
         return True
     table_name = str(getattr(dataset, "table_name", "") or "")
     return table_name.lower().endswith("_mart")
 
 
 def list_mart_tables(database_id: int, schema: str | None = None) -> list[SqlaTable]:
-    query = db.session.query(SqlaTable).filter(SqlaTable.database_id == database_id)
-    if schema is not None:
-        query = query.filter(SqlaTable.schema == schema)
-    tables = query.all()
-    return [table for table in tables if is_mart_table(table)]
+    requested_schema = _normalize_schema_name(schema)
+    tables = (
+        db.session.query(SqlaTable)
+        .filter(SqlaTable.database_id == database_id)
+        .all()
+    )
+    mart_tables: list[SqlaTable] = []
+    for table in tables:
+        if not is_mart_table(table):
+            continue
+        resolved_schema, _ = _resolve_dataset_table_ref(table)
+        if requested_schema is None or resolved_schema == requested_schema:
+            mart_tables.append(table)
+    return mart_tables
 
 
 def build_mart_schema_context(
@@ -44,10 +72,12 @@ def build_mart_schema_context(
 ) -> list[dict[str, Any]]:
     context: list[dict[str, Any]] = []
     for table in list_mart_tables(database_id, schema)[:max_tables]:
+        resolved_schema, resolved_table = _resolve_dataset_table_ref(table)
         context.append(
             {
-                "table": table.table_name,
-                "schema": table.schema,
+                "table": resolved_table,
+                "schema": resolved_schema,
+                "dataset_name": table.table_name,
                 "description": table.description,
                 "columns": [
                     {
@@ -63,7 +93,8 @@ def build_mart_schema_context(
 
 
 def table_identifier(schema: str | None, table_name: str) -> str:
-    return f"{schema}.{table_name}" if schema else table_name
+    normalized_schema = _normalize_schema_name(schema)
+    return f"{normalized_schema}.{table_name}" if normalized_schema else table_name
 
 
 def _allowed_table_maps(
@@ -72,13 +103,14 @@ def _allowed_table_maps(
     identifiers: set[str] = set()
     table_to_schemas: dict[str, set[str]] = {}
     for table in allowed_tables:
-        identifiers.add(table_identifier(table.schema, table.table_name))
-        table_to_schemas.setdefault(table.table_name, set()).add(table.schema or "")
+        schema_name, table_name = _resolve_dataset_table_ref(table)
+        identifiers.add(table_identifier(schema_name, table_name))
+        table_to_schemas.setdefault(table_name, set()).add(schema_name or "")
     return identifiers, table_to_schemas
 
 
 def _normalize_table_ref(table: Table, default_schema: str | None) -> str:
-    schema = table.schema or default_schema
+    schema = _normalize_schema_name(table.schema) or _normalize_schema_name(default_schema)
     return table_identifier(schema, table.table)
 
 
@@ -97,6 +129,7 @@ def ensure_mart_only_sql(
     *,
     schema: str | None = None,
 ) -> dict[str, Any]:
+    schema = _normalize_schema_name(schema)
     script = ensure_select_only_sql(database, sql)
     mart_tables = list_mart_tables(database.id, schema)
     if not mart_tables:

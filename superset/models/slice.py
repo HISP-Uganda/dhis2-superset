@@ -186,15 +186,30 @@ class Slice(  # pylint: disable=too-many-public-methods
         return datasource.explore_url if datasource else None
 
     def datasource_name_text(self) -> str | None:
-        if self.table:
-            if self.table.schema:
-                return f"{self.table.schema}.{self.table.table_name}"
-            return self.table.table_name
-        if self.datasource:
-            if self.datasource.schema:
-                return f"{self.datasource.schema}.{self.datasource.name}"
-            return self.datasource.name
-        return None
+        datasource = self.table or self.datasource
+        persisted_name = str(self.datasource_name or "").strip()
+        if datasource:
+            extra = {}
+            if hasattr(datasource, "extra_dict"):
+                extra = datasource.extra_dict or {}
+            elif hasattr(datasource, "get_extra_dict"):
+                extra = datasource.get_extra_dict() or {}
+            display_name = extra.get("dhis2_dataset_display_name")
+            if isinstance(display_name, str) and display_name.strip():
+                return display_name.strip()
+
+            if persisted_name.endswith("[MART]"):
+                if datasource.schema and persisted_name.startswith(f"{datasource.schema}."):
+                    return persisted_name.split(".", 1)[1]
+                return persisted_name
+
+            table_name = getattr(datasource, "table_name", None) or getattr(
+                datasource, "name", None
+            )
+            if datasource.schema and table_name:
+                return f"{datasource.schema}.{table_name}"
+            return table_name
+        return persisted_name or None
 
     @property
     def datasource_edit_url(self) -> str | None:
@@ -232,7 +247,7 @@ class Slice(  # pylint: disable=too-many-public-methods
             "cache_timeout": self.cache_timeout,
             "changed_on": self.changed_on.isoformat(),
             "changed_on_humanized": self.changed_on_humanized,
-            "datasource": self.datasource_name,
+            "datasource": self.datasource_name_text() or self.datasource_name,
             "description": self.description,
             "description_markeddown": self.description_markeddown,
             "edit_url": self.edit_url,

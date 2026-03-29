@@ -179,9 +179,13 @@ export function useTables(options: Params) {
     () => new Set(schemaOptions?.map(({ value }) => value)),
     [schemaOptions],
   );
+  const hasSchemaSelection = schema !== undefined;
 
   const enabled = Boolean(
-    dbId && schema && !isFetching && schemaOptionsMap.has(schema),
+    dbId &&
+      hasSchemaSelection &&
+      !isFetching &&
+      (!schema || !schemaOptions?.length || schemaOptionsMap.has(schema)),
   );
 
   const result = useTablesQuery(
