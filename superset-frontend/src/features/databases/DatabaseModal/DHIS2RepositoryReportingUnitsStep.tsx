@@ -51,14 +51,6 @@ const SELECT_DROPDOWN_STYLE = {
   overflow: 'auto' as const,
 };
 
-function getSelectPopupContainer(triggerNode: HTMLElement): HTMLElement {
-  return (
-    (triggerNode.closest('.ant-modal-content') as HTMLElement | null) ||
-    triggerNode.parentElement ||
-    document.body
-  );
-}
-
 const StepContainer = styled.div`
   display: flex;
   flex-direction: column;
@@ -1322,6 +1314,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
           <div>
             <Text strong>{t('Repository reporting unit approach')}</Text>
             <Select
+              virtual={false}
               value={approach}
               onChange={value =>
                 setApproach(value as RepositoryReportingUnitApproach)
@@ -1354,6 +1347,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
             <div>
               <Text strong>{t('Fallback behavior for unmatched units')}</Text>
               <Select
+                virtual={false}
                 options={[
                   {
                     value: 'preserve_unmatched',
@@ -1377,6 +1371,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
             <div>
               <Text strong>{t('Fallback behavior for unresolved conflicts')}</Text>
               <Select
+                virtual={false}
                 options={[
                   {
                     value: 'preserve_for_review',
@@ -1550,6 +1545,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
             <Text strong>{t('Enabled hierarchy levels')}</Text>
             <Select
               mode="multiple"
+              virtual={false}
               placeholder={t('Select repository levels')}
               value={enabledLevelKeys}
               onChange={values =>
@@ -1560,7 +1556,6 @@ export default function DHIS2RepositoryReportingUnitsStep({
                 label: option.label,
               }))}
               optionFilterProp="label"
-              getPopupContainer={getSelectPopupContainer}
               dropdownStyle={SELECT_DROPDOWN_STYLE}
               styles={{ root: { width: '100%' } }}
             />
@@ -1576,6 +1571,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
             <Text strong>{t('Enabled org unit group sets')}</Text>
             <Select
               mode="multiple"
+              virtual={false}
               placeholder={t('Select org unit group sets')}
               value={enabledGroupSetKeys}
               onChange={values =>
@@ -1586,7 +1582,6 @@ export default function DHIS2RepositoryReportingUnitsStep({
                 label: option.label,
               }))}
               optionFilterProp="label"
-              getPopupContainer={getSelectPopupContainer}
               dropdownStyle={SELECT_DROPDOWN_STYLE}
               styles={{ root: { width: '100%' } }}
             />
@@ -1602,6 +1597,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
             <Text strong>{t('Enabled org unit groups')}</Text>
             <Select
               mode="multiple"
+              virtual={false}
               placeholder={t('Select org unit groups')}
               value={enabledGroupKeys}
               onChange={values =>
@@ -1612,7 +1608,6 @@ export default function DHIS2RepositoryReportingUnitsStep({
                 label: option.label,
               }))}
               optionFilterProp="label"
-              getPopupContainer={getSelectPopupContainer}
               dropdownStyle={SELECT_DROPDOWN_STYLE}
               styles={{ root: { width: '100%' } }}
             />

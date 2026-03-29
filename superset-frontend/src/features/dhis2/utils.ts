@@ -10,10 +10,17 @@ export const getDatabaseIdFromSearch = (search: string): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
-export const getDHIS2Route = (
-  pathname: string,
-  databaseId?: number,
-): string => {
+export const getDatasetIdFromSearch = (search: string): number | undefined => {
+  const params = new URLSearchParams(search);
+  const rawValue = params.get('dataset');
+  if (!rawValue) {
+    return undefined;
+  }
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+export const getDHIS2Route = (pathname: string, databaseId?: number): string => {
   if (!databaseId) {
     return pathname;
   }

@@ -3100,6 +3100,8 @@ class DHIS2SyncService:
             **selected_detail_map,
             **resolved_detail_map,
         }
+        if not concrete_units and selected_detail_map:
+            concrete_units = list(selected_detail_map.keys())
 
         if org_unit_source_mode == _ORG_UNIT_SOURCE_MODE_PRIMARY:
             primary_units = [

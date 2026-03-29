@@ -416,6 +416,7 @@ export default function DHIS2DatasetWizard({
         variable_type: m.variableType,
         variable_name: m.variableName,
         alias: m.alias || undefined,
+        extra_params: m.extraParams,
       }));
 
       // Attempt staged-dataset creation first (multi-instance path)

@@ -68,14 +68,18 @@ import WizardStepSchedule, {
 import type {
   LevelMappingConfig,
 } from '../DHIS2DatasetWizard/index';
-import buildStagedDhIS2DatasetPayload from '../buildStagedDhIS2DatasetPayload';
 import refreshDatasetMetadata from '../refreshDatasetMetadata';
 
 const { Title, Paragraph, Text } = Typography;
 
 type DatasetType = 'dhis2' | 'database';
 type DatabaseSourceMode = 'table' | 'sql';
-type DataLevelScope = 'selected' | 'children' | 'grandchildren' | 'all_levels';
+type DataLevelScope =
+  | 'selected'
+  | 'children'
+  | 'grandchildren'
+  | 'ancestors'
+  | 'all_levels';
 type OrgUnitSourceMode = 'primary' | 'repository' | 'per_instance' | 'federated';
 type RepositoryDimensionKeys = {
   levels: string[];
@@ -147,6 +151,7 @@ interface VariableMapping {
   instanceId: number;
   instanceName: string;
   alias?: string;
+  extraParams?: Record<string, unknown>;
 }
 
 interface WorkflowState {
@@ -246,6 +251,18 @@ const DEFAULT_SCHEDULE: ScheduleConfig = {
 
 const PREV_URL =
   '/tablemodelview/list/?pageIndex=0&sortColumn=changed_on_delta_humanized&sortOrder=desc';
+
+const buildDHIS2LocalDataMonitorRoute = (
+  databaseId: number,
+  stagedDatasetId?: number,
+): string => {
+  const params = new URLSearchParams();
+  params.set('database', String(databaseId));
+  if (stagedDatasetId) {
+    params.set('dataset', String(stagedDatasetId));
+  }
+  return `/superset/dhis2/local-data/?${params.toString()}`;
+};
 
 const SHELL_BREAKPOINT = 1100;
 const METADATA_POLL_INTERVAL_MS = 4000;
@@ -400,7 +417,81 @@ function normalizeRepositoryDimensionKeys(
   };
 }
 
-function buildRepositoryLevelDimensionOptions(
+function normalizeSelectedOrgUnitDetails(
+  payload: unknown,
+): SelectedOrgUnitDetail[] {
+  return Array.isArray(payload)
+    ? payload.filter(
+        (item): item is SelectedOrgUnitDetail =>
+          !!item && typeof item === 'object' && typeof (item as SelectedOrgUnitDetail).id === 'string',
+      )
+    : [];
+}
+
+function deriveSelectedOrgUnitKeys(
+  details: SelectedOrgUnitDetail[],
+): string[] {
+  return Array.from(
+    new Set(
+      details
+        .map(
+          detail =>
+            detail.selectionKey ||
+            detail.repositoryKey ||
+            detail.sourceOrgUnitId ||
+            detail.id,
+        )
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0),
+    ),
+  );
+}
+
+export function buildEffectiveOrgUnitSelection(state: WorkflowState) {
+  const repositoryConfig = state.database?.repository_org_unit_config;
+  const useRepositoryDefaults =
+    state.orgUnits.length === 0 && state.selectedOrgUnitDetails.length === 0;
+
+  const selectedOrgUnitDetails = useRepositoryDefaults
+    ? normalizeSelectedOrgUnitDetails(repositoryConfig?.selected_org_unit_details)
+    : state.selectedOrgUnitDetails;
+
+  const configuredOrgUnits = Array.isArray(repositoryConfig?.selected_org_units)
+    ? repositoryConfig.selected_org_units.filter(
+        (value): value is string =>
+          typeof value === 'string' && value.trim().length > 0,
+      )
+    : [];
+
+  const orgUnits = useRepositoryDefaults
+    ? Array.from(
+        new Set([
+          ...configuredOrgUnits,
+          ...deriveSelectedOrgUnitKeys(selectedOrgUnitDetails),
+        ]),
+      )
+    : state.orgUnits;
+
+  const dataLevelScope = useRepositoryDefaults
+    ? state.database?.repository_data_scope || state.dataLevelScope
+    : state.dataLevelScope;
+  const maxOrgUnitLevel = useRepositoryDefaults
+    ? state.maxOrgUnitLevel ?? state.database?.lowest_data_level_to_use ?? null
+    : state.maxOrgUnitLevel;
+  const primaryOrgUnitInstanceId =
+    state.orgUnitSourceMode === 'primary'
+      ? state.primaryOrgUnitInstanceId ?? state.database?.primary_instance_id ?? null
+      : null;
+
+  return {
+    orgUnits,
+    selectedOrgUnitDetails,
+    dataLevelScope,
+    maxOrgUnitLevel,
+    primaryOrgUnitInstanceId,
+  };
+}
+
+export function buildRepositoryLevelDimensionOptions(
   enabledDimensions: DatabaseRepositoryEnabledDimensions | null | undefined,
   metadata: StepOrgUnitsMetadataPayload | null,
 ): RepositoryDimensionOption[] {
@@ -413,7 +504,7 @@ function buildRepositoryLevelDimensionOptions(
   const configuredLevels = Array.isArray(enabledDimensions?.levels)
     ? enabledDimensions.levels
     : [];
-  if (enabledDimensionsConfigured) {
+  if (enabledDimensionsConfigured && configuredLevels.length > 0) {
     return configuredLevels.map((item: RepositoryEnabledLevelDimension) => ({
       value: item.key,
       label: item.label,
@@ -1471,6 +1562,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
           variableName: (v.variable_name as string) || '',
           variableType: (v.variable_type as string) || '',
           alias: (v.alias as string | undefined) || undefined,
+          extraParams:
+            v.extra_params && typeof v.extra_params === 'object'
+              ? (v.extra_params as Record<string, unknown>)
+              : undefined,
         }));
 
         dispatch({
@@ -2137,12 +2232,8 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         repositoryEnabledDimensions,
         repositoryOrgUnitMetadata,
       ).map(option => option.value),
-      groups: buildRepositoryNamedDimensionOptions(
-        repositoryEnabledDimensions?.groups,
-      ).map(option => option.value),
-      group_sets: buildRepositoryNamedDimensionOptions(
-        repositoryEnabledDimensions?.group_sets,
-      ).map(option => option.value),
+      groups: [],
+      group_sets: [],
     };
 
     if (
@@ -2208,7 +2299,6 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
 
   const createDatasetRecord = async (
     payload: Record<string, unknown>,
-    createChart: boolean,
     columns?: Array<{
       column_name: string;
       verbose_name?: string;
@@ -2256,13 +2346,14 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     }
 
     addSuccessToast(t('Dataset created successfully.'));
-    history.push(createChart ? `/chart/add/?dataset=${result.id}` : PREV_URL);
+    history.push(PREV_URL);
   };
 
-  const createDhIS2Dataset = async (createChart: boolean) => {
+  const createDhIS2Dataset = async () => {
     if (!state.databaseId) {
       throw new Error(t('Select a DHIS2 Database before creating a dataset.'));
     }
+    const effectiveOrgUnitSelection = buildEffectiveOrgUnitSelection(state);
 
     const stagedPayload = {
       database_id: state.databaseId,
@@ -2270,7 +2361,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       description: state.datasetSettings.description.trim() || undefined,
       schedule_cron: state.scheduleConfig.cron,
       schedule_timezone: state.scheduleConfig.timezone,
-      ...(state.maxOrgUnitLevel != null ? { max_orgunit_level: state.maxOrgUnitLevel } : {}),
+      ...(effectiveOrgUnitSelection.maxOrgUnitLevel != null
+        ? { max_orgunit_level: effectiveOrgUnitSelection.maxOrgUnitLevel }
+        : {}),
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
@@ -2279,10 +2372,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         default_relative_period: state.defaultRelativePeriod ?? 'LAST_12_MONTHS',
         default_period_start: state.defaultPeriodStart ?? null,
         default_period_end: state.defaultPeriodEnd ?? null,
-        org_units: state.orgUnits,
+        org_units: effectiveOrgUnitSelection.orgUnits,
         org_units_auto_detect: state.orgUnitsAutoDetect,
-        org_unit_details: state.selectedOrgUnitDetails,
-        org_unit_scope: state.dataLevelScope,
+        org_unit_details: effectiveOrgUnitSelection.selectedOrgUnitDetails,
+        org_unit_scope: effectiveOrgUnitSelection.dataLevelScope,
         repository_enabled_dimensions: state.repositoryDimensionKeys,
         include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
@@ -2291,7 +2384,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             : state.orgUnitSourceMode,
         primary_org_unit_instance_id:
           state.orgUnitSourceMode === 'primary'
-            ? state.primaryOrgUnitInstanceId
+            ? effectiveOrgUnitSelection.primaryOrgUnitInstanceId
             : null,
         level_mapping: state.levelMapping ?? null,
       },
@@ -2303,6 +2396,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
               variable_type: variable.variableType,
               variable_name: variable.variableName,
               alias: variable.alias || undefined,
+              extra_params: variable.extraParams,
             }))
           : undefined,
     };
@@ -2314,65 +2408,20 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     const stagedResult = (
       stagedResponse.json as { result?: Record<string, unknown> }
     )?.result;
-    const servingColumns = Array.isArray(stagedResult?.serving_columns)
-      ? (stagedResult?.serving_columns as Array<{
-          column_name: string;
-          verbose_name?: string;
-          type?: string;
-          is_dttm?: boolean;
-          filterable?: boolean;
-          groupby?: boolean;
-          is_active?: boolean;
-        }>)
-      : [];
-    const servingTableRef =
-      (stagedResult?.serving_table_ref as string | undefined) || null;
-    const stagingTableRef =
-      (stagedResult?.staging_table_ref as string | undefined) ||
-      (typeof stagedResult?.staging_table_name === 'string'
-        ? `dhis2_staging.${stagedResult.staging_table_name}`
-        : null);
 
-    if (!stagingTableRef) {
-      throw new Error(t('The staged dataset did not return a serving table.'));
+    if (typeof stagedResult?.id !== 'number') {
+      throw new Error(
+        t('The staged dataset was created but no staged dataset id was returned.'),
+      );
     }
 
-    // The backend already registered a Superset virtual dataset during staged
-    // dataset creation (via ensure_serving_table → register_serving_table_as_superset_dataset).
-    // Re-use that record to avoid a duplicate and the UNIQUE constraint 500 error.
-    if (typeof stagedResult?.serving_superset_dataset_id === 'number') {
-      const existingId = stagedResult.serving_superset_dataset_id as number;
-      addSuccessToast(t('Dataset created successfully.'));
-      history.push(createChart ? `/chart/add/?dataset=${existingId}` : PREV_URL);
-      return;
-    }
-
-    await createDatasetRecord(
-      buildStagedDhIS2DatasetPayload({
-        datasetName: state.datasetSettings.name.trim(),
-        stagingTableRef,
-        servingTableRef,
-        sourceDatabaseId: state.databaseId,
-        sourceDatabaseName: state.database?.database_name,
-        servingDatabaseId:
-          typeof stagedResult?.serving_database_id === 'number'
-            ? stagedResult.serving_database_id
-            : null,
-        servingDatabaseName:
-          typeof stagedResult?.serving_database_name === 'string'
-            ? stagedResult.serving_database_name
-            : null,
-        stagedDatasetId:
-          typeof stagedResult?.id === 'number' ? stagedResult.id : null,
-        selectedInstanceIds: state.selectedInstanceIds,
-        selectedInstanceNames: selectedInstances.map(instance => instance.name),
-      }),
-      createChart,
-      servingColumns,
+    addSuccessToast(t('Dataset created successfully.'));
+    history.push(
+      buildDHIS2LocalDataMonitorRoute(state.databaseId, stagedResult.id),
     );
   };
 
-  const createDatabaseDataset = async (createChart: boolean) => {
+  const createDatabaseDataset = async () => {
     if (!state.databaseId) {
       throw new Error(t('Select a database source before creating a dataset.'));
     }
@@ -2385,7 +2434,6 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
           schema: state.schema,
           table_name: state.tableName,
         },
-        createChart,
       );
       return;
     }
@@ -2398,7 +2446,6 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         table_name: state.datasetSettings.name.trim(),
         sql: state.sql,
       },
-      createChart,
     );
   };
 
@@ -2406,12 +2453,15 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     if (!editStagedDatasetId) {
       throw new Error(t('No staged dataset ID found for update.'));
     }
+    const effectiveOrgUnitSelection = buildEffectiveOrgUnitSelection(state);
     const updatePayload = {
       name: state.datasetSettings.name.trim(),
       description: state.datasetSettings.description.trim() || undefined,
       schedule_cron: state.scheduleConfig.cron,
       schedule_timezone: state.scheduleConfig.timezone,
-      ...(state.maxOrgUnitLevel != null ? { max_orgunit_level: state.maxOrgUnitLevel } : {}),
+      ...(effectiveOrgUnitSelection.maxOrgUnitLevel != null
+        ? { max_orgunit_level: effectiveOrgUnitSelection.maxOrgUnitLevel }
+        : {}),
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
@@ -2420,10 +2470,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
         default_relative_period: state.defaultRelativePeriod ?? 'LAST_12_MONTHS',
         default_period_start: state.defaultPeriodStart ?? null,
         default_period_end: state.defaultPeriodEnd ?? null,
-        org_units: state.orgUnits,
+        org_units: effectiveOrgUnitSelection.orgUnits,
         org_units_auto_detect: state.orgUnitsAutoDetect,
-        org_unit_details: state.selectedOrgUnitDetails,
-        org_unit_scope: state.dataLevelScope,
+        org_unit_details: effectiveOrgUnitSelection.selectedOrgUnitDetails,
+        org_unit_scope: effectiveOrgUnitSelection.dataLevelScope,
         repository_enabled_dimensions: state.repositoryDimensionKeys,
         include_disaggregation_dimension: state.includeDisaggregationDimension ?? false,
         org_unit_source_mode:
@@ -2432,7 +2482,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
             : state.orgUnitSourceMode,
         primary_org_unit_instance_id:
           state.orgUnitSourceMode === 'primary'
-            ? state.primaryOrgUnitInstanceId
+            ? effectiveOrgUnitSelection.primaryOrgUnitInstanceId
             : null,
         level_mapping: state.levelMapping ?? null,
       },
@@ -2444,6 +2494,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
               variable_type: variable.variableType,
               variable_name: variable.variableName,
               alias: variable.alias || undefined,
+              extra_params: variable.extraParams,
             }))
           : [],
     };
@@ -2468,7 +2519,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     history.push(PREV_URL);
   };
 
-  const handleCreate = async (createChart: boolean) => {
+  const handleCreate = async () => {
     const nextErrors = getStepErrorsForCurrentState(state, instances, {
       instancesError,
       instancesLoading,
@@ -2487,9 +2538,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       if (isEditMode && state.datasetType === 'dhis2') {
         await updateDhIS2Dataset();
       } else if (state.datasetType === 'dhis2') {
-        await createDhIS2Dataset(createChart);
+        await createDhIS2Dataset();
       } else if (state.datasetType === 'database') {
-        await createDatabaseDataset(createChart);
+        await createDatabaseDataset();
       }
     } catch (error) {
       addDangerToast(
@@ -3262,6 +3313,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                           <Text strong>{t('Hierarchy levels')}</Text>
                           <Select
                             mode="multiple"
+                            virtual={false}
                             value={state.repositoryDimensionKeys.levels}
                             onChange={value =>
                               updateDhIS2State({
@@ -3281,6 +3333,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                           <Text strong>{t('Org unit groups')}</Text>
                           <Select
                             mode="multiple"
+                            virtual={false}
                             value={state.repositoryDimensionKeys.groups}
                             onChange={value =>
                               updateDhIS2State({
@@ -3300,6 +3353,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                           <Text strong>{t('Org unit group sets')}</Text>
                           <Select
                             mode="multiple"
+                            virtual={false}
                             value={state.repositoryDimensionKeys.group_sets}
                             onChange={value =>
                               updateDhIS2State({
@@ -3779,23 +3833,18 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
                   <Button
                     loading={saving}
                     type="primary"
-                    onClick={() => void handleCreate(false)}
+                    onClick={() => void handleCreate()}
                   >
                     {t('Update Dataset')}
                   </Button>
                 ) : (
-                  <>
-                    <Button loading={saving} onClick={() => void handleCreate(false)}>
-                      {t('Create Dataset')}
-                    </Button>
-                    <Button
-                      loading={saving}
-                      onClick={() => void handleCreate(true)}
-                      type="primary"
-                    >
-                      {t('Create and Explore')}
-                    </Button>
-                  </>
+                  <Button
+                    loading={saving}
+                    onClick={() => void handleCreate()}
+                    type="primary"
+                  >
+                    {t('Create Dataset')}
+                  </Button>
                 )}
               </>
             ) : null}

@@ -14,6 +14,7 @@ import {
   Table,
   Tag,
 } from 'antd';
+import { useHistory, useLocation } from 'react-router-dom';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
@@ -30,6 +31,7 @@ import useDHIS2Databases from 'src/features/dhis2/useDHIS2Databases';
 import {
   formatCount,
   formatDateTime,
+  getDatasetIdFromSearch,
   getDHIS2Route,
   getErrorMessage,
   getSqlLabQueryRoute,
@@ -126,6 +128,8 @@ const shallowEqualRecord = (
 
 export default function DHIS2LocalData() {
   const { addDangerToast, addSuccessToast } = useToasts();
+  const history = useHistory();
+  const location = useLocation();
   const {
     databases,
     loading: loadingDatabases,
@@ -176,6 +180,15 @@ export default function DHIS2LocalData() {
     Record<string, string | undefined>
   >({});
   const [selectedPeriods, setSelectedPeriods] = useState<string[]>([]);
+  const locationSearchRef = useRef(location.search);
+  const requestedDatasetId = useMemo(
+    () => getDatasetIdFromSearch(location.search),
+    [location.search],
+  );
+
+  useEffect(() => {
+    locationSearchRef.current = location.search;
+  }, [location.search]);
 
   const stopJobPolling = useCallback(() => {
     if (jobProgressTimerRef.current !== null) {
@@ -237,6 +250,12 @@ export default function DHIS2LocalData() {
       const nextDatasets = (response.json.result || []) as DHIS2StagedDatasetSummary[];
       setDatasets(nextDatasets);
       setActiveDatasetId(currentId => {
+        if (
+          requestedDatasetId &&
+          nextDatasets.some(dataset => dataset.id === requestedDatasetId)
+        ) {
+          return requestedDatasetId;
+        }
         if (currentId && nextDatasets.some(dataset => dataset.id === currentId)) {
           return currentId;
         }
@@ -259,7 +278,35 @@ export default function DHIS2LocalData() {
 
   useEffect(() => {
     void loadDatasets();
-  }, [selectedDatabaseId]);
+  }, [selectedDatabaseId, requestedDatasetId]);
+
+  useEffect(() => {
+    if (!requestedDatasetId) {
+      return;
+    }
+    if (!datasets.some(dataset => dataset.id === requestedDatasetId)) {
+      return;
+    }
+    setActiveDatasetId(current =>
+      current === requestedDatasetId ? current : requestedDatasetId,
+    );
+  }, [datasets, requestedDatasetId]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(locationSearchRef.current);
+    if (activeDatasetId) {
+      params.set('dataset', String(activeDatasetId));
+    } else {
+      params.delete('dataset');
+    }
+    const nextSearch = params.toString() ? `?${params.toString()}` : '';
+    if (nextSearch !== locationSearchRef.current) {
+      history.replace({
+        pathname: location.pathname,
+        search: nextSearch,
+      });
+    }
+  }, [activeDatasetId, history, location.pathname]);
 
   useEffect(() => {
     if (!selectedDatabaseId) {

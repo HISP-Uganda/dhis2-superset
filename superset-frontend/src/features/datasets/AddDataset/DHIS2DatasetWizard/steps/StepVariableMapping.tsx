@@ -14,6 +14,7 @@ export interface VariableMapping {
   instanceId: number;
   instanceName: string;
   alias?: string;
+  extraParams?: Record<string, unknown>;
 }
 
 export interface StepVariableMappingProps {

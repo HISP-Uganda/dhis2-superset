@@ -27,14 +27,6 @@ const SELECT_DROPDOWN_STYLE = {
   overflow: 'auto' as const,
 };
 
-function getSelectPopupContainer(triggerNode: HTMLElement): HTMLElement {
-  return (
-    (triggerNode.closest('.ant-modal-content') as HTMLElement | null) ||
-    triggerNode.parentElement ||
-    document.body
-  );
-}
-
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
 export interface OrgUnitLevel {
@@ -448,6 +440,7 @@ export default function StepLevelMapping({
         <DefaultInstanceRow data-test="dhis2-level-mapping-default-instance-row">
           <Text style={{ flexShrink: 0 }}>{t('Populate labels from:')}</Text>
           <Select
+            virtual={false}
             allowClear
             data-test="dhis2-level-mapping-default-instance"
             placeholder={t('Select default instance')}
@@ -456,7 +449,6 @@ export default function StepLevelMapping({
             onChange={(val: unknown) =>
               handleApplyDefaultInstance(val == null ? null : Number(val))
             }
-            getPopupContainer={getSelectPopupContainer}
             dropdownStyle={SELECT_DROPDOWN_STYLE}
             styles={{ root: { minWidth: 220 } }}
           />
@@ -527,13 +519,13 @@ export default function StepLevelMapping({
               return (
                 <InstanceCell key={inst.id}>
                   <Select
+                    virtual={false}
                     css={{ width: '100%' }}
                     value={raw == null ? '' : String(raw)}
                     options={options}
                     onChange={(val: unknown) =>
                       handleInstanceLevelChange(idx, inst.id, String(val ?? ''))
                     }
-                    getPopupContainer={getSelectPopupContainer}
                     dropdownStyle={SELECT_DROPDOWN_STYLE}
                   />
                 </InstanceCell>

@@ -2070,11 +2070,21 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             m.metric_name: m for m in self.metrics
         }
         selected_hierarchy_candidates: list[str] = []
+        selected_groupby_hierarchy_candidates: list[str] = []
         selected_period_candidates: list[str] = []
         for selected in [*(groupby or []), *(columns or [])]:
+            normalized_selected: str | None = None
             if isinstance(selected, str):
                 normalized_selected = self._sanitize_column_reference(selected)
+            elif is_adhoc_column(selected):
+                adhoc_column_name = get_column_name(selected)
+                if isinstance(adhoc_column_name, str):
+                    normalized_selected = self._sanitize_column_reference(
+                        adhoc_column_name
+                    )
+            if normalized_selected:
                 selected_hierarchy_candidates.append(normalized_selected)
+                selected_groupby_hierarchy_candidates.append(normalized_selected)
                 selected_period_candidates.append(normalized_selected)
         if isinstance(requested_granularity, str):
             selected_period_candidates.append(
@@ -2124,6 +2134,24 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             and dhis2_hierarchy_column_names
         ):
             selected_terminal_hierarchy_column = dhis2_hierarchy_column_names[-1]
+        selected_required_hierarchy_columns = list(
+            dict.fromkeys(
+                [
+                    *[
+                        candidate
+                        for candidate in selected_groupby_hierarchy_candidates
+                        if candidate in dhis2_hierarchy_column_names
+                    ],
+                    *(
+                        [normalized_explicit_selected_org_unit_column]
+                        if normalized_explicit_selected_org_unit_column
+                        and normalized_explicit_selected_org_unit_column
+                        in dhis2_hierarchy_column_names
+                        else []
+                    ),
+                ]
+            )
+        )
 
         selected_terminal_period_column = (
             resolve_terminal_hierarchy_column(
@@ -2704,6 +2732,16 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             )
             if terminal_hierarchy_predicate is not None:
                 where_clause_and.append(terminal_hierarchy_predicate)
+            for required_hierarchy_column in selected_required_hierarchy_columns:
+                if required_hierarchy_column == selected_terminal_hierarchy_column:
+                    continue
+                required_ou_predicate = build_terminal_hierarchy_sqla_predicate(
+                    required_hierarchy_column,
+                    [required_hierarchy_column],
+                    terminal=False,
+                )
+                if required_ou_predicate is not None:
+                    where_clause_and.append(required_ou_predicate)
         elif (
             normalized_explicit_selected_org_unit_column
             and normalized_explicit_selected_org_unit_column in columns_by_name

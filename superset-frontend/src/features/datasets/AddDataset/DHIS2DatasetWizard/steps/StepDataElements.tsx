@@ -17,6 +17,7 @@ import {
 } from 'antd';
 
 import { DHIS2WizardState } from '../index';
+import type { DHIS2DisaggregationMode } from 'src/features/dhis2/types';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -617,6 +618,43 @@ function getStatusTagColor(status: FederatedInstanceResult['status']): string {
     return 'volcano';
   }
   return 'gold';
+}
+
+function getMappingDisaggregationMode(
+  mapping: DHIS2WizardState['variableMappings'][number],
+): 'total' | 'details' {
+  const mode = String(mapping.extraParams?.disaggregation || '').trim().toLowerCase();
+  return mode === 'all' || mode === 'selected' ? 'details' : 'total';
+}
+
+export function applyVariableDisaggregationMode(
+  mappings: DHIS2WizardState['variableMappings'],
+  instanceId: number,
+  variableId: string,
+  mode: 'total' | 'details',
+): DHIS2WizardState['variableMappings'] {
+  return mappings.map(mapping => {
+    if (
+      mapping.instanceId !== instanceId ||
+      mapping.variableId !== variableId
+    ) {
+      return mapping;
+    }
+
+    const nextExtraParams = {
+      ...(mapping.extraParams || {}),
+      disaggregation: (mode === 'details' ? 'all' : 'total') as DHIS2DisaggregationMode,
+    } as Record<string, unknown>;
+
+    if (mode === 'total') {
+      delete nextExtraParams.selected_coc_uids;
+    }
+
+    return {
+      ...mapping,
+      extraParams: nextExtraParams,
+    };
+  });
 }
 
 function buildDynamicFilterParams(
@@ -1290,6 +1328,9 @@ export default function WizardStepDataElements({
               item.source_instance_id,
               item.source_instance_name,
             ),
+            extraParams: {
+              disaggregation: 'total',
+            },
           },
         ];
 
@@ -1311,6 +1352,24 @@ export default function WizardStepDataElements({
             alias,
           }
         : mapping,
+    );
+
+    updateState({
+      variableMappings,
+      dataElements: [...new Set(variableMappings.map(mapping => mapping.variableId))],
+    });
+  };
+
+  const updateVariableDisaggregation = (
+    instanceId: number,
+    variableId: string,
+    mode: 'total' | 'details',
+  ) => {
+    const variableMappings = applyVariableDisaggregationMode(
+      selectedMappings,
+      instanceId,
+      variableId,
+      mode,
     );
 
     updateState({
@@ -2041,6 +2100,31 @@ export default function WizardStepDataElements({
                         placeholder={t('Optional alias')}
                         value={mapping.alias || ''}
                       />
+                      <div style={{ marginTop: 8 }}>
+                        <Text
+                          type="secondary"
+                          style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
+                        >
+                          {t('Value mode')}
+                        </Text>
+                        <Select
+                          aria-label={t('Value mode for %s', mapping.variableName)}
+                          options={[
+                            { value: 'total', label: t('Total') },
+                            { value: 'details', label: t('Details') },
+                          ]}
+                          size="small"
+                          style={{ width: 180 }}
+                          value={getMappingDisaggregationMode(mapping)}
+                          onChange={value =>
+                            updateVariableDisaggregation(
+                              mapping.instanceId,
+                              mapping.variableId,
+                              value as 'total' | 'details',
+                            )
+                          }
+                        />
+                      </div>
                     </div>
                   ))}
                   {group.mappings.length > 6 ? (

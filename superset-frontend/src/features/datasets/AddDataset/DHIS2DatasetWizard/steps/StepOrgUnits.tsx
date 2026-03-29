@@ -42,14 +42,6 @@ const SELECT_DROPDOWN_STYLE = {
   overflow: 'auto' as const,
 };
 
-function getSelectPopupContainer(triggerNode: HTMLElement): HTMLElement {
-  return (
-    (triggerNode.closest('.ant-modal-content') as HTMLElement | null) ||
-    triggerNode.parentElement ||
-    document.body
-  );
-}
-
 const StepContainer = styled.div`
   display: flex;
   flex-direction: column;
@@ -3097,6 +3089,7 @@ export default function WizardStepOrgUnits({
             <div style={{ marginTop: 16 }}>
               <SectionTitle>{t('Primary configured connection')}</SectionTitle>
               <Select
+                virtual={false}
                 value={primaryInstanceId ?? undefined}
                 onChange={value =>
                   updateState({
@@ -3111,7 +3104,6 @@ export default function WizardStepOrgUnits({
                     value: instance.id,
                     label: instance.name,
                   }))}
-                getPopupContainer={getSelectPopupContainer}
                 dropdownStyle={SELECT_DROPDOWN_STYLE}
                 styles={{ root: { width: '100%' } }}
               />
@@ -3239,6 +3231,7 @@ export default function WizardStepOrgUnits({
               )}
           </Paragraph>
           <Select
+            virtual={false}
             allowClear
             disabled={effectiveLowestDataLevelOptions.length === 0}
             placeholder={
@@ -3264,7 +3257,6 @@ export default function WizardStepOrgUnits({
                 .toLowerCase()
                 .includes(input.toLowerCase())
             }
-            getPopupContainer={getSelectPopupContainer}
             dropdownStyle={SELECT_DROPDOWN_STYLE}
             styles={{ root: { width: '100%', maxWidth: 400 } }}
           />
@@ -3457,6 +3449,7 @@ export default function WizardStepOrgUnits({
             <div>
               <SectionTitle>{t('Filter by level')}</SectionTitle>
               <Select
+                virtual={false}
                 allowClear
                 placeholder={t('Select a level')}
                 value={selectedLevel}
@@ -3468,7 +3461,6 @@ export default function WizardStepOrgUnits({
                     .toLowerCase()
                     .includes(input.toLowerCase())
                 }
-                getPopupContainer={getSelectPopupContainer}
                 dropdownStyle={SELECT_DROPDOWN_STYLE}
                 styles={{ root: { width: '100%' } }}
               />
@@ -3479,6 +3471,7 @@ export default function WizardStepOrgUnits({
               <div>
                 <SectionTitle>{t('Filter by group set')}</SectionTitle>
                 <Select
+                  virtual={false}
                   allowClear
                   placeholder={t('Select a group set')}
                   value={selectedGroupSet}
@@ -3490,7 +3483,6 @@ export default function WizardStepOrgUnits({
                       .toLowerCase()
                       .includes(input.toLowerCase())
                   }
-                  getPopupContainer={getSelectPopupContainer}
                   dropdownStyle={SELECT_DROPDOWN_STYLE}
                   styles={{ root: { width: '100%' } }}
                 />
@@ -3502,6 +3494,7 @@ export default function WizardStepOrgUnits({
               <div>
                 <SectionTitle>{t('Filter by group')}</SectionTitle>
                 <Select
+                  virtual={false}
                   allowClear
                   placeholder={
                     selectedGroupSet
@@ -3517,7 +3510,6 @@ export default function WizardStepOrgUnits({
                       .toLowerCase()
                       .includes(input.toLowerCase())
                   }
-                  getPopupContainer={getSelectPopupContainer}
                   dropdownStyle={SELECT_DROPDOWN_STYLE}
                   styles={{ root: { width: '100%' } }}
                 />

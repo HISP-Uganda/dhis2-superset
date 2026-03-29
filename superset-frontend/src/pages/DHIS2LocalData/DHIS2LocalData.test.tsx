@@ -564,3 +564,112 @@ test('deletes the staged dataset and local tables from the workspace', async () 
     'Deleted ANC Coverage and removed its local staged data and serving tables.',
   );
 });
+
+test('selects the staged dataset from the URL query when provided', async () => {
+  mockClient.get.mockImplementation(async ({ endpoint }: { endpoint: string }) => {
+    if (endpoint.startsWith('/api/v1/database/')) {
+      return {
+        json: {
+          count: 1,
+          result: [{ id: 7, database_name: 'DHIS2 Uganda', backend: 'dhis2' }],
+        },
+      } as any;
+    }
+    if (
+      endpoint ===
+      '/api/v1/dhis2/staged-datasets/?database_id=7&include_inactive=true&include_stats=true'
+    ) {
+      return {
+        json: {
+          result: [
+            {
+              id: 11,
+              database_id: 7,
+              name: 'ANC Coverage',
+              description: 'Main ANC dataset',
+              is_active: true,
+              last_sync_status: 'success',
+              last_sync_at: '2026-03-13T12:00:00',
+              staging_table_ref: 'dhis2_staging.ds_11_anc_coverage',
+              serving_table_ref: 'dhis2_serving.sv_11_anc_coverage',
+              serving_database_id: 13,
+              serving_database_name: 'main',
+              serving_columns: [],
+              stats: { total_rows: 2500 },
+            },
+            {
+              id: 12,
+              database_id: 7,
+              name: 'Malaria Incidence',
+              description: 'Monitor this dataset',
+              is_active: true,
+              last_sync_status: 'queued',
+              last_sync_at: '2026-03-13T13:00:00',
+              staging_table_ref: 'dhis2_staging.ds_12_malaria_incidence',
+              serving_table_ref: 'dhis2_serving.sv_12_malaria_incidence',
+              serving_database_id: 13,
+              serving_database_name: 'main',
+              serving_columns: [],
+              stats: { total_rows: 3200 },
+            },
+          ],
+        },
+      } as any;
+    }
+    if (endpoint.startsWith('/api/v1/dhis2/staged-datasets/11/preview?limit=')) {
+      return {
+        json: {
+          result: {
+            columns: [],
+            rows: [],
+            limit: 25,
+            staging_table_ref: 'dhis2_staging.ds_11_anc_coverage',
+            serving_table_ref: 'dhis2_serving.sv_11_anc_coverage',
+            diagnostics: {
+              table_exists: true,
+              row_count: 2500,
+              sql_preview: 'SELECT * FROM dhis2_staging.ds_11_anc_coverage LIMIT 25',
+              rows_returned: 0,
+              org_unit_columns: [],
+              period_columns: [],
+            },
+          },
+        },
+      } as any;
+    }
+    if (endpoint.startsWith('/api/v1/dhis2/staged-datasets/12/preview?limit=')) {
+      return {
+        json: {
+          result: {
+            columns: [],
+            rows: [],
+            limit: 25,
+            staging_table_ref: 'dhis2_staging.ds_12_malaria_incidence',
+            serving_table_ref: 'dhis2_serving.sv_12_malaria_incidence',
+            diagnostics: {
+              table_exists: true,
+              row_count: 3200,
+              sql_preview:
+                'SELECT * FROM dhis2_staging.ds_12_malaria_incidence LIMIT 25',
+              rows_returned: 0,
+              org_unit_columns: [],
+              period_columns: [],
+            },
+          },
+        },
+      } as any;
+    }
+    throw new Error(`Unexpected GET ${endpoint}`);
+  });
+
+  render(
+    <MemoryRouter
+      initialEntries={['/superset/dhis2/local-data/?database=7&dataset=12']}
+    >
+      <DHIS2LocalData />
+    </MemoryRouter>,
+  );
+
+  expect((await screen.findAllByText('Monitor this dataset')).length).toBeGreaterThan(0);
+  expect(screen.getAllByText('Malaria Incidence').length).toBeGreaterThan(0);
+});

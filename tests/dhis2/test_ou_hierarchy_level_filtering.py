@@ -472,6 +472,36 @@ def test_resolve_org_units_applies_allowed_levels():
             assert lvl in {1, 3}, f"Unexpected level {lvl} for uid {uid}"
 
 
+def test_resolve_org_units_uses_selected_details_when_org_units_are_empty():
+    """Repository-root defaults still resolve when only org_unit_details were saved."""
+    from superset.dhis2.sync_service import DHIS2SyncService
+
+    instance = _make_instance(instance_id=1, database_id=10)
+
+    dataset_config = {
+        "org_units": [],
+        "org_unit_details": [
+            {
+                "id": "national",
+                "selectionKey": "repo:national",
+                "sourceOrgUnitId": "national",
+                "sourceInstanceIds": [1],
+            }
+        ],
+        "org_unit_scope": "all_levels",
+        "org_unit_source_mode": "repository",
+    }
+
+    with patch(
+        "superset.dhis2.sync_service._load_org_unit_hierarchy",
+        return_value=_HIERARCHY_8_LEVELS,
+    ):
+        result = DHIS2SyncService._resolve_org_units_for_instance(instance, dataset_config)
+
+    assert "national" in result
+    assert "region_a" in result
+
+
 def test_resolve_level_constraints_returns_none_when_unset():
     """_resolve_level_constraints returns (None, None) when config has no constraints."""
     from superset.dhis2.sync_service import DHIS2SyncService

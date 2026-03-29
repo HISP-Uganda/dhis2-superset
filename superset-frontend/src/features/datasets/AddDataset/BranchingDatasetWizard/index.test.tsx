@@ -21,6 +21,8 @@ import fetchMock from 'fetch-mock';
 import { render, screen, userEvent, waitFor } from 'spec/helpers/testing-library';
 
 import BranchingDatasetWizard, {
+  buildEffectiveOrgUnitSelection,
+  buildRepositoryLevelDimensionOptions,
   WORKFLOW_STEPS,
   initialWorkflowState,
   normalizeInstancesPayload,
@@ -46,6 +48,12 @@ const metadataStatusEndpoint = (databaseId: number) =>
   `glob:*/api/v1/dhis2/diagnostics/metadata-status/${databaseId}`;
 const metadataRefreshEndpoint = (databaseId: number) =>
   `glob:*/api/v1/dhis2/diagnostics/metadata-refresh/${databaseId}`;
+const dataElementsEndpoint = (databaseId: number) =>
+  `glob:*/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElements&federated=true&staged=true*`;
+const dataElementGroupsEndpoint = (databaseId: number) =>
+  `glob:*/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElementGroups&federated=true&staged=true*`;
+const dataElementGroupSetsEndpoint = (databaseId: number) =>
+  `glob:*/api/v1/database/${databaseId}/dhis2_metadata/?type=dataElementGroupSets&federated=true&staged=true*`;
 const schemasEndpoint = (databaseId: number) =>
   `glob:*/api/v1/database/${databaseId}/schemas/?q=*`;
 const tablesEndpoint = (databaseId: number) =>
@@ -329,6 +337,80 @@ test('stores dataset-specific repository dimension keys from DHIS2 selection upd
     group_sets: ['gs_ownership'],
   });
   expect(nextState.repositoryDimensionKeysConfigured).toBe(true);
+});
+
+test('falls back to saved repository org-unit defaults when dataset org units are left untouched', () => {
+  const state = {
+    ...initialWorkflowState,
+    database: {
+      id: 9,
+      database_name: 'Malaria Repository Multiple Sources',
+      backend: 'dhis2',
+      repository_data_scope: 'all_levels',
+      lowest_data_level_to_use: 6,
+      repository_org_unit_config: {
+        selected_org_units: ['repo:ou-root'],
+        selected_org_unit_details: [
+          {
+            id: 'ou_root',
+            selectionKey: 'repo:ou-root',
+            sourceOrgUnitId: 'ou_root',
+            displayName: 'Uganda',
+            lineage: [
+              {
+                instance_id: 101,
+                source_org_unit_uid: 'ou_root',
+              },
+            ],
+          },
+        ],
+      },
+      primary_instance_id: 101,
+    },
+    databaseId: 9,
+    orgUnitSourceMode: 'repository' as const,
+  };
+
+  expect(buildEffectiveOrgUnitSelection(state)).toEqual({
+    orgUnits: ['repo:ou-root'],
+    selectedOrgUnitDetails: [
+      expect.objectContaining({
+        id: 'ou_root',
+        selectionKey: 'repo:ou-root',
+      }),
+    ],
+    dataLevelScope: 'all_levels',
+    maxOrgUnitLevel: 6,
+    primaryOrgUnitInstanceId: null,
+  });
+});
+
+test('falls back to repository hierarchy levels when configured level dimensions are empty', () => {
+  expect(
+    buildRepositoryLevelDimensionOptions(
+      {
+        levels: [],
+        groups: [],
+        group_sets: [],
+      },
+      {
+        orgUnitLevels: [
+          { level: 1, displayName: 'National' },
+          { level: 2, displayName: 'District' },
+          { level: 3, displayName: 'Health Facilities' },
+        ],
+        repositoryConfig: {
+          enabled_dimensions: {
+            levels: [],
+          },
+        },
+      } as any,
+    ),
+  ).toEqual([
+    { value: 'level:1', label: 'National' },
+    { value: 'level:2', label: 'District' },
+    { value: 'level:3', label: 'Health Facilities' },
+  ]);
 });
 
 test('prunes invalid federated org-unit selections when configured connection scope changes', () => {
@@ -868,4 +950,119 @@ test('surfaces the managed schedule behavior in the settings step', async () => 
   expect(
     screen.getByText(/Background processing is automatically enabled/i),
   ).toBeVisible();
+});
+
+test('creates a DHIS2 dataset through staged datasets only and opens the local-data monitor', async () => {
+  fetchMock.get(stagingEndpoint(9), {
+    result: {
+      source: { id: 90, source_name: 'Malaria Repository Multiple Sources' },
+      capabilities: {
+        source_type: 'dhis2',
+        staging_supported: true,
+        background_refresh_forced: true,
+      },
+    },
+  });
+  fetchMock.get(instancesEndpoint(9), {
+    count: 1,
+    result: [
+      {
+        id: 101,
+        database_id: 9,
+        name: 'National eHMIS DHIS2',
+        url: 'https://national.example.org',
+        auth_type: 'basic',
+        is_active: true,
+      },
+    ],
+  });
+  fetchMock.get(dataElementsEndpoint(9), {
+    status: 'success',
+    result: [
+      {
+        id: 'de1',
+        displayName: 'ANC Visits',
+        source_instance_id: 101,
+        source_instance_name: 'National eHMIS DHIS2',
+      },
+    ],
+    instance_results: [
+      {
+        id: 101,
+        name: 'National eHMIS DHIS2',
+        status: 'success',
+        count: 1,
+      },
+    ],
+  });
+  fetchMock.get(dataElementGroupsEndpoint(9), {
+    status: 'success',
+    result: [],
+  });
+  fetchMock.get(dataElementGroupSetsEndpoint(9), {
+    status: 'success',
+    result: [],
+  });
+  fetchMock.post('glob:*/api/v1/dhis2/staged-datasets/', {
+    result: {
+      id: 11,
+      serving_superset_dataset_id: 19,
+      serving_table_ref: '`dhis2_serving`.`sv_11_anc_visits_mart`',
+    },
+  });
+
+  render(<BranchingDatasetWizard />, { useRedux: true });
+
+  await userEvent.click(
+    await screen.findByRole('button', {
+      name: /Malaria Repository Multiple Sources/i,
+    }),
+  );
+  expect(
+    await screen.findByText(
+      /Active DHIS2 instances from this Database are included automatically/i,
+    ),
+  ).toBeVisible();
+
+  await userEvent.click(screen.getByRole('button', { name: /^Next$/i }));
+  await waitFor(() => {
+    expect(fetchMock.called(dataElementsEndpoint(9))).toBe(true);
+  });
+  expect((await screen.findAllByText(/Select Variables/i)).length).toBeGreaterThan(0);
+
+  await userEvent.click(
+    await screen.findByRole('button', { name: /ANC Visits/i }),
+  );
+
+  await userEvent.click(screen.getByRole('button', { name: /^Next$/i }));
+  expect((await screen.findAllByText(/Dataset Settings/i)).length).toBeGreaterThan(0);
+
+  const datasetNameInput = screen.getByRole('textbox', {
+    name: /Dataset Name/i,
+  });
+  await userEvent.clear(datasetNameInput);
+  await userEvent.type(datasetNameInput, 'ANC Coverage');
+
+  await userEvent.click(screen.getByRole('button', { name: /^Next$/i }));
+  expect((await screen.findAllByText(/Review & Create/i)).length).toBeGreaterThan(0);
+
+  expect(
+    screen.getAllByRole('button', { name: /^Create Dataset$/i }),
+  ).toHaveLength(1);
+  expect(
+    screen.queryByRole('button', { name: /Create and Explore/i }),
+  ).not.toBeInTheDocument();
+
+  await userEvent.click(
+    screen.getByRole('button', { name: /^Create Dataset$/i }),
+  );
+
+  await waitFor(() => {
+    expect(fetchMock.called('glob:*/api/v1/dhis2/staged-datasets/')).toBe(true);
+  });
+
+  expect(fetchMock.called('glob:*/api/v1/dataset/')).toBe(false);
+  expect(mockHistoryPush).toHaveBeenCalledWith(
+    '/superset/dhis2/local-data/?database=9&dataset=11',
+  );
 });

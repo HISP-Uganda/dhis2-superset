@@ -181,6 +181,17 @@ def _resolve_dhis2_staged_local_table_ref(
 
 def _format_sql_table_ref(schema_name: str | None, table_name: str) -> str:
     return f"{schema_name}.{table_name}" if schema_name else table_name
+
+
+def _parse_table_ref(table_ref: str) -> tuple[str | None, str]:
+    parsed = _extract_dhis2_staged_local_table_ref_from_extra(
+        {"dhis2_serving_table_ref": table_ref}
+    )
+    if parsed is None:
+        return None, table_ref
+    return parsed
+
+
 VIRTUAL_TABLE_ALIAS = "virtual_table"
 
 # a non-exhaustive set of additive metrics

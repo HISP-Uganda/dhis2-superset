@@ -8,7 +8,9 @@ import {
   within,
 } from 'spec/helpers/testing-library';
 
-import WizardStepDataElements from './StepDataElements';
+import WizardStepDataElements, {
+  applyVariableDisaggregationMode,
+} from './StepDataElements';
 
 const metadataEndpoint =
   'glob:*/api/v1/database/9/dhis2_metadata/?type=dataElements&federated=true&staged=true*';
@@ -114,6 +116,87 @@ test('toggles the disaggregation dimension setting in wizard state', async () =>
   expect(updateState).toHaveBeenCalledWith({
     includeDisaggregationDimension: true,
   });
+});
+
+test('updates a selected variable between Total and Details modes', () => {
+  expect(
+    applyVariableDisaggregationMode(
+      [
+        {
+          variableId: 'de1',
+          variableName: 'ANC Visits',
+          variableType: 'dataElement',
+          instanceId: 101,
+          instanceName: 'National eHMIS DHIS2',
+          extraParams: {
+            disaggregation: 'total',
+            selected_coc_uids: ['coc_1'],
+          },
+        },
+      ],
+      101,
+      'de1',
+      'details',
+    ),
+  ).toEqual([
+    expect.objectContaining({
+      variableId: 'de1',
+      extraParams: expect.objectContaining({
+        disaggregation: 'all',
+        selected_coc_uids: ['coc_1'],
+      }),
+    }),
+  ]);
+
+  expect(
+    applyVariableDisaggregationMode(
+      [
+        {
+          variableId: 'de1',
+          variableName: 'ANC Visits',
+          variableType: 'dataElement',
+          instanceId: 101,
+          instanceName: 'National eHMIS DHIS2',
+          extraParams: {
+            disaggregation: 'all',
+            selected_coc_uids: ['coc_1'],
+          },
+        },
+      ],
+      101,
+      'de1',
+      'total',
+    ),
+  ).toEqual([
+    expect.objectContaining({
+      variableId: 'de1',
+      extraParams: expect.objectContaining({
+        disaggregation: 'total',
+      }),
+    }),
+  ]);
+  expect(
+    (
+      applyVariableDisaggregationMode(
+        [
+          {
+            variableId: 'de1',
+            variableName: 'ANC Visits',
+            variableType: 'dataElement',
+            instanceId: 101,
+            instanceName: 'National eHMIS DHIS2',
+            extraParams: {
+              disaggregation: 'all',
+              selected_coc_uids: ['coc_1'],
+            },
+          },
+        ],
+        101,
+        'de1',
+        'total',
+      )[0].extraParams as Record<string, unknown>
+    ).selected_coc_uids,
+  ).toBeUndefined();
 });
 
 test('loads federated variables across configured connections and preserves source lineage', async () => {
