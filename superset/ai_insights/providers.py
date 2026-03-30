@@ -37,6 +37,20 @@ def _normalize_openai_message_content(content: Any) -> str:
     return str(content or "")
 
 
+def _normalize_anthropic_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text", "")).strip()
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ).strip()
+    if isinstance(content, dict):
+        return str(content.get("text", "")).strip()
+    return str(content or "")
+
+
 class BaseProvider:
     provider_type = "base"
 
@@ -87,6 +101,105 @@ class BaseProvider:
     ) -> ProviderResponse:
         raise NotImplementedError
 
+    def _post_chat_completion(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        selected_model: str,
+        messages: list[dict[str, str]],
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> ProviderResponse:
+        started_at = perf_counter()
+        response = requests.post(
+            url,
+            headers=headers,
+            json={
+                "model": selected_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                **(extra_payload or {}),
+            },
+            timeout=timeout,
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            error_msg = f"HTTP {response.status_code} Error"
+            try:
+                error_body = response.json()
+                if isinstance(error_body, dict) and "error" in error_body:
+                    if isinstance(error_body["error"], dict) and "message" in error_body["error"]:
+                        error_msg += f": {error_body['error']['message']}"
+                    else:
+                        error_msg += f": {error_body['error']}"
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise AIProviderError(error_msg) from ex
+
+        payload = response.json()
+        try:
+            text = _normalize_openai_message_content(
+                payload["choices"][0]["message"]["content"]
+            )
+        except (KeyError, IndexError, TypeError) as ex:
+            raise AIProviderError(
+                f"Provider {self.provider_id} returned an unexpected response"
+            ) from ex
+
+        return ProviderResponse(
+            provider_id=self.provider_id,
+            model=selected_model,
+            text=text,
+            duration_ms=int((perf_counter() - started_at) * 1000),
+        )
+
+
+class OpenAIProvider(BaseProvider):
+    provider_type = "openai"
+
+    def is_available(self) -> bool:
+        return super().is_available()
+
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+
+        headers = {"Content-Type": "application/json"}
+        if secret := resolve_provider_secret(self.config):
+            headers["Authorization"] = f"Bearer {secret}"
+        if organization := str(self.config.get("organization_id") or "").strip():
+            headers["OpenAI-Organization"] = organization
+
+        base_url = str(self.config.get("base_url") or "https://api.openai.com/v1").rstrip(
+            "/"
+        )
+        return self._post_chat_completion(
+            url=f"{base_url}/chat/completions",
+            headers=headers,
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
 
 class OpenAICompatibleProvider(BaseProvider):
     provider_type = "openai_compatible"
@@ -115,28 +228,118 @@ class OpenAICompatibleProvider(BaseProvider):
         if secret := resolve_provider_secret(self.config):
             headers["Authorization"] = f"Bearer {secret}"
 
-        started_at = perf_counter()
-        response = requests.post(
-            f"{base_url}/chat/completions",
+        return self._post_chat_completion(
+            url=f"{base_url}/chat/completions",
             headers=headers,
-            json={
-                "model": selected_model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+
+class GeminiProvider(OpenAICompatibleProvider):
+    provider_type = "gemini"
+
+
+class DeepSeekProvider(OpenAICompatibleProvider):
+    provider_type = "deepseek"
+
+
+class AnthropicProvider(BaseProvider):
+    provider_type = "anthropic"
+
+    def is_available(self) -> bool:
+        return super().is_available()
+
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": str(
+                self.config.get("api_version") or "2023-06-01"
+            ).strip(),
+        }
+        if secret := resolve_provider_secret(self.config):
+            headers["x-api-key"] = secret
+
+        anthropic_messages: list[dict[str, str]] = []
+        system_prompts: list[str] = []
+        for message in messages:
+            role = str(message.get("role") or "user").strip().lower()
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "system":
+                system_prompts.append(content)
+                continue
+            anthropic_messages.append(
+                {
+                    "role": "assistant" if role == "assistant" else "user",
+                    "content": content,
+                }
+            )
+
+        if not anthropic_messages:
+            raise AIProviderError(
+                f"Provider {self.provider_id} requires at least one non-system message"
+            )
+
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": anthropic_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system_prompts:
+            payload["system"] = "\n\n".join(system_prompts)
+
+        started_at = perf_counter()
+        base_url = str(self.config.get("base_url") or "https://api.anthropic.com").rstrip(
+            "/"
+        )
+        response = requests.post(
+            f"{base_url}/v1/messages",
+            headers=headers,
+            json=payload,
             timeout=timeout,
         )
-        response.raise_for_status()
-        payload = response.json()
         try:
-            text = _normalize_openai_message_content(
-                payload["choices"][0]["message"]["content"]
-            )
-        except (KeyError, IndexError, TypeError) as ex:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            error_msg = f"HTTP {response.status_code} Error"
+            try:
+                error_body = response.json()
+                if isinstance(error_body, dict) and "error" in error_body:
+                    if isinstance(error_body["error"], dict) and "message" in error_body["error"]:
+                        error_msg += f": {error_body['error']['message']}"
+                    else:
+                        error_msg += f": {error_body['error']}"
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise AIProviderError(error_msg) from ex
+
+        body = response.json()
+        text = _normalize_anthropic_message_content(body.get("content"))
+        if not text:
             raise AIProviderError(
                 f"Provider {self.provider_id} returned an unexpected response"
-            ) from ex
+            )
 
         return ProviderResponse(
             provider_id=self.provider_id,
@@ -183,7 +386,21 @@ class OllamaProvider(BaseProvider):
             },
             timeout=timeout,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            error_msg = f"HTTP {response.status_code} Error"
+            try:
+                error_body = response.json()
+                if isinstance(error_body, dict) and "error" in error_body:
+                    if isinstance(error_body["error"], dict) and "message" in error_body["error"]:
+                        error_msg += f": {error_body['error']['message']}"
+                    else:
+                        error_msg += f": {error_body['error']}"
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise AIProviderError(error_msg) from ex
+
         payload = response.json()
         try:
             text = str(payload["message"]["content"])
@@ -269,15 +486,19 @@ class MockProvider(BaseProvider):
 
 
 PROVIDER_TYPES: dict[str, type[BaseProvider]] = {
+    "anthropic": AnthropicProvider,
+    "deepseek": DeepSeekProvider,
+    "gemini": GeminiProvider,
     "mock": MockProvider,
     "ollama": OllamaProvider,
+    "openai": OpenAIProvider,
     "openai_compatible": OpenAICompatibleProvider,
 }
 
 
 class ProviderRegistry:
-    def __init__(self) -> None:
-        config = get_ai_insights_config()
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        config = config or get_ai_insights_config()
         provider_configs = config.get("providers") or {}
         self._providers: dict[str, BaseProvider] = {}
         for provider_id, provider_config in provider_configs.items():

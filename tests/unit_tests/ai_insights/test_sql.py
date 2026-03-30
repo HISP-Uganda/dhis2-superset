@@ -12,8 +12,8 @@ from superset.ai_insights.sql import (
 )
 
 
-def test_is_mart_table_accepts_marker_role() -> None:
-    dataset = SimpleNamespace(dataset_role="serving_dataset", table_name="foo")
+def test_is_mart_table_accepts_mart_role() -> None:
+    dataset = SimpleNamespace(dataset_role="MART", table_name="foo")
     assert is_mart_table(dataset) is True
 
 

@@ -161,6 +161,11 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             AIDashboardRestApi,
             AISqlRestApi,
         )
+        from superset.ai_insights.admin_api import AIManagementRestApi
+        from superset.ai_insights.admin_views import (
+            AIManagementView,
+            ai_management_frontend_blueprint,
+        )
         from superset.async_events.api import AsyncEventsRestApi
         from superset.available_domains.api import AvailableDomainsRestApi
         from superset.cachekeys.api import CacheRestApi
@@ -265,6 +270,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.views.health import health_blueprint
 
         self.superset_app.register_blueprint(health_blueprint)
+        self.superset_app.register_blueprint(ai_management_frontend_blueprint)
         self.superset_app.register_blueprint(dhis2_frontend_blueprint)
         self.superset_app.register_blueprint(local_staging_blueprint)
         self.superset_app.register_blueprint(cms_frontend_blueprint)
@@ -279,6 +285,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(AIChartRestApi)
         appbuilder.add_api(AIDashboardRestApi)
         appbuilder.add_api(AISqlRestApi)
+        appbuilder.add_api(AIManagementRestApi)
         appbuilder.add_api(AdvancedDataTypeRestApi)
         appbuilder.add_api(AvailableDomainsRestApi)
         appbuilder.add_api(CacheRestApi)
@@ -509,6 +516,14 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             menu_cond=lambda: feature_flag_manager.is_feature_enabled(
                 "ENABLE_EXTENSIONS"
             ),
+        )
+        appbuilder.add_view(
+            AIManagementView,
+            "AI Management",
+            label=_("AI Management"),
+            icon="fa-robot",
+            category="AI",
+            category_label=_("AI"),
         )
 
         #

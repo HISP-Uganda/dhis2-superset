@@ -145,6 +145,10 @@ const LocalStagingSettings = lazy(
     ),
 );
 
+const AIManagement = lazy(
+  () => import(/* webpackChunkName: "AIManagement" */ 'src/pages/AIManagement'),
+);
+
 const Chart = lazy(
   () => import(/* webpackChunkName: "Chart" */ 'src/pages/Chart'),
 );
@@ -378,6 +382,10 @@ export const routes: Routes = [
   {
     path: '/superset/local-staging/',
     Component: LocalStagingSettings,
+  },
+  {
+    path: '/superset/ai-management/',
+    Component: AIManagement,
   },
   {
     path: '/rowlevelsecurity/list',

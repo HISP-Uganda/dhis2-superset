@@ -48,6 +48,9 @@ jest.mock('src/pages/PublicLandingPage', () => () => (
 jest.mock('src/pages/CMSAdminPage', () => () => (
   <div data-test="mock-cms-admin" />
 ));
+jest.mock('src/pages/AIManagement', () => () => (
+  <div data-test="mock-ai-management" />
+));
 
 import { isFrontendRoute, routes } from './routes';
 

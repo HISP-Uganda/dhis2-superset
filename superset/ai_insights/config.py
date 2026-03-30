@@ -47,10 +47,20 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
 
 
 def get_ai_insights_config() -> dict[str, Any]:
-    return _merge_dicts(
+    merged = _merge_dicts(
         DEFAULT_AI_INSIGHTS_CONFIG,
         current_app.config.get("AI_INSIGHTS_CONFIG") or {},
     )
+    try:
+        from superset.ai_insights.settings import load_ai_settings_override
+
+        return _merge_dicts(merged, load_ai_settings_override())
+    except Exception:  # pylint: disable=broad-except
+        current_app.logger.debug(
+            "Falling back to static AI insights config; persisted settings unavailable",
+            exc_info=True,
+        )
+        return merged
 
 
 def is_ai_insights_enabled() -> bool:
