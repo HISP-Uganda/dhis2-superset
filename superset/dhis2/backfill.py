@@ -58,7 +58,10 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy.exc import OperationalError as _SAOperationalError
+from sqlalchemy.exc import (
+    OperationalError as _SAOperationalError,
+    ProgrammingError as _SAProgrammingError,
+)
 from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
@@ -1163,6 +1166,8 @@ def run_compatibility_backfill() -> None:
     ensure_metadata_schema_compatibility()
     try:
         repair_dhis2_dataset_roles()
+    except (_SAOperationalError, _SAProgrammingError) as _oe:
+        logger.debug("compat_backfill: tables not ready for dataset_role repair — skipping: %s", _oe)
     except Exception:  # pylint: disable=broad-except
         logger.warning("compat_backfill: dataset_role repair failed", exc_info=True)
     try:
@@ -1188,17 +1193,16 @@ def run_compatibility_backfill() -> None:
 
         recover_missing_staged_datasets_from_sqla_tables()
         datasets = db.session.query(DHIS2StagedDataset).all()
-    except _SAOperationalError as _oe:
+    except (_SAOperationalError, _SAProgrammingError) as _oe:
         # ORM model references columns not yet added by a pending migration
-        # (e.g. warehouse extension columns).  Skip silently — the next
-        # 'superset db upgrade' run will apply those columns and this
-        # backfill will succeed on the following startup.
+        # (e.g. warehouse extension columns) or tables not yet created.
+        # Skip silently — the next 'superset db upgrade' run will apply 
+        # those columns and this backfill will succeed on the following startup.
         logger.debug(
             "compat_backfill: schema not fully migrated yet — skipping. "
             "Run 'superset db upgrade' to apply pending migrations. "
             "Detail: %s",
             _oe,
-            exc_info=True,
         )
         return
     except Exception:  # pylint: disable=broad-except

@@ -28,15 +28,22 @@ down_revision = 'c233f5365c9e'
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 def upgrade():
     # Add is_public column to slices table with default value
-    # SQLite doesn't support ALTER COLUMN, so we add with nullable=False and server_default directly
-    with op.batch_alter_table('slices') as batch_op:
-        batch_op.add_column(
-            sa.Column('is_public', sa.Boolean(), nullable=False, server_default=sa.false())
-        )
+    # Check if column already exists to avoid duplicate column error
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [col['name'] for col in inspector.get_columns('slices')]
+
+    if 'is_public' not in columns:
+        # SQLite doesn't support ALTER COLUMN, so we add with nullable=False and server_default directly
+        with op.batch_alter_table('slices') as batch_op:
+            batch_op.add_column(
+                sa.Column('is_public', sa.Boolean(), nullable=False, server_default=sa.false())
+            )
 
 
 def downgrade():

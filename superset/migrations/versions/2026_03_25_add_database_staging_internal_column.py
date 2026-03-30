@@ -35,16 +35,21 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Add the column
-    with op.batch_alter_table('dbs') as batch_op:
-        batch_op.add_column(
-            sa.Column(
-                'is_dhis2_staging_internal',
-                sa.Boolean(),
-                nullable=False,
-                server_default=sa.false()
+    # Add the column safely
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [col['name'] for col in inspector.get_columns('dbs')]
+
+    if 'is_dhis2_staging_internal' not in columns:
+        with op.batch_alter_table('dbs') as batch_op:
+            batch_op.add_column(
+                sa.Column(
+                    'is_dhis2_staging_internal',
+                    sa.Boolean(),
+                    nullable=False,
+                    server_default=sa.false()
+                )
             )
-        )
 
     # Data migration: backfill from extra
     bind = op.get_bind()

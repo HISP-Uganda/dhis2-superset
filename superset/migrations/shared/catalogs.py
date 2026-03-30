@@ -25,7 +25,7 @@ import sqlalchemy as sa
 from alembic import op
 from flask import current_app
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import defer, Session
 
 from superset import db, security_manager
 from superset.db_engine_specs.base import GenericDBException
@@ -359,6 +359,25 @@ def delete_models_non_default_catalog(
             print_processed_batch(start_time, i, total_rows, model, batch_size)
 
 
+def get_safe_db_query(session: Session) -> Any:
+    """
+    Return a query for the Database model that defers any columns that do not
+    exist in the physical 'dbs' table. This prevents UndefinedColumn errors
+    when running older migrations with newer models.
+    """
+    query = session.query(Database)
+    try:
+        bind = session.get_bind()
+        inspector = sa.inspect(bind)
+        columns = {c["name"] for c in inspector.get_columns("dbs")}
+        for col_name in Database.__table__.columns.keys():
+            if col_name not in columns:
+                query = query.options(defer(col_name))
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return query
+
+
 def upgrade_catalog_perms(engines: set[str] | None = None) -> None:
     """
     Update models and permissions when catalogs are introduced in a DB engine spec.
@@ -379,7 +398,7 @@ def upgrade_catalog_perms(engines: set[str] | None = None) -> None:
     bind = op.get_bind()
     session = db.Session(bind=bind)
 
-    for database in session.query(Database).all():
+    for database in get_safe_db_query(session).all():
         db_engine_spec = database.db_engine_spec
         if (
             engines and db_engine_spec.engine not in engines
@@ -576,7 +595,7 @@ def downgrade_catalog_perms(engines: set[str] | None = None) -> None:
     bind = op.get_bind()
     session = db.Session(bind=bind)
 
-    for database in session.query(Database).all():
+    for database in get_safe_db_query(session).all():
         db_engine_spec = database.db_engine_spec
         if (
             engines and db_engine_spec.engine not in engines
