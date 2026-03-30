@@ -164,6 +164,7 @@ NPM_CONFIG_AUDIT="${NPM_CONFIG_AUDIT:-false}"
 NPM_CONFIG_FUND="${NPM_CONFIG_FUND:-false}"
 NPM_CONFIG_PROGRESS="${NPM_CONFIG_PROGRESS:-false}"
 NPM_CONFIG_UPDATE_NOTIFIER="${NPM_CONFIG_UPDATE_NOTIFIER:-false}"
+NPM_CONFIG_LOGLEVEL="${NPM_CONFIG_LOGLEVEL:-error}"
 
 # ------------------------------------------------------------------------------
 # Common helpers
@@ -487,6 +488,8 @@ start_frontend() {
     export npm_config_fund="${NPM_CONFIG_FUND}"
     export npm_config_progress="${NPM_CONFIG_PROGRESS}"
     export npm_config_update_notifier="${NPM_CONFIG_UPDATE_NOTIFIER}"
+  export npm_config_loglevel="${NPM_CONFIG_LOGLEVEL}"
+    export npm_config_loglevel="${NPM_CONFIG_LOGLEVEL}"
     npm install ${NPM_INSTALL_FLAGS}
   fi
   local pid
@@ -766,6 +769,7 @@ build_frontend_if_present_server() {
     export npm_config_fund="${NPM_CONFIG_FUND}"
     export npm_config_progress="${NPM_CONFIG_PROGRESS}"
     export npm_config_update_notifier="${NPM_CONFIG_UPDATE_NOTIFIER}"
+    export npm_config_loglevel="${NPM_CONFIG_LOGLEVEL}"
     export CI=1
     if [[ -f package-lock.json ]]; then
       npm ci ${NPM_INSTALL_FLAGS} || npm install ${NPM_INSTALL_FLAGS}
@@ -788,15 +792,41 @@ configure_redis_server() {
 configure_postgresql_server() {
   [[ "$POSTGRES_ENABLED" == "1" ]] || return 0
   info "Configuring PostgreSQL"
-  sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER}'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER ${POSTGRES_USER} WITH PASSWORD '${POSTGRES_PASSWORD}';"
-  sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER} ENCODING 'UTF8';"
-  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};"
+
+  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${POSTGRES_USER}') THEN
+    CREATE ROLE ${POSTGRES_USER} LOGIN PASSWORD '${POSTGRES_PASSWORD}';
+  ELSE
+    ALTER ROLE ${POSTGRES_USER} WITH LOGIN PASSWORD '${POSTGRES_PASSWORD}';
+  END IF;
+END
+\$\$;
+SQL
+
+  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${POSTGRES_DB}') THEN
+    CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER} ENCODING 'UTF8';
+  END IF;
+END
+\$\$;
+SQL
+
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres <<SQL
+ALTER DATABASE ${POSTGRES_DB} OWNER TO ${POSTGRES_USER};
+GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};
+SQL
 
   if [[ "$POSTGRES_INSTALL_EXTENSIONS" == "1" ]]; then
-    sudo -u postgres psql -d "$POSTGRES_DB" -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;'
-    sudo -u postgres psql -d "$POSTGRES_DB" -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
-    sudo -u postgres psql -d "$POSTGRES_DB" -c 'CREATE EXTENSION IF NOT EXISTS citext;'
-    sudo -u postgres psql -d "$POSTGRES_DB" -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$POSTGRES_DB" <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+SQL
   fi
 
   local pg_version pg_conf
@@ -812,7 +842,11 @@ configure_postgresql_server() {
   grep -q '^random_page_cost' "$pg_conf" && sudo sed -i 's/^random_page_cost =.*/random_page_cost = 1.1/' "$pg_conf" || echo 'random_page_cost = 1.1' | sudo tee -a "$pg_conf" >/dev/null
   grep -q '^effective_io_concurrency' "$pg_conf" && sudo sed -i 's/^effective_io_concurrency =.*/effective_io_concurrency = 200/' "$pg_conf" || echo 'effective_io_concurrency = 200' | sudo tee -a "$pg_conf" >/dev/null
   sudo systemctl restart postgresql
-  ok "PostgreSQL configured and tuned"
+
+  # Verify that the generated credentials actually work before continuing
+  PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c 'SELECT 1;' >/dev/null
+
+  ok "PostgreSQL configured, password synchronized, and connectivity verified"
 }
 
 generate_env_server() {
@@ -945,6 +979,7 @@ class CeleryConfig:
 CELERY_CONFIG = CeleryConfig
 ENABLE_PROXY_FIX = True
 PREFERRED_URL_SCHEME = "https"
+RATELIMIT_STORAGE_URI = f"redis://{REDIS_HOST}:{REDIS_PORT}/6"
 PY
   ok "superset_config.py written"
 }
@@ -1105,17 +1140,27 @@ patch_metadata_db_schema_for_dhis2() {
   [[ "$POSTGRES_ENABLED" == "1" ]] || return 0
   info "Patching metadata DB schema for DHIS2 custom columns"
 
-  sudo -u postgres psql -d "$POSTGRES_DB" <<'SQL'
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS is_dhis2_staging_internal BOOLEAN DEFAULT FALSE;
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_reporting_unit_approach VARCHAR(255);
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS lowest_data_level_to_use VARCHAR(255);
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS primary_instance_id INTEGER;
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_data_scope VARCHAR(255);
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_org_unit_config_json JSONB;
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_org_unit_status VARCHAR(255);
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_org_unit_status_message TEXT;
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_org_unit_task_id VARCHAR(255);
-ALTER TABLE IF EXISTS dbs ADD COLUMN IF NOT EXISTS repository_org_unit_last_finalized_at TIMESTAMPTZ;
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$POSTGRES_DB" <<'SQL' >/dev/null
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'dbs'
+  ) THEN
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS is_dhis2_staging_internal BOOLEAN DEFAULT FALSE;
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_reporting_unit_approach VARCHAR(255);
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS lowest_data_level_to_use VARCHAR(255);
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS primary_instance_id INTEGER;
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_data_scope VARCHAR(255);
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_org_unit_config_json JSONB;
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_org_unit_status VARCHAR(255);
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_org_unit_status_message TEXT;
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_org_unit_task_id VARCHAR(255);
+    ALTER TABLE public.dbs ADD COLUMN IF NOT EXISTS repository_org_unit_last_finalized_at TIMESTAMPTZ;
+  END IF;
+END
+$$;
 SQL
 
   ok "Metadata DB schema patch applied"
@@ -1443,6 +1488,7 @@ export NPM_CONFIG_AUDIT='${NPM_CONFIG_AUDIT}'
 export NPM_CONFIG_FUND='${NPM_CONFIG_FUND}'
 export NPM_CONFIG_PROGRESS='${NPM_CONFIG_PROGRESS}'
 export NPM_CONFIG_UPDATE_NOTIFIER='${NPM_CONFIG_UPDATE_NOTIFIER}'
+export NPM_CONFIG_LOGLEVEL='${NPM_CONFIG_LOGLEVEL}'
 test -f '${REMOTE_SCRIPT_PATH}' || { echo 'Missing remote manager script: ${REMOTE_SCRIPT_PATH}' >&2; exit 1; }
 chmod +x '${REMOTE_SCRIPT_PATH}'
 '${REMOTE_SCRIPT_PATH}' install-server
@@ -1492,6 +1538,7 @@ export NPM_CONFIG_AUDIT='${NPM_CONFIG_AUDIT}'
 export NPM_CONFIG_FUND='${NPM_CONFIG_FUND}'
 export NPM_CONFIG_PROGRESS='${NPM_CONFIG_PROGRESS}'
 export NPM_CONFIG_UPDATE_NOTIFIER='${NPM_CONFIG_UPDATE_NOTIFIER}'
+export NPM_CONFIG_LOGLEVEL='${NPM_CONFIG_LOGLEVEL}'
 test -f '${REMOTE_SCRIPT_PATH}' || { echo 'Missing remote manager script: ${REMOTE_SCRIPT_PATH}' >&2; exit 1; }
 chmod +x '${REMOTE_SCRIPT_PATH}'
 '${REMOTE_SCRIPT_PATH}' upgrade-server
@@ -1613,6 +1660,7 @@ Important environment variables:
   NODE_MAJOR=20
   NPM_VERSION=10.8.2
   NPM_INSTALL_FLAGS='--legacy-peer-deps --no-audit --no-fund --progress=false --loglevel=error'
+  NPM_CONFIG_LOGLEVEL=error
 
 Examples:
   CODEBASE_SOURCE=local DOMAIN=supersets.vitalplatforms.com ADMIN_EMAIL=admin@vitalplatforms.com ADMIN_PASSWORD='StrongPass' ./superset-manager-v2-comprehensive.sh deploy-remote

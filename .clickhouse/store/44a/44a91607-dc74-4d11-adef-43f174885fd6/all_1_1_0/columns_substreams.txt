@@ -1,0 +1,169 @@
+columns substreams version: 1
+48 columns:
+3 substreams for column `national`:
+	national.dict_prefix
+	national.dict
+	national
+3 substreams for column `district`:
+	district.dict_prefix
+	district.dict
+	district
+3 substreams for column `chiefdom`:
+	chiefdom.dict_prefix
+	chiefdom.dict
+	chiefdom
+3 substreams for column `facility`:
+	facility.dict_prefix
+	facility.dict
+	facility
+3 substreams for column `chc`:
+	chc.dict_prefix
+	chc.dict
+	chc
+3 substreams for column `chiefdom_2`:
+	chiefdom_2.dict_prefix
+	chiefdom_2.dict
+	chiefdom_2
+3 substreams for column `chp`:
+	chp.dict_prefix
+	chp.dict
+	chp
+3 substreams for column `clinic`:
+	clinic.dict_prefix
+	clinic.dict
+	clinic
+3 substreams for column `country`:
+	country.dict_prefix
+	country.dict
+	country
+3 substreams for column `district_2`:
+	district_2.dict_prefix
+	district_2.dict
+	district_2
+3 substreams for column `eastern_area`:
+	eastern_area.dict_prefix
+	eastern_area.dict
+	eastern_area
+3 substreams for column `hospital`:
+	hospital.dict_prefix
+	hospital.dict
+	hospital
+3 substreams for column `area`:
+	area.dict_prefix
+	area.dict
+	area
+3 substreams for column `facility_ownership`:
+	facility_ownership.dict_prefix
+	facility_ownership.dict
+	facility_ownership
+3 substreams for column `facility_type`:
+	facility_type.dict_prefix
+	facility_type.dict
+	facility_type
+3 substreams for column `location_rural_urban`:
+	location_rural_urban.dict_prefix
+	location_rural_urban.dict
+	location_rural_urban
+3 substreams for column `period`:
+	period.dict_prefix
+	period.dict
+	period
+1 substreams for column `ou_level`:
+	ou_level
+3 substreams for column `co_uid`:
+	co_uid.dict_prefix
+	co_uid.dict
+	co_uid
+3 substreams for column `disaggregation`:
+	disaggregation.dict_prefix
+	disaggregation.dict
+	disaggregation
+3 substreams for column `aoc_uid`:
+	aoc_uid.dict_prefix
+	aoc_uid.dict
+	aoc_uid
+3 substreams for column `attribute_option_combo`:
+	attribute_option_combo.dict_prefix
+	attribute_option_combo.dict
+	attribute_option_combo
+3 substreams for column `under_5_5_and_above_of_age`:
+	under_5_5_and_above_of_age.dict_prefix
+	under_5_5_and_above_of_age.dict
+	under_5_5_and_above_of_age
+3 substreams for column `referrals_age`:
+	referrals_age.dict_prefix
+	referrals_age.dict
+	referrals_age
+3 substreams for column `morbidity_age`:
+	morbidity_age.dict_prefix
+	morbidity_age.dict
+	morbidity_age
+2 substreams for column `malaria_cases`:
+	malaria_cases.null
+	malaria_cases
+2 substreams for column `malaria_deaths_5_yrs_narrative`:
+	malaria_deaths_5_yrs_narrative.null
+	malaria_deaths_5_yrs_narrative
+2 substreams for column `malaria_deaths_5_yrs`:
+	malaria_deaths_5_yrs.null
+	malaria_deaths_5_yrs
+2 substreams for column `inpatient_malaria_deaths`:
+	inpatient_malaria_deaths.null
+	inpatient_malaria_deaths
+2 substreams for column `inpatient_malaria_cases`:
+	inpatient_malaria_cases.null
+	inpatient_malaria_cases
+2 substreams for column `idsr_malaria`:
+	idsr_malaria.null
+	idsr_malaria
+2 substreams for column `malaria_outbreak_threshold`:
+	malaria_outbreak_threshold.null
+	malaria_outbreak_threshold
+2 substreams for column `malaria_referrals`:
+	malaria_referrals.null
+	malaria_referrals
+2 substreams for column `malaria_treated_at_phu_with_act_24_hrs_f_up`:
+	malaria_treated_at_phu_with_act_24_hrs_f_up.null
+	malaria_treated_at_phu_with_act_24_hrs_f_up
+2 substreams for column `malaria_treated_at_phu_with_act_24_hrs_new`:
+	malaria_treated_at_phu_with_act_24_hrs_new.null
+	malaria_treated_at_phu_with_act_24_hrs_new
+2 substreams for column `malaria_treated_at_phu_with_act_24_hrs_f_up_2`:
+	malaria_treated_at_phu_with_act_24_hrs_f_up_2.null
+	malaria_treated_at_phu_with_act_24_hrs_f_up_2
+2 substreams for column `malaria_treated_at_phu_with_act_24_hrs_new_2`:
+	malaria_treated_at_phu_with_act_24_hrs_new_2.null
+	malaria_treated_at_phu_with_act_24_hrs_new_2
+2 substreams for column `malaria_treated_at_phu_without_act_24_hrs_f_up`:
+	malaria_treated_at_phu_without_act_24_hrs_f_up.null
+	malaria_treated_at_phu_without_act_24_hrs_f_up
+2 substreams for column `malaria_treated_at_phu_without_act_24_hrs_new`:
+	malaria_treated_at_phu_without_act_24_hrs_new.null
+	malaria_treated_at_phu_without_act_24_hrs_new
+2 substreams for column `malaria_treated_at_phu_without_act_24_hrs_f_up_2`:
+	malaria_treated_at_phu_without_act_24_hrs_f_up_2.null
+	malaria_treated_at_phu_without_act_24_hrs_f_up_2
+2 substreams for column `malaria_treated_at_phu_without_act_24_hrs_new_2`:
+	malaria_treated_at_phu_without_act_24_hrs_new_2.null
+	malaria_treated_at_phu_without_act_24_hrs_new_2
+2 substreams for column `malaria_treated_in_community_with_act_24_hrs_f_up`:
+	malaria_treated_in_community_with_act_24_hrs_f_up.null
+	malaria_treated_in_community_with_act_24_hrs_f_up
+2 substreams for column `malaria_treated_in_community_with_act_24_hrs_new`:
+	malaria_treated_in_community_with_act_24_hrs_new.null
+	malaria_treated_in_community_with_act_24_hrs_new
+2 substreams for column `malaria_treated_in_community_with_act_24_hrs_f_up_2`:
+	malaria_treated_in_community_with_act_24_hrs_f_up_2.null
+	malaria_treated_in_community_with_act_24_hrs_f_up_2
+2 substreams for column `malaria_treated_in_community_with_act_24_hrs_new_2`:
+	malaria_treated_in_community_with_act_24_hrs_new_2.null
+	malaria_treated_in_community_with_act_24_hrs_new_2
+2 substreams for column `rapid_diagnostic_test_for_malaria_negative`:
+	rapid_diagnostic_test_for_malaria_negative.null
+	rapid_diagnostic_test_for_malaria_negative
+2 substreams for column `rapid_diagnostic_test_for_malaria_positive`:
+	rapid_diagnostic_test_for_malaria_positive.null
+	rapid_diagnostic_test_for_malaria_positive
+2 substreams for column `malaria_cases_confirmed`:
+	malaria_cases_confirmed.null
+	malaria_cases_confirmed

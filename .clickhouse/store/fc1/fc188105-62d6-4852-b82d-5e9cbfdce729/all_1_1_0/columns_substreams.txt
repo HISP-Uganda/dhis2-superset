@@ -1,0 +1,97 @@
+columns substreams version: 1
+32 columns:
+2 substreams for column `national`:
+	national.dict
+	national
+2 substreams for column `region`:
+	region.dict
+	region
+2 substreams for column `district_city`:
+	district_city.dict
+	district_city
+2 substreams for column `dlg_municipality_city_council`:
+	dlg_municipality_city_council.dict
+	dlg_municipality_city_council
+2 substreams for column `sub_county_town_council_division`:
+	sub_county_town_council_division.dict
+	sub_county_town_council_division
+2 substreams for column `health_facility`:
+	health_facility.dict
+	health_facility
+2 substreams for column `period`:
+	period.dict
+	period
+1 substreams for column `ou_level`:
+	ou_level
+2 substreams for column `co_uid`:
+	co_uid.dict
+	co_uid
+2 substreams for column `disaggregation`:
+	disaggregation.dict
+	disaggregation
+2 substreams for column `aoc_uid`:
+	aoc_uid.dict
+	aoc_uid
+2 substreams for column `attribute_option_combo`:
+	attribute_option_combo.dict
+	attribute_option_combo
+2 substreams for column `c_105_ss34a_malaria_rapid_diagnostic_tests_quantity_consumed`:
+	c_105_ss34a_malaria_rapid_diagnostic_tests_quantity_consumed.null
+	c_105_ss34a_malaria_rapid_diagnostic_tests_quantity_consumed
+2 substreams for column `c_105_wt12a_malaria_opening_balance`:
+	c_105_wt12a_malaria_opening_balance.null
+	c_105_wt12a_malaria_opening_balance
+2 substreams for column `c_105_ss01a_artemether_lumefantrine_120_20_mg_quantity_consumed`:
+	c_105_ss01a_artemether_lumefantrine_120_20_mg_quantity_consumed.null
+	c_105_ss01a_artemether_lumefantrine_120_20_mg_quantity_consumed
+2 substreams for column `c_105_ss34d_malaria_rapid_diagnostic_tests_quantity_expired`:
+	c_105_ss34d_malaria_rapid_diagnostic_tests_quantity_expired.null
+	c_105_ss34d_malaria_rapid_diagnostic_tests_quantity_expired
+2 substreams for column `c_105_ss03b_long_lasting_insecticidal_nets_llins_days_out_of_stock`:
+	c_105_ss03b_long_lasting_insecticidal_nets_llins_days_out_of_stock.null
+	c_105_ss03b_long_lasting_insecticidal_nets_llins_days_out_of_stock
+2 substreams for column `c_105_ss02c_artesunate_60mg_stock_on_hand`:
+	c_105_ss02c_artesunate_60mg_stock_on_hand.null
+	c_105_ss02c_artesunate_60mg_stock_on_hand
+2 substreams for column `c_105_ss01b_artemether_lumefantrine_120_20_mg_days_out_of_stock`:
+	c_105_ss01b_artemether_lumefantrine_120_20_mg_days_out_of_stock.null
+	c_105_ss01b_artemether_lumefantrine_120_20_mg_days_out_of_stock
+2 substreams for column `c_105_ss34c_malaria_rapid_diagnostic_tests_stock_on_hand`:
+	c_105_ss34c_malaria_rapid_diagnostic_tests_stock_on_hand.null
+	c_105_ss34c_malaria_rapid_diagnostic_tests_stock_on_hand
+2 substreams for column `c_105_ss02d_artesunate_60mg_quantity_expired`:
+	c_105_ss02d_artesunate_60mg_quantity_expired.null
+	c_105_ss02d_artesunate_60mg_quantity_expired
+2 substreams for column `c_105_ss03a_long_lasting_insecticidal_nets_llins_quantity_consumed`:
+	c_105_ss03a_long_lasting_insecticidal_nets_llins_quantity_consumed.null
+	c_105_ss03a_long_lasting_insecticidal_nets_llins_quantity_consumed
+2 substreams for column `c_105_ss02b_artesunate_60mg_days_out_of_stock`:
+	c_105_ss02b_artesunate_60mg_days_out_of_stock.null
+	c_105_ss02b_artesunate_60mg_days_out_of_stock
+2 substreams for column `c_105_ss03c_long_lasting_insecticidal_nets_llins_stock_on_hand`:
+	c_105_ss03c_long_lasting_insecticidal_nets_llins_stock_on_hand.null
+	c_105_ss03c_long_lasting_insecticidal_nets_llins_stock_on_hand
+2 substreams for column `c_105_ss01d_artemether_lumefantrine_120_20_mg_quantity_expired`:
+	c_105_ss01d_artemether_lumefantrine_120_20_mg_quantity_expired.null
+	c_105_ss01d_artemether_lumefantrine_120_20_mg_quantity_expired
+2 substreams for column `c_105_ss02a_artesunate_60mg_quantity_consumed`:
+	c_105_ss02a_artesunate_60mg_quantity_consumed.null
+	c_105_ss02a_artesunate_60mg_quantity_consumed
+2 substreams for column `c_105_ss34b_malaria_rapid_diagnostic_tests_days_out_of_stock`:
+	c_105_ss34b_malaria_rapid_diagnostic_tests_days_out_of_stock.null
+	c_105_ss34b_malaria_rapid_diagnostic_tests_days_out_of_stock
+2 substreams for column `c_105_wt12b_malaria_received`:
+	c_105_wt12b_malaria_received.null
+	c_105_wt12b_malaria_received
+2 substreams for column `c_105_wt12d_malaria_doses_wasted`:
+	c_105_wt12d_malaria_doses_wasted.null
+	c_105_wt12d_malaria_doses_wasted
+2 substreams for column `c_105_ss01c_artemether_lumefantrine_120_20_mg_stock_on_hand`:
+	c_105_ss01c_artemether_lumefantrine_120_20_mg_stock_on_hand.null
+	c_105_ss01c_artemether_lumefantrine_120_20_mg_stock_on_hand
+2 substreams for column `c_105_ss03d_long_lasting_insecticidal_nets_llins_quantity_expired`:
+	c_105_ss03d_long_lasting_insecticidal_nets_llins_quantity_expired.null
+	c_105_ss03d_long_lasting_insecticidal_nets_llins_quantity_expired
+2 substreams for column `c_105_wt12c_malaria_closing_balance`:
+	c_105_wt12c_malaria_closing_balance.null
+	c_105_wt12c_malaria_closing_balance

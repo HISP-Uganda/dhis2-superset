@@ -1,0 +1,19 @@
+columns format version: 1
+17 columns:
+`staged_dataset_id` Int32
+`source_instance_id` Int32
+`source_instance_name` LowCardinality(String)
+`dx_uid` LowCardinality(String)
+`dx_name` String
+`dx_type` LowCardinality(String)
+`pe` LowCardinality(String)
+`ou` LowCardinality(String)
+`ou_name` String
+`ou_level` UInt16
+`value` String
+`value_numeric` Float64
+`co_uid` LowCardinality(String)
+`co_name` String
+`aoc_uid` LowCardinality(String)
+`synced_at` DateTime
+`sync_job_id` Nullable(Int32)

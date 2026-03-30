@@ -168,6 +168,21 @@ NPM_CONFIG_LOGLEVEL="${NPM_CONFIG_LOGLEVEL:-error}"
 FRONTEND_PATCH_TSCONFIGS="${FRONTEND_PATCH_TSCONFIGS:-1}"
 FRONTEND_BUILD_STRATEGY="${FRONTEND_BUILD_STRATEGY:-build}"
 TSC_COMPILE_ON_ERROR="${TSC_COMPILE_ON_ERROR:-true}"
+FRONTEND_FORCE_RETRY_ON_TS_ERRORS="${FRONTEND_FORCE_RETRY_ON_TS_ERRORS:-1}"
+FRONTEND_BUILD_MAX_RETRIES="${FRONTEND_BUILD_MAX_RETRIES:-2}"
+FRONTEND_REWRITE_PLUGIN_TSCONFIGS="${FRONTEND_REWRITE_PLUGIN_TSCONFIGS:-1}"
+FRONTEND_VERBOSE_LOGS="${FRONTEND_VERBOSE_LOGS:-1}"
+FRONTEND_HEARTBEAT_SECONDS="${FRONTEND_HEARTBEAT_SECONDS:-30}"
+FRONTEND_BUILD_LOG_FILE="${FRONTEND_BUILD_LOG_FILE:-$LOG_DIR/frontend-build.log}"
+FRONTEND_CLEAN="${FRONTEND_CLEAN:-0}"
+FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-90}"
+FRONTEND_TYPECHECK="${FRONTEND_TYPECHECK:-0}"
+FRONTEND_NODE_OLD_SPACE_SIZE_MB="${FRONTEND_NODE_OLD_SPACE_SIZE_MB:-auto}"
+FRONTEND_FORK_TS_MEMORY_LIMIT_MB="${FRONTEND_FORK_TS_MEMORY_LIMIT_MB:-auto}"
+FRONTEND_LOG_TAIL_LINES="${FRONTEND_LOG_TAIL_LINES:-200}"
+FRONTEND_DEP_FINGERPRINT_FILE="${FRONTEND_DEP_FINGERPRINT_FILE:-$RUN_DIR/frontend-deps.sha256}"
+WEBPACK_VERBOSE_ARGS="${WEBPACK_VERBOSE_ARGS:-}"
+NPM_INSTALL_VERBOSE="${NPM_INSTALL_VERBOSE:-0}"
 
 # ------------------------------------------------------------------------------
 # Common helpers
@@ -176,9 +191,267 @@ ensure_dirs() { mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$R
 check_not_root() { [[ ${EUID} -ne 0 ]] || die "Do not run as root. Use a sudo-capable app user."; }
 require_domain() { [[ -n "$DOMAIN" ]] || die "DOMAIN is required. Example: DOMAIN=supersets.vitalplatforms.com"; }
 
+source_runtime_env() {
+  [[ -f "$ENV_FILE" ]] || die "Missing runtime environment file: $ENV_FILE"
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  export SUPERSET_CONFIG_PATH="$SUPERSET_CONFIG_FILE"
+  export FLASK_APP=superset
+}
+
+
 read_pid_file() { [[ -f "$1" ]] && cat "$1"; }
 pid_is_running() { [[ -n "${1:-}" ]] && ps -p "$1" >/dev/null 2>&1; }
 port_is_in_use() { lsof -tiTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+
+run_step() {
+  local label="$1"
+  shift
+  header "$label"
+  local started_at ended_at rc=0
+  started_at="$(date +%s)"
+  "$@" || rc=$?
+  ended_at="$(date +%s)"
+  if [[ "$rc" -eq 0 ]]; then
+    ok "$label completed in $((ended_at - started_at))s"
+  else
+    err "$label failed after $((ended_at - started_at))s"
+    return "$rc"
+  fi
+}
+
+
+frontend_dep_fingerprint() {
+  local dir="$1"
+  (
+    cd "$dir"
+    if [[ -f package-lock.json ]]; then
+      cat package.json package-lock.json 2>/dev/null | sha256sum | awk '{print $1}'
+    else
+      cat package.json 2>/dev/null | sha256sum | awk '{print $1}'
+    fi
+  )
+}
+
+
+frontend_node_modules_ready() {
+  local dir="$1"
+  [[ -d "$dir/node_modules" ]] || return 1
+  frontend_required_bins_ready "$dir"
+}
+
+
+
+frontend_apply_common_env() {
+  export npm_config_legacy_peer_deps="${NPM_CONFIG_LEGACY_PEER_DEPS}"
+  export npm_config_audit="${NPM_CONFIG_AUDIT}"
+  export npm_config_fund="${NPM_CONFIG_FUND}"
+  export npm_config_progress="${NPM_CONFIG_PROGRESS}"
+  export npm_config_update_notifier="${NPM_CONFIG_UPDATE_NOTIFIER}"
+  export npm_config_loglevel="${NPM_CONFIG_LOGLEVEL}"
+  export DISABLE_TYPE_CHECK="${FRONTEND_DISABLE_TYPE_CHECK}"
+  export TSC_COMPILE_ON_ERROR="${TSC_COMPILE_ON_ERROR}"
+  export PUPPETEER_SKIP_DOWNLOAD=1
+  export CI=1
+  export NODE_OPTIONS="${NODE_OPTIONS:---max_old_space_size=${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-8192}}"
+  export NODE_ENV=production
+  export BABEL_ENV="${BABEL_ENV:=production}"
+}
+
+frontend_cleanup_dirs() {
+  local dir="$1"
+  rm -rf \
+    "$dir/node_modules" \
+    "$dir/.cache" \
+    "$dir/.temp_cache" \
+    "$dir/node_modules/.cache" \
+    /tmp/webpack-* \
+    /tmp/.webpack-* 2>/dev/null || true
+}
+
+run_frontend_logged_command() {
+  local log_file="$1"
+  local heartbeat_seconds="$2"
+  local timeout_minutes="$3"
+  shift 3
+  local runner_pid=""
+  local rc=0
+  local elapsed=0
+
+  mkdir -p "$(dirname "$log_file")"
+  : > "$log_file"
+  printf "===== frontend command start %s =====\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_file"
+
+  (
+    set -o pipefail
+    if command -v timeout >/dev/null 2>&1; then
+      if command -v stdbuf >/dev/null 2>&1; then
+        timeout --foreground "${timeout_minutes}m" stdbuf -oL -eL "$@" 2>&1 | tee -a "$log_file"
+      else
+        timeout --foreground "${timeout_minutes}m" "$@" 2>&1 | tee -a "$log_file"
+      fi
+    else
+      if command -v stdbuf >/dev/null 2>&1; then
+        stdbuf -oL -eL "$@" 2>&1 | tee -a "$log_file"
+      else
+        "$@" 2>&1 | tee -a "$log_file"
+      fi
+    fi
+  ) &
+  runner_pid=$!
+
+  while kill -0 "$runner_pid" 2>/dev/null; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    if (( heartbeat_seconds > 0 )) && (( elapsed % heartbeat_seconds == 0 )); then
+      echo "[INFO] Frontend build still running ($(date -u +%Y-%m-%dT%H:%M:%SZ)); elapsed=${elapsed}s; log: $log_file" | tee -a "$log_file"
+    fi
+  done
+
+  wait "$runner_pid" || rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "[ERROR] Frontend command timed out after ${timeout_minutes} minute(s); log: $log_file" | tee -a "$log_file" >&2
+  elif [[ "$rc" -eq 0 ]]; then
+    echo "[OK] Frontend command finished successfully; log: $log_file" | tee -a "$log_file"
+  else
+    echo "[ERROR] Frontend command failed with exit code $rc; log: $log_file" | tee -a "$log_file" >&2
+  fi
+  return "$rc"
+}
+
+frontend_run_step() {
+  local desc="$1"
+  local log_file="$2"
+  local heartbeat="$3"
+  local timeout_minutes="$4"
+  shift 4
+  info "[frontend] START ${desc}"
+  local rc=0
+  run_frontend_logged_command "$log_file" "$heartbeat" "$timeout_minutes" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    warn "[frontend] FAILED ${desc}"
+    echo "----- frontend log tail (${FRONTEND_LOG_TAIL_LINES:-200} lines) -----"
+    tail -n "${FRONTEND_LOG_TAIL_LINES:-200}" "$log_file" || true
+    return "$rc"
+  fi
+  info "[frontend] END ${desc}"
+  return 0
+}
+
+
+frontend_required_bins_ready() {
+  local dir="$1"
+  [[ -x "$dir/node_modules/.bin/webpack" ]] || return 1
+  [[ -x "$dir/node_modules/.bin/webpack-cli" ]] || return 1
+  [[ -x "$dir/node_modules/.bin/cross-env" ]] || return 1
+  return 0
+}
+
+frontend_ensure_required_bins() {
+  local dir="$1"
+  local log_file="$2"
+  local heartbeat="$3"
+  local timeout_minutes="$4"
+  local fingerprint_file="$5"
+
+  if frontend_required_bins_ready "$dir"; then
+    return 0
+  fi
+
+  warn "[frontend] required frontend binaries are missing (cross-env/webpack/webpack-cli); repairing frontend dependencies"
+  rm -rf "$dir/node_modules/.cache" "$dir/.cache" "$dir/.temp_cache" 2>/dev/null || true
+
+  if [[ -f "$dir/package-lock.json" ]]; then
+    if ! frontend_run_step "npm ci repair" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm ci ${NPM_INSTALL_FLAGS}"; then
+      warn "[frontend] npm ci repair failed; falling back to npm install"
+      frontend_run_step "npm install repair" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm install ${NPM_INSTALL_FLAGS}" || return $?
+    fi
+  else
+    frontend_run_step "npm install repair" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm install ${NPM_INSTALL_FLAGS}" || return $?
+  fi
+
+  if ! frontend_required_bins_ready "$dir"; then
+    warn "[frontend] installing explicit frontend build dependencies"
+    frontend_run_step "npm install explicit build deps" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm install -D --legacy-peer-deps webpack webpack-cli cross-env" || return $?
+  fi
+
+  if ! frontend_required_bins_ready "$dir"; then
+    err "[frontend] dependency repair finished but required binaries are still missing"
+    return 127
+  fi
+
+  local current_fingerprint=""
+  current_fingerprint="$(frontend_dep_fingerprint "$dir")"
+  [[ -n "$current_fingerprint" ]] && printf '%s
+' "$current_fingerprint" > "$fingerprint_file"
+  ok "[frontend] required frontend binaries verified"
+  return 0
+}
+
+frontend_install_deps_if_needed() {
+  local dir="$1"
+  local log_file="$2"
+  local heartbeat="$3"
+  local timeout_minutes="$4"
+  local fingerprint_file="$5"
+
+  mkdir -p "$(dirname "$fingerprint_file")"
+
+  if [[ "${FRONTEND_CLEAN:-0}" == "1" ]]; then
+    info "[frontend] FRONTEND_CLEAN=1; clearing node_modules and webpack caches"
+    frontend_cleanup_dirs "$dir"
+    rm -f "$fingerprint_file"
+  fi
+
+  local current_fingerprint=""
+  local saved_fingerprint=""
+  current_fingerprint="$(frontend_dep_fingerprint "$dir")"
+  [[ -f "$fingerprint_file" ]] && saved_fingerprint="$(cat "$fingerprint_file" 2>/dev/null || true)"
+
+  if [[ -n "$current_fingerprint" && "$current_fingerprint" == "$saved_fingerprint" ]] && frontend_node_modules_ready "$dir"; then
+    info "[frontend] package fingerprint unchanged; reusing existing node_modules"
+    return 0
+  fi
+
+  if [[ -n "$current_fingerprint" && "$current_fingerprint" == "$saved_fingerprint" ]]; then
+    warn "[frontend] fingerprint unchanged but node_modules is incomplete; repairing dependencies"
+    frontend_ensure_required_bins "$dir" "$log_file" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
+    return 0
+  fi
+
+  if [[ -f "$dir/package-lock.json" ]]; then
+    if ! frontend_run_step "npm ci" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm ci ${NPM_INSTALL_FLAGS}"; then
+      warn "[frontend] npm ci failed; falling back to npm install"
+      frontend_run_step "npm install fallback" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm install ${NPM_INSTALL_FLAGS}" || return $?
+    fi
+  else
+    frontend_run_step "npm install" "$log_file" "$heartbeat" "$timeout_minutes" bash -lc "cd '$dir' && npm install ${NPM_INSTALL_FLAGS}" || return $?
+  fi
+
+  [[ -n "$current_fingerprint" ]] && printf '%s
+' "$current_fingerprint" > "$fingerprint_file"
+  frontend_ensure_required_bins "$dir" "$log_file" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
+  return 0
+}
+
+frontend_run_optional_checks() {
+  local log_file="$1"
+  local heartbeat="$2"
+  local timeout_minutes="$3"
+
+  if [[ "${FRONTEND_TYPECHECK:-0}" == "1" ]]; then
+    if npm run 2>/dev/null | grep -q 'type:refs'; then
+      frontend_run_step "npm run type:refs" "$log_file" "$heartbeat" "$timeout_minutes" npm run type:refs || return $?
+    fi
+    if npm run 2>/dev/null | grep -qE '^[[:space:]]+type[[:space:]]'; then
+      frontend_run_step "npm run type" "$log_file" "$heartbeat" "$timeout_minutes" npm run type -- --pretty false || return $?
+    fi
+  fi
+  return 0
+}
 
 kill_pid_file() {
   local pid_file="$1"
@@ -355,6 +628,36 @@ calc_autotune() {
     NGINX_PROXY_BUFFERS="16 16k"; NGINX_PROXY_BUFFER_SIZE="16k"; NGINX_PROXY_BUSY="64k"
   else
     NGINX_PROXY_BUFFERS="32 16k"; NGINX_PROXY_BUFFER_SIZE="32k"; NGINX_PROXY_BUSY="128k"
+  fi
+
+  if [[ -z "${FRONTEND_NODE_OLD_SPACE_SIZE_MB:-}" || "${FRONTEND_NODE_OLD_SPACE_SIZE_MB}" == "auto" ]]; then
+    if (( TOTAL_MEM_MB >= 24576 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=14336
+    elif (( TOTAL_MEM_MB >= 16384 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=12288
+    elif (( TOTAL_MEM_MB >= 12288 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=10240
+    elif (( TOTAL_MEM_MB >= 8192 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=8192
+    else
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=6144
+    fi
+  else
+    FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB="${FRONTEND_NODE_OLD_SPACE_SIZE_MB}"
+  fi
+
+  if [[ -z "${FRONTEND_FORK_TS_MEMORY_LIMIT_MB:-}" || "${FRONTEND_FORK_TS_MEMORY_LIMIT_MB}" == "auto" ]]; then
+    if (( TOTAL_MEM_MB >= 24576 )); then
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=8192
+    elif (( TOTAL_MEM_MB >= 16384 )); then
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=6144
+    elif (( TOTAL_MEM_MB >= 12288 )); then
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=5120
+    else
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=4096
+    fi
+  else
+    FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB="${FRONTEND_FORK_TS_MEMORY_LIMIT_MB}"
   fi
 
   GUNICORN_TIMEOUT=300
@@ -572,14 +875,22 @@ restart_celery() { stop_celery_beat || true; stop_celery_worker || true; sleep 1
 build_frontend() {
   header "Building Superset Frontend"
   validate_frontend
+  export INSTALL_DIR="$PROJECT_DIR"
+  patch_frontend_workspace_for_custom_branch
+  patch_frontend_webpack_memory_for_branch
   cd "$FRONTEND_DIR"
-  export npm_config_legacy_peer_deps="${NPM_CONFIG_LEGACY_PEER_DEPS}"
-  export npm_config_audit="${NPM_CONFIG_AUDIT}"
-  export npm_config_fund="${NPM_CONFIG_FUND}"
-  export npm_config_progress="${NPM_CONFIG_PROGRESS}"
-  export npm_config_update_notifier="${NPM_CONFIG_UPDATE_NOTIFIER}"
-  npm install ${NPM_INSTALL_FLAGS}
-  npm run build
+
+  frontend_apply_common_env
+
+  local build_log="${FRONTEND_BUILD_LOG_FILE:-$PROJECT_DIR/frontend-build.log}"
+  local heartbeat="${FRONTEND_HEARTBEAT_SECONDS:-30}"
+  local timeout_minutes="${FRONTEND_TIMEOUT_MINUTES:-90}"
+  local fingerprint_file="${FRONTEND_DEP_FINGERPRINT_FILE:-$PROJECT_DIR/.frontend-deps.sha256}"
+
+  frontend_install_deps_if_needed "$FRONTEND_DIR" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
+  frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
+  frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; if [[ -x "$PWD/node_modules/.bin/webpack" ]]; then exec "$PWD/node_modules/.bin/webpack" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack binary missing under $PWD/node_modules" >&2; exit 127; fi' "$FRONTEND_DIR" || return $?
+
   ok "Frontend build complete"
 }
 
@@ -771,118 +1082,253 @@ patch_frontend_workspace_for_custom_branch() {
 
   local frontend_dir="$INSTALL_DIR/superset-frontend"
 
-  python3 - "$frontend_dir" <<'PY'
+  python3 - "$frontend_dir" "${FRONTEND_REWRITE_PLUGIN_TSCONFIGS:-1}" <<'PY'
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
-frontend = Path(sys.argv[1])
+frontend = Path(sys.argv[1]).resolve()
+rewrite_plugins = sys.argv[2] == "1"
 
-def patch_json_file(path: Path):
+def strip_jsonc(txt: str) -> str:
+    txt = re.sub(r"/\*.*?\*/", "", txt, flags=re.S)
+    txt = re.sub(r"^\s*//.*$", "", txt, flags=re.M)
+    txt = re.sub(r",(\s*[}\]])", r"\1", txt)
+    return txt
+
+def load_jsonc(path: Path):
+    raw = path.read_text(encoding="utf-8")
+    return json.loads(strip_jsonc(raw))
+
+def dump_json(path: Path, data):
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+def rel_from_tsconfig_to_frontend(path: Path) -> str:
+    rel = os.path.relpath(frontend, path.parent)
+    rel = rel.replace(os.sep, "/")
+    return "." if rel == "." else rel
+
+def uniq(seq):
+    out = []
+    for item in seq:
+        if item not in out:
+            out.append(item)
+    return out
+
+patched = 0
+
+COMMON_EXCLUDE = [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.stories.ts",
+    "**/*.stories.tsx",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/spec/**",
+]
+
+for path in frontend.rglob("tsconfig*.json"):
     try:
-        data = json.loads(path.read_text())
+        data = load_jsonc(path)
     except Exception:
-        return False
+        continue
 
-    changed = False
     compiler = data.setdefault("compilerOptions", {})
+    rel = rel_from_tsconfig_to_frontend(path)
+    changed = False
 
-    # Broaden plugin projects so imports from ../../src and ../../packages stop failing
+    desired_pairs = {
+        "baseUrl": rel,
+        "rootDir": rel,
+        "composite": False,
+        "incremental": False,
+        "skipLibCheck": True,
+        "noEmitOnError": False,
+        "allowJs": True,
+        "resolveJsonModule": True,
+    }
+    for key, value in desired_pairs.items():
+        if compiler.get(key) != value:
+            compiler[key] = value
+            changed = True
+
+    root_dirs = [f"{rel}/src", f"{rel}/packages", f"{rel}/plugins"]
+    if compiler.get("rootDirs") != root_dirs:
+        compiler["rootDirs"] = root_dirs
+        changed = True
+
+    paths = dict(compiler.get("paths") or {})
+    desired_paths = {
+        "src/*": ["src/*"],
+        "packages/*": ["packages/*"],
+        "plugins/*": ["plugins/*"],
+    }
+    merged_paths = dict(paths)
+    merged_paths.update(desired_paths)
+    if merged_paths != paths:
+        compiler["paths"] = merged_paths
+        changed = True
+
+    include = data.get("include")
+    if not isinstance(include, list):
+        include = []
+
+    # IMPORTANT: production build should not pull test/spec/story files
+    desired_include = [
+        f"{rel}/src/**/*",
+        "src/**/*",
+    ]
+    merged_include = uniq(include + desired_include)
+    if merged_include != include:
+        data["include"] = merged_include
+        changed = True
+
+    excludes = data.get("exclude")
+    if not isinstance(excludes, list):
+        excludes = []
+    merged_exclude = uniq(excludes + COMMON_EXCLUDE)
+    if merged_exclude != excludes:
+        data["exclude"] = merged_exclude
+        changed = True
+
+    for key in ("files", "references"):
+        if key in data:
+            del data[key]
+            changed = True
+
     rel_parts = path.relative_to(frontend).parts
-    if len(rel_parts) >= 2 and rel_parts[0] == "plugins" and rel_parts[-1] == "tsconfig.json":
-        if compiler.get("rootDir") != "../..":
-            compiler["rootDir"] = "../.."
-            changed = True
-        if compiler.get("baseUrl") != "../..":
-            compiler["baseUrl"] = "../.."
-            changed = True
-        if compiler.get("composite") is not False:
-            compiler["composite"] = False
-            changed = True
-
-        wanted = [
-            "src/**/*",
-            "test/**/*",
-            "../../src/**/*",
-            "../../packages/**/*",
-            "../../plugins/**/*",
-        ]
-        include = data.get("include") or []
-        if not isinstance(include, list):
-            include = []
-        merged = []
-        for item in include + wanted:
-            if item not in merged:
-                merged.append(item)
-        if data.get("include") != merged:
-            data["include"] = merged
-            changed = True
-
-        if "files" in data:
-            del data["files"]
-            changed = True
-        if "references" in data:
-            del data["references"]
-            changed = True
-
-    # Make root tsconfig less strict for production asset builds
-    if path == frontend / "tsconfig.json":
-        if compiler.get("skipLibCheck") is not True:
-            compiler["skipLibCheck"] = True
-            changed = True
-        if compiler.get("noEmitOnError") is not False:
-            compiler["noEmitOnError"] = False
-            changed = True
+    is_plugin_tsconfig = len(rel_parts) >= 3 and rel_parts[0] == "plugins" and rel_parts[-1] == "tsconfig.json"
+    if rewrite_plugins and is_plugin_tsconfig:
+        data = {
+            "extends": "../../tsconfig.json",
+            "compilerOptions": {
+                **compiler,
+                "baseUrl": "../..",
+                "rootDir": "../..",
+                "rootDirs": ["../../src", "../../packages", "../../plugins"],
+                "composite": False,
+                "incremental": False,
+                "skipLibCheck": True,
+                "noEmitOnError": False,
+                "allowJs": True,
+                "resolveJsonModule": True,
+                "paths": {
+                    **dict(compiler.get("paths") or {}),
+                    "src/*": ["src/*"],
+                    "packages/*": ["packages/*"],
+                    "plugins/*": ["plugins/*"],
+                },
+            },
+            "include": [
+                "../../src/**/*",
+                "../../packages/**/src/**/*",
+                "../../plugins/**/src/**/*",
+                "src/**/*",
+            ],
+            "exclude": COMMON_EXCLUDE,
+        }
+        changed = True
 
     if changed:
-        path.write_text(json.dumps(data, indent=2) + "\n")
-    return changed
+        dump_json(path, data)
+        patched += 1
 
-count = 0
-for path in frontend.rglob("tsconfig.json"):
-    if patch_json_file(path):
-        count += 1
-
-# Patch the Dayjs typing issue seen in this branch
 constants = frontend / "src/explore/components/controls/DateFilterControl/utils/constants.ts"
 if constants.exists():
-    txt = constants.read_text()
+    txt = constants.read_text(encoding="utf-8")
     new = txt.replace("extendedDayjs()\n  .utc()", "(extendedDayjs() as any)\n  .utc()")
     if new != txt:
-        constants.write_text(new)
-        count += 1
+        constants.write_text(new, encoding="utf-8")
+        patched += 1
 
-print(count)
+print(patched)
 PY
 
   ok "Frontend workspace patch applied"
 }
 
+patch_frontend_webpack_memory_for_branch() {
+  [[ -d "$INSTALL_DIR/superset-frontend" ]] || return 0
+  info "Patching frontend webpack memory settings"
+
+  local frontend_dir="$INSTALL_DIR/superset-frontend"
+  local mem_limit="${FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB:-6144}"
+
+  python3 - "$frontend_dir" "$mem_limit" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+frontend = Path(sys.argv[1])
+mem_limit = sys.argv[2]
+patched = 0
+
+for path in list(frontend.rglob("webpack*.js")) + list(frontend.rglob("webpack.config.ts")):
+    try:
+        txt = path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+    if "ForkTsCheckerWebpackPlugin" not in txt:
+        continue
+
+    new = txt
+    # If memoryLimit already exists, replace it
+    new = re.sub(r'(memoryLimit\s*:\s*)\d+', rf'\g<1>{mem_limit}', new)
+
+    # Otherwise inject a conservative typescript memory limit into the first plugin constructor
+    if new == txt:
+        patterns = [
+            r'ForkTsCheckerWebpackPlugin\(\s*\{',
+            r'new\s+ForkTsCheckerWebpackPlugin\(\s*\{',
+        ]
+        replaced = False
+        for pat in patterns:
+            m = re.search(pat, new)
+            if m:
+                inject = m.group(0) + f'\n      typescript: {{ memoryLimit: {mem_limit} }},'
+                new = new[:m.start()] + inject + new[m.end():]
+                replaced = True
+                break
+        if not replaced:
+            continue
+
+    if new != txt:
+        path.write_text(new, encoding="utf-8")
+        patched += 1
+
+print(patched)
+PY
+  ok "Frontend webpack memory patch applied"
+}
+
+
 build_frontend_if_present_server() {
   if [[ -d "$INSTALL_DIR/superset-frontend" ]]; then
     info "Building frontend assets"
+    info "Frontend Node heap target: ${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-8192} MB; ForkTsChecker memory limit target: ${FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB:-6144} MB"
     patch_frontend_workspace_for_custom_branch
+    patch_frontend_webpack_memory_for_branch
     cd "$INSTALL_DIR/superset-frontend"
-    export npm_config_legacy_peer_deps="${NPM_CONFIG_LEGACY_PEER_DEPS}"
-    export npm_config_audit="${NPM_CONFIG_AUDIT}"
-    export npm_config_fund="${NPM_CONFIG_FUND}"
-    export npm_config_progress="${NPM_CONFIG_PROGRESS}"
-    export npm_config_update_notifier="${NPM_CONFIG_UPDATE_NOTIFIER}"
-    export npm_config_loglevel="${NPM_CONFIG_LOGLEVEL}"
-    export DISABLE_TYPE_CHECK="${FRONTEND_DISABLE_TYPE_CHECK}"
-    export TSC_COMPILE_ON_ERROR="${TSC_COMPILE_ON_ERROR}"
-    export CI=1
-    if [[ -f package-lock.json ]]; then
-      npm ci ${NPM_INSTALL_FLAGS} || npm install ${NPM_INSTALL_FLAGS}
-    else
-      npm install ${NPM_INSTALL_FLAGS}
-    fi
-    if [[ "${FRONTEND_BUILD_STRATEGY:-build}" == "build" ]]; then
-      npm run build || npm run prod
-    else
-      npm run "${FRONTEND_BUILD_STRATEGY}"
-    fi
+
+    frontend_apply_common_env
+
+    local build_log="${FRONTEND_BUILD_LOG_FILE:-$INSTALL_DIR/logs/frontend-build.log}"
+    local heartbeat="${FRONTEND_HEARTBEAT_SECONDS:-30}"
+    local timeout_minutes="${FRONTEND_TIMEOUT_MINUTES:-90}"
+    local fingerprint_file="${FRONTEND_DEP_FINGERPRINT_FILE:-$RUN_DIR/frontend-deps.sha256}"
+
+    frontend_install_deps_if_needed "$INSTALL_DIR/superset-frontend" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
+    frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
+    frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; if [[ -x "$PWD/node_modules/.bin/webpack" ]]; then exec "$PWD/node_modules/.bin/webpack" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack binary missing under $PWD/node_modules" >&2; exit 127; fi' "$INSTALL_DIR/superset-frontend" || return $?
+
+    [[ -d "$INSTALL_DIR/superset/static/assets" ]] || die "Frontend build did not produce $INSTALL_DIR/superset/static/assets"
     ok "Frontend assets built"
+    info "Continuing with Redis, PostgreSQL, config generation, and Superset initialization"
   fi
 }
 
@@ -955,138 +1401,278 @@ SQL
 }
 
 generate_env_server() {
-  info "Writing .env"
+  info "Writing production .env"
+
+  local runtime_domain="${DOMAIN}"
+  local runtime_base_url="https://${runtime_domain}"
+  local runtime_db_uri="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+  local csrf_exempt_json='["superset.views.core.log","ChartDataRestApi.data","ChartDataRestApi.get_data","ChartDataRestApi.data_from_cache","DashboardRestApi.get","DashboardRestApi.get_charts","DashboardRestApi.get_datasets","DashboardRestApi.get_tabs","DatabaseRestApi.dhis2_chart_data"]'
+  local cors_origins_json="[\"${runtime_base_url}\"]"
+  local cors_allow_headers_json='["*"]'
+  local cors_resources_json='["/*"]'
+  local celery_accept_json='["json"]'
+  local public_navbar_custom_links_json='[]'
+  local public_footer_links_json='[{"text":"Privacy Policy"},{"text":"Terms of Service"}]'
+  local ai_allowed_roles_json='[]'
+  local ai_mode_roles_json='{"chart":[],"dashboard":[],"sql":[]}'
+  local celery_task_annotations_json='{"sql_lab.get_sql_results":{"rate_limit":"100/s"}}'
+  local celery_task_routes_json='{"superset.tasks.dhis2_sync.*":{"queue":"dhis2"},"superset.tasks.dhis2_cache.*":{"queue":"dhis2"},"superset.tasks.dhis2_metadata.*":{"queue":"dhis2"},"dhis2.finalize_repository_org_units":{"queue":"dhis2"}}'
+  local celery_beat_schedule_json='{"dhis2-sync-scheduled":{"task":"superset.tasks.dhis2_sync.sync_all_scheduled_datasets","schedule":{"minute":"*/15"}},"reports.scheduler":{"task":"reports.scheduler","schedule":{"minute":"*","hour":"*"}},"reports.prune_log":{"task":"reports.prune_log","schedule":{"minute":0,"hour":0}}}'
+  local theme_dark_json='{"algorithm":"dark","token":{"colorPrimary":"#2893B3","colorLink":"#2893B3","colorError":"#e04355","colorWarning":"#fcc700","colorSuccess":"#5ac189","colorInfo":"#66bcfe","fontFamily":"Inter, Helvetica, Arial","fontFamilyCode":"'\''Fira Code'\'', '\''Courier New'\'', monospace","transitionTiming":0.3,"brandIconMaxWidth":37,"fontSizeXS":"8","fontSizeXXL":"28","fontWeightNormal":"400","fontWeightLight":"300","fontWeightStrong":"500","colorBgBase":"#111827"}}'
+
   cat > "$ENV_FILE" <<EOF
-DOMAIN=${DOMAIN}
+# ---------------------------------------------------------------------------
+# Superset production runtime environment
+# Generated by superset-manager-v2-v15
+# ---------------------------------------------------------------------------
+
+DOMAIN=${runtime_domain}
 SUPERSET_ENV=production
+SUPERSET_CONFIG_PATH=${SUPERSET_CONFIG_FILE}
+
+# Core runtime
 SUPERSET_HOST=${SUPERSET_HOST}
 SUPERSET_PORT=${SUPERSET_PORT}
-SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
-GUEST_TOKEN_JWT_SECRET=${GUEST_TOKEN_JWT_SECRET}
+SUPERSET_BASE_URL=${runtime_base_url}
+WEBDRIVER_BASEURL=http://127.0.0.1:${SUPERSET_PORT}/
+WEBDRIVER_BASEURL_USER_FRIENDLY=${runtime_base_url}
+SUPERSET_DEBUG=0
+ENABLE_PROXY_FIX=true
+PREFERRED_URL_SCHEME=https
 
-ADMIN_USERNAME=${ADMIN_USERNAME}
-ADMIN_FIRSTNAME=${ADMIN_FIRSTNAME}
-ADMIN_LASTNAME=${ADMIN_LASTNAME}
-ADMIN_EMAIL=${ADMIN_EMAIL}
-
+# Metadata database
 POSTGRES_ENABLED=${POSTGRES_ENABLED}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_HOST=${POSTGRES_HOST}
 POSTGRES_PORT=${POSTGRES_PORT}
-DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+DATABASE_URL=${runtime_db_uri}
+SUPERSET_DB_URI=${runtime_db_uri}
 
+# Secrets
+SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
+SECRET_KEY=${SUPERSET_SECRET_KEY}
+GUEST_TOKEN_JWT_SECRET=${GUEST_TOKEN_JWT_SECRET}
+GUEST_TOKEN_JWT_ALGO=HS256
+GUEST_TOKEN_HEADER_NAME=X-GuestToken
+GUEST_TOKEN_JWT_EXP_SECONDS=86400
+
+# Admin bootstrap
+ADMIN_USERNAME=${ADMIN_USERNAME}
+ADMIN_FIRSTNAME=${ADMIN_FIRSTNAME}
+ADMIN_LASTNAME=${ADMIN_LASTNAME}
+ADMIN_EMAIL=${ADMIN_EMAIL}
+
+# Request / query limits
+ROW_LIMIT=50000
+SUPERSET_WEBSERVER_TIMEOUT=${GUNICORN_TIMEOUT}
+SQLLAB_TIMEOUT=300
+SQLLAB_ASYNC_TIME_LIMIT_SEC=${SQLLAB_ASYNC_TIME_LIMIT_SEC}
+
+# Security / CSRF
+WTF_CSRF_ENABLED=true
+WTF_CSRF_EXEMPT_LIST=${csrf_exempt_json}
+MAPBOX_API_KEY=
+
+# Embedding / public access
+EMBEDDED_SUPERSET=true
+PUBLIC_ROLE_LIKE=Gamma
+FAB_ADD_SECURITY_VIEWS=true
+AUTH_TYPE=1
+AUTH_ROLE_PUBLIC=Public
+PUBLIC_DASHBOARD_ENTRY_ENABLED=true
+GUEST_ROLE_NAME=Public
+
+# CORS
+ENABLE_CORS=true
+CORS_SUPPORTS_CREDENTIALS=true
+CORS_ALLOW_HEADERS=${cors_allow_headers_json}
+CORS_RESOURCES=${cors_resources_json}
+CORS_ORIGINS_JSON=${cors_origins_json}
+
+# Feature flags
+FF_EMBEDDED_SUPERSET=true
+FF_EMBEDDABLE_CHARTS=true
+FF_DASHBOARD_RBAC=true
+FF_DASHBOARD_NATIVE_FILTERS=true
+FF_ENABLE_TEMPLATE_PROCESSING=true
+FF_AI_INSIGHTS=true
+FF_DRILL_BY=true
+FF_DRILL_TO_DETAIL=true
+FF_THUMBNAILS=true
+FF_ALERT_REPORTS=true
+FF_DYNAMIC_PLUGINS=true
+
+# AI Insights
+AI_INSIGHTS_ENABLED=true
+AI_INSIGHTS_ALLOW_SQL_EXECUTION=false
+AI_INSIGHTS_MAX_CONTEXT_ROWS=20
+AI_INSIGHTS_MAX_CONTEXT_COLUMNS=25
+AI_INSIGHTS_MAX_DASHBOARD_CHARTS=12
+AI_INSIGHTS_MAX_FOLLOW_UP_MESSAGES=6
+AI_INSIGHTS_MAX_GENERATED_SQL_ROWS=200
+AI_INSIGHTS_REQUEST_TIMEOUT_SECONDS=30
+AI_INSIGHTS_MAX_TOKENS=1200
+AI_INSIGHTS_TEMPERATURE=0.1
+AI_INSIGHTS_ENABLE_MOCK=1
+AI_INSIGHTS_ALLOWED_ROLES=${ai_allowed_roles_json}
+AI_INSIGHTS_MODE_ROLES=${ai_mode_roles_json}
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODELS=gpt-4.1-mini
+OPENAI_DEFAULT_MODEL=gpt-4.1-mini
+OLLAMA_BASE_URL=
+OLLAMA_MODELS=llama3.1:8b
+OLLAMA_DEFAULT_MODEL=llama3.1:8b
+
+# Talisman / CSP
+TALISMAN_ENABLED=true
+TALISMAN_FORCE_HTTPS=false
+SESSION_COOKIE_SECURE=true
+
+# Redis / cache / results backend
 REDIS_HOST=${REDIS_HOST}
 REDIS_PORT=${REDIS_PORT}
 REDIS_DB=${REDIS_DB}
-CELERY_BROKER_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
-CELERY_RESULT_BACKEND=redis://${REDIS_HOST}:${REDIS_PORT}/1
+CACHE_REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+DATA_CACHE_REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/1
 RESULTS_BACKEND_REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/2
-
+RESULTS_BACKEND_REDIS_DB=2
+RATELIMIT_STORAGE_URI=redis://${REDIS_HOST}:${REDIS_PORT}/6
 CACHE_DEFAULT_TIMEOUT=${CACHE_DEFAULT_TIMEOUT}
 DATA_CACHE_TIMEOUT=${DATA_CACHE_TIMEOUT}
 FILTER_STATE_CACHE_TIMEOUT=${FILTER_STATE_CACHE_TIMEOUT}
 EXPLORE_FORM_DATA_CACHE_TIMEOUT=${EXPLORE_FORM_DATA_CACHE_TIMEOUT}
-SQLLAB_ASYNC_TIME_LIMIT_SEC=${SQLLAB_ASYNC_TIME_LIMIT_SEC}
 
-CPU_CORES=${CPU_CORES}
-TOTAL_MEM_MB=${TOTAL_MEM_MB}
-ROOT_DISK_GB=${ROOT_DISK_GB}
-GUNICORN_WORKERS=${GUNICORN_WORKERS}
-GUNICORN_THREADS=${GUNICORN_THREADS}
-GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT}
-GUNICORN_KEEPALIVE=${GUNICORN_KEEPALIVE}
-CELERY_CONCURRENCY=${CELERY_CONCURRENCY}
-REDIS_MAXMEMORY_MB=${REDIS_MAXMEMORY_MB}
-PG_SHARED_BUFFERS_MB=${PG_SHARED_BUFFERS_MB}
-PG_EFFECTIVE_CACHE_MB=${PG_EFFECTIVE_CACHE_MB}
-PG_MAINTENANCE_MB=${PG_MAINTENANCE_MB}
-PG_WORK_MEM_MB=${PG_WORK_MEM_MB}
-WORKER_PREFETCH_MULTIPLIER=${WORKER_PREFETCH_MULTIPLIER}
-GUNICORN_CMD_ARGS=--bind ${SUPERSET_HOST}:${SUPERSET_PORT} --workers ${GUNICORN_WORKERS} --threads ${GUNICORN_THREADS} --worker-class gthread --timeout ${GUNICORN_TIMEOUT} --keep-alive ${GUNICORN_KEEPALIVE} --max-requests 2000 --max-requests-jitter 200
+# Celery
+CELERY_BROKER_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+CELERY_RESULT_BACKEND=redis://${REDIS_HOST}:${REDIS_PORT}/1
+CELERY_TASK_SERIALIZER=json
+CELERY_RESULT_SERIALIZER=json
+CELERY_ACCEPT_CONTENT=${celery_accept_json}
+CELERY_TIMEZONE=Africa/Kampala
+CELERY_ENABLE_UTC=true
+CELERY_WORKER_PREFETCH_MULTIPLIER=${WORKER_PREFETCH_MULTIPLIER}
+CELERY_TASK_ACKS_LATE=true
+CELERY_TASK_ANNOTATIONS=${celery_task_annotations_json}
+CELERY_TASK_ROUTES=${celery_task_routes_json}
+CELERY_BEAT_SCHEDULE=${celery_beat_schedule_json}
 
-UFW_ENABLE=${UFW_ENABLE}
-ALLOW_SSH_PORT=${ALLOW_SSH_PORT}
-ENABLE_HTTPS=${ENABLE_HTTPS}
-AUTO_SSL=${AUTO_SSL}
-LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
-LETSENCRYPT_STAGING=${LETSENCRYPT_STAGING}
-EXPOSE_SUPERSET_PORT=${EXPOSE_SUPERSET_PORT}
-EXPOSE_POSTGRES_PORT=${EXPOSE_POSTGRES_PORT}
-EXPOSE_REDIS_PORT=${EXPOSE_REDIS_PORT}
+# Public page configuration
+PUBLIC_NAVBAR_TITLE=National Malaria Data Repository
+PUBLIC_NAVBAR_LOGO_ALT=National Malaria Data Repository
+PUBLIC_LOGIN_TEXT=Login
+PUBLIC_LOGIN_URL=/login/
+PUBLIC_LOGIN_TYPE=primary
+PUBLIC_NAVBAR_CUSTOM_LINKS=${public_navbar_custom_links_json}
+PUBLIC_SIDEBAR_POSITION=left
+PUBLIC_SIDEBAR_TITLE=Categories
+PUBLIC_WELCOME_TITLE=Welcome
+PUBLIC_WELCOME_DESCRIPTION=Select a category from the sidebar to view dashboards.
+PUBLIC_FOOTER_TEXT=\u00A9 2026 Your Organization
+PUBLIC_FOOTER_LINKS=${public_footer_links_json}
+
+# DHIS2 cache / tuning
+DHIS2_CACHE_REFRESH_INTERVAL=21600
+DHIS2_CACHE_TTL_GEOJSON=21600
+DHIS2_CACHE_TTL_ORG_HIERARCHY=3600
+DHIS2_CACHE_TTL_ORG_LEVELS=7200
+DHIS2_CACHE_TTL_ANALYTICS=1800
+DHIS2_CACHE_TTL_FILTER_OPTIONS=3600
+DHIS2_CACHE_TTL_NAME_TO_UID=3600
+DHIS2_CACHE_MAX_SIZE_MB=500
+
+# Theme
+ENABLE_UI_THEME_ADMINISTRATION=true
+THEME_DARK_JSON=${theme_dark_json}
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=%(asctime)s:%(levelname)s:%(name)s:%(message)s
+SUPERSET_LOG_FILE=${INSTALL_DIR}/logs/superset.log
+
+# Frontend build / deployment
+NODE_MAJOR=${NODE_MAJOR}
+NPM_VERSION=${NPM_VERSION}
+FRONTEND_CLEAN=${FRONTEND_CLEAN}
+FRONTEND_TYPECHECK=${FRONTEND_TYPECHECK}
+FRONTEND_TIMEOUT_MINUTES=${FRONTEND_TIMEOUT_MINUTES}
+FRONTEND_NODE_OLD_SPACE_SIZE_MB=${FRONTEND_NODE_OLD_SPACE_SIZE_MB}
+FRONTEND_FORK_TS_MEMORY_LIMIT_MB=${FRONTEND_FORK_TS_MEMORY_LIMIT_MB}
 EOF
-  ok ".env written"
+
+  chmod 600 "$ENV_FILE" || true
+  ok ".env written to $ENV_FILE"
 }
 
 generate_superset_config_server() {
-  info "Writing superset_config.py"
+  info "Writing merged env-driven superset_config.py"
   cat > "$SUPERSET_CONFIG_FILE" <<'PY'
+# Merged, environment-driven Superset configuration for DHIS2/custom deployment
+# Place at: /srv/apps/superset/config/superset_config.py
+
+import json
 import os
+from datetime import timedelta
+
 from cachelib.redis import RedisCache
+from cachelib import FileSystemCache
+from celery.schedules import crontab
 
-SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
-SECRET_KEY = os.getenv("SUPERSET_SECRET_KEY")
-WTF_CSRF_ENABLED = True
-TALISMAN_ENABLED = False
-ROW_LIMIT = 5000
-SUPERSET_WEBSERVER_TIMEOUT = int(os.getenv("GUNICORN_TIMEOUT", "300"))
-SQLLAB_ASYNC_TIME_LIMIT_SEC = int(os.getenv("SQLLAB_ASYNC_TIME_LIMIT_SEC", "21600"))
-FEATURE_FLAGS = {
-    "EMBEDDED_SUPERSET": True,
-    "ENABLE_TEMPLATE_PROCESSING": True,
-    "THUMBNAILS": True,
-    "ALERT_REPORTS": True,
-    "DASHBOARD_RBAC": True,
-    "DYNAMIC_PLUGINS": True,
-}
-REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
 
-FILTER_STATE_CACHE_CONFIG = {
-    "CACHE_TYPE": "RedisCache",
-    "CACHE_DEFAULT_TIMEOUT": int(os.getenv("FILTER_STATE_CACHE_TIMEOUT", "86400")),
-    "CACHE_KEY_PREFIX": "superset_filter_state_",
-    "CACHE_REDIS_HOST": REDIS_HOST,
-    "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": 3,
-}
-EXPLORE_FORM_DATA_CACHE_CONFIG = {
-    "CACHE_TYPE": "RedisCache",
-    "CACHE_DEFAULT_TIMEOUT": int(os.getenv("EXPLORE_FORM_DATA_CACHE_TIMEOUT", "86400")),
-    "CACHE_KEY_PREFIX": "superset_explore_form_",
-    "CACHE_REDIS_HOST": REDIS_HOST,
-    "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": 4,
-}
-DATA_CACHE_CONFIG = {
-    "CACHE_TYPE": "RedisCache",
-    "CACHE_DEFAULT_TIMEOUT": int(os.getenv("DATA_CACHE_TIMEOUT", "300")),
-    "CACHE_KEY_PREFIX": "superset_data_",
-    "CACHE_REDIS_HOST": REDIS_HOST,
-    "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": 5,
-}
-RESULTS_BACKEND = RedisCache(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=2,
-    key_prefix="superset_results_",
-)
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
 
-class CeleryConfig:
-    broker_url = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
-    result_backend = os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1")
-    worker_prefetch_multiplier = int(os.getenv("WORKER_PREFETCH_MULTIPLIER", "1"))
-    task_acks_late = True
-    task_annotations = {"sql_lab.get_sql_results": {"rate_limit": "100/s"}}
+def env_json(name: str, default):
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default
 
-CELERY_CONFIG = CeleryConfig
-ENABLE_PROXY_FIX = True
-PREFERRED_URL_SCHEME = "https"
-RATELIMIT_STORAGE_URI = f"redis://{REDIS_HOST}:{REDIS_PORT}/6"
-PY
-  ok "superset_config.py written"
+def env_csv(name: str, default: str = ""):
+    raw = os.getenv(name, default)
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+APP_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+DATA_DIR = os.path.join(APP_DIR, "data")
+UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# -----------------------------------------------------------------------------
+# Core runtime
+# -----------------------------------------------------------------------------
+SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or os.getenv("SUPERSET_DB_URI")
+SECRET_KEY = os.getenv("SECRET_KEY") or os.getenv("SUPERSET_SECRET_KEY")
+
+if not SQLALCHEMY_DATABASE_URI:
+    raise RuntimeError("Missing DATABASE_URL or SUPERSET_DB_URI in environment")
+
+if SQLALCHEMY_DATABASE_URI.startswith("sqlite:") or "superset.db" in SQLALCHEMY_DATABASE_URI:
+    raise RuntimeError("Refusing to start with SQLite metadata in deployment")
+
+if not SECRET_KEY:
+    raise RuntimeError("Missing SECRET_KEY or SUPERSET_SECRET_KEY in environment")
+
+SQLALCHEMY_TRACK_MODIFICATIONS = False
+SQLALCHEMY_ENGINE_OPTIONS = {
+    "pool_pre_ping": env_bool("SQLALCHEMY_POOL_PRE_PING", True),
+    "pool_recycle": env_int("SQLALCHEMY_POOL_RECYCLE", 1800),
 }
 
 create_systemd_units_server() {
@@ -1152,94 +1738,422 @@ EOF
   sudo systemctl enable superset-web superset-worker superset-beat
   ok "systemd units created"
 }
+SUPERSET_WEBSERVER_TIMEOUT = env_int("SUPERSET_WEBSERVER_TIMEOUT", int(timedelta(minutes=5).total_seconds()))
+SQLLAB_TIMEOUT = env_int("SQLLAB_TIMEOUT", int(timedelta(minutes=5).total_seconds()))
+SQLLAB_ASYNC_TIME_LIMIT_SEC = env_int("SQLLAB_ASYNC_TIME_LIMIT_SEC", int(timedelta(hours=6).total_seconds()))
+ROW_LIMIT = env_int("ROW_LIMIT", 50000)
 
-configure_firewall_server() {
-  [[ "$UFW_ENABLE" == "1" ]] || { warn "UFW disabled; skipping firewall config"; return 0; }
-  info "Configuring UFW"
-  sudo ufw allow "${ALLOW_SSH_PORT}"/tcp comment 'SSH' || true
-  sudo ufw allow 80/tcp comment 'HTTP' || true
-  if [[ "$ENABLE_HTTPS" == "1" || "$AUTO_SSL" == "1" ]]; then
-    sudo ufw allow 443/tcp comment 'HTTPS' || true
-  fi
-  [[ "$EXPOSE_SUPERSET_PORT" == "1" ]] && sudo ufw allow "${SUPERSET_PORT}"/tcp comment 'Superset direct' || true
-  [[ "$EXPOSE_POSTGRES_PORT" == "1" ]] && sudo ufw allow "${POSTGRES_PORT}"/tcp comment 'PostgreSQL' || true
-  [[ "$EXPOSE_REDIS_PORT" == "1" ]] && sudo ufw allow "${REDIS_PORT}"/tcp comment 'Redis' || true
-  sudo ufw --force enable || true
-  sudo ufw reload || true
-  ok "UFW configured"
+SUPERSET_BASE_URL = os.getenv("SUPERSET_BASE_URL", "https://supersets.vitalplatforms.com")
+WEBDRIVER_BASEURL = os.getenv("WEBDRIVER_BASEURL", "http://127.0.0.1:8088/")
+WEBDRIVER_BASEURL_USER_FRIENDLY = os.getenv("WEBDRIVER_BASEURL_USER_FRIENDLY", SUPERSET_BASE_URL)
+
+DEBUG = env_bool("SUPERSET_DEBUG", False)
+WEBPACK_DEV_SERVER_URL = os.getenv("WEBPACK_DEV_SERVER_URL", "http://localhost:9001")
+
+# -----------------------------------------------------------------------------
+# Proxy / security / CSRF
+# -----------------------------------------------------------------------------
+ENABLE_PROXY_FIX = env_bool("ENABLE_PROXY_FIX", True)
+PREFERRED_URL_SCHEME = os.getenv("PREFERRED_URL_SCHEME", "https")
+
+WTF_CSRF_ENABLED = env_bool("WTF_CSRF_ENABLED", True)
+WTF_CSRF_TIME_LIMIT = None
+WTF_CSRF_EXEMPT_LIST = env_json("WTF_CSRF_EXEMPT_LIST", [
+    "superset.views.core.log",
+    "ChartDataRestApi.data",
+    "ChartDataRestApi.get_data",
+    "ChartDataRestApi.data_from_cache",
+    "DashboardRestApi.get",
+    "DashboardRestApi.get_charts",
+    "DashboardRestApi.get_datasets",
+    "DashboardRestApi.get_tabs",
+    "DatabaseRestApi.dhis2_chart_data",
+])
+
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
+
+# -----------------------------------------------------------------------------
+# Embedding / public access
+# -----------------------------------------------------------------------------
+EMBEDDED_SUPERSET = env_bool("EMBEDDED_SUPERSET", True)
+PUBLIC_ROLE_LIKE = os.getenv("PUBLIC_ROLE_LIKE", "Gamma")
+FAB_ADD_SECURITY_VIEWS = env_bool("FAB_ADD_SECURITY_VIEWS", True)
+AUTH_TYPE = env_int("AUTH_TYPE", 1)  # AUTH_DB
+AUTH_ROLE_PUBLIC = os.getenv("AUTH_ROLE_PUBLIC", "Public")
+PUBLIC_DASHBOARD_ENTRY_ENABLED = env_bool("PUBLIC_DASHBOARD_ENTRY_ENABLED", True)
+
+GUEST_ROLE_NAME = os.getenv("GUEST_ROLE_NAME", "Public")
+GUEST_TOKEN_JWT_SECRET = os.getenv("GUEST_TOKEN_JWT_SECRET", SECRET_KEY)
+GUEST_TOKEN_JWT_ALGO = os.getenv("GUEST_TOKEN_JWT_ALGO", "HS256")
+GUEST_TOKEN_HEADER_NAME = os.getenv("GUEST_TOKEN_HEADER_NAME", "X-GuestToken")
+GUEST_TOKEN_JWT_EXP_SECONDS = env_int("GUEST_TOKEN_JWT_EXP_SECONDS", 86400)
+
+# -----------------------------------------------------------------------------
+# CORS
+# -----------------------------------------------------------------------------
+ENABLE_CORS = env_bool("ENABLE_CORS", True)
+CORS_OPTIONS = {
+    "supports_credentials": env_bool("CORS_SUPPORTS_CREDENTIALS", True),
+    "allow_headers": env_json("CORS_ALLOW_HEADERS", ["*"]),
+    "resources": env_json("CORS_RESOURCES", [r"/*"]),
+    "origins": env_json("CORS_ORIGINS_JSON", env_csv("CORS_ORIGINS", "*")),
 }
 
-configure_nginx_server() {
-  info "Configuring Nginx reverse proxy"
-  sudo tee "$NGINX_SITE" >/dev/null <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${DOMAIN};
+# -----------------------------------------------------------------------------
+# Feature flags
+# -----------------------------------------------------------------------------
+FEATURE_FLAGS = {
+    "EMBEDDED_SUPERSET": env_bool("FF_EMBEDDED_SUPERSET", True),
+    "EMBEDDABLE_CHARTS": env_bool("FF_EMBEDDABLE_CHARTS", True),
+    "DASHBOARD_RBAC": env_bool("FF_DASHBOARD_RBAC", True),
+    "DASHBOARD_NATIVE_FILTERS": env_bool("FF_DASHBOARD_NATIVE_FILTERS", True),
+    "ENABLE_TEMPLATE_PROCESSING": env_bool("FF_ENABLE_TEMPLATE_PROCESSING", True),
+    "AI_INSIGHTS": env_bool("FF_AI_INSIGHTS", True),
+    "DrillBy": env_bool("FF_DRILL_BY", True),
+    "DrillToDetail": env_bool("FF_DRILL_TO_DETAIL", True),
+    "THUMBNAILS": env_bool("FF_THUMBNAILS", True),
+    "ALERT_REPORTS": env_bool("FF_ALERT_REPORTS", True),
+    "DYNAMIC_PLUGINS": env_bool("FF_DYNAMIC_PLUGINS", True),
+}
 
-    client_max_body_size 64m;
+# -----------------------------------------------------------------------------
+# AI Insights providers
+# -----------------------------------------------------------------------------
+_AI_INSIGHTS_PROVIDERS = {}
 
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 1024;
-    gzip_proxied any;
-    gzip_types
-        text/plain
-        text/css
-        application/json
-        application/javascript
-        text/xml
-        application/xml
-        application/xml+rss
-        text/javascript
-        image/svg+xml;
-
-    location / {
-        proxy_pass http://${SUPERSET_HOST}:${SUPERSET_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_buffering on;
-        proxy_buffer_size ${NGINX_PROXY_BUFFER_SIZE};
-        proxy_buffers ${NGINX_PROXY_BUFFERS};
-        proxy_busy_buffers_size ${NGINX_PROXY_BUSY};
-        proxy_read_timeout 300;
-        proxy_send_timeout 300;
-        proxy_connect_timeout 60;
+if os.getenv("OPENAI_API_KEY"):
+    _AI_INSIGHTS_PROVIDERS["openai"] = {
+        "enabled": env_bool("OPENAI_ENABLED", True),
+        "type": os.getenv("OPENAI_PROVIDER_TYPE", "openai_compatible"),
+        "label": os.getenv("OPENAI_PROVIDER_LABEL", "OpenAI"),
+        "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "api_key_env": "OPENAI_API_KEY",
+        "models": env_csv("OPENAI_MODELS", "gpt-4.1-mini"),
+        "default_model": os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"),
+        "is_local": False,
     }
-}
-EOF
-  sudo ln -sf "$NGINX_SITE" "/etc/nginx/sites-enabled/${APP_NAME}"
-  sudo rm -f /etc/nginx/sites-enabled/default
-  sudo nginx -t
-  sudo systemctl enable --now nginx
-  sudo systemctl reload nginx
-  ok "Nginx configured for HTTP"
+
+ollama_base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST")
+if ollama_base_url:
+    _AI_INSIGHTS_PROVIDERS["ollama"] = {
+        "enabled": env_bool("OLLAMA_ENABLED", True),
+        "type": "ollama",
+        "label": os.getenv("OLLAMA_PROVIDER_LABEL", "Ollama"),
+        "base_url": ollama_base_url,
+        "models": env_csv("OLLAMA_MODELS", "llama3.1:8b"),
+        "default_model": os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"),
+        "is_local": True,
+    }
+
+if not _AI_INSIGHTS_PROVIDERS and env_bool("AI_INSIGHTS_ENABLE_MOCK", True):
+    _AI_INSIGHTS_PROVIDERS["mock"] = {
+        "enabled": True,
+        "type": "mock",
+        "label": "Mock AI (local)",
+        "models": ["mock-1"],
+        "default_model": "mock-1",
+        "is_local": True,
+    }
+
+AI_INSIGHTS_CONFIG = {
+    "enabled": env_bool("AI_INSIGHTS_ENABLED", True),
+    "allow_sql_execution": env_bool("AI_INSIGHTS_ALLOW_SQL_EXECUTION", False),
+    "max_context_rows": env_int("AI_INSIGHTS_MAX_CONTEXT_ROWS", 20),
+    "max_context_columns": env_int("AI_INSIGHTS_MAX_CONTEXT_COLUMNS", 25),
+    "max_dashboard_charts": env_int("AI_INSIGHTS_MAX_DASHBOARD_CHARTS", 12),
+    "max_follow_up_messages": env_int("AI_INSIGHTS_MAX_FOLLOW_UP_MESSAGES", 6),
+    "max_generated_sql_rows": env_int("AI_INSIGHTS_MAX_GENERATED_SQL_ROWS", 200),
+    "request_timeout_seconds": env_int("AI_INSIGHTS_REQUEST_TIMEOUT_SECONDS", 30),
+    "max_tokens": env_int("AI_INSIGHTS_MAX_TOKENS", 1200),
+    "temperature": float(os.getenv("AI_INSIGHTS_TEMPERATURE", "0.1")),
+    "default_provider": os.getenv("AI_INSIGHTS_DEFAULT_PROVIDER", next(iter(_AI_INSIGHTS_PROVIDERS), None)),
+    "default_model": os.getenv("AI_INSIGHTS_DEFAULT_MODEL", None),
+    "allowed_roles": env_json("AI_INSIGHTS_ALLOWED_ROLES", []),
+    "mode_roles": env_json("AI_INSIGHTS_MODE_ROLES", {
+        "chart": [],
+        "dashboard": [],
+        "sql": [],
+    }),
+    "providers": _AI_INSIGHTS_PROVIDERS,
 }
 
-configure_ssl_server() {
-  [[ "$AUTO_SSL" == "1" ]] || { warn "Automatic SSL disabled"; return 0; }
-  [[ -n "$DOMAIN" ]] || { warn "DOMAIN not set; skipping Let's Encrypt"; return 0; }
-  [[ -n "$LETSENCRYPT_EMAIL" ]] || { warn "LETSENCRYPT_EMAIL not set; skipping Let's Encrypt"; return 0; }
+# -----------------------------------------------------------------------------
+# CSP / Talisman for DHIS2 maps and embeds
+# -----------------------------------------------------------------------------
+TALISMAN_ENABLED = env_bool("TALISMAN_ENABLED", True)
 
-  info "Requesting Let's Encrypt certificate for ${DOMAIN}"
-  local staging_arg=""
-  [[ "$LETSENCRYPT_STAGING" == "1" ]] && staging_arg="--staging"
-  sudo systemctl enable --now nginx
-  sudo nginx -t
-  sudo systemctl reload nginx
-  sudo certbot --nginx --non-interactive --agree-tos --email "$LETSENCRYPT_EMAIL" -d "$DOMAIN" ${staging_arg} --redirect || {
-    warn "Let's Encrypt provisioning failed. Check DNS for ${DOMAIN} and ensure ports 80/443 are open."
-    return 1
-  }
-  sudo systemctl reload nginx
-  ok "Let's Encrypt SSL configured"
+_default_csp = {
+    "base-uri": ["'self'"],
+    "default-src": ["'self'"],
+    "img-src": [
+        "'self'",
+        "blob:",
+        "data:",
+        "https://a.basemaps.cartocdn.com",
+        "https://b.basemaps.cartocdn.com",
+        "https://c.basemaps.cartocdn.com",
+        "https://tile.openstreetmap.org",
+        "https://a.tile.openstreetmap.org",
+        "https://b.tile.openstreetmap.org",
+        "https://c.tile.openstreetmap.org",
+        "https://tile.opentopomap.org",
+        "https://a.tile.opentopomap.org",
+        "https://b.tile.opentopomap.org",
+        "https://c.tile.opentopomap.org",
+        "https://server.arcgisonline.com",
+        "https://apachesuperset.gateway.scarf.sh",
+        "https://static.scarf.sh/",
+        "https://cdn.document360.io",
+    ],
+    "worker-src": ["'self'", "blob:"],
+    "connect-src": [
+        "'self'",
+        "ws://localhost:8081",
+        "ws://localhost:8088",
+        "ws://localhost:9000",
+        "ws://localhost:9001",
+        "https://a.basemaps.cartocdn.com",
+        "https://b.basemaps.cartocdn.com",
+        "https://c.basemaps.cartocdn.com",
+        "https://tile.openstreetmap.org",
+        "https://a.tile.openstreetmap.org",
+        "https://b.tile.openstreetmap.org",
+        "https://c.tile.openstreetmap.org",
+        "https://tile.opentopomap.org",
+        "https://a.tile.opentopomap.org",
+        "https://b.tile.opentopomap.org",
+        "https://c.tile.opentopomap.org",
+        "https://server.arcgisonline.com",
+        "https://api.mapbox.com",
+        "https://events.mapbox.com",
+        "https://unpkg.com",
+    ],
+    "object-src": ["'none'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
 }
+_CSP_CONFIG = {
+    "content_security_policy": env_json("CONTENT_SECURITY_POLICY_JSON", _default_csp),
+    "content_security_policy_nonce_in": env_json("CONTENT_SECURITY_POLICY_NONCE_IN", ["script-src"]),
+    "force_https": env_bool("TALISMAN_FORCE_HTTPS", False),
+    "session_cookie_secure": env_bool("SESSION_COOKIE_SECURE", False),
+}
+TALISMAN_CONFIG = _CSP_CONFIG
+TALISMAN_DEV_CONFIG = _CSP_CONFIG
 
+# -----------------------------------------------------------------------------
+# Cache / Redis
+# -----------------------------------------------------------------------------
+REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = env_int("REDIS_PORT", 6379)
+
+CACHE_CONFIG = env_json("CACHE_CONFIG_JSON", {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_DEFAULT_TIMEOUT": env_int("CACHE_DEFAULT_TIMEOUT", 86400),
+    "CACHE_KEY_PREFIX": os.getenv("CACHE_KEY_PREFIX", "superset_"),
+    "CACHE_REDIS_URL": os.getenv("CACHE_REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/0"),
+})
+
+DATA_CACHE_CONFIG = env_json("DATA_CACHE_CONFIG_JSON", {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_DEFAULT_TIMEOUT": env_int("DATA_CACHE_TIMEOUT", 86400),
+    "CACHE_KEY_PREFIX": os.getenv("DATA_CACHE_KEY_PREFIX", "superset_data_"),
+    "CACHE_REDIS_URL": os.getenv("DATA_CACHE_REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/1"),
+})
+
+FILTER_STATE_CACHE_CONFIG = env_json("FILTER_STATE_CACHE_CONFIG_JSON", {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_DEFAULT_TIMEOUT": env_int("FILTER_STATE_CACHE_TIMEOUT", 86400),
+    "CACHE_KEY_PREFIX": os.getenv("FILTER_STATE_CACHE_KEY_PREFIX", "superset_filter_state_"),
+    "CACHE_REDIS_HOST": REDIS_HOST,
+    "CACHE_REDIS_PORT": REDIS_PORT,
+    "CACHE_REDIS_DB": env_int("FILTER_STATE_CACHE_REDIS_DB", 3),
+})
+
+EXPLORE_FORM_DATA_CACHE_CONFIG = env_json("EXPLORE_FORM_DATA_CACHE_CONFIG_JSON", {
+    "CACHE_TYPE": "RedisCache",
+    "CACHE_DEFAULT_TIMEOUT": env_int("EXPLORE_FORM_DATA_CACHE_TIMEOUT", 86400),
+    "CACHE_KEY_PREFIX": os.getenv("EXPLORE_FORM_DATA_CACHE_KEY_PREFIX", "superset_explore_form_"),
+    "CACHE_REDIS_HOST": REDIS_HOST,
+    "CACHE_REDIS_PORT": REDIS_PORT,
+    "CACHE_REDIS_DB": env_int("EXPLORE_FORM_DATA_CACHE_REDIS_DB", 4),
+})
+
+# Async query results backend: Redis preferred, filesystem fallback
+if os.getenv("RESULTS_BACKEND_REDIS_URL"):
+    RESULTS_BACKEND = RedisCache(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=env_int("RESULTS_BACKEND_REDIS_DB", 2),
+        key_prefix=os.getenv("RESULTS_BACKEND_KEY_PREFIX", "superset_results_"),
+    )
+else:
+    _RESULTS_BACKEND_DIR = os.getenv(
+        "RESULTS_BACKEND_DIR",
+        os.path.join(APP_DIR, "superset_home", "sqllab_results"),
+    )
+    os.makedirs(_RESULTS_BACKEND_DIR, exist_ok=True)
+    RESULTS_BACKEND = FileSystemCache(
+        cache_dir=_RESULTS_BACKEND_DIR,
+        default_timeout=SQLLAB_ASYNC_TIME_LIMIT_SEC,
+        threshold=env_int("RESULTS_BACKEND_THRESHOLD", 5000),
+    )
+
+RATELIMIT_STORAGE_URI = os.getenv(
+    "RATELIMIT_STORAGE_URI",
+    f"redis://{REDIS_HOST}:{REDIS_PORT}/6",
+)
+
+# -----------------------------------------------------------------------------
+# Celery
+# -----------------------------------------------------------------------------
+class CeleryConfig:
+    broker_url = os.getenv("CELERY_BROKER_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/2")
+    result_backend = os.getenv("CELERY_RESULT_BACKEND", f"redis://{REDIS_HOST}:{REDIS_PORT}/2")
+    task_serializer = os.getenv("CELERY_TASK_SERIALIZER", "json")
+    accept_content = env_json("CELERY_ACCEPT_CONTENT", ["json"])
+    result_serializer = os.getenv("CELERY_RESULT_SERIALIZER", "json")
+    timezone = os.getenv("CELERY_TIMEZONE", "Africa/Kampala")
+    enable_utc = env_bool("CELERY_ENABLE_UTC", True)
+    worker_prefetch_multiplier = env_int("CELERY_WORKER_PREFETCH_MULTIPLIER", 1)
+    task_acks_late = env_bool("CELERY_TASK_ACKS_LATE", True)
+    task_annotations = env_json("CELERY_TASK_ANNOTATIONS", {
+        "sql_lab.get_sql_results": {"rate_limit": "100/s"}
+    })
+    task_routes = env_json("CELERY_TASK_ROUTES", {
+        "superset.tasks.dhis2_sync.*": {"queue": "dhis2"},
+        "superset.tasks.dhis2_cache.*": {"queue": "dhis2"},
+        "superset.tasks.dhis2_metadata.*": {"queue": "dhis2"},
+        "dhis2.finalize_repository_org_units": {"queue": "dhis2"},
+    })
+    beat_schedule = env_json("CELERY_BEAT_SCHEDULE", {
+        "dhis2-sync-scheduled": {
+            "task": "superset.tasks.dhis2_sync.sync_all_scheduled_datasets",
+            "schedule": crontab(minute="*/15"),
+        },
+        "reports.scheduler": {
+            "task": "reports.scheduler",
+            "schedule": crontab(minute="*", hour="*"),
+        },
+        "reports.prune_log": {
+            "task": "reports.prune_log",
+            "schedule": crontab(minute=0, hour=0),
+        },
+    })
+
+CELERY_CONFIG = CeleryConfig
+
+# -----------------------------------------------------------------------------
+# Public page configuration
+# -----------------------------------------------------------------------------
+PUBLIC_PAGE_CONFIG = env_json("PUBLIC_PAGE_CONFIG_JSON", {
+    "navbar": {
+        "enabled": True,
+        "height": 60,
+        "backgroundColor": "#ffffff",
+        "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.1)",
+        "logo": {
+            "enabled": True,
+            "src": None,
+            "alt": os.getenv("PUBLIC_NAVBAR_LOGO_ALT", "National Malaria Data Repository"),
+            "height": 40,
+        },
+        "title": {
+            "enabled": True,
+            "text": os.getenv("PUBLIC_NAVBAR_TITLE", "National Malaria Data Repository"),
+            "fontSize": "18px",
+            "fontWeight": 700,
+            "color": "#1890ff",
+        },
+        "loginButton": {
+            "enabled": True,
+            "text": os.getenv("PUBLIC_LOGIN_TEXT", "Login"),
+            "url": os.getenv("PUBLIC_LOGIN_URL", "/login/"),
+            "type": os.getenv("PUBLIC_LOGIN_TYPE", "primary"),
+        },
+        "customLinks": env_json("PUBLIC_NAVBAR_CUSTOM_LINKS", []),
+    },
+    "sidebar": {
+        "enabled": True,
+        "width": 280,
+        "position": os.getenv("PUBLIC_SIDEBAR_POSITION", "left"),
+        "backgroundColor": "#ffffff",
+        "borderStyle": "1px solid #f0f0f0",
+        "title": os.getenv("PUBLIC_SIDEBAR_TITLE", "Categories"),
+        "collapsibleOnMobile": True,
+        "mobileBreakpoint": 768,
+    },
+    "content": {
+        "backgroundColor": "#f5f5f5",
+        "padding": "0",
+        "showWelcomeMessage": True,
+        "welcomeTitle": os.getenv("PUBLIC_WELCOME_TITLE", "Welcome"),
+        "welcomeDescription": os.getenv("PUBLIC_WELCOME_DESCRIPTION", "Select a category from the sidebar to view dashboards."),
+    },
+    "footer": {
+        "enabled": True,
+        "height": 50,
+        "backgroundColor": "#fafafa",
+        "text": os.getenv("PUBLIC_FOOTER_TEXT", "© 2026 Your Organization"),
+        "textColor": "#666666",
+        "links": env_json("PUBLIC_FOOTER_LINKS", [
+            {"text": "Privacy Policy"},
+            {"text": "Terms of Service"},
+        ]),
+    },
+})
+
+# -----------------------------------------------------------------------------
+# DHIS2 cache / tuning
+# -----------------------------------------------------------------------------
+DHIS2_CACHE_REFRESH_INTERVAL = env_int("DHIS2_CACHE_REFRESH_INTERVAL", 21600)
+DHIS2_CACHE_TTL = env_json("DHIS2_CACHE_TTL_JSON", {
+    "geojson": env_int("DHIS2_CACHE_TTL_GEOJSON", 21600),
+    "org_hierarchy": env_int("DHIS2_CACHE_TTL_ORG_HIERARCHY", 3600),
+    "org_levels": env_int("DHIS2_CACHE_TTL_ORG_LEVELS", 7200),
+    "analytics": env_int("DHIS2_CACHE_TTL_ANALYTICS", 1800),
+    "filter_options": env_int("DHIS2_CACHE_TTL_FILTER_OPTIONS", 3600),
+    "name_to_uid": env_int("DHIS2_CACHE_TTL_NAME_TO_UID", 3600),
+})
+DHIS2_CACHE_MAX_SIZE_MB = env_int("DHIS2_CACHE_MAX_SIZE_MB", 500)
+
+# -----------------------------------------------------------------------------
+# Theme administration / dark theme
+# -----------------------------------------------------------------------------
+ENABLE_UI_THEME_ADMINISTRATION = env_bool("ENABLE_UI_THEME_ADMINISTRATION", True)
+THEME_DARK = env_json("THEME_DARK_JSON", {
+    "algorithm": "dark",
+    "token": {
+        "colorPrimary": "#2893B3",
+        "colorLink": "#2893B3",
+        "colorError": "#e04355",
+        "colorWarning": "#fcc700",
+        "colorSuccess": "#5ac189",
+        "colorInfo": "#66bcfe",
+        "fontFamily": "Inter, Helvetica, Arial",
+        "fontFamilyCode": "'Fira Code', 'Courier New', monospace",
+        "transitionTiming": 0.3,
+        "brandIconMaxWidth": 37,
+        "fontSizeXS": "8",
+        "fontSizeXXL": "28",
+        "fontWeightNormal": "400",
+        "fontWeightLight": "300",
+        "fontWeightStrong": "500",
+        "colorBgBase": "#111827",
+    },
+})
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FORMAT = os.getenv("LOG_FORMAT", "%(asctime)s:%(levelname)s:%(name)s:%(message)s")
+LOG_FILE = os.getenv("SUPERSET_LOG_FILE", os.path.join(APP_DIR, "logs", "superset.log"))
+
+PY
+  chmod 640 "$SUPERSET_CONFIG_FILE" || true
+  ok "superset_config.py written to $SUPERSET_CONFIG_FILE"
+}
 
 patch_metadata_db_schema_for_dhis2() {
   [[ "$POSTGRES_ENABLED" == "1" ]] || return 0
@@ -1271,16 +2185,22 @@ SQL
 initialize_superset_server() {
   info "Initializing Superset"
   venv_activate
-  export SUPERSET_CONFIG_PATH="$SUPERSET_CONFIG_FILE"
-  export FLASK_APP=superset
-  export DATABASE_URL="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+  source_runtime_env
+
+  info "Running: superset db upgrade"
   superset db upgrade
+  ok "superset db upgrade complete"
+
+  info "Running: superset fab create-admin"
   superset fab create-admin \
-    --username "$ADMIN_USERNAME" \
-    --firstname "$ADMIN_FIRSTNAME" \
-    --lastname "$ADMIN_LASTNAME" \
-    --email "$ADMIN_EMAIL" \
+    --username "${ADMIN_USERNAME:-$ADMIN_USERNAME}" \
+    --firstname "${ADMIN_FIRSTNAME:-$ADMIN_FIRSTNAME}" \
+    --lastname "${ADMIN_LASTNAME:-$ADMIN_LASTNAME}" \
+    --email "${ADMIN_EMAIL:-$ADMIN_EMAIL}" \
     --password "$ADMIN_PASSWORD" || true
+  ok "superset fab create-admin complete"
+
+  info "Running: superset init"
   superset init
   ok "Superset initialized"
 }
@@ -1303,30 +2223,52 @@ show_status_server() {
   echo "Celery: concurrency=${CELERY_CONCURRENCY:-?}"
   echo "PostgreSQL: shared_buffers=${PG_SHARED_BUFFERS_MB:-?}MB effective_cache=${PG_EFFECTIVE_CACHE_MB:-?}MB work_mem=${PG_WORK_MEM_MB:-?}MB"
   echo "Redis: maxmemory=${REDIS_MAXMEMORY_MB:-?}MB"
+  echo "Checking service states..."
+  sudo systemctl is-active superset-web || true
+  sudo systemctl is-active superset-worker || true
+  sudo systemctl is-active superset-beat || true
+  sudo systemctl is-active nginx || true
+  sudo systemctl is-active redis-server || true
+  sudo systemctl is-active postgresql || true
   sudo systemctl --no-pager --full status superset-web superset-worker superset-beat nginx redis-server postgresql || true
 }
+
+show_runtime_paths() {
+  cat <<EOF
+Superset runtime paths
+  Install dir         : ${INSTALL_DIR}
+  Env file            : ${ENV_FILE}
+  Config file         : ${SUPERSET_CONFIG_FILE}
+  Frontend build log  : ${FRONTEND_BUILD_LOG_FILE:-$INSTALL_DIR/logs/frontend-build.log}
+  Gunicorn log        : ${GUNICORN_LOG}
+EOF
+}
+
 
 install_server() {
   check_not_root
   require_domain
   calc_autotune
   ensure_dirs
-  install_system_packages
-  setup_venv_server
-  install_python_dependencies_server
-  build_frontend_if_present_server
-  configure_redis_server
-  configure_postgresql_server
-  generate_env_server
-  generate_superset_config_server
-  create_systemd_units_server
-  configure_firewall_server
-  configure_nginx_server
-  configure_ssl_server || true
-  patch_metadata_db_schema_for_dhis2
-  initialize_superset_server
-  start_services_server
-  show_status_server
+
+  run_step "Installing system packages" install_system_packages
+  run_step "Creating Python virtual environment" setup_venv_server
+  run_step "Installing Python dependencies" install_python_dependencies_server
+  run_step "Building frontend assets" build_frontend_if_present_server
+  run_step "Configuring Redis" configure_redis_server
+  run_step "Configuring PostgreSQL" configure_postgresql_server
+  run_step "Writing environment file" generate_env_server
+  run_step "Writing Superset configuration" generate_superset_config_server
+  run_step "Creating systemd units" create_systemd_units_server
+  run_step "Configuring firewall" configure_firewall_server
+  run_step "Configuring Nginx reverse proxy" configure_nginx_server
+  run_step "Configuring Let's Encrypt SSL" configure_ssl_server || true
+  run_step "Patching DHIS2 metadata schema" patch_metadata_db_schema_for_dhis2
+  run_step "Initializing Superset application" initialize_superset_server
+  run_step "Starting services" start_services_server
+  run_step "Collecting service status" show_status_server
+  show_runtime_paths
+
   cat <<EOF
 
 Deployment complete.
@@ -1594,6 +2536,19 @@ export NPM_CONFIG_LOGLEVEL='${NPM_CONFIG_LOGLEVEL}'
 export FRONTEND_PATCH_TSCONFIGS='${FRONTEND_PATCH_TSCONFIGS}'
 export FRONTEND_BUILD_STRATEGY='${FRONTEND_BUILD_STRATEGY}'
 export TSC_COMPILE_ON_ERROR='${TSC_COMPILE_ON_ERROR}'
+export FRONTEND_FORCE_RETRY_ON_TS_ERRORS='${FRONTEND_FORCE_RETRY_ON_TS_ERRORS}'
+export FRONTEND_BUILD_MAX_RETRIES='${FRONTEND_BUILD_MAX_RETRIES}'
+export FRONTEND_REWRITE_PLUGIN_TSCONFIGS='${FRONTEND_REWRITE_PLUGIN_TSCONFIGS}'
+export FRONTEND_VERBOSE_LOGS='${FRONTEND_VERBOSE_LOGS}'
+export FRONTEND_HEARTBEAT_SECONDS='${FRONTEND_HEARTBEAT_SECONDS}'
+export FRONTEND_BUILD_LOG_FILE='${FRONTEND_BUILD_LOG_FILE}'
+export FRONTEND_CLEAN='${FRONTEND_CLEAN}'
+export FRONTEND_TIMEOUT_MINUTES='${FRONTEND_TIMEOUT_MINUTES}'
+export FRONTEND_TYPECHECK='${FRONTEND_TYPECHECK}'
+export FRONTEND_LOG_TAIL_LINES='${FRONTEND_LOG_TAIL_LINES}'
+export FRONTEND_DEP_FINGERPRINT_FILE='${FRONTEND_DEP_FINGERPRINT_FILE}'
+export WEBPACK_VERBOSE_ARGS='${WEBPACK_VERBOSE_ARGS}'
+export NPM_INSTALL_VERBOSE='${NPM_INSTALL_VERBOSE}'
 test -f '${REMOTE_SCRIPT_PATH}' || { echo 'Missing remote manager script: ${REMOTE_SCRIPT_PATH}' >&2; exit 1; }
 chmod +x '${REMOTE_SCRIPT_PATH}'
 '${REMOTE_SCRIPT_PATH}' install-server
@@ -1647,6 +2602,19 @@ export NPM_CONFIG_LOGLEVEL='${NPM_CONFIG_LOGLEVEL}'
 export FRONTEND_PATCH_TSCONFIGS='${FRONTEND_PATCH_TSCONFIGS}'
 export FRONTEND_BUILD_STRATEGY='${FRONTEND_BUILD_STRATEGY}'
 export TSC_COMPILE_ON_ERROR='${TSC_COMPILE_ON_ERROR}'
+export FRONTEND_FORCE_RETRY_ON_TS_ERRORS='${FRONTEND_FORCE_RETRY_ON_TS_ERRORS}'
+export FRONTEND_BUILD_MAX_RETRIES='${FRONTEND_BUILD_MAX_RETRIES}'
+export FRONTEND_REWRITE_PLUGIN_TSCONFIGS='${FRONTEND_REWRITE_PLUGIN_TSCONFIGS}'
+export FRONTEND_VERBOSE_LOGS='${FRONTEND_VERBOSE_LOGS}'
+export FRONTEND_HEARTBEAT_SECONDS='${FRONTEND_HEARTBEAT_SECONDS}'
+export FRONTEND_BUILD_LOG_FILE='${FRONTEND_BUILD_LOG_FILE}'
+export FRONTEND_CLEAN='${FRONTEND_CLEAN}'
+export FRONTEND_TIMEOUT_MINUTES='${FRONTEND_TIMEOUT_MINUTES}'
+export FRONTEND_TYPECHECK='${FRONTEND_TYPECHECK}'
+export FRONTEND_LOG_TAIL_LINES='${FRONTEND_LOG_TAIL_LINES}'
+export FRONTEND_DEP_FINGERPRINT_FILE='${FRONTEND_DEP_FINGERPRINT_FILE}'
+export WEBPACK_VERBOSE_ARGS='${WEBPACK_VERBOSE_ARGS}'
+export NPM_INSTALL_VERBOSE='${NPM_INSTALL_VERBOSE}'
 test -f '${REMOTE_SCRIPT_PATH}' || { echo 'Missing remote manager script: ${REMOTE_SCRIPT_PATH}' >&2; exit 1; }
 chmod +x '${REMOTE_SCRIPT_PATH}'
 '${REMOTE_SCRIPT_PATH}' upgrade-server
@@ -1684,14 +2652,15 @@ upgrade_server() {
   require_domain
   calc_autotune
   ensure_dirs
-  generate_env_server
-  generate_superset_config_server
-  install_python_dependencies_server
-  build_frontend_if_present_server
-  patch_metadata_db_schema_for_dhis2
-  initialize_superset_server
-  restart_services_server
-  show_status_server
+
+  run_step "Writing environment file" generate_env_server
+  run_step "Writing Superset configuration" generate_superset_config_server
+  run_step "Installing Python dependencies" install_python_dependencies_server
+  run_step "Building frontend assets" build_frontend_if_present_server
+  run_step "Patching DHIS2 metadata schema" patch_metadata_db_schema_for_dhis2
+  run_step "Initializing Superset application" initialize_superset_server
+  run_step "Restarting services" restart_services_server
+  run_step "Collecting service status" show_status_server
 }
 
 # ------------------------------------------------------------------------------
@@ -1699,7 +2668,7 @@ upgrade_server() {
 # ------------------------------------------------------------------------------
 usage() {
   cat <<EOF
-Usage: ./superset-manager-v2-comprehensive.sh <command>
+Usage: ./superset-manager-v2-v15.sh <command>
 
 Local development:
   start                Start local backend
@@ -1740,6 +2709,7 @@ Server install on current machine:
   stop-server          Stop server services
   restart-server       Restart server services
   status-server        Show server service status
+  show-config-paths    Show runtime config and log paths
 
 Remote deployment:
   deploy-remote        Deploy remote using CODEBASE_SOURCE=local or CODEBASE_SOURCE=git
@@ -1765,18 +2735,32 @@ Important environment variables:
   ADMIN_PASSWORD=...
   LETSENCRYPT_EMAIL=...
   POSTGRES_PASSWORD=...
+  FRONTEND_NODE_OLD_SPACE_SIZE_MB=auto   # auto-sizes Node heap from server RAM
+  FRONTEND_FORK_TS_MEMORY_LIMIT_MB=auto  # auto-sizes ForkTsChecker memory limit
   NODE_MAJOR=20
   NPM_VERSION=10.8.2
   NPM_INSTALL_FLAGS='--legacy-peer-deps --no-audit --no-fund --progress=false --loglevel=error'
   NPM_CONFIG_LOGLEVEL=error
   FRONTEND_PATCH_TSCONFIGS=1
   TSC_COMPILE_ON_ERROR=true
+  FRONTEND_FORCE_RETRY_ON_TS_ERRORS=1
+  FRONTEND_BUILD_MAX_RETRIES=2
+  FRONTEND_REWRITE_PLUGIN_TSCONFIGS=1
+  FRONTEND_CLEAN=0
+  FRONTEND_TIMEOUT_MINUTES=90
+  FRONTEND_TYPECHECK=0
+  FRONTEND_LOG_TAIL_LINES=200
+  FRONTEND_VERBOSE_LOGS=1
+  FRONTEND_HEARTBEAT_SECONDS=30
+  FRONTEND_BUILD_LOG_FILE=/srv/apps/superset/logs/frontend-build.log
+  WEBPACK_VERBOSE_ARGS=''  # keep empty for normal deploys; extra webpack args slowed or broke builds in this repo
+  NPM_INSTALL_VERBOSE=0
 
 Examples:
-  CODEBASE_SOURCE=local DOMAIN=supersets.vitalplatforms.com ADMIN_EMAIL=admin@vitalplatforms.com ADMIN_PASSWORD='StrongPass' ./superset-manager-v2-comprehensive.sh deploy-remote
-  CODEBASE_SOURCE=git GIT_REPO_URL=https://github.com/HISP-Uganda/dhis2-superset.git GIT_BRANCH=martbase DOMAIN=supersets.vitalplatforms.com ./superset-manager-v2-comprehensive.sh deploy-remote
-  CODEBASE_SOURCE=git GIT_REPO_URL=https://github.com/HISP-Uganda/dhis2-superset.git GIT_REF=martbase DOMAIN=supersets.vitalplatforms.com ./superset-manager-v2-comprehensive.sh upgrade-remote
-  ./superset-manager-v2-comprehensive.sh start-all
+  CODEBASE_SOURCE=local DOMAIN=supersets.vitalplatforms.com ADMIN_EMAIL=admin@vitalplatforms.com ADMIN_PASSWORD='StrongPass' ./superset-manager-v2-v15.sh deploy-remote
+  CODEBASE_SOURCE=git GIT_REPO_URL=https://github.com/HISP-Uganda/dhis2-superset.git GIT_BRANCH=martbase DOMAIN=supersets.vitalplatforms.com ./superset-manager-v2-v15.sh deploy-remote
+  CODEBASE_SOURCE=git GIT_REPO_URL=https://github.com/HISP-Uganda/dhis2-superset.git GIT_REF=martbase DOMAIN=supersets.vitalplatforms.com ./superset-manager-v2-v15.sh upgrade-remote
+  ./superset-manager-v2-v15.sh start-all
 EOF
 }
 
@@ -1835,6 +2819,7 @@ main() {
     stop-server) stop_services_server ;;
     restart-server) restart_services_server ;;
     status-server) calc_autotune; show_status_server ;;
+    show-config-paths) calc_autotune; show_runtime_paths ;;
 
     deploy-remote) deploy_remote ;;
     upgrade-remote) upgrade_remote ;;

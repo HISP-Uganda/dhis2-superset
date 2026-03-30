@@ -1,0 +1,50 @@
+columns substreams version: 1
+17 columns:
+1 substreams for column `staged_dataset_id`:
+	staged_dataset_id
+1 substreams for column `source_instance_id`:
+	source_instance_id
+2 substreams for column `source_instance_name`:
+	source_instance_name.dict
+	source_instance_name
+2 substreams for column `dx_uid`:
+	dx_uid.dict
+	dx_uid
+2 substreams for column `dx_name`:
+	dx_name.size
+	dx_name
+2 substreams for column `dx_type`:
+	dx_type.dict
+	dx_type
+2 substreams for column `pe`:
+	pe.dict
+	pe
+2 substreams for column `ou`:
+	ou.dict
+	ou
+2 substreams for column `ou_name`:
+	ou_name.size
+	ou_name
+2 substreams for column `ou_level`:
+	ou_level.sparse.idx
+	ou_level
+2 substreams for column `value`:
+	value.size
+	value
+1 substreams for column `value_numeric`:
+	value_numeric
+2 substreams for column `co_uid`:
+	co_uid.dict
+	co_uid
+3 substreams for column `co_name`:
+	co_name.sparse.idx
+	co_name.size
+	co_name
+2 substreams for column `aoc_uid`:
+	aoc_uid.dict
+	aoc_uid
+1 substreams for column `synced_at`:
+	synced_at
+2 substreams for column `sync_job_id`:
+	sync_job_id.null
+	sync_job_id
