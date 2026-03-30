@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# v15.34 tuned for martbase branch: ClickHouse default, dynamic plugins off, Celery Beat schedule fixed in Python
 set -Eeuo pipefail
 
 # ==============================================================================
@@ -91,6 +92,8 @@ SUPERSET_HOST="${SUPERSET_HOST:-127.0.0.1}"
 SUPERSET_PORT="${SUPERSET_PORT:-8088}"
 SUPERSET_SECRET_KEY="${SUPERSET_SECRET_KEY:-$(openssl rand -base64 42 2>/dev/null | tr -d '\n' || echo change_me_now)}"
 GUEST_TOKEN_JWT_SECRET="${GUEST_TOKEN_JWT_SECRET:-$(openssl rand -base64 42 2>/dev/null | tr -d '\n' || echo change_me_now)}"
+FORCE_ROTATE_SECRETS="${FORCE_ROTATE_SECRETS:-0}"
+RESET_ENCRYPTED_DATABASE_SECRETS_ON_KEY_MISMATCH="${RESET_ENCRYPTED_DATABASE_SECRETS_ON_KEY_MISMATCH:-1}"
 
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8088}"
@@ -123,7 +126,7 @@ GIT_CLONE_DEPTH="${GIT_CLONE_DEPTH:-1}"
 # Service feature toggles
 # ------------------------------------------------------------------------------
 CLICKHOUSE_ENABLED="${CLICKHOUSE_ENABLED:-1}"
-DUCKDB_ENABLED="${DUCKDB_ENABLED:-1}"
+DUCKDB_ENABLED="${DUCKDB_ENABLED:-0}"
 POSTGRES_ENABLED="${POSTGRES_ENABLED:-1}"
 POSTGRES_INSTALL_EXTENSIONS="${POSTGRES_INSTALL_EXTENSIONS:-1}"
 
@@ -139,6 +142,22 @@ EXPOSE_CLICKHOUSE_HTTP="${EXPOSE_CLICKHOUSE_HTTP:-0}"
 EXPOSE_CLICKHOUSE_NATIVE="${EXPOSE_CLICKHOUSE_NATIVE:-0}"
 EXPOSE_POSTGRES_PORT="${EXPOSE_POSTGRES_PORT:-0}"
 EXPOSE_REDIS_PORT="${EXPOSE_REDIS_PORT:-0}"
+
+# ------------------------------------------------------------------------------
+# ClickHouse / DHIS2 serving engine
+# ------------------------------------------------------------------------------
+DHIS2_SERVING_ENGINE="${DHIS2_SERVING_ENGINE:-clickhouse}"
+CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-127.0.0.1}"
+CLICKHOUSE_HTTP_HOST="${CLICKHOUSE_HTTP_HOST:-127.0.0.1}"
+CLICKHOUSE_HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
+CLICKHOUSE_NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
+CLICKHOUSE_USER="${CLICKHOUSE_USER:-dhis2_user}"
+CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-$(openssl rand -hex 18 2>/dev/null || echo clickhouse_change_me)}"
+CLICKHOUSE_STAGING_DATABASE="${CLICKHOUSE_STAGING_DATABASE:-dhis2_staging}"
+CLICKHOUSE_SERVING_DATABASE="${CLICKHOUSE_SERVING_DATABASE:-dhis2_serving}"
+CLICKHOUSE_CONTROL_DATABASE="${CLICKHOUSE_CONTROL_DATABASE:-dhis2_control}"
+CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2 ClickHouse}"
+CLICKHOUSE_PYTHON_PACKAGE="${CLICKHOUSE_PYTHON_PACKAGE:-clickhouse-connect}"
 
 # ------------------------------------------------------------------------------
 # Database / cache
@@ -1149,6 +1168,7 @@ install_python_dependencies_server() {
   [[ -f "$INSTALL_DIR/requirements/development.txt" ]] && pip install -r "$INSTALL_DIR/requirements/development.txt" || true
   pip install apache-superset psycopg2-binary redis celery gevent gunicorn cachelib
   [[ "$DUCKDB_ENABLED" == "1" ]] && pip install duckdb duckdb-engine
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] && pip install -U "${CLICKHOUSE_PYTHON_PACKAGE}"
   if [[ -f "$INSTALL_DIR/setup.py" || -f "$INSTALL_DIR/pyproject.toml" ]]; then
     pip install -e "$INSTALL_DIR" || true
   fi
@@ -1479,14 +1499,75 @@ SQL
   grep -q '^effective_io_concurrency' "$pg_conf" && sudo sed -i 's/^effective_io_concurrency =.*/effective_io_concurrency = 200/' "$pg_conf" || echo 'effective_io_concurrency = 200' | sudo tee -a "$pg_conf" >/dev/null
   sudo systemctl restart postgresql
 
-  # Verify that the generated credentials actually work before continuing
-  PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c 'SELECT 1;' >/dev/null
+  PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c 'SELECT current_user, current_database();' >/dev/null
 
   ok "PostgreSQL configured, password synchronized, and connectivity verified"
 }
 
+
+preserve_existing_runtime_secrets_server() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  [[ "${FORCE_ROTATE_SECRETS:-0}" == "1" ]] && return 0
+
+  info "Preserving existing runtime secrets from $ENV_FILE"
+
+  local existing_secret existing_guest existing_pg existing_ch
+  existing_secret="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${SUPERSET_SECRET_KEY:-${SECRET_KEY:-}}"' _ "$ENV_FILE" 2>/dev/null || true)"
+  existing_guest="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${GUEST_TOKEN_JWT_SECRET:-}"' _ "$ENV_FILE" 2>/dev/null || true)"
+  existing_pg="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${POSTGRES_PASSWORD:-}"' _ "$ENV_FILE" 2>/dev/null || true)"
+  existing_ch="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${CLICKHOUSE_PASSWORD:-}"' _ "$ENV_FILE" 2>/dev/null || true)"
+
+  [[ -n "$existing_secret" ]] && SUPERSET_SECRET_KEY="$existing_secret"
+  [[ -n "$existing_guest" ]] && GUEST_TOKEN_JWT_SECRET="$existing_guest"
+  [[ -n "$existing_pg" ]] && POSTGRES_PASSWORD="$existing_pg"
+  [[ -n "$existing_ch" ]] && CLICKHOUSE_PASSWORD="$existing_ch"
+
+  ok "Existing runtime secrets preserved"
+}
+
+reset_invalid_database_secrets_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  warn "Resetting encrypted database secrets in metadata DB because SECRET_KEY does not match existing ciphertext"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<'SQL' >/dev/null
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='dbs' AND column_name='password'
+  ) THEN
+    EXECUTE 'UPDATE public.dbs SET password = NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='dbs' AND column_name='encrypted_extra'
+  ) THEN
+    EXECUTE 'UPDATE public.dbs SET encrypted_extra = NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='dbs' AND column_name='server_cert'
+  ) THEN
+    EXECUTE 'UPDATE public.dbs SET server_cert = NULL';
+  END IF;
+END
+$$;
+SQL
+  ok "Encrypted database secrets reset in metadata DB"
+}
+
+
+verify_postgres_runtime_credentials_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  info "Verifying PostgreSQL runtime credentials"
+  PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c 'SELECT current_user, current_database();' >/dev/null
+  ok "PostgreSQL runtime credentials verified"
+}
+
 generate_env_server() {
   info "Writing production .env"
+  preserve_existing_runtime_secrets_server
 
   local runtime_domain="${DOMAIN}"
   local runtime_base_url="https://${runtime_domain}"
@@ -1502,20 +1583,12 @@ generate_env_server() {
   local ai_mode_roles_json='{"chart":[],"dashboard":[],"sql":[]}'
   local celery_task_annotations_json='{"sql_lab.get_sql_results":{"rate_limit":"100/s"}}'
   local celery_task_routes_json='{"superset.tasks.dhis2_sync.*":{"queue":"dhis2"},"superset.tasks.dhis2_cache.*":{"queue":"dhis2"},"superset.tasks.dhis2_metadata.*":{"queue":"dhis2"},"dhis2.finalize_repository_org_units":{"queue":"dhis2"}}'
-  local celery_beat_schedule_json='{"dhis2-sync-scheduled":{"task":"superset.tasks.dhis2_sync.sync_all_scheduled_datasets","schedule":{"minute":"*/15"}},"reports.scheduler":{"task":"reports.scheduler","schedule":{"minute":"*","hour":"*"}},"reports.prune_log":{"task":"reports.prune_log","schedule":{"minute":0,"hour":0}}}'
   local theme_dark_json='{"algorithm":"dark","token":{"colorPrimary":"#2893B3","colorLink":"#2893B3","colorError":"#e04355","colorWarning":"#fcc700","colorSuccess":"#5ac189","colorInfo":"#66bcfe","fontFamily":"Inter, Helvetica, Arial","fontFamilyCode":"'\''Fira Code'\'', '\''Courier New'\'', monospace","transitionTiming":0.3,"brandIconMaxWidth":37,"fontSizeXS":"8","fontSizeXXL":"28","fontWeightNormal":"400","fontWeightLight":"300","fontWeightStrong":"500","colorBgBase":"#111827"}}'
 
   cat > "$ENV_FILE" <<EOF
-# ---------------------------------------------------------------------------
-# Superset production runtime environment
-# Generated by superset-manager-v2-v15
-# ---------------------------------------------------------------------------
-
 DOMAIN=${runtime_domain}
 SUPERSET_ENV=production
 SUPERSET_CONFIG_PATH=${SUPERSET_CONFIG_FILE}
-
-# Core runtime
 SUPERSET_HOST=${SUPERSET_HOST}
 SUPERSET_PORT=${SUPERSET_PORT}
 SUPERSET_BASE_URL=${runtime_base_url}
@@ -1524,8 +1597,6 @@ WEBDRIVER_BASEURL_USER_FRIENDLY=${runtime_base_url}
 SUPERSET_DEBUG=0
 ENABLE_PROXY_FIX=true
 PREFERRED_URL_SCHEME=https
-
-# Metadata database
 POSTGRES_ENABLED=${POSTGRES_ENABLED}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
@@ -1534,33 +1605,23 @@ POSTGRES_HOST=${POSTGRES_HOST}
 POSTGRES_PORT=${POSTGRES_PORT}
 DATABASE_URL=${runtime_db_uri}
 SUPERSET_DB_URI=${runtime_db_uri}
-
-# Secrets
 SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
 SECRET_KEY=${SUPERSET_SECRET_KEY}
 GUEST_TOKEN_JWT_SECRET=${GUEST_TOKEN_JWT_SECRET}
 GUEST_TOKEN_JWT_ALGO=HS256
 GUEST_TOKEN_HEADER_NAME=X-GuestToken
 GUEST_TOKEN_JWT_EXP_SECONDS=86400
-
-# Admin bootstrap
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_FIRSTNAME=${ADMIN_FIRSTNAME}
 ADMIN_LASTNAME=${ADMIN_LASTNAME}
 ADMIN_EMAIL=${ADMIN_EMAIL}
-
-# Request / query limits
 ROW_LIMIT=50000
 SUPERSET_WEBSERVER_TIMEOUT=${GUNICORN_TIMEOUT}
 SQLLAB_TIMEOUT=300
 SQLLAB_ASYNC_TIME_LIMIT_SEC=${SQLLAB_ASYNC_TIME_LIMIT_SEC}
-
-# Security / CSRF
 WTF_CSRF_ENABLED=true
 WTF_CSRF_EXEMPT_LIST=${csrf_exempt_json}
 MAPBOX_API_KEY=
-
-# Embedding / public access
 EMBEDDED_SUPERSET=true
 PUBLIC_ROLE_LIKE=Gamma
 FAB_ADD_SECURITY_VIEWS=true
@@ -1568,15 +1629,11 @@ AUTH_TYPE=1
 AUTH_ROLE_PUBLIC=Public
 PUBLIC_DASHBOARD_ENTRY_ENABLED=true
 GUEST_ROLE_NAME=Public
-
-# CORS
 ENABLE_CORS=true
 CORS_SUPPORTS_CREDENTIALS=true
 CORS_ALLOW_HEADERS=${cors_allow_headers_json}
 CORS_RESOURCES=${cors_resources_json}
 CORS_ORIGINS_JSON=${cors_origins_json}
-
-# Feature flags
 FF_EMBEDDED_SUPERSET=true
 FF_EMBEDDABLE_CHARTS=true
 FF_DASHBOARD_RBAC=true
@@ -1587,9 +1644,7 @@ FF_DRILL_BY=true
 FF_DRILL_TO_DETAIL=true
 FF_THUMBNAILS=true
 FF_ALERT_REPORTS=true
-FF_DYNAMIC_PLUGINS=true
-
-# AI Insights
+FF_DYNAMIC_PLUGINS=false
 AI_INSIGHTS_ENABLED=true
 AI_INSIGHTS_ALLOW_SQL_EXECUTION=false
 AI_INSIGHTS_MAX_CONTEXT_ROWS=20
@@ -1610,13 +1665,9 @@ OPENAI_DEFAULT_MODEL=gpt-4.1-mini
 OLLAMA_BASE_URL=
 OLLAMA_MODELS=llama3.1:8b
 OLLAMA_DEFAULT_MODEL=llama3.1:8b
-
-# Talisman / CSP
 TALISMAN_ENABLED=true
 TALISMAN_FORCE_HTTPS=false
 SESSION_COOKIE_SECURE=true
-
-# Redis / cache / results backend
 REDIS_HOST=${REDIS_HOST}
 REDIS_PORT=${REDIS_PORT}
 REDIS_DB=${REDIS_DB}
@@ -1629,8 +1680,6 @@ CACHE_DEFAULT_TIMEOUT=${CACHE_DEFAULT_TIMEOUT}
 DATA_CACHE_TIMEOUT=${DATA_CACHE_TIMEOUT}
 FILTER_STATE_CACHE_TIMEOUT=${FILTER_STATE_CACHE_TIMEOUT}
 EXPLORE_FORM_DATA_CACHE_TIMEOUT=${EXPLORE_FORM_DATA_CACHE_TIMEOUT}
-
-# Celery
 CELERY_BROKER_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
 CELERY_RESULT_BACKEND=redis://${REDIS_HOST}:${REDIS_PORT}/1
 CELERY_TASK_SERIALIZER=json
@@ -1642,23 +1691,23 @@ CELERY_WORKER_PREFETCH_MULTIPLIER=${WORKER_PREFETCH_MULTIPLIER}
 CELERY_TASK_ACKS_LATE=true
 CELERY_TASK_ANNOTATIONS=${celery_task_annotations_json}
 CELERY_TASK_ROUTES=${celery_task_routes_json}
-CELERY_BEAT_SCHEDULE=${celery_beat_schedule_json}
-
-# Public page configuration
-PUBLIC_NAVBAR_TITLE='National Malaria Data Repository'
-PUBLIC_NAVBAR_LOGO_ALT='National Malaria Data Repository'
+DHIS2_SYNC_CRON_MINUTE=*/15
+REPORTS_SCHEDULER_MINUTE=*
+REPORTS_SCHEDULER_HOUR=*
+REPORTS_PRUNE_MINUTE=0
+REPORTS_PRUNE_HOUR=0
+PUBLIC_NAVBAR_TITLE=National Malaria Data Repository
+PUBLIC_NAVBAR_LOGO_ALT=National Malaria Data Repository
 PUBLIC_LOGIN_TEXT=Login
 PUBLIC_LOGIN_URL=/login/
 PUBLIC_LOGIN_TYPE=primary
 PUBLIC_NAVBAR_CUSTOM_LINKS=${public_navbar_custom_links_json}
 PUBLIC_SIDEBAR_POSITION=left
-PUBLIC_SIDEBAR_TITLE='Categories'
-PUBLIC_WELCOME_TITLE='Welcome'
-PUBLIC_WELCOME_DESCRIPTION='Select a category from the sidebar to view dashboards.'
-PUBLIC_FOOTER_TEXT='© 2026 Your Organization'
+PUBLIC_SIDEBAR_TITLE=Categories
+PUBLIC_WELCOME_TITLE=Welcome
+PUBLIC_WELCOME_DESCRIPTION=Select a category from the sidebar to view dashboards.
+PUBLIC_FOOTER_TEXT=© 2026 Your Organization
 PUBLIC_FOOTER_LINKS=${public_footer_links_json}
-
-# DHIS2 cache / tuning
 DHIS2_CACHE_REFRESH_INTERVAL=21600
 DHIS2_CACHE_TTL_GEOJSON=21600
 DHIS2_CACHE_TTL_ORG_HIERARCHY=3600
@@ -1667,17 +1716,30 @@ DHIS2_CACHE_TTL_ANALYTICS=1800
 DHIS2_CACHE_TTL_FILTER_OPTIONS=3600
 DHIS2_CACHE_TTL_NAME_TO_UID=3600
 DHIS2_CACHE_MAX_SIZE_MB=500
-
-# Theme
 ENABLE_UI_THEME_ADMINISTRATION=true
 THEME_DARK_JSON=${theme_dark_json}
-
-# Logging
 LOG_LEVEL=INFO
 LOG_FORMAT='%(asctime)s:%(levelname)s:%(name)s:%(message)s'
 SUPERSET_LOG_FILE=${INSTALL_DIR}/logs/superset.log
 
-# Frontend build / deployment
+CLICKHOUSE_ENABLED=${CLICKHOUSE_ENABLED}
+DUCKDB_ENABLED=${DUCKDB_ENABLED}
+DHIS2_SERVING_ENGINE=clickhouse
+DHIS2_CLICKHOUSE_ENABLED=true
+DHIS2_CLICKHOUSE_HOST=${CLICKHOUSE_HOST}
+DHIS2_CLICKHOUSE_PORT=${CLICKHOUSE_NATIVE_PORT}
+DHIS2_CLICKHOUSE_HTTP_PORT=${CLICKHOUSE_HTTP_PORT}
+DHIS2_CLICKHOUSE_DATABASE=${CLICKHOUSE_STAGING_DATABASE}
+DHIS2_CLICKHOUSE_SERVING_DATABASE=${CLICKHOUSE_SERVING_DATABASE}
+DHIS2_CLICKHOUSE_CONTROL_DATABASE=${CLICKHOUSE_CONTROL_DATABASE}
+DHIS2_CLICKHOUSE_USER=${CLICKHOUSE_USER}
+DHIS2_CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+DHIS2_CLICKHOUSE_SECURE=false
+DHIS2_CLICKHOUSE_HTTP_PROTOCOL=http
+DHIS2_CLICKHOUSE_SUPERSET_DB_NAME=${CLICKHOUSE_SUPERSET_DB_NAME}
+DHIS2_CLICKHOUSE_REFRESH_STRATEGY=versioned_view_swap
+DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS=2
+
 NODE_MAJOR=${NODE_MAJOR}
 NPM_VERSION=${NPM_VERSION}
 FRONTEND_CLEAN=${FRONTEND_CLEAN}
@@ -1705,6 +1767,7 @@ create_systemd_units_server() {
 [Unit]
 Description=Superset Web
 After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
 
 [Service]
 User=${svc_user}
@@ -1725,14 +1788,16 @@ EOF"
 [Unit]
 Description=Superset Celery Worker
 After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
 
 [Service]
+Type=simple
 User=${svc_user}
 Group=${svc_group}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=SUPERSET_CONFIG_PATH=${SUPERSET_CONFIG_FILE}
-ExecStart=${VENV_DIR}/bin/celery --app=superset.tasks.celery_app:app worker --pool=prefork -O fair --concurrency=${CELERY_CONCURRENCY} --logfile=${CELERY_WORKER_LOG}
+ExecStart=${VENV_DIR}/bin/celery --app=superset.tasks.celery_app:app worker --pool=prefork -O fair --concurrency=${CELERY_CONCURRENCY} --queues=celery,dhis2 --hostname=${APP_NAME}@%H --pidfile=${RUN_DIR}/celery-worker.pid --logfile=${CELERY_WORKER_LOG} --loglevel=INFO
 Restart=always
 RestartSec=5
 
@@ -1744,14 +1809,16 @@ EOF"
 [Unit]
 Description=Superset Celery Beat
 After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
 
 [Service]
+Type=simple
 User=${svc_user}
 Group=${svc_group}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=SUPERSET_CONFIG_PATH=${SUPERSET_CONFIG_FILE}
-ExecStart=${VENV_DIR}/bin/celery --app=superset.tasks.celery_app:app beat --logfile=${CELERY_BEAT_LOG}
+ExecStart=${VENV_DIR}/bin/celery --app=superset.tasks.celery_app:app beat --loglevel=INFO --schedule=${RUN_DIR}/celerybeat-schedule --pidfile=${RUN_DIR}/celerybeat.pid --logfile=${CELERY_BEAT_LOG}
 Restart=always
 RestartSec=5
 
@@ -1907,7 +1974,7 @@ FEATURE_FLAGS = {
     "DrillToDetail": env_bool("FF_DRILL_TO_DETAIL", True),
     "THUMBNAILS": env_bool("FF_THUMBNAILS", True),
     "ALERT_REPORTS": env_bool("FF_ALERT_REPORTS", True),
-    "DYNAMIC_PLUGINS": env_bool("FF_DYNAMIC_PLUGINS", True),
+    "DYNAMIC_PLUGINS": env_bool("FF_DYNAMIC_PLUGINS", False),
 }
 
 # -----------------------------------------------------------------------------
@@ -2120,20 +2187,26 @@ class CeleryConfig:
         "superset.tasks.dhis2_metadata.*": {"queue": "dhis2"},
         "dhis2.finalize_repository_org_units": {"queue": "dhis2"},
     })
-    beat_schedule = env_json("CELERY_BEAT_SCHEDULE", {
+    beat_schedule = {
         "dhis2-sync-scheduled": {
             "task": "superset.tasks.dhis2_sync.sync_all_scheduled_datasets",
-            "schedule": crontab(minute="*/15"),
+            "schedule": crontab(minute=os.getenv("DHIS2_SYNC_CRON_MINUTE", "*/15")),
         },
         "reports.scheduler": {
             "task": "reports.scheduler",
-            "schedule": crontab(minute="*", hour="*"),
+            "schedule": crontab(
+                minute=os.getenv("REPORTS_SCHEDULER_MINUTE", "*"),
+                hour=os.getenv("REPORTS_SCHEDULER_HOUR", "*"),
+            ),
         },
         "reports.prune_log": {
             "task": "reports.prune_log",
-            "schedule": crontab(minute=0, hour=0),
+            "schedule": crontab(
+                minute=env_int("REPORTS_PRUNE_MINUTE", 0),
+                hour=env_int("REPORTS_PRUNE_HOUR", 0),
+            ),
         },
-    })
+    }
 
 CELERY_CONFIG = CeleryConfig
 
@@ -2410,6 +2483,11 @@ superset_create_admin_server() {
 
 superset_init_once_server() {
   info "Running: superset init"
+  local log_file="${LOG_DIR:-$INSTALL_DIR/logs}/superset-init.log"
+  mkdir -p "$(dirname "$log_file")"
+  : > "$log_file"
+
+  set +e
   bash -lc '
     set -a
     source "'"$ENV_FILE"'"
@@ -2417,10 +2495,343 @@ superset_init_once_server() {
     export SUPERSET_CONFIG_PATH="'"$SUPERSET_CONFIG_FILE"'"
     cd "'"$INSTALL_DIR"'"
     "'"$INSTALL_DIR"'/venv/bin/superset" init
-  '
+  ' 2>&1 | tee -a "$log_file"
+  local rc="${PIPESTATUS[0]}"
+  set -e
+
+  if [[ "$rc" -ne 0 ]] && grep -q "Invalid decryption key" "$log_file" 2>/dev/null; then
+    if [[ "${RESET_ENCRYPTED_DATABASE_SECRETS_ON_KEY_MISMATCH:-1}" == "1" ]]; then
+      warn "Detected invalid decryption key during superset init; preserving current SECRET_KEY going forward and resetting encrypted database secrets once"
+      reset_invalid_database_secrets_server || return $?
+
+      : > "$log_file"
+      set +e
+      bash -lc '
+        set -a
+        source "'"$ENV_FILE"'"
+        set +a
+        export SUPERSET_CONFIG_PATH="'"$SUPERSET_CONFIG_FILE"'"
+        cd "'"$INSTALL_DIR"'"
+        "'"$INSTALL_DIR"'/venv/bin/superset" init
+      ' 2>&1 | tee -a "$log_file"
+      rc="${PIPESTATUS[0]}"
+      set -e
+    fi
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    err "superset init failed"
+    return "$rc"
+  fi
   ok "superset init complete"
+  return 0
 }
 
+
+patch_problematic_postgres_migrations_server() {
+  info "Patching known problematic migrations for PostgreSQL deployment"
+
+  local mig1="$INSTALL_DIR/superset/migrations/versions/2024-05-01_10-52_58d051681a3b_add_catalog_perm_to_tables.py"
+  if [[ -f "$mig1" ]]; then
+    python3 - "$mig1" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+old1 = '    upgrade_catalog_perms(engines={"postgresql"})'
+old2 = """    try:
+        upgrade_catalog_perms(engines={\"postgresql\"})
+    except Exception as ex:
+        print(f\"[migration patch] temporarily skipping upgrade_catalog_perms on PostgreSQL bootstrap: {ex}\")"""
+new = '    print("[migration patch] skipping upgrade_catalog_perms on PostgreSQL bootstrap")'
+
+changed = False
+if old2 in s:
+    s = s.replace(old2, new, 1)
+    changed = True
+elif old1 in s:
+    s = s.replace(old1, new, 1)
+    changed = True
+
+if changed:
+    p.write_text(s)
+PY
+  fi
+
+  ok "Problematic PostgreSQL bootstrap migrations patched"
+}
+
+
+assert_superset_core_tables_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  local missing=""
+  missing="$(sudo -u postgres psql -d "${POSTGRES_DB:-superset}" -tAc "
+SELECT string_agg(tbl, ',')
+FROM (
+  SELECT unnest(ARRAY['alembic_version','dbs','tables','slices','dashboards']) AS tbl
+) x
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM information_schema.tables
+  WHERE table_schema='public' AND table_name=x.tbl
+);" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "$missing" && "$missing" != "" ]]; then
+    err "Superset core tables are still missing after migration: $missing"
+    return 1
+  fi
+  ok "Superset core tables verified"
+}
+
+
+
+ensure_alembic_version_table_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  info "Ensuring alembic_version table exists with wide version_num and correct ownership"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<SQL >/dev/null
+CREATE TABLE IF NOT EXISTS public.alembic_version (
+  version_num VARCHAR(255) NOT NULL PRIMARY KEY
+);
+ALTER TABLE public.alembic_version
+  ALTER COLUMN version_num TYPE VARCHAR(255);
+ALTER TABLE public.alembic_version
+  OWNER TO "${POSTGRES_USER:-superset}";
+GRANT ALL PRIVILEGES ON TABLE public.alembic_version TO "${POSTGRES_USER:-superset}";
+SQL
+  ok "alembic_version table prepared"
+}
+
+ensure_alembic_version_width_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  ensure_alembic_version_table_server || return $?
+  info "Ensuring alembic_version.version_num is wide enough for long revision IDs"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<SQL >/dev/null
+ALTER TABLE public.alembic_version
+  ALTER COLUMN version_num TYPE VARCHAR(255);
+ALTER TABLE public.alembic_version
+  OWNER TO "${POSTGRES_USER:-superset}";
+GRANT ALL PRIVILEGES ON TABLE public.alembic_version TO "${POSTGRES_USER:-superset}";
+SQL
+  ok "alembic_version width checked"
+}
+
+
+superset_db_upgrade_with_recovery_server() {
+  local log_file="${1:-$LOG_DIR/superset-db-upgrade.log}"
+
+  ensure_alembic_version_table_server || return $?
+  ensure_alembic_version_width_server || return $?
+  if superset_db_upgrade_once_server "$log_file"; then
+    return 0
+  fi
+
+  if grep -q "value too long for type character varying(32)" "$log_file" 2>/dev/null; then
+    warn "Detected alembic_version width failure; creating/widening version table and retrying"
+    ensure_alembic_version_table_server || return $?
+    ensure_alembic_version_width_server || return $?
+    if superset_db_upgrade_once_server "$log_file"; then
+      return 0
+    fi
+  fi
+
+  if grep -q "column dbs.is_dhis2_staging_internal does not exist" "$log_file" 2>/dev/null; then
+    warn "Detected missing DHIS2 dbs columns during migration; patching and retrying"
+    patch_dhis2_dbs_columns_now_server || return $?
+    ensure_alembic_version_table_server || return $?
+    ensure_alembic_version_width_server || return $?
+    if superset_db_upgrade_once_server "$log_file"; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+
+stop_superset_services_before_upgrade_server() {
+  info "Stopping Superset services before database upgrade"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop superset-web 2>/dev/null || true
+    systemctl stop superset-worker 2>/dev/null || true
+    systemctl stop superset-beat 2>/dev/null || true
+  fi
+
+  pkill -f "/srv/apps/superset/venv/bin/gunicorn" 2>/dev/null || true
+  pkill -f "celery.*superset" 2>/dev/null || true
+
+  if [[ "${POSTGRES_ENABLED:-1}" == "1" ]]; then
+    sudo -u postgres psql -d postgres -v ON_ERROR_STOP=1 -c \
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${POSTGRES_DB:-superset}' AND pid <> pg_backend_pid();" \
+      >/dev/null 2>&1 || true
+  fi
+
+  ok "Superset services quiesced for migration"
+}
+
+
+patch_deadlock_prone_postgres_migrations_server() {
+  info "Patching known deadlock-prone migrations for PostgreSQL deployment"
+
+  local mig="$INSTALL_DIR/superset/migrations/versions/2023-09-15_12-58_4b85906e5b91_add_on_delete_cascade_for_dashboard_roles.py"
+  if [[ -f "$mig" ]]; then
+    python3 - "$mig" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+old = """def upgrade():
+    for foreign_key in foreign_keys:
+        redefine(foreign_key, on_delete="CASCADE")"""
+new = """def upgrade():
+    print("[migration patch] skipping dashboard_roles cascade rewrite on PostgreSQL bootstrap")"""
+
+if old in s and new not in s:
+    s = s.replace(old, new, 1)
+    p.write_text(s)
+PY
+  fi
+
+  ok "Deadlock-prone PostgreSQL bootstrap migrations patched"
+}
+
+
+repair_alembic_version_privileges_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  info "Repairing alembic_version ownership and privileges"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<'SQL' >/dev/null
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema='public' AND table_name='alembic_version'
+  ) THEN
+    ALTER TABLE public.alembic_version OWNER TO superset;
+    GRANT ALL PRIVILEGES ON TABLE public.alembic_version TO superset;
+  END IF;
+END
+$$;
+SQL
+  ok "alembic_version ownership and privileges repaired"
+}
+
+
+patch_boolean_sql_postgres_migrations_server() {
+  info "Patching PostgreSQL boolean SQL in latest repo migrations"
+
+  local mig="$INSTALL_DIR/superset/migrations/versions/2026_03_20_public_portal_cms_admin_v2.py"
+  if [[ -f "$mig" ]]; then
+    python3 - "$mig" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+old = "WHERE is_published = 1 AND published_on IS NULL"
+new = "WHERE is_published IS TRUE AND published_on IS NULL"
+
+if old in s and new not in s:
+    s = s.replace(old, new, 1)
+    p.write_text(s)
+PY
+  fi
+
+  ok "PostgreSQL boolean SQL migrations patched"
+}
+
+
+patch_identifier_length_postgres_migrations_server() {
+  info "Patching PostgreSQL identifier-length issues in latest repo migrations"
+
+  local mig="$INSTALL_DIR/superset/migrations/versions/2026_03_21_public_portal_design_system_v3.py"
+  if [[ -f "$mig" ]]; then
+    python3 - "$mig" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+replacements = {
+    "fk_public_pages_theme_id_public_cms_themes": "fk_pub_pages_theme_id",
+    "fk_public_pages_template_id_public_cms_templates": "fk_pub_pages_template_id",
+    "fk_public_pages_style_bundle_id_public_cms_style_bundles": "fk_pub_pages_style_bundle_id",
+    "fk_public_page_sections_style_bundle_id_public_cms_style_bundles": "fk_pub_page_sections_style_bundle_id",
+    "fk_public_page_components_style_bundle_id_public_cms_style_bundles": "fk_pub_page_components_style_bundle_id",
+}
+
+changed = False
+for old, new in replacements.items():
+    if old in s:
+        s = s.replace(old, new)
+        changed = True
+
+if changed:
+    p.write_text(s)
+PY
+  fi
+
+  ok "PostgreSQL identifier-length migrations patched"
+}
+
+
+patch_boolean_assignment_postgres_migrations_server() {
+  info "Patching PostgreSQL boolean assignment SQL in latest repo migrations"
+
+  local mig="$INSTALL_DIR/superset/migrations/versions/2026-03-27_00-06_87fd02a1b791_disable_sqllab_for_dhis2.py"
+  if [[ -f "$mig" ]]; then
+    python3 - "$mig" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+replacements = {
+    "UPDATE dbs SET expose_in_sqllab = 0 WHERE sqlalchemy_uri LIKE 'dhis2%'":
+        "UPDATE dbs SET expose_in_sqllab = FALSE WHERE sqlalchemy_uri LIKE 'dhis2%'",
+    "UPDATE dbs SET expose_in_sqllab = 1 WHERE sqlalchemy_uri LIKE 'dhis2%'":
+        "UPDATE dbs SET expose_in_sqllab = TRUE WHERE sqlalchemy_uri LIKE 'dhis2%'",
+}
+
+changed = False
+for old, new in replacements.items():
+    if old in s and new not in s:
+        s = s.replace(old, new)
+        changed = True
+
+if changed:
+    p.write_text(s)
+PY
+  fi
+
+  ok "PostgreSQL boolean assignment migrations patched"
+}
+
+
+verify_clickhouse_runtime_server() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Verifying ClickHouse runtime connectivity"
+
+  curl -fsS "http://127.0.0.1:${CLICKHOUSE_HTTP_PORT}/ping" >/dev/null
+  "$VENV_DIR/bin/python" - <<PY
+import clickhouse_connect
+client = clickhouse_connect.get_client(
+    host="${CLICKHOUSE_HOST}",
+    port=int("${CLICKHOUSE_HTTP_PORT}"),
+    username="${CLICKHOUSE_USER}",
+    password="${CLICKHOUSE_PASSWORD}",
+    database="${CLICKHOUSE_STAGING_DATABASE}",
+)
+print("CLICKHOUSE_OK", client.query("SELECT version()").result_rows[0][0])
+PY
+
+  ok "ClickHouse runtime connectivity verified"
+}
 
 initialize_superset_server() {
   header "Initializing Superset application"
@@ -2428,19 +2839,35 @@ initialize_superset_server() {
 
   mkdir -p "$LOG_DIR" "$RUN_DIR" "$DATA_DIR"
 
-  superset_db_upgrade_once_server "$LOG_DIR/superset-db-upgrade.log"
+  stop_superset_services_before_upgrade_server || return $?
+  ensure_alembic_version_table_server || return $?
+  repair_alembic_version_privileges_server || return $?
+  patch_problematic_postgres_migrations_server || return $?
+  patch_deadlock_prone_postgres_migrations_server || return $?
+  patch_boolean_sql_postgres_migrations_server || return $?
+  patch_identifier_length_postgres_migrations_server || return $?
+  patch_boolean_assignment_postgres_migrations_server || return $?
 
-  patch_dhis2_dbs_columns_now_server
+  superset_db_upgrade_with_recovery_server "$LOG_DIR/superset-db-upgrade.log" || return $?
 
-  superset_db_upgrade_once_server "$LOG_DIR/superset-db-upgrade.log"
+  patch_dhis2_dbs_columns_now_server || return $?
+  ensure_alembic_version_table_server || return $?
+  repair_alembic_version_privileges_server || return $?
+  ensure_alembic_version_width_server || return $?
 
-  superset_create_admin_server
-  superset_init_once_server
+  superset_db_upgrade_with_recovery_server "$LOG_DIR/superset-db-upgrade.log" || return $?
+
+  assert_superset_core_tables_server || return $?
+
+  superset_create_admin_server || return $?
+  superset_init_once_server || return $?
 
   ok "Superset initialized"
 }
 
 start_services_server() {
+  sudo rm -f "${RUN_DIR}/celerybeat-schedule" "${RUN_DIR}/celerybeat.pid" "${INSTALL_DIR}/celerybeat-schedule" || true
+  sudo chown -R "${REMOTE_APP_USER:-superset}:${REMOTE_APP_USER:-superset}" "${RUN_DIR}" "${LOG_DIR}" || true
   sudo systemctl restart superset-web superset-worker superset-beat nginx redis-server postgresql
   ok "Services started"
 }
@@ -2449,6 +2876,8 @@ stop_services_server() {
   ok "Services stopped"
 }
 restart_services_server() {
+  sudo rm -f "${RUN_DIR}/celerybeat-schedule" "${RUN_DIR}/celerybeat.pid" "${INSTALL_DIR}/celerybeat-schedule" || true
+  sudo chown -R "${REMOTE_APP_USER:-superset}:${REMOTE_APP_USER:-superset}" "${RUN_DIR}" "${LOG_DIR}" || true
   sudo systemctl restart superset-web superset-worker superset-beat nginx redis-server postgresql
   ok "Services restarted"
 }
@@ -2465,7 +2894,23 @@ show_status_server() {
   sudo systemctl is-active nginx || true
   sudo systemctl is-active redis-server || true
   sudo systemctl is-active postgresql || true
-  sudo systemctl --no-pager --full status superset-web superset-worker superset-beat nginx redis-server postgresql || true
+  sudo systemctl is-active clickhouse-server || true
+  sudo systemctl --no-pager --full status superset-web superset-worker superset-beat nginx redis-server postgresql clickhouse-server || true
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf "http://127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}/ping" >/dev/null 2>&1 && echo "ClickHouse HTTP ping: OK" || echo "ClickHouse HTTP ping: FAILED"
+  fi
+  if [[ -f "${ENV_FILE}" && -x "${VENV_DIR}/bin/celery" ]]; then
+    set +e
+    (
+      set -a
+      . "${ENV_FILE}"
+      set +a
+      export SUPERSET_CONFIG_PATH="${SUPERSET_CONFIG_FILE}"
+      export FLASK_APP=superset
+      "${VENV_DIR}/bin/celery" --app=superset.tasks.celery_app:app inspect ping
+    ) || true
+    set -e
+  fi
 }
 
 show_runtime_paths() {
@@ -2476,6 +2921,8 @@ Superset runtime paths
   Config file         : ${SUPERSET_CONFIG_FILE}
   Frontend build log  : ${FRONTEND_BUILD_LOG_FILE:-$INSTALL_DIR/logs/frontend-build.log}
   Gunicorn log        : ${GUNICORN_LOG}
+  ClickHouse HTTP     : http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}
+  ClickHouse DBs      : ${CLICKHOUSE_STAGING_DATABASE}, ${CLICKHOUSE_SERVING_DATABASE}, ${CLICKHOUSE_CONTROL_DATABASE}
 EOF
 }
 
@@ -2507,6 +2954,12 @@ configure_firewall_server() {
     fi
     if [[ "${EXPOSE_REDIS_PORT:-0}" == "1" ]]; then
       run_privileged "ufw allow ${REDIS_PORT:-6379}/tcp >/dev/null 2>&1 || true"
+    fi
+    if [[ "${EXPOSE_CLICKHOUSE_HTTP:-0}" == "1" ]]; then
+      run_privileged "ufw allow ${CLICKHOUSE_HTTP_PORT:-8123}/tcp >/dev/null 2>&1 || true"
+    fi
+    if [[ "${EXPOSE_CLICKHOUSE_NATIVE:-0}" == "1" ]]; then
+      run_privileged "ufw allow ${CLICKHOUSE_NATIVE_PORT:-9000}/tcp >/dev/null 2>&1 || true"
     fi
     run_privileged "ufw --force enable >/dev/null 2>&1 || true"
     ok "Firewall configured (SSH 22, HTTP 80, HTTPS 443, optional service ports)"
@@ -2570,18 +3023,225 @@ EOF"
   ok "Nginx configured and restarted"
 }
 
+
+ensure_clickhouse_env_vars() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Ensuring ClickHouse env vars in $ENV_FILE"
+  python3 - "$ENV_FILE" <<'PY'
+from pathlib import Path
+import shlex, sys
+
+env_file = Path(sys.argv[1])
+existing = {}
+if env_file.exists():
+    for line in env_file.read_text(encoding='utf-8').splitlines():
+        if not line.strip() or line.lstrip().startswith('#') or '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        existing[k.strip()] = v
+
+updates = {
+    "DHIS2_SERVING_ENGINE": "clickhouse",
+    "DHIS2_CLICKHOUSE_ENABLED": "true",
+    "DHIS2_CLICKHOUSE_HOST": "'"${CLICKHOUSE_HOST}"'",
+    "DHIS2_CLICKHOUSE_PORT": "'"${CLICKHOUSE_NATIVE_PORT}"'",
+    "DHIS2_CLICKHOUSE_HTTP_PORT": "'"${CLICKHOUSE_HTTP_PORT}"'",
+    "DHIS2_CLICKHOUSE_DATABASE": "'"${CLICKHOUSE_STAGING_DATABASE}"'",
+    "DHIS2_CLICKHOUSE_SERVING_DATABASE": "'"${CLICKHOUSE_SERVING_DATABASE}"'",
+    "DHIS2_CLICKHOUSE_CONTROL_DATABASE": "'"${CLICKHOUSE_CONTROL_DATABASE}"'",
+    "DHIS2_CLICKHOUSE_USER": "'"${CLICKHOUSE_USER}"'",
+    "DHIS2_CLICKHOUSE_PASSWORD": "'"${CLICKHOUSE_PASSWORD}"'",
+    "DHIS2_CLICKHOUSE_SECURE": "false",
+    "DHIS2_CLICKHOUSE_HTTP_PROTOCOL": "http",
+    "DHIS2_CLICKHOUSE_SUPERSET_DB_NAME": "'"${CLICKHOUSE_SUPERSET_DB_NAME}"'",
+    "DHIS2_CLICKHOUSE_REFRESH_STRATEGY": "versioned_view_swap",
+    "DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS": "2",
+}
+for k, raw in updates.items():
+    existing[k] = shlex.quote(raw)
+
+lines = []
+seen = set()
+if env_file.exists():
+    for line in env_file.read_text(encoding='utf-8').splitlines():
+        if not line.strip() or line.lstrip().startswith('#') or '=' not in line:
+            lines.append(line)
+            continue
+        k = line.split('=', 1)[0].strip()
+        if k in updates:
+            lines.append(f"{k}={existing[k]}")
+            seen.add(k)
+        else:
+            lines.append(line)
+
+for k in updates:
+    if k not in seen and not any(l.startswith(f"{k}=") for l in lines):
+        lines.append(f"{k}={existing[k]}")
+
+env_file.write_text("\n".join(lines).rstrip() + "\n", encoding='utf-8')
+PY
+  ok "ClickHouse env vars ensured"
+}
+
+install_clickhouse() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Installing ClickHouse if missing"
+
+  if command -v clickhouse-server >/dev/null 2>&1; then
+    ok "ClickHouse already installed"
+    clickhouse-server --version 2>/dev/null | head -1 || true
+    return 0
+  fi
+
+  run_privileged "apt-get update"
+  run_privileged "DEBIAN_FRONTEND=noninteractive apt-get install -y apt-transport-https ca-certificates curl gnupg"
+
+  run_privileged "rm -f /usr/share/keyrings/clickhouse-keyring.gpg"
+  run_privileged "bash -lc \"curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg\""
+
+  run_privileged "bash -lc 'ARCH=\$(dpkg --print-architecture); echo \"deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=\${ARCH}] https://packages.clickhouse.com/deb stable main\" > /etc/apt/sources.list.d/clickhouse.list'"
+
+  run_privileged "apt-get update"
+  run_privileged "DEBIAN_FRONTEND=noninteractive apt-get install -y clickhouse-server clickhouse-client"
+
+  ok "ClickHouse installation complete"
+  clickhouse-server --version 2>/dev/null | head -1 || true
+}
+
+start_clickhouse() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Starting and enabling ClickHouse"
+
+  command -v clickhouse-server >/dev/null 2>&1 || die "clickhouse-server not found; run install_clickhouse first"
+
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files clickhouse-server.service >/dev/null 2>&1; then
+    run_privileged "systemctl enable clickhouse-server >/dev/null 2>&1 || true"
+    run_privileged "systemctl restart clickhouse-server"
+  elif command -v service >/dev/null 2>&1; then
+    run_privileged "service clickhouse-server restart"
+  else
+    run_privileged "clickhouse-server --daemon --config-file=/etc/clickhouse-server/config.xml || true"
+  fi
+
+  local tries=0
+  while ! curl -sf "http://127.0.0.1:${CLICKHOUSE_HTTP_PORT}/ping" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [[ "$tries" -ge 30 ]]; then
+      warn "ClickHouse did not respond on HTTP port ${CLICKHOUSE_HTTP_PORT}; checking service state"
+      command -v systemctl >/dev/null 2>&1 && run_privileged "systemctl --no-pager -l status clickhouse-server || true"
+      die "ClickHouse did not start in 30s"
+    fi
+    sleep 1
+  done
+  ok "ClickHouse server ready"
+}
+
+setup_clickhouse_dbs() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Bootstrapping ClickHouse databases and user"
+
+  command -v clickhouse-client >/dev/null 2>&1 || die "clickhouse-client not found"
+
+  run_privileged "clickhouse-client --multiquery <<SQL
+CREATE DATABASE IF NOT EXISTS ${CLICKHOUSE_STAGING_DATABASE};
+CREATE DATABASE IF NOT EXISTS ${CLICKHOUSE_SERVING_DATABASE};
+CREATE DATABASE IF NOT EXISTS ${CLICKHOUSE_CONTROL_DATABASE};
+CREATE USER IF NOT EXISTS ${CLICKHOUSE_USER} IDENTIFIED BY '${CLICKHOUSE_PASSWORD}';
+ALTER USER ${CLICKHOUSE_USER} IDENTIFIED BY '${CLICKHOUSE_PASSWORD}';
+GRANT ALL ON ${CLICKHOUSE_STAGING_DATABASE}.* TO ${CLICKHOUSE_USER};
+GRANT ALL ON ${CLICKHOUSE_SERVING_DATABASE}.* TO ${CLICKHOUSE_USER};
+GRANT ALL ON ${CLICKHOUSE_CONTROL_DATABASE}.* TO ${CLICKHOUSE_USER};
+GRANT SELECT ON system.tables TO ${CLICKHOUSE_USER};
+GRANT SELECT ON system.columns TO ${CLICKHOUSE_USER};
+GRANT SELECT ON system.parts TO ${CLICKHOUSE_USER};
+SQL"
+
+  ok "ClickHouse bootstrap complete"
+}
+
+install_clickhouse_python_package() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Installing ClickHouse Python package"
+  venv_activate
+  "$VENV_DIR/bin/pip" install -U "${CLICKHOUSE_PYTHON_PACKAGE}"
+
+  "$VENV_DIR/bin/python" - <<PY
+import sys
+try:
+    import clickhouse_connect
+    client = clickhouse_connect.get_client(
+        host='${CLICKHOUSE_HOST}',
+        port=${CLICKHOUSE_HTTP_PORT},
+        username='${CLICKHOUSE_USER}',
+        password='${CLICKHOUSE_PASSWORD}',
+    )
+    result = client.query('SELECT version()')
+    print('CLICKHOUSE_CONNECT_OK', result.result_rows[0][0])
+except Exception as e:
+    print(f'CLICKHOUSE_CONNECT_WARN: {e}', file=sys.stderr)
+    sys.exit(0)
+PY
+
+  ok "ClickHouse Python package installed"
+}
+
+sync_superset_clickhouse_config_server() {
+  [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+  info "Syncing ClickHouse credentials into Superset local_staging_settings"
+
+  source_runtime_env
+  "$VENV_DIR/bin/python" - <<PY
+import os, sys
+sys.path.insert(0, "${INSTALL_DIR}")
+os.environ.setdefault("FLASK_APP", "superset")
+from superset import create_app, db
+from superset.local_staging.platform_settings import LocalStagingSettings
+
+app = create_app()
+with app.app_context():
+    s = LocalStagingSettings.get()
+    cfg = s.get_clickhouse_config() or {}
+    cfg.update({
+        "host": os.environ.get("DHIS2_CLICKHOUSE_HOST", "${CLICKHOUSE_HOST}"),
+        "http_port": int(os.environ.get("DHIS2_CLICKHOUSE_HTTP_PORT", "${CLICKHOUSE_HTTP_PORT}")),
+        "port": int(os.environ.get("DHIS2_CLICKHOUSE_PORT", "${CLICKHOUSE_NATIVE_PORT}")),
+        "database": os.environ.get("DHIS2_CLICKHOUSE_DATABASE", "${CLICKHOUSE_STAGING_DATABASE}"),
+        "serving_database": os.environ.get("DHIS2_CLICKHOUSE_SERVING_DATABASE", "${CLICKHOUSE_SERVING_DATABASE}"),
+        "control_database": os.environ.get("DHIS2_CLICKHOUSE_CONTROL_DATABASE", "${CLICKHOUSE_CONTROL_DATABASE}"),
+        "user": os.environ.get("DHIS2_CLICKHOUSE_USER", "${CLICKHOUSE_USER}"),
+        "password": os.environ.get("DHIS2_CLICKHOUSE_PASSWORD", "${CLICKHOUSE_PASSWORD}"),
+        "secure": os.environ.get("DHIS2_CLICKHOUSE_SECURE", "false").lower() == "true",
+        "verify": True,
+        "connect_timeout": 10,
+        "send_receive_timeout": 300,
+    })
+    s.set_clickhouse_config(cfg)
+    s.active_engine = "clickhouse"
+    db.session.commit()
+    print("CONFIG_SYNC_OK", cfg["user"], cfg["host"], cfg["http_port"], cfg["database"])
+PY
+
+  ok "Superset ClickHouse config synchronized"
+}
+
 install_server() {
   check_not_root
   require_domain
   calc_autotune
   ensure_dirs
+  preserve_existing_runtime_secrets_server
 
   run_step "Installing system packages" install_system_packages
+  run_step "Installing ClickHouse" install_clickhouse
+  run_step "Starting ClickHouse" start_clickhouse
+  run_step "Bootstrapping ClickHouse databases" setup_clickhouse_dbs
   run_step "Creating Python virtual environment" setup_venv_server
   run_step "Installing Python dependencies" install_python_dependencies_server
+  run_step "Installing ClickHouse Python package" install_clickhouse_python_package
   run_step "Building frontend assets" build_frontend_if_present_server
   run_step "Configuring Redis" configure_redis_server
   run_step "Configuring PostgreSQL" configure_postgresql_server
+  run_step "Verifying PostgreSQL credentials" verify_postgres_runtime_credentials_server
   run_step "Writing environment file" generate_env_server
   run_step "Writing Superset configuration" generate_superset_config_server
   run_step "Creating systemd units" create_systemd_units_server
@@ -2590,6 +3250,7 @@ install_server() {
   run_step "Configuring Let's Encrypt SSL" configure_ssl_server || true
   run_step "Patching DHIS2 metadata schema" patch_metadata_db_schema_for_dhis2
   run_step "Initializing Superset application" initialize_superset_server
+  run_step "Syncing Superset ClickHouse config" sync_superset_clickhouse_config_server
   run_step "Starting services" start_services_server
   run_step "Collecting service status" show_status_server
   show_runtime_paths
@@ -2599,6 +3260,8 @@ install_server() {
 Deployment complete.
 URL: https://${DOMAIN}
 Detected resources: ${CPU_CORES} CPU cores, ${TOTAL_MEM_MB}MB RAM, ${ROOT_DISK_GB}GB disk.
+Serving engine: ${DHIS2_SERVING_ENGINE}
+ClickHouse HTTP: http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}
 EOF
 }
 
@@ -2715,13 +3378,20 @@ done
 if [[ -d "\$REMOTE_INSTALL_DIR/.git" ]]; then
   cd "\$REMOTE_INSTALL_DIR"
   git config --global --add safe.directory "\$REMOTE_INSTALL_DIR" >/dev/null 2>&1 || true
+
+  # Remove deployment-time drift before syncing from Git.
+  rm -f "\$REMOTE_INSTALL_DIR/superset-manager.sh" "\$REMOTE_INSTALL_DIR/superset-manager-v2.sh" || true
+  git reset --hard HEAD
+  git clean -fd -e config -e data -e logs -e run -e venv -e .env || true
+
   git remote set-url origin "\$GIT_REPO_URL"
   git fetch --all --tags
   if [[ -n "\$GIT_REF" ]]; then
-    git checkout "\$GIT_REF"
+    git checkout -f "\$GIT_REF"
+    git reset --hard "\$GIT_REF" || true
   else
-    git checkout "\$GIT_BRANCH"
-    git pull --ff-only origin "\$GIT_BRANCH"
+    git checkout -f "\$GIT_BRANCH"
+    git reset --hard "origin/\$GIT_BRANCH"
   fi
 else
   if (( \${#non_runtime[@]} > 0 )); then

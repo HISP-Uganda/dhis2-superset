@@ -2334,6 +2334,107 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         )
         return self.response(200, schemas=schemas_allowed_processed)
 
+    @expose(
+        "/<int:pk>/dhis2_variable_dimensions/",
+        methods=["GET"],
+    )
+    @protect()
+    @safe
+    @statsd_metrics
+    @event_logger.log_this_with_context(
+        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}"
+        f".dhis2_variable_dimensions",
+        log_to_statsd=False,
+    )
+    def dhis2_variable_dimensions(self, pk: int) -> Response:
+        """Return disaggregation dimensions for a DHIS2 variable.
+
+        This endpoint is used during dataset creation (before the variable is
+        persisted) to determine whether a data element supports disaggregation
+        and what categories are available.
+
+        ---
+        get:
+          summary: Disaggregation dimensions for a DHIS2 variable
+          parameters:
+          - in: path
+            name: pk
+            schema:
+              type: integer
+            description: Database identifier
+          - in: query
+            name: instance_id
+            schema:
+              type: integer
+            required: true
+            description: DHIS2 instance identifier
+          - in: query
+            name: variable_id
+            schema:
+              type: string
+            required: true
+            description: DHIS2 variable UID
+          - in: query
+            name: variable_type
+            schema:
+              type: string
+            description: Variable type (dataElement, indicator, programIndicator)
+          responses:
+            200:
+              description: Dimension availability payload
+            400:
+              description: Missing parameters
+            404:
+              description: Database not found
+        """
+        from superset.dhis2.metadata_staging_service import (
+            get_dimension_availability_for_variable,
+        )
+
+        database = self.datamodel.get(pk)
+        if not database:
+            return self.response_404()
+
+        instance_id = request.args.get("instance_id", type=int)
+        variable_id = request.args.get("variable_id", "").strip()
+        variable_type = request.args.get("variable_type", "dataElement").strip()
+
+        if not instance_id or not variable_id:
+            return self.response_400(
+                message="instance_id and variable_id query parameters are required"
+            )
+
+        try:
+            dimensions = get_dimension_availability_for_variable(
+                instance_id=instance_id,
+                variable_id=variable_id,
+                variable_type=variable_type,
+            )
+            # Derive summary flags from the dimensions list
+            has_non_default_categories = len(dimensions) > 0
+            return self.response(
+                200,
+                result={
+                    "variable_id": variable_id,
+                    "variable_type": variable_type,
+                    "supports_total": True,
+                    "supports_details": variable_type.lower() in (
+                        "dataelement",
+                        "dataelements",
+                    ),
+                    "supports_disaggregation": has_non_default_categories,
+                    "disaggregation_dimensions": dimensions,
+                },
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception(
+                "dhis2_variable_dimensions: failed for db=%s instance=%s variable=%s",
+                pk,
+                instance_id,
+                variable_id,
+            )
+            return self.response_400(message=str(exc))
+
     @expose("/<int:pk>/dhis2_metadata/", methods=["GET"])
     @protect()
     @safe
@@ -3253,6 +3354,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             params: dict[str, Any] = {
                 "fields": (
                     "id,displayName,name,aggregationType,valueType,domainType,"
+                    "categoryCombo[id,displayName,name],"
                     "groups[id,displayName,name]"
                 ),
                 "paging": "false",

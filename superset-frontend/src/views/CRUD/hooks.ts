@@ -461,7 +461,9 @@ export function useSingleViewResource<D extends object = any>(
               error: errMsg,
             });
 
-            return errMsg;
+            // Do not return errMsg — callers check truthiness of the result
+            // to distinguish success from failure. Returning the error message
+            // would make the error look like a successful response.
           }),
         )
         .finally(() => {

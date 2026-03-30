@@ -762,17 +762,13 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     [db],
   );
   const repositoryStepInitialValue = useMemo(() => {
-    const dbValue = repositoryStepInitialValueFromDb;
-    const dbHasRepositoryConfig = Boolean(
-      dbValue?.repository_reporting_unit_approach ||
-        dbValue?.repository_org_unit_config ||
-        (dbValue?.repository_org_units || []).length,
-    );
-    if (dbHasRepositoryConfig) {
-      return dbValue;
-    }
-    return repositoryReportingUnitsValue || dbValue;
-  }, [repositoryReportingUnitsValue, repositoryStepInitialValueFromDb]);
+    // Only derive initialValue from the persisted DB state.
+    // Never feed repositoryReportingUnitsValue (the child's own output) back
+    // as initialValue — that creates a parent↔child reinitialization loop
+    // where onChange triggers a new initialValue, which resets the child,
+    // which emits onChange again.
+    return repositoryStepInitialValueFromDb;
+  }, [repositoryStepInitialValueFromDb]);
   const effectiveRepositoryReportingUnitsValue = useMemo(() => {
     if (!repositoryReportingUnitsValue) {
       return repositoryStepInitialValueFromDb
@@ -1203,6 +1199,23 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
     }
 
     if (dbToUpdate.configuration_method === ConfigurationMethod.DynamicForm) {
+      // Strip blank numeric parameters (e.g. port='') before save/test so the
+      // backend schema validator does not reject them with "Not a valid integer".
+      const schemaProps = isEditMode
+        ? dbToUpdate.parameters_schema?.properties
+        : dbModel?.parameters?.properties;
+      if (schemaProps && dbToUpdate.parameters) {
+        Object.keys(schemaProps).forEach(key => {
+          const schemaType = schemaProps[key]?.type;
+          if (
+            (schemaType === 'integer' || schemaType === 'number') &&
+            dbToUpdate.parameters?.[key as keyof DatabaseParameters] === ''
+          ) {
+            delete dbToUpdate.parameters[key as keyof DatabaseParameters];
+          }
+        });
+      }
+
       // Validate DB before saving
       if (dbToUpdate?.parameters?.catalog) {
         // need to stringify gsheets catalog to allow it to be serialized
@@ -1305,7 +1318,16 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
         dbToUpdate as DatabaseObject,
         true,
       );
-      if (result) {
+      // Explicitly verify the update returned a valid database object.
+      // A 422 or other error can produce a truthy-but-invalid result
+      // (e.g. an error message string or an object without an id).
+      // Without this check the modal could advance on failure.
+      const isSuccessfulUpdate =
+        result &&
+        typeof result === 'object' &&
+        !('error' in result) &&
+        !('message' in result);
+      if (isSuccessfulUpdate) {
         if (onDatabaseAdd) onDatabaseAdd();
         if (await runExtraExtensionSave(dbToUpdate)) {
           setLoading(false);

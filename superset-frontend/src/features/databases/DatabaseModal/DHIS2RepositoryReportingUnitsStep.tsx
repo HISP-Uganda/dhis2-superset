@@ -30,7 +30,7 @@ import type {
   RepositoryReportingUnitApproach,
   RepositorySeparateInstanceConfig,
 } from '../types';
-import { resolveRepositoryOrgUnits } from './repositoryOrgUnits';
+import { buildLookup, pruneSelectedKeys, resolveRepositoryOrgUnits } from './repositoryOrgUnits';
 
 const { Paragraph, Text } = Typography;
 
@@ -727,15 +727,24 @@ function buildStepValue(params: {
     approach === 'separate'
       ? activeInstanceIds.map(instanceId => {
           const state = separateWizardStates[instanceId] || buildEmptyWizardState([instanceId]);
+          const instanceScope =
+            (state.dataLevelScope as RepositoryDataScope | undefined) || 'selected';
+          const instanceMetadata = separateMetadata[instanceId]?.orgUnits || [];
+          const instanceLookup = buildLookup(instanceMetadata);
+          const rawKeys = sanitizeSelectionKeys(state.orgUnits);
+          const prunedKeys = pruneSelectedKeys(rawKeys, instanceLookup, instanceScope);
+          const prunedKeySet = new Set(prunedKeys);
           return {
             instance_id: instanceId,
-            data_scope:
-              (state.dataLevelScope as RepositoryDataScope | undefined) || 'selected',
+            data_scope: instanceScope,
             lowest_data_level_to_use: state.maxOrgUnitLevel ?? null,
-            selected_org_units: sanitizeSelectionKeys(state.orgUnits),
-            selected_org_unit_details:
+            selected_org_units: prunedKeys,
+            selected_org_unit_details: (
               (state.selectedOrgUnitDetails as RepositorySeparateInstanceConfig['selected_org_unit_details']) ||
-              [],
+              []
+            ).filter(detail =>
+              prunedKeySet.has(detail.selectionKey || detail.id || ''),
+            ),
           };
         })
       : [];
@@ -770,11 +779,27 @@ function buildStepValue(params: {
           ? t('Select reporting units to build the repository hierarchy before continuing.')
           : null;
 
+  // Prune selected org units so ancestor selections correctly subsume
+  // covered descendants under expanding scopes (children/grandchildren/
+  // all_levels). Without this, the backend may reject the payload as
+  // containing stale redundant selections.
+  const sharedOrgUnitLookup = buildLookup(sharedMetadata?.orgUnits || []);
+  const prunedSharedSelectedOrgUnits = pruneSelectedKeys(
+    sharedSelectedOrgUnits,
+    sharedOrgUnitLookup,
+    effectiveSharedDataScope,
+  );
+  const prunedSelectedOrgUnitDetailsSet = new Set(prunedSharedSelectedOrgUnits);
+  const prunedSelectedOrgUnitDetails = (
+    (sharedWizardState.selectedOrgUnitDetails as DatabaseRepositoryOrgUnitConfig['selected_org_unit_details']) ||
+    []
+  ).filter(detail =>
+    prunedSelectedOrgUnitDetailsSet.has(detail.selectionKey || detail.id || ''),
+  );
+
   const repositoryOrgUnitConfig: DatabaseRepositoryOrgUnitConfig = {
-    selected_org_units: sharedSelectedOrgUnits,
-    selected_org_unit_details:
-      (sharedWizardState.selectedOrgUnitDetails as DatabaseRepositoryOrgUnitConfig['selected_org_unit_details']) ||
-      [],
+    selected_org_units: prunedSharedSelectedOrgUnits,
+    selected_org_unit_details: prunedSelectedOrgUnitDetails,
     level_mapping:
       approach === 'map_merge' || approach === 'auto_merge'
         ? ((sharedWizardState.levelMapping as DatabaseRepositoryOrgUnitConfig['level_mapping']) ||
@@ -937,6 +962,7 @@ export default function DHIS2RepositoryReportingUnitsStep({
     ),
   );
   const initializationKeyRef = useRef<string>('');
+  const lastEmittedFingerprintRef = useRef<string>('');
   const hasPersistedLevelDimensions = Array.isArray(
     initialValue?.repository_org_unit_config?.enabled_dimensions?.levels,
   );
@@ -949,10 +975,17 @@ export default function DHIS2RepositoryReportingUnitsStep({
   const savedEnabledDimensions =
     initialValue?.repository_org_unit_config?.enabled_dimensions || null;
 
+  // Only track external identity changes (databaseId + active instance set)
+  // and the approach from persisted config. Never include the full initialValue
+  // object — it contains large nested payloads and feeding it back through
+  // onChange→parent→initialValue creates an expensive reinitialization loop.
   const initializationKey = JSON.stringify({
     databaseId: databaseId || null,
     activeInstanceIds: activeInstances.map(instance => instance.id),
-    initialValue,
+    approach: initialValue?.repository_reporting_unit_approach || null,
+    primaryInstanceId: initialValue?.primary_instance_id ?? null,
+    selectedOrgUnitCount:
+      initialValue?.repository_org_unit_config?.selected_org_units?.length ?? 0,
   });
 
   useEffect(() => {
@@ -1026,6 +1059,10 @@ export default function DHIS2RepositoryReportingUnitsStep({
     ],
     [separateMetadata, sharedMetadata],
   );
+  // This intentionally calls resolveRepositoryOrgUnits independently from
+  // stepValue to break a dependency cycle: stepValue → enabledDimensions →
+  // levelDimensionOptions → stepValue. The cost is acceptable because useMemo
+  // prevents recalculation when inputs are stable.
   const levelDimensionOptions = useMemo(
     () =>
       buildLevelDimensionOptions(
@@ -1239,6 +1276,25 @@ export default function DHIS2RepositoryReportingUnitsStep({
     if (waitingForPersistedInstances) {
       return;
     }
+    // Build a lightweight fingerprint to avoid emitting semantically identical
+    // payloads to the parent, which would cause unnecessary re-renders and
+    // state churn — especially expensive for large repository hierarchies.
+    const fingerprint = JSON.stringify({
+      a: stepValue.repository_reporting_unit_approach,
+      l: stepValue.lowest_data_level_to_use,
+      p: stepValue.primary_instance_id,
+      s: stepValue.repository_data_scope,
+      n: stepValue.repository_org_units.length,
+      v: stepValue.validationError,
+      ou: stepValue.repository_org_unit_config?.selected_org_units?.length ?? 0,
+      dl: stepValue.repository_org_unit_config?.enabled_dimensions?.levels?.length ?? 0,
+      dg: stepValue.repository_org_unit_config?.enabled_dimensions?.groups?.length ?? 0,
+      ds: stepValue.repository_org_unit_config?.enabled_dimensions?.group_sets?.length ?? 0,
+    });
+    if (fingerprint === lastEmittedFingerprintRef.current) {
+      return;
+    }
+    lastEmittedFingerprintRef.current = fingerprint;
     onChange(stepValue);
   }, [onChange, stepValue, waitingForPersistedInstances]);
 

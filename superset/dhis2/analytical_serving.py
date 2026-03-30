@@ -237,6 +237,11 @@ def _should_include_category_dimensions(
             "selected_coc_uids"
         ):
             return True
+        # disaggregate_by with at least one dimension key means the user
+        # chose specific category dimensions in Total mode.
+        disaggregate_by = extra_params.get("disaggregate_by")
+        if isinstance(disaggregate_by, list) and disaggregate_by:
+            return True
     return False
 
 
@@ -939,7 +944,31 @@ def _build_category_dimension_context(
             normalized_instance_id = int(instance_id) if instance_id is not None else None
         except (TypeError, ValueError):
             normalized_instance_id = None
-        for dimension in _variable_dimension_availability(variable):
+
+        # Determine which dimensions to include based on extra_params.
+        # If disaggregate_by is specified, only include those dimension keys.
+        # If not specified but disaggregation mode is 'total', include all
+        # available dimensions (backward-compatible default).
+        extra_params_getter = getattr(variable, "get_extra_params", None)
+        variable_extra_params = (
+            extra_params_getter() if callable(extra_params_getter) else {}
+        )
+        if not isinstance(variable_extra_params, dict):
+            variable_extra_params = {}
+        disaggregate_by_raw = variable_extra_params.get("disaggregate_by")
+        disaggregate_by_keys: set[str] | None = None
+        if isinstance(disaggregate_by_raw, list) and disaggregate_by_raw:
+            disaggregate_by_keys = {
+                str(k).strip() for k in disaggregate_by_raw if str(k).strip()
+            }
+
+        all_dimensions = _variable_dimension_availability(variable)
+        for dimension in all_dimensions:
+            # When the user explicitly selected disaggregation dimensions,
+            # skip any dimension not in the selected set.
+            dim_key = str(dimension.get("dimension_key") or "").strip()
+            if disaggregate_by_keys is not None and dim_key not in disaggregate_by_keys:
+                continue
             label = str(
                 dimension.get("dimension_label")
                 or dimension.get("category_name")

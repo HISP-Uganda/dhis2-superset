@@ -15,6 +15,12 @@ export interface VariableMapping {
   instanceName: string;
   alias?: string;
   extraParams?: Record<string, unknown>;
+  /** Category combo name from DHIS2 metadata (null/undefined = default). */
+  categoryComboName?: string | null;
+  /** Whether this variable has non-default disaggregation categories. */
+  supportsDisaggregation?: boolean;
+  /** Whether Details mode makes sense (only data elements). */
+  supportsDetails?: boolean;
 }
 
 export interface StepVariableMappingProps {

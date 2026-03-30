@@ -205,6 +205,37 @@ interface InstanceOption {
   database_name?: string | null;
 }
 
+/** A single disaggregation category from a DHIS2 category combo. */
+export interface VariableDimensionItem {
+  dimension_key: string;
+  dimension_label: string;
+  dimension_scope: 'groupby' | 'filter_only';
+  is_groupable: boolean;
+  is_filterable: boolean;
+  category_id: string;
+  category_name: string;
+  category_combo_id: string | null;
+  category_combo_name: string | null;
+  data_dimension_type: string;
+  display_order: number;
+  options: Array<{
+    id: string;
+    displayName: string;
+    name?: string;
+    code?: string;
+  }>;
+}
+
+/** Dimension availability summary returned by the backend. */
+export interface VariableDimensionAvailability {
+  variable_id: string;
+  variable_type: string;
+  supports_total: boolean;
+  supports_details: boolean;
+  supports_disaggregation: boolean;
+  disaggregation_dimensions: VariableDimensionItem[];
+}
+
 interface FederatedVariableItem {
   id: string;
   displayName: string;
@@ -214,6 +245,11 @@ interface FederatedVariableItem {
   domainType?: string;
   typeInfo?: string;
   analyticsType?: string;
+  categoryCombo?: {
+    id?: string;
+    displayName?: string;
+    name?: string;
+  };
   indicatorType?: {
     id?: string;
     displayName?: string;
@@ -649,11 +685,44 @@ export function applyVariableDisaggregationMode(
     if (mode === 'total') {
       delete nextExtraParams.selected_coc_uids;
     }
+    if (mode === 'details') {
+      // Clear disaggregate_by when switching to Details — detailed COC
+      // expansion handles the same semantics, so both would conflict.
+      delete nextExtraParams.disaggregate_by;
+    }
 
     return {
       ...mapping,
       extraParams: nextExtraParams,
     };
+  });
+}
+
+/** Update the disaggregate_by dimension keys on a variable mapping. */
+export function applyVariableDisaggregateBy(
+  mappings: DHIS2WizardState['variableMappings'],
+  instanceId: number,
+  variableId: string,
+  dimensionKeys: string[],
+): DHIS2WizardState['variableMappings'] {
+  return mappings.map(mapping => {
+    if (
+      mapping.instanceId !== instanceId ||
+      mapping.variableId !== variableId
+    ) {
+      return mapping;
+    }
+    const nextExtraParams = {
+      ...(mapping.extraParams || {}),
+    } as Record<string, unknown>;
+
+    if (dimensionKeys.length > 0) {
+      nextExtraParams.disaggregate_by = dimensionKeys;
+    } else {
+      delete nextExtraParams.disaggregate_by;
+    }
+
+    return { ...mapping, extraParams: nextExtraParams };
   });
 }
 
@@ -794,6 +863,45 @@ export default function WizardStepDataElements({
       filterCatalogRequestIdRef.current += 1;
     },
     [],
+  );
+
+  // ─── Dimension availability cache for disaggregation selectors ───────────
+  // Keyed by "instanceId:variableId", populated lazily when a variable card
+  // is expanded in Total mode.
+  const [dimensionCache, setDimensionCache] = useState<
+    Record<string, VariableDimensionAvailability | 'loading' | 'error'>
+  >({});
+
+  const fetchDimensionAvailability = useCallback(
+    async (instanceId: number, variableId: string, variableType: string) => {
+      if (!databaseId) return;
+      const cacheKey = `${instanceId}:${variableId}`;
+      setDimensionCache(prev => {
+        if (prev[cacheKey] && prev[cacheKey] !== 'error') return prev;
+        return { ...prev, [cacheKey]: 'loading' };
+      });
+      try {
+        const params = new URLSearchParams({
+          instance_id: String(instanceId),
+          variable_id: variableId,
+          variable_type: variableType,
+        });
+        const response = await SupersetClient.get({
+          endpoint: `/api/v1/database/${databaseId}/dhis2_variable_dimensions/?${params}`,
+        });
+        const result = (response.json as any)?.result as
+          | VariableDimensionAvailability
+          | undefined;
+        if (result && isMountedRef.current) {
+          setDimensionCache(prev => ({ ...prev, [cacheKey]: result }));
+        }
+      } catch {
+        if (isMountedRef.current) {
+          setDimensionCache(prev => ({ ...prev, [cacheKey]: 'error' }));
+        }
+      }
+    },
+    [databaseId],
   );
 
   const deferredSearchText = filters.searchText.trim();
@@ -1309,6 +1417,22 @@ export default function WizardStepDataElements({
         mapping.variableId === item.id,
     );
 
+    const varType = DX_TYPE_TO_VARIABLE_TYPE[dxType] || dxType;
+    const normalizedVarType = varType.toLowerCase();
+    const isDataElement =
+      normalizedVarType === 'dataelement' || normalizedVarType === 'dataelements';
+
+    // Determine category combo metadata from the DHIS2 item.
+    // A data element with categoryCombo named "default" (or missing) has no
+    // meaningful disaggregation.
+    const ccName =
+      item.categoryCombo?.displayName || item.categoryCombo?.name || null;
+    const ccIsDefault =
+      !ccName ||
+      ['default', 'default category', 'default total'].includes(
+        ccName.trim().toLowerCase(),
+      );
+
     const variableMappings = existing
       ? selectedMappings.filter(
           mapping =>
@@ -1322,14 +1446,17 @@ export default function WizardStepDataElements({
           {
             variableId: item.id,
             variableName: item.displayName,
-            variableType: DX_TYPE_TO_VARIABLE_TYPE[dxType] || dxType,
+            variableType: varType,
             instanceId: item.source_instance_id,
             instanceName: resolveInstanceName(
               item.source_instance_id,
               item.source_instance_name,
             ),
+            categoryComboName: isDataElement && !ccIsDefault ? ccName : null,
+            supportsDisaggregation: isDataElement && !ccIsDefault,
+            supportsDetails: isDataElement,
             extraParams: {
-              disaggregation: 'total',
+              disaggregation: 'total' as DHIS2DisaggregationMode,
             },
           },
         ];
@@ -1372,6 +1499,23 @@ export default function WizardStepDataElements({
       mode,
     );
 
+    updateState({
+      variableMappings,
+      dataElements: [...new Set(variableMappings.map(mapping => mapping.variableId))],
+    });
+  };
+
+  const updateVariableDisaggregateBy = (
+    instanceId: number,
+    variableId: string,
+    dimensionKeys: string[],
+  ) => {
+    const variableMappings = applyVariableDisaggregateBy(
+      selectedMappings,
+      instanceId,
+      variableId,
+      dimensionKeys,
+    );
     updateState({
       variableMappings,
       dataElements: [...new Set(variableMappings.map(mapping => mapping.variableId))],
@@ -2054,79 +2198,240 @@ export default function WizardStepDataElements({
                       <Tag color="blue">{group.mappings.length}</Tag>
                     </Space>
                   </div>
-                  {group.mappings.slice(0, 6).map(mapping => (
-                    <div
-                      key={`${mapping.instanceId}-${mapping.variableId}`}
-                      style={{ width: '100%' }}
-                    >
+                  {group.mappings.slice(0, 6).map(mapping => {
+                    const mode = getMappingDisaggregationMode(mapping);
+                    const cacheKey = `${mapping.instanceId}:${mapping.variableId}`;
+                    const cachedDims = dimensionCache[cacheKey];
+                    const isDataElementVar =
+                      mapping.supportsDetails !== false &&
+                      ['dataelement', 'dataelements'].includes(
+                        (mapping.variableType || '').toLowerCase(),
+                      );
+                    const showDetailsOption = isDataElementVar;
+                    const canDisaggregate = mapping.supportsDisaggregation === true;
+
+                    // Lazily fetch dimension availability when a variable
+                    // that supports disaggregation is shown in Total mode.
+                    if (
+                      canDisaggregate &&
+                      mode === 'total' &&
+                      !cachedDims
+                    ) {
+                      fetchDimensionAvailability(
+                        mapping.instanceId,
+                        mapping.variableId,
+                        mapping.variableType,
+                      );
+                    }
+
+                    const dimensions =
+                      cachedDims &&
+                      cachedDims !== 'loading' &&
+                      cachedDims !== 'error'
+                        ? cachedDims.disaggregation_dimensions
+                        : [];
+
+                    const currentDisaggregateBy = (
+                      (mapping.extraParams?.disaggregate_by as string[]) || []
+                    );
+
+                    return (
                       <div
+                        key={`${mapping.instanceId}-${mapping.variableId}`}
                         style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                          marginBottom: 6,
+                          width: '100%',
+                          borderBottom: '1px solid var(--color-border-secondary, #f0f0f0)',
+                          paddingBottom: 10,
+                          marginBottom: 4,
                         }}
                       >
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 600 }}>
-                            {mapping.variableName}
+                        {/* Header: name + type + remove */}
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            gap: 8,
+                            marginBottom: 6,
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600 }}>
+                              {mapping.variableName}
+                            </div>
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                              {mapping.variableType}
+                              {mapping.categoryComboName
+                                ? ` · ${mapping.categoryComboName}`
+                                : ''}
+                            </Text>
                           </div>
-                          <Text type="secondary">{mapping.variableType}</Text>
+                          <Button
+                            danger
+                            size="small"
+                            onClick={() =>
+                              handleToggleElement({
+                                id: mapping.variableId,
+                                displayName: mapping.variableName,
+                                source_instance_id: mapping.instanceId,
+                                source_instance_name: mapping.instanceName,
+                              })
+                            }
+                          >
+                            {t('Remove')}
+                          </Button>
                         </div>
-                        <Button
-                          danger
-                          size="small"
-                          onClick={() =>
-                            handleToggleElement({
-                              id: mapping.variableId,
-                              displayName: mapping.variableName,
-                              source_instance_id: mapping.instanceId,
-                              source_instance_name: mapping.instanceName,
-                            })
-                          }
-                        >
-                          {t('Remove')}
-                        </Button>
-                      </div>
-                      <Input
-                        aria-label={t('Alias for %s', mapping.variableName)}
-                        onChange={event =>
-                          updateVariableAlias(
-                            mapping.instanceId,
-                            mapping.variableId,
-                            event.target.value,
-                          )
-                        }
-                        placeholder={t('Optional alias')}
-                        value={mapping.alias || ''}
-                      />
-                      <div style={{ marginTop: 8 }}>
-                        <Text
-                          type="secondary"
-                          style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
-                        >
-                          {t('Value mode')}
-                        </Text>
-                        <Select
-                          aria-label={t('Value mode for %s', mapping.variableName)}
-                          options={[
-                            { value: 'total', label: t('Total') },
-                            { value: 'details', label: t('Details') },
-                          ]}
-                          size="small"
-                          style={{ width: 180 }}
-                          value={getMappingDisaggregationMode(mapping)}
-                          onChange={value =>
-                            updateVariableDisaggregation(
+
+                        {/* Alias */}
+                        <Input
+                          aria-label={t('Alias for %s', mapping.variableName)}
+                          onChange={event =>
+                            updateVariableAlias(
                               mapping.instanceId,
                               mapping.variableId,
-                              value as 'total' | 'details',
+                              event.target.value,
                             )
                           }
+                          placeholder={t('Optional alias')}
+                          size="small"
+                          value={mapping.alias || ''}
                         />
+
+                        {/* Value mode: Total / Details */}
+                        <div style={{ marginTop: 8 }}>
+                          <Text
+                            type="secondary"
+                            style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
+                          >
+                            {t('Value mode')}
+                          </Text>
+                          <Select
+                            aria-label={t('Value mode for %s', mapping.variableName)}
+                            options={
+                              showDetailsOption
+                                ? [
+                                    { value: 'total', label: t('Total') },
+                                    { value: 'details', label: t('Details (Category Option Combos)') },
+                                  ]
+                                : [{ value: 'total', label: t('Total') }]
+                            }
+                            size="small"
+                            style={{ width: '100%' }}
+                            value={mode}
+                            onChange={value =>
+                              updateVariableDisaggregation(
+                                mapping.instanceId,
+                                mapping.variableId,
+                                value as 'total' | 'details',
+                              )
+                            }
+                          />
+                          {!showDetailsOption && (
+                            <Text
+                              type="secondary"
+                              style={{ display: 'block', fontSize: 11, marginTop: 2 }}
+                            >
+                              {t(
+                                'Only Total is available for %s variables.',
+                                mapping.variableType,
+                              )}
+                            </Text>
+                          )}
+                        </div>
+
+                        {/* Disaggregate by — only in Total mode for variables
+                            with non-default category combos */}
+                        {mode === 'total' && canDisaggregate && (
+                          <div style={{ marginTop: 8 }}>
+                            <Text
+                              type="secondary"
+                              style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
+                            >
+                              {t('Disaggregate by')}
+                            </Text>
+                            {cachedDims === 'loading' ? (
+                              <Text
+                                type="secondary"
+                                style={{ fontSize: 11, fontStyle: 'italic' }}
+                              >
+                                {t('Loading dimensions…')}
+                              </Text>
+                            ) : cachedDims === 'error' ? (
+                              <Text
+                                type="warning"
+                                style={{ fontSize: 11 }}
+                              >
+                                {t('Could not load disaggregation dimensions.')}
+                              </Text>
+                            ) : dimensions.length > 0 ? (
+                              <Select
+                                aria-label={t(
+                                  'Disaggregate by for %s',
+                                  mapping.variableName,
+                                )}
+                                mode="multiple"
+                                options={dimensions.map(dim => ({
+                                  value: dim.dimension_key,
+                                  label: dim.dimension_label,
+                                  disabled: !dim.is_groupable,
+                                }))}
+                                placeholder={t('Select categories…')}
+                                size="small"
+                                style={{ width: '100%' }}
+                                value={currentDisaggregateBy}
+                                onChange={(keys: string[]) =>
+                                  updateVariableDisaggregateBy(
+                                    mapping.instanceId,
+                                    mapping.variableId,
+                                    keys,
+                                  )
+                                }
+                              />
+                            ) : (
+                              <Text
+                                type="secondary"
+                                style={{ fontSize: 11 }}
+                              >
+                                {t('No disaggregation categories available.')}
+                              </Text>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Details mode info */}
+                        {mode === 'details' && (
+                          <Text
+                            type="secondary"
+                            style={{
+                              display: 'block',
+                              fontSize: 11,
+                              marginTop: 6,
+                              fontStyle: 'italic',
+                            }}
+                          >
+                            {t(
+                              'Each Category Option Combo will be expanded as a separate column. Disaggregation selector is disabled in this mode.',
+                            )}
+                          </Text>
+                        )}
+
+                        {/* Total mode without disaggregation support info */}
+                        {mode === 'total' && !canDisaggregate && isDataElementVar && (
+                          <Text
+                            type="secondary"
+                            style={{
+                              display: 'block',
+                              fontSize: 11,
+                              marginTop: 6,
+                            }}
+                          >
+                            {t(
+                              'This data element uses the default category combo — no disaggregation is available.',
+                            )}
+                          </Text>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {group.mappings.length > 6 ? (
                     <Text type="secondary">
                       {t('+%s more selected for this connection', group.mappings.length - 6)}

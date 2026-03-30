@@ -44,7 +44,7 @@ function normalizeName(value: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
-function buildLookup(units: OrgUnit[]): Map<string, OrgUnit> {
+export function buildLookup(units: OrgUnit[]): Map<string, OrgUnit> {
   return new Map(units.map(unit => [unit.selectionKey, unit] as const));
 }
 
@@ -86,7 +86,7 @@ function getAncestorKeys(selectionKey: string, lookup: Map<string, OrgUnit>): st
   return keys;
 }
 
-function pruneSelectedKeys(
+export function pruneSelectedKeys(
   selectedKeys: string[],
   lookup: Map<string, OrgUnit>,
   scope: RepositoryDataScope,

@@ -1391,6 +1391,7 @@ def _get_fetch_spec(metadata_type: str) -> tuple[str, str, dict[str, Any]]:
             {
                 "fields": (
                     "id,displayName,name,aggregationType,valueType,domainType,"
+                    "categoryCombo[id,displayName,name],"
                     "groups[id,displayName,name],"
                     "legendSet[id,displayName,name,legends[id,displayName,name,startValue,endValue,color]]"
                 ),

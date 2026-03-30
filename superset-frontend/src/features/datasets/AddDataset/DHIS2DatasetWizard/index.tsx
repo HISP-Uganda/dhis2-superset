@@ -21,7 +21,9 @@ import WizardStepInstances from './steps/StepInstances';
 import WizardStepDataElements from './steps/StepDataElements';
 import WizardStepVariableMapping from './steps/StepVariableMapping';
 import WizardStepPeriods from './steps/StepPeriods';
-import WizardStepOrgUnits from './steps/StepOrgUnits';
+import WizardStepOrgUnits, {
+  type StepOrgUnitsMetadataPayload,
+} from './steps/StepOrgUnits';
 import WizardStepLevelMapping from './steps/StepLevelMapping';
 import WizardStepDataPreview from './steps/StepDataPreview';
 import WizardStepSchedule from './steps/StepSchedule';
@@ -365,6 +367,38 @@ export default function DHIS2DatasetWizard({
   const updateWizardState = useCallback(
     (updates: Partial<DHIS2WizardState>) => {
       setWizardState(prev => ({ ...prev, ...updates }));
+    },
+    [],
+  );
+
+  // When org-unit metadata loads, pre-populate repositoryDimensionKeys from
+  // the database's saved enabled_dimensions so that datasets inherit the
+  // repository's activated levels, groups, and group sets by default.
+  const handleOrgUnitMetadataLoaded = useCallback(
+    (metadata: StepOrgUnitsMetadataPayload) => {
+      const dims = metadata.repositoryEnabledDimensions;
+      if (!dims) {
+        return;
+      }
+      setWizardState(prev => {
+        const existing = prev.repositoryDimensionKeys;
+        // Only seed if the user has not already made manual selections
+        const hasExistingSelections =
+          (existing?.levels?.length ?? 0) > 0 ||
+          (existing?.groups?.length ?? 0) > 0 ||
+          (existing?.group_sets?.length ?? 0) > 0;
+        if (hasExistingSelections) {
+          return prev;
+        }
+        return {
+          ...prev,
+          repositoryDimensionKeys: {
+            levels: (dims.levels || []).map(d => d.key),
+            groups: (dims.groups || []).map(d => d.key),
+            group_sets: (dims.group_sets || []).map(d => d.key),
+          },
+        };
+      });
     },
     [],
   );
@@ -728,6 +762,7 @@ export default function DHIS2DatasetWizard({
             updateState={updateWizardState}
             errors={errors}
             databaseId={dataset?.db?.id}
+            onMetadataLoaded={handleOrgUnitMetadataLoaded}
           />
         );
       case STEP_LEVEL_MAPPING:

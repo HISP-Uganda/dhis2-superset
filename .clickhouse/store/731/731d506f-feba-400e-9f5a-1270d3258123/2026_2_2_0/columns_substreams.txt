@@ -1,0 +1,51 @@
+columns substreams version: 1
+15 columns:
+3 substreams for column `national`:
+	national.dict_prefix
+	national.dict
+	national
+3 substreams for column `district`:
+	district.dict_prefix
+	district.dict
+	district
+3 substreams for column `chiefdom`:
+	chiefdom.dict_prefix
+	chiefdom.dict
+	chiefdom
+3 substreams for column `facility`:
+	facility.dict_prefix
+	facility.dict
+	facility
+3 substreams for column `period`:
+	period.dict_prefix
+	period.dict
+	period
+1 substreams for column `ou_level`:
+	ou_level
+2 substreams for column `inpatient_malaria_cases`:
+	inpatient_malaria_cases.null
+	inpatient_malaria_cases
+2 substreams for column `inpatient_malaria_deaths`:
+	inpatient_malaria_deaths.null
+	inpatient_malaria_deaths
+2 substreams for column `malaria_deaths_5_yrs`:
+	malaria_deaths_5_yrs.null
+	malaria_deaths_5_yrs
+2 substreams for column `malaria_deaths_5_yrs_narrative`:
+	malaria_deaths_5_yrs_narrative.null
+	malaria_deaths_5_yrs_narrative
+2 substreams for column `malaria_cases`:
+	malaria_cases.null
+	malaria_cases
+2 substreams for column `malaria_outbreak_threshold`:
+	malaria_outbreak_threshold.null
+	malaria_outbreak_threshold
+2 substreams for column `malaria_referrals`:
+	malaria_referrals.null
+	malaria_referrals
+2 substreams for column `malaria_treated_at_phu_with_act_24_hrs_f_up`:
+	malaria_treated_at_phu_with_act_24_hrs_f_up.null
+	malaria_treated_at_phu_with_act_24_hrs_f_up
+2 substreams for column `_manifest_build_v7`:
+	_manifest_build_v7.null
+	_manifest_build_v7
