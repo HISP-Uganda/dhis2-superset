@@ -152,9 +152,9 @@ export interface PublicPageLayoutConfig {
 export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
   navbar: {
     enabled: true,
-    height: 60,
-    backgroundColor: '#ffffff',
-    boxShadow: 'none',
+    height: 52,
+    backgroundColor: '#0D3B66',
+    boxShadow: '0 1px 3px rgba(13,59,102,0.08)',
     logo: {
       enabled: true,
       alt: 'Organization Logo',
@@ -165,7 +165,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
       text: 'Uganda Malaria Analytics Portal',
       fontSize: '16px',
       fontWeight: 700,
-      color: '#1e2d45',
+      color: '#ffffff',
       darkColor: '#e6edf3',
     },
     loginButton: {
@@ -180,16 +180,16 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     enabled: true,
     width: 260,
     position: 'left',
-    backgroundColor: '#F3F2F1',
-    textColor: '#201F1E',
-    accentColor: '#0078D4',
-    borderStyle: '1px solid #EDEBE9',
+    backgroundColor: '#F5F7FA',
+    textColor: '#1A1F2C',
+    accentColor: '#1976D2',
+    borderStyle: '1px solid #E5EAF0',
     title: 'Dashboards',
     collapsibleOnMobile: true,
     mobileBreakpoint: 768,
   },
   content: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#F5F7FA',
     padding: '0',
     showWelcomeMessage: true,
     welcomeTitle: 'Uganda Malaria Analytics Portal',
@@ -198,10 +198,10 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
   },
   footer: {
     enabled: true,
-    height: 52,
-    backgroundColor: '#201F1E',
+    height: 48,
+    backgroundColor: '#0D3B66',
     text: '© Uganda Malaria Analytics Portal · Ministry of Health',
-    textColor: '#A19F9D',
+    textColor: 'rgba(255, 255, 255, 0.7)',
     links: [
       { text: 'Data Sources', url: '#' },
       { text: 'Methodology', url: '#' },

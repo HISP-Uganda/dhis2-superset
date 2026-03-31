@@ -73,13 +73,14 @@ const CrossFilterIcon = styled(Icons.ApartmentOutlined)`
 
 const ChartHeaderStyles = styled.div`
   ${({ theme }) => css`
-    font-size: ${theme.fontSizeLG}px;
+    font-size: var(--pro-density-chart-title, ${theme.fontSizeLG}px);
     font-weight: ${theme.fontWeightStrong};
-    margin-bottom: ${theme.sizeUnit}px;
+    margin-bottom: 4px;
     display: flex;
     max-width: 100%;
     align-items: flex-start;
     min-height: 0;
+    padding: var(--pro-density-header-v, 8px) var(--pro-density-header-h, 12px);
 
     & > .header-title {
       overflow: hidden;

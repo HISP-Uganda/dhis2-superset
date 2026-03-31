@@ -1488,9 +1488,17 @@ export default function WizardStepDataElements({
           },
         ];
 
+    // Auto-enable includeDisaggregationDimension when any variable has
+    // a non-default categoryCombo so its dimensions appear as chart columns.
+    const hasDisaggregation = variableMappings.some(
+      m =>
+        Array.isArray((m.extraParams as Record<string, unknown> | undefined)?.disaggregate_by) &&
+        ((m.extraParams as Record<string, unknown>).disaggregate_by as string[]).length > 0,
+    );
     updateState({
       variableMappings,
       dataElements: [...new Set(variableMappings.map(mapping => mapping.variableId))],
+      ...(hasDisaggregation ? { includeDisaggregationDimension: true } : {}),
     });
   };
 

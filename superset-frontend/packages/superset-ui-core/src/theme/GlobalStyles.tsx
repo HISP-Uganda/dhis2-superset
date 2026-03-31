@@ -47,8 +47,9 @@ export const GlobalStyles = () => {
           background-color: ${theme.colorBgBase};
           color: ${theme.colorText};
           -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
           margin: 0;
-          font-family: ${theme.fontFamily};
+          font-family: ${theme.fontFamily || 'Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'};
         }
 
         a {

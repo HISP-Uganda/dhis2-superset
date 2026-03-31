@@ -213,14 +213,10 @@ def _should_include_category_dimensions(
     dataset_config: dict[str, Any],
     variables: Sequence[Any],
 ) -> bool:
-    explicit = dataset_config.get("preserve_category_dimensions")
-    if explicit is None:
-        explicit = dataset_config.get("include_disaggregation_dimension")
-    if explicit is None:
-        explicit = getattr(dataset, "preserve_category_dimensions", None)
-    if explicit is not None:
-        return bool(explicit)
-
+    # Per-variable disaggregation settings always take priority: if any
+    # variable carries disaggregate_by / selected_coc_uids / "all"/"selected"
+    # mode, the category dimension columns MUST be present regardless of the
+    # dataset-level toggle.
     for variable in variables:
         if _variable_dimension_availability(variable):
             return True
@@ -242,6 +238,16 @@ def _should_include_category_dimensions(
         disaggregate_by = extra_params.get("disaggregate_by")
         if isinstance(disaggregate_by, list) and disaggregate_by:
             return True
+
+    # Fall back to dataset-level explicit toggle
+    explicit = dataset_config.get("preserve_category_dimensions")
+    if explicit is None:
+        explicit = dataset_config.get("include_disaggregation_dimension")
+    if explicit is None:
+        explicit = getattr(dataset, "preserve_category_dimensions", None)
+    if explicit is not None:
+        return bool(explicit)
+
     return False
 
 

@@ -759,16 +759,20 @@ THEME_DEFAULT: Theme = {
         # Spinner
         "brandSpinnerUrl": None,
         "brandSpinnerSvg": None,
-        # Default colors
-        "colorPrimary": "#2893B3",  # NOTE: previous lighter primary color was #20a7c9 # noqa: E501
-        "colorLink": "#2893B3",
-        "colorError": "#e04355",
-        "colorWarning": "#fcc700",
-        "colorSuccess": "#5ac189",
-        "colorInfo": "#66bcfe",
-        # Fonts
-        "fontFamily": "Inter, Helvetica, Arial",
-        "fontFamilyCode": "'Fira Code', 'Courier New', monospace",
+        # Pro Theme palette
+        "colorPrimary": "#1976D2",
+        "colorLink": "#1976D2",
+        "colorError": "#D32F2F",
+        "colorWarning": "#F9A825",
+        "colorSuccess": "#2E7D32",
+        "colorInfo": "#4DA3FF",
+        # Pro typography
+        "fontFamily": 'Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        "fontFamilyCode": '"Fira Code", "Cascadia Code", Consolas, monospace',
+        # Pro shape
+        "borderRadius": 8,
+        "borderRadiusLG": 12,
+        "borderRadiusSM": 6,
         # Extra tokens
         "transitionTiming": 0.3,
         "brandIconMaxWidth": 37,

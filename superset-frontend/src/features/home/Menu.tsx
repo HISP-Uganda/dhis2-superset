@@ -52,8 +52,8 @@ const StyledHeader = styled.header`
       top: 0;
       left: 0;
       right: 0;
-      background: #1e2d45;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(135deg, #0D3B66 0%, #164E8A 100%);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
       z-index: 1000;
 
       &:nth-last-of-type(2) nav {
@@ -74,8 +74,7 @@ const StyledHeader = styled.header`
         display: flex;
         flex-direction: column;
         justify-content: center;
-        /* must be exactly the height of the Antd navbar */
-        min-height: 46px;
+        min-height: 48px;
         padding: ${theme.sizeUnit}px
           ${theme.sizeUnit * 2}px
           ${theme.sizeUnit}px
@@ -98,9 +97,9 @@ const StyledHeader = styled.header`
         padding-left: ${theme.sizeUnit * 4}px;
         padding-right: ${theme.sizeUnit * 4}px;
         margin-right: ${theme.sizeUnit * 4}px;
-        font-size: 20px;
+        font-size: 18px;
         font-weight: 700;
-        letter-spacing: -0.2px;
+        letter-spacing: -0.3px;
         float: left;
         display: flex;
         flex-direction: column;
@@ -110,7 +109,7 @@ const StyledHeader = styled.header`
           white-space: nowrap;
         }
         @media (max-width: 1127px) {
-          font-size: 16px;
+          font-size: 15px;
           padding-left: ${theme.sizeUnit * 3}px;
           padding-right: ${theme.sizeUnit * 3}px;
         }
@@ -125,16 +124,17 @@ const StyledHeader = styled.header`
         border-bottom: none;
 
         .ant-menu-item {
-          color: rgba(255, 255, 255, 0.95);
+          color: rgba(255, 255, 255, 0.92);
           font-weight: 500;
+          font-size: 13px;
 
           a {
-            color: rgba(255, 255, 255, 0.95);
+            color: rgba(255, 255, 255, 0.92);
           }
 
           &:hover {
             color: #ffffff;
-            background: rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.08);
 
             a {
               color: #ffffff;
@@ -144,7 +144,7 @@ const StyledHeader = styled.header`
           &.ant-menu-item-selected {
             color: #ffffff;
             background: rgba(255, 255, 255, 0.06);
-            border-bottom: 2px solid #2b6a6a;
+            border-bottom: 2px solid #4DA3FF;
             border-radius: 0;
 
             a {

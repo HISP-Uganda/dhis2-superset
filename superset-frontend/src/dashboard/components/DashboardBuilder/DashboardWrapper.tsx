@@ -34,6 +34,7 @@ const StyledDiv = styled.div`
     grid-template-columns: auto 1fr;
     grid-template-rows: auto 1fr;
     flex: 1;
+    gap: var(--pro-density-gutter, 8px);
     /* Special cases */
 
     &.dragdroppable--dragging {

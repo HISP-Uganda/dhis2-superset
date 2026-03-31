@@ -3021,12 +3021,8 @@ class DHIS2SyncService:
         dataset_config: dict[str, Any],
         variables: list[DHIS2DatasetVariable],
     ) -> bool:
-        explicit = dataset_config.get("preserve_category_dimensions")
-        if explicit is None:
-            explicit = dataset_config.get("include_disaggregation_dimension")
-        if explicit is not None:
-            return bool(explicit)
-
+        # Per-variable disaggregation settings take priority over the
+        # dataset-level toggle so dimensions always appear when needed.
         for variable in variables:
             getter = getattr(variable, "get_extra_params", None)
             extra_params = getter() if callable(getter) else {}
@@ -3038,6 +3034,16 @@ class DHIS2SyncService:
             selected_coc_uids = extra_params.get("selected_coc_uids")
             if isinstance(selected_coc_uids, list) and selected_coc_uids:
                 return True
+            disaggregate_by = extra_params.get("disaggregate_by")
+            if isinstance(disaggregate_by, list) and disaggregate_by:
+                return True
+
+        explicit = dataset_config.get("preserve_category_dimensions")
+        if explicit is None:
+            explicit = dataset_config.get("include_disaggregation_dimension")
+        if explicit is not None:
+            return bool(explicit)
+
         return False
 
     @staticmethod

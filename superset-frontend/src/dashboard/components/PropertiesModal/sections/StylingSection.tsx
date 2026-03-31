@@ -28,6 +28,7 @@ import { CssEditor, Select, Alert } from '@superset-ui/core/components';
 import rison from 'rison';
 import ColorSchemeSelect from 'src/dashboard/components/ColorSchemeSelect';
 import { ModalFormField } from 'src/components/Modal';
+import ProThemePresetPicker from 'src/theme/ProThemePresetPicker';
 
 const StyledCssEditor = styled(CssEditor)`
   border-radius: ${({ theme }) => theme.borderRadius}px;
@@ -61,6 +62,10 @@ interface StylingSectionProps {
   ) => void;
   onCustomCssChange: (css: string) => void;
   addDangerToast?: (message: string) => void;
+  selectedPresetId?: string | null;
+  selectedLayoutId?: string | null;
+  onPresetChange?: (presetId: string) => void;
+  onLayoutChange?: (layoutId: string) => void;
 }
 
 const StylingSection = ({
@@ -73,6 +78,10 @@ const StylingSection = ({
   onColorSchemeChange,
   onCustomCssChange,
   addDangerToast,
+  selectedPresetId = null,
+  selectedLayoutId = null,
+  onPresetChange,
+  onLayoutChange,
 }: StylingSectionProps) => {
   const [cssTemplates, setCssTemplates] = useState<CssTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
@@ -131,6 +140,22 @@ const StylingSection = ({
 
   return (
     <>
+      {onPresetChange && onLayoutChange && (
+        <ModalFormField
+          label={t('Pro Theme')}
+          testId="dashboard-pro-theme-field"
+          helperText={t(
+            'Select a color preset and layout template. These apply globally via CSS variables.',
+          )}
+        >
+          <ProThemePresetPicker
+            selectedPresetId={selectedPresetId}
+            selectedLayoutId={selectedLayoutId}
+            onPresetChange={onPresetChange}
+            onLayoutChange={onLayoutChange}
+          />
+        </ModalFormField>
+      )}
       {themes.length > 0 && (
         <ModalFormField
           label={t('Theme')}

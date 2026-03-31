@@ -104,7 +104,7 @@ const AppShell = () => {
                     css={css`
                       display: flex;
                       flex-direction: column;
-                      padding-top: ${isPublicPortalRoute ? 0 : 46}px;
+                      padding-top: ${isPublicPortalRoute ? 0 : 'var(--pro-layout-navbar-height, 48px)'};
                       min-height: 100vh;
                     `}
                   >
