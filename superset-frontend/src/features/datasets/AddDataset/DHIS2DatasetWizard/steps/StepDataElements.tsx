@@ -249,6 +249,23 @@ interface FederatedVariableItem {
     id?: string;
     displayName?: string;
     name?: string;
+    categories?: Array<{
+      id?: string;
+      displayName?: string;
+      name?: string;
+      dataDimensionType?: string;
+      categoryOptions?: Array<{
+        id?: string;
+        displayName?: string;
+        name?: string;
+        code?: string;
+      }>;
+    }>;
+  };
+  optionSet?: {
+    id?: string;
+    displayName?: string;
+    name?: string;
   };
   indicatorType?: {
     id?: string;
@@ -1457,6 +1474,16 @@ export default function WizardStepDataElements({
             supportsDetails: isDataElement,
             extraParams: {
               disaggregation: 'total' as DHIS2DisaggregationMode,
+              // Auto-select all disaggregation categories from inline metadata
+              ...(isDataElement &&
+                !ccIsDefault &&
+                item.categoryCombo?.categories?.length
+                ? {
+                    disaggregate_by: item.categoryCombo.categories
+                      .map(cat => cat.id)
+                      .filter(Boolean),
+                  }
+                : {}),
             },
           },
         ];
@@ -2070,6 +2097,18 @@ export default function WizardStepDataElements({
                   item.indicatorType?.displayName ||
                   item.indicatorType?.name ||
                   undefined;
+                const ccLabel =
+                  item.categoryCombo?.displayName ||
+                  item.categoryCombo?.name ||
+                  null;
+                const ccIsDefault =
+                  !ccLabel ||
+                  ['default', 'default category', 'default total'].includes(
+                    ccLabel.trim().toLowerCase(),
+                  );
+                const ccCategories = (!ccIsDefault && item.categoryCombo?.categories) || [];
+                const optionSetLabel =
+                  item.optionSet?.displayName || item.optionSet?.name || null;
                 return (
                   <VariableRow
                     key={`${item.source_instance_id}-${item.id}`}
@@ -2088,6 +2127,17 @@ export default function WizardStepDataElements({
                             {item.valueType ? <Tag>{item.valueType}</Tag> : null}
                             {item.aggregationType ? (
                               <Tag>{item.aggregationType}</Tag>
+                            ) : null}
+                            {!ccIsDefault && ccLabel ? (
+                              <Tag color="orange">{ccLabel}</Tag>
+                            ) : null}
+                            {ccCategories.map(cat => (
+                              <Tag color="volcano" key={cat.id || cat.name}>
+                                {cat.displayName || cat.name}
+                              </Tag>
+                            ))}
+                            {optionSetLabel ? (
+                              <Tag color="lime">{optionSetLabel}</Tag>
                             ) : null}
                             {item.domainType ? <Tag>{item.domainType}</Tag> : null}
                             {item.formType ? <Tag>{item.formType}</Tag> : null}
@@ -2338,94 +2388,120 @@ export default function WizardStepDataElements({
                           )}
                         </div>
 
-                        {/* Disaggregate by — only in Total mode for variables
-                            with non-default category combos */}
-                        {mode === 'total' && canDisaggregate && (
-                          <div style={{ marginTop: 8 }}>
-                            <Text
-                              type="secondary"
-                              style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
-                            >
-                              {t('Disaggregate by')}
-                            </Text>
-                            {cachedDims === 'loading' ? (
-                              <Text
-                                type="secondary"
-                                style={{ fontSize: 11, fontStyle: 'italic' }}
-                              >
-                                {t('Loading dimensions…')}
-                              </Text>
-                            ) : cachedDims === 'error' ? (
-                              <Text
-                                type="warning"
-                                style={{ fontSize: 11 }}
-                              >
-                                {t('Could not load disaggregation dimensions.')}
-                              </Text>
-                            ) : dimensions.length > 0 ? (
-                              <Select
-                                aria-label={t(
-                                  'Disaggregate by for %s',
-                                  mapping.variableName,
-                                )}
-                                mode="multiple"
-                                options={dimensions.map(dim => ({
-                                  value: dim.dimension_key,
-                                  label: dim.dimension_label,
-                                  disabled: !dim.is_groupable,
-                                }))}
-                                placeholder={t('Select categories…')}
-                                size="small"
-                                style={{ width: '100%' }}
-                                value={currentDisaggregateBy}
-                                onChange={(keys: string[]) =>
-                                  updateVariableDisaggregateBy(
-                                    mapping.instanceId,
-                                    mapping.variableId,
-                                    keys,
-                                  )
-                                }
-                              />
-                            ) : (
-                              <Text
-                                type="secondary"
-                                style={{ fontSize: 11 }}
-                              >
-                                {t('No disaggregation categories available.')}
-                              </Text>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Details mode info */}
-                        {mode === 'details' && (
+                        {/* Disaggregation section — shown for both modes */}
+                        <div style={{ marginTop: 8 }}>
                           <Text
                             type="secondary"
-                            style={{
-                              display: 'block',
-                              fontSize: 11,
-                              marginTop: 6,
-                              fontStyle: 'italic',
-                            }}
+                            style={{ display: 'block', fontSize: 12, marginBottom: 4 }}
                           >
-                            {t(
-                              'Each Category Option Combo will be expanded as a separate column. Disaggregation selector is disabled in this mode.',
-                            )}
+                            {t('Disaggregation')}
                           </Text>
-                        )}
 
-                        {/* Total mode without disaggregation support info */}
-                        {mode === 'total' && !canDisaggregate && isDataElementVar && (
+                          {/* Total mode with disaggregation support */}
+                          {mode === 'total' && canDisaggregate && (
+                            <>
+                              {cachedDims === 'loading' ? (
+                                <Text
+                                  type="secondary"
+                                  style={{ fontSize: 11, fontStyle: 'italic' }}
+                                >
+                                  {t('Loading dimensions…')}
+                                </Text>
+                              ) : cachedDims === 'error' ? (
+                                <Text
+                                  type="warning"
+                                  style={{ fontSize: 11 }}
+                                >
+                                  {t('Could not load disaggregation dimensions.')}
+                                </Text>
+                              ) : dimensions.length > 0 ? (
+                                <>
+                                  <Select
+                                    aria-label={t(
+                                      'Disaggregate by for %s',
+                                      mapping.variableName,
+                                    )}
+                                    mode="multiple"
+                                    options={dimensions.map(dim => ({
+                                      value: dim.dimension_key,
+                                      label: dim.dimension_label,
+                                      disabled: !dim.is_groupable,
+                                    }))}
+                                    placeholder={t('Select categories…')}
+                                    size="small"
+                                    style={{ width: '100%' }}
+                                    value={currentDisaggregateBy}
+                                    onChange={(keys: string[]) =>
+                                      updateVariableDisaggregateBy(
+                                        mapping.instanceId,
+                                        mapping.variableId,
+                                        keys,
+                                      )
+                                    }
+                                  />
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                                    {currentDisaggregateBy.length > 0 ? (
+                                      dimensions
+                                        .filter(dim => currentDisaggregateBy.includes(dim.dimension_key))
+                                        .map(dim => (
+                                          <Tag color="volcano" key={dim.dimension_key}>
+                                            {dim.dimension_label}
+                                          </Tag>
+                                        ))
+                                    ) : (
+                                      <Tag color="green">{t('Aggregated (Total)')}</Tag>
+                                    )}
+                                  </div>
+                                </>
+                              ) : (
+                                <Tag color="green">{t('Aggregated (Total)')}</Tag>
+                              )}
+                            </>
+                          )}
+
+                          {/* Total mode without disaggregation support (default catcombo) */}
+                          {mode === 'total' && !canDisaggregate && (
+                            <Tag color="green">{t('Default (Total)')}</Tag>
+                          )}
+
+                          {/* Details mode — show category combo and categories as tags */}
+                          {mode === 'details' && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              {mapping.categoryComboName ? (
+                                <Tag color="orange">{mapping.categoryComboName}</Tag>
+                              ) : null}
+                              {cachedDims !== 'loading' &&
+                               cachedDims !== 'error' &&
+                               dimensions.length > 0
+                                ? dimensions.map(dim => (
+                                    <Tag color="volcano" key={dim.dimension_key}>
+                                      {dim.dimension_label}
+                                    </Tag>
+                                  ))
+                                : null}
+                              {!dimensions.length && mapping.categoryComboName ? (
+                                <Tag color="purple">{t('All COCs expanded')}</Tag>
+                              ) : null}
+                              {!mapping.categoryComboName && (
+                                <Tag color="green">{t('Default (Total)')}</Tag>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Not a data element — explain Total-only */}
+                        {!showDetailsOption && (
                           <Text
                             type="secondary"
                             style={{
                               display: 'block',
                               fontSize: 11,
-                              marginTop: 6,
+                              marginTop: 2,
                             }}
                           >
                             {t(
-                              'This data element uses the default category combo — no disaggregation is available.',
+                              'Only Total is available for %s variables.',
+                              mapping.variableType,
                             )}
                           </Text>
                         )}

@@ -36,6 +36,7 @@ import { useChartCustomizationModal } from '../../ChartCustomization/useChartCus
 import ChartCustomizationModal from '../../ChartCustomization/ChartCustomizationModal';
 import { useCrossFiltersScopingModal } from '../CrossFilters/ScopingModal/useCrossFiltersScopingModal';
 import FilterConfigurationLink from '../FilterConfigurationLink';
+import { generateDhis2Filters } from '../dhis2FilterGenerator';
 
 type SelectedKey = FilterBarOrientation | string | number;
 
@@ -53,6 +54,7 @@ const CROSS_FILTERS_MENU_KEY = 'cross-filters-menu-key';
 const CROSS_FILTERS_SCOPING_MENU_KEY = 'cross-filters-scoping-menu-key';
 const ADD_EDIT_FILTERS_MENU_KEY = 'add-edit-filters-menu-key';
 const CHART_CUSTOMIZATION_MENU_KEY = 'chart-customization-menu-key';
+const DHIS2_GENERATE_FILTERS_MENU_KEY = 'dhis2-generate-filters-menu-key';
 
 const isOrientation = (o: SelectedKey): o is FilterBarOrientation =>
   o === FilterBarOrientation.Vertical || o === FilterBarOrientation.Horizontal;
@@ -90,6 +92,9 @@ const FilterBarSettings = () => {
     handleSave: handleChartCustomizationSave,
   } = useChartCustomizationModal();
 
+  const [isGeneratingDhis2Filters, setIsGeneratingDhis2Filters] =
+    useState(false);
+
   const [openScopingModal, scopingModal] = useCrossFiltersScopingModal();
 
   const { openFilterConfigModal, FilterConfigModalComponent } =
@@ -97,6 +102,34 @@ const FilterBarSettings = () => {
       createNewOnOpen: filterValues.length === 0,
       dashboardId,
     });
+
+  const handleGenerateDhis2Filters = useCallback(async () => {
+    if (isGeneratingDhis2Filters) return;
+    setIsGeneratingDhis2Filters(true);
+    try {
+      const { created } = await generateDhis2Filters(dashboardId, filters);
+      if (created > 0) {
+        // Reload the page to pick up new filter configuration
+        window.location.reload();
+      } else {
+        // eslint-disable-next-line no-alert
+        window.alert(
+          t(
+            'No new DHIS2 filters to generate. All hierarchy columns already have filters.',
+          ),
+        );
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to generate DHIS2 filters', err);
+      // eslint-disable-next-line no-alert
+      window.alert(
+        t('Failed to generate DHIS2 filters. Check dataset sync status.'),
+      );
+    } finally {
+      setIsGeneratingDhis2Filters(false);
+    }
+  }, [dashboardId, filters, isGeneratingDhis2Filters]);
 
   const updateCrossFiltersSetting = useCallback(
     async isEnabled => {
@@ -148,6 +181,8 @@ const FilterBarSettings = () => {
         openFilterConfigModal();
       } else if (selectedKey === CHART_CUSTOMIZATION_MENU_KEY) {
         openChartCustomizationModal();
+      } else if (selectedKey === DHIS2_GENERATE_FILTERS_MENU_KEY) {
+        handleGenerateDhis2Filters();
       }
     },
     [
@@ -156,6 +191,7 @@ const FilterBarSettings = () => {
       toggleFilterBarOrientation,
       openFilterConfigModal,
       openChartCustomizationModal,
+      handleGenerateDhis2Filters,
     ],
   );
 
@@ -185,6 +221,13 @@ const FilterBarSettings = () => {
             {t('Add or edit filters')}
           </FilterConfigurationLink>
         ),
+      });
+      items.push({
+        key: DHIS2_GENERATE_FILTERS_MENU_KEY,
+        label: isGeneratingDhis2Filters
+          ? t('Generating DHIS2 filters...')
+          : t('Generate DHIS2 filters'),
+        disabled: isGeneratingDhis2Filters,
       });
       if (canEdit) {
         items.push({ type: 'divider' });
@@ -256,6 +299,7 @@ const FilterBarSettings = () => {
     crossFiltersMenuItem,
     dashboardId,
     filterValues,
+    isGeneratingDhis2Filters,
   ]);
 
   if (!menuItems.length || !canEdit) {

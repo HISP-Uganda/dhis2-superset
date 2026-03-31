@@ -185,6 +185,7 @@ class DashboardRestApi(BaseSupersetModelRestApi):
         "screenshot",
         "put_filters",
         "put_colors",
+        "dhis2_filter_blueprint",
         "get_public_dashboards",
         "get_public_dashboard",
         "get_public_entry_dashboard",
@@ -774,6 +775,253 @@ class DashboardRestApi(BaseSupersetModelRestApi):
             )
             response = self.response_422(message=str(ex))
         return response
+
+    @expose("/<pk>/dhis2-filter-blueprint", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    @event_logger.log_this_with_context(
+        action=lambda self, *args, **kwargs: f"{self.__class__.__name__}.dhis2_filter_blueprint",
+        log_to_statsd=False,
+    )
+    def dhis2_filter_blueprint(self, pk: int) -> Response:
+        """
+        Generate a DHIS2 native-filter blueprint for a dashboard.
+        ---
+        get:
+          summary: >-
+            Inspect all DHIS2 staged datasets used by charts on this dashboard
+            and return a unified filter configuration blueprint with cascading
+            OU hierarchy and period hierarchy filters.
+          parameters:
+          - in: path
+            schema:
+              type: integer
+            name: pk
+          responses:
+            200:
+              description: Filter blueprint
+              content:
+                application/json:
+                  schema:
+                    type: object
+            404:
+              $ref: '#/components/responses/404'
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            from superset.daos.dashboard import DashboardDAO  # pylint: disable=import-outside-toplevel
+            dashboard = DashboardDAO.find_by_id(pk)
+        except Exception:  # pylint: disable=broad-except
+            return self.response_404()
+        if dashboard is None:
+            return self.response_404()
+
+        try:
+            result = self._build_dashboard_dhis2_filter_blueprint(dashboard)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Error building DHIS2 filter blueprint for dashboard %s", pk
+            )
+            return self.response_500(
+                message="Failed to build DHIS2 filter blueprint"
+            )
+
+        return self.response(200, result=result)
+
+    @staticmethod
+    def _build_dashboard_dhis2_filter_blueprint(dashboard: Any) -> dict[str, Any]:
+        """Collect DHIS2 filter blueprints from all datasets in a dashboard.
+
+        Merges OU hierarchy / period hierarchy columns across datasets,
+        deduplicating by column_name so a single filter covers all datasets
+        that share the same hierarchy column.
+        """
+        import json as _json  # pylint: disable=import-outside-toplevel
+        from superset.connectors.sqla.models import SqlaTable  # pylint: disable=import-outside-toplevel
+
+        slices = dashboard.slices or []
+        # Collect all unique Superset datasets
+        seen_table_ids: set[int] = set()
+        tables: list[Any] = []
+        for sl in slices:
+            ds = sl.datasource
+            if ds and hasattr(ds, "id") and ds.id not in seen_table_ids:
+                seen_table_ids.add(ds.id)
+                tables.append(ds)
+
+        # For each table, inspect columns for DHIS2 metadata
+        # Use column_name as dedup key — all datasets sharing the same
+        # OU hierarchy column name should be covered by a single filter.
+        filters_by_key: dict[str, dict[str, Any]] = {}
+        dataset_targets: dict[str, list[dict[str, Any]]] = {}  # key → [{datasetId, column}]
+        _PERIOD_HIERARCHY_ORDER = [
+            "period_year", "period_half", "period_quarter",
+            "period_bimonth", "period_month", "period_biweek",
+            "period_week", "period",
+        ]
+
+        for table in tables:
+            for col in (table.columns or []):
+                extra_raw = getattr(col, "extra", None) or "{}"
+                try:
+                    extra = _json.loads(extra_raw) if isinstance(extra_raw, str) else (extra_raw or {})
+                except (_json.JSONDecodeError, TypeError):
+                    extra = {}
+
+                col_name = col.column_name
+                verbose = getattr(col, "verbose_name", None) or col_name
+                entry: dict[str, Any] | None = None
+
+                if extra.get("dhis2_is_ou_hierarchy"):
+                    level = extra.get("dhis2_ou_level", 0)
+                    key = f"ou_level_{level}"
+                    entry = {
+                        "key": key,
+                        "label": verbose,
+                        "column_name": col_name,
+                        "filter_type": "filter_select",
+                        "category": "ou_hierarchy",
+                        "level": level,
+                        "extra": extra,
+                    }
+                elif extra.get("dhis2_is_ou_group"):
+                    gid = extra.get("dhis2_ou_group_id", col_name)
+                    key = f"ou_group_{gid}"
+                    entry = {
+                        "key": key,
+                        "label": verbose,
+                        "column_name": col_name,
+                        "filter_type": "filter_select",
+                        "category": "ou_group",
+                        "extra": extra,
+                    }
+                elif extra.get("dhis2_is_ou_group_set"):
+                    gsid = extra.get("dhis2_ou_group_set_id", col_name)
+                    key = f"ou_groupset_{gsid}"
+                    entry = {
+                        "key": key,
+                        "label": verbose,
+                        "column_name": col_name,
+                        "filter_type": "filter_select",
+                        "category": "ou_group_set",
+                        "extra": extra,
+                    }
+                elif extra.get("dhis2_is_period_hierarchy"):
+                    pkey = extra.get("dhis2_period_key", "")
+                    if pkey in ("period_variant", "period_level", "period_parent"):
+                        continue
+                    key = f"period_{pkey}"
+                    entry = {
+                        "key": key,
+                        "label": verbose,
+                        "column_name": col_name,
+                        "filter_type": "filter_select",
+                        "category": "period_hierarchy",
+                        "period_key": pkey,
+                        "extra": extra,
+                    }
+
+                if entry is None:
+                    continue
+                key = entry["key"]
+                if key not in filters_by_key:
+                    filters_by_key[key] = entry
+                # Track which Superset datasets have this column
+                dataset_targets.setdefault(key, [])
+                target = {"datasetId": table.id, "column": {"name": col_name}}
+                if target not in dataset_targets[key]:
+                    dataset_targets[key].append(target)
+
+        # Build ordered list with cascade references
+        ou_filters = sorted(
+            [f for f in filters_by_key.values() if f["category"] == "ou_hierarchy"],
+            key=lambda f: f.get("level", 0),
+        )
+        group_filters = [f for f in filters_by_key.values() if f["category"] == "ou_group"]
+        groupset_filters = [f for f in filters_by_key.values() if f["category"] == "ou_group_set"]
+        period_filters = sorted(
+            [f for f in filters_by_key.values() if f["category"] == "period_hierarchy"],
+            key=lambda f: (
+                _PERIOD_HIERARCHY_ORDER.index(f.get("period_key", ""))
+                if f.get("period_key") in _PERIOD_HIERARCHY_ORDER
+                else 999
+            ),
+        )
+
+        result_filters: list[dict[str, Any]] = []
+        order = 0
+
+        # OU hierarchy with cascading
+        prev_key: str | None = None
+        for f in ou_filters:
+            order += 1
+            result_filters.append({
+                "key": f["key"],
+                "label": f["label"],
+                "column_name": f["column_name"],
+                "filter_type": f["filter_type"],
+                "category": f["category"],
+                "cascade_parent_key": prev_key,
+                "order": order,
+                "targets": dataset_targets.get(f["key"], []),
+                "extra": f.get("extra", {}),
+            })
+            prev_key = f["key"]
+
+        # OU groups (no cascade)
+        for f in group_filters:
+            order += 1
+            result_filters.append({
+                "key": f["key"],
+                "label": f["label"],
+                "column_name": f["column_name"],
+                "filter_type": f["filter_type"],
+                "category": f["category"],
+                "cascade_parent_key": None,
+                "order": order,
+                "targets": dataset_targets.get(f["key"], []),
+                "extra": f.get("extra", {}),
+            })
+
+        # OU group sets (no cascade)
+        for f in groupset_filters:
+            order += 1
+            result_filters.append({
+                "key": f["key"],
+                "label": f["label"],
+                "column_name": f["column_name"],
+                "filter_type": f["filter_type"],
+                "category": f["category"],
+                "cascade_parent_key": None,
+                "order": order,
+                "targets": dataset_targets.get(f["key"], []),
+                "extra": f.get("extra", {}),
+            })
+
+        # Period hierarchy with cascading
+        prev_key = None
+        for f in period_filters:
+            order += 1
+            result_filters.append({
+                "key": f["key"],
+                "label": f["label"],
+                "column_name": f["column_name"],
+                "filter_type": f["filter_type"],
+                "category": f["category"],
+                "cascade_parent_key": prev_key,
+                "order": order,
+                "targets": dataset_targets.get(f["key"], []),
+                "extra": f.get("extra", {}),
+            })
+            prev_key = f["key"]
+
+        return {
+            "dashboard_id": dashboard.id,
+            "dataset_count": len(tables),
+            "filters": result_filters,
+        }
 
     @expose("/<pk>/colors", methods=("PUT",))
     @protect()

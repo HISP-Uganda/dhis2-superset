@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v15.34 tuned for martbase branch: ClickHouse default, dynamic plugins off, Celery Beat schedule fixed in Python
+# v15.35 tuned for martbase branch: ClickHouse default, dynamic plugins off, Celery Beat schedule fixed in Python, stronger frontend memory tuning
 set -Eeuo pipefail
 
 # ==============================================================================
@@ -212,9 +212,12 @@ FRONTEND_BUILD_MAX_RETRIES="${FRONTEND_BUILD_MAX_RETRIES:-2}"
 FRONTEND_REWRITE_PLUGIN_TSCONFIGS="${FRONTEND_REWRITE_PLUGIN_TSCONFIGS:-1}"
 FRONTEND_VERBOSE_LOGS="${FRONTEND_VERBOSE_LOGS:-1}"
 FRONTEND_HEARTBEAT_SECONDS="${FRONTEND_HEARTBEAT_SECONDS:-30}"
+FRONTEND_HEARTBEAT_TAIL_LINES="${FRONTEND_HEARTBEAT_TAIL_LINES:-3}"
+FRONTEND_HEARTBEAT_SHOW_PS="${FRONTEND_HEARTBEAT_SHOW_PS:-1}"
 FRONTEND_BUILD_LOG_FILE="${FRONTEND_BUILD_LOG_FILE:-$LOG_DIR/frontend-build.log}"
+FRONTEND_DISABLE_SOURCEMAPS="${FRONTEND_DISABLE_SOURCEMAPS:-1}"
 FRONTEND_CLEAN="${FRONTEND_CLEAN:-0}"
-FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-90}"
+FRONTEND_TIMEOUT_MINUTES="${FRONTEND_TIMEOUT_MINUTES:-180}"
 FRONTEND_TYPECHECK="${FRONTEND_TYPECHECK:-0}"
 FRONTEND_NODE_OLD_SPACE_SIZE_MB="${FRONTEND_NODE_OLD_SPACE_SIZE_MB:-auto}"
 FRONTEND_FORK_TS_MEMORY_LIMIT_MB="${FRONTEND_FORK_TS_MEMORY_LIMIT_MB:-auto}"
@@ -282,7 +285,7 @@ source_runtime_env() {
   [[ -f "$ENV_FILE" ]] || die "Missing runtime environment file: $ENV_FILE"
   set -a
   # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  source "$ENV_FILE" || die "Failed to source runtime environment file: $ENV_FILE"
   set +a
   export SUPERSET_CONFIG_PATH="$SUPERSET_CONFIG_FILE"
   export FLASK_APP=superset
@@ -345,7 +348,12 @@ frontend_apply_common_env() {
   export TSC_COMPILE_ON_ERROR="${TSC_COMPILE_ON_ERROR}"
   export PUPPETEER_SKIP_DOWNLOAD=1
   export CI=1
-  export FRONTEND_NODE_OPTIONS="--max_old_space_size=${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-8192}"
+  export FRONTEND_NODE_OPTIONS="--max_old_space_size=${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"
+  export NODE_OPTIONS="${FRONTEND_NODE_OPTIONS}${NODE_OPTIONS:+ ${NODE_OPTIONS}}"
+  if [[ "${FRONTEND_DISABLE_SOURCEMAPS:-1}" == "1" ]]; then
+    export GENERATE_SOURCEMAP=false
+  fi
+  export DISABLE_ESLINT_PLUGIN=true
   unset NODE_ENV || true
   unset BABEL_ENV || true
 }
@@ -369,10 +377,16 @@ run_frontend_logged_command() {
   local runner_pid=""
   local rc=0
   local elapsed=0
+  local last_size=0
+  local current_size=0
+  local delta_size=0
+  local sid=""
+  local hb_tail_lines="${FRONTEND_HEARTBEAT_TAIL_LINES:-3}"
 
   mkdir -p "$(dirname "$log_file")"
   : > "$log_file"
-  printf "===== frontend command start %s =====\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_file"
+  printf "===== frontend command start %s =====
+" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_file"
 
   (
     set -o pipefail
@@ -392,11 +406,26 @@ run_frontend_logged_command() {
   ) &
   runner_pid=$!
 
+  sid="$(ps -o sid= -p "$runner_pid" 2>/dev/null | tr -d ' ' || true)"
+  [[ -n "${sid:-}" ]] || sid="$runner_pid"
+
   while kill -0 "$runner_pid" 2>/dev/null; do
     sleep 1
     elapsed=$((elapsed + 1))
     if (( heartbeat_seconds > 0 )) && (( elapsed % heartbeat_seconds == 0 )); then
-      echo "[INFO] Frontend build still running ($(date -u +%Y-%m-%dT%H:%M:%SZ)); elapsed=${elapsed}s; log: $log_file" | tee -a "$log_file"
+      current_size="$(wc -c < "$log_file" 2>/dev/null || echo 0)"
+      delta_size=$(( current_size - last_size ))
+      last_size="$current_size"
+
+      {
+        echo "[INFO] Frontend build heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ); elapsed=${elapsed}s; log_size=${current_size}B; delta=${delta_size}B; log: $log_file"
+        if [[ "${FRONTEND_HEARTBEAT_SHOW_PS:-1}" == "1" ]]; then
+          echo "[INFO] Frontend process snapshot:"
+          ps -o pid,ppid,etime,%cpu,%mem,cmd --forest -g "$sid" 2>/dev/null | sed 's/^/[INFO]   /' || true
+        fi
+        echo "[INFO] Frontend recent log tail:"
+        tail -n "$hb_tail_lines" "$log_file" 2>/dev/null | sed 's/^/[INFO]   /' || true
+      } | tee -a "$log_file"
     fi
   done
 
@@ -727,12 +756,14 @@ calc_autotune() {
   fi
 
   if [[ -z "${FRONTEND_NODE_OLD_SPACE_SIZE_MB:-}" || "${FRONTEND_NODE_OLD_SPACE_SIZE_MB}" == "auto" ]]; then
-    if (( TOTAL_MEM_MB >= 24576 )); then
-      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=16384
+    if (( TOTAL_MEM_MB >= 32768 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=20480
+    elif (( TOTAL_MEM_MB >= 24576 )); then
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=18432
     elif (( TOTAL_MEM_MB >= 16384 )); then
-      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=12288
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=14336
     elif (( TOTAL_MEM_MB >= 12288 )); then
-      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=10240
+      FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=12288
     elif (( TOTAL_MEM_MB >= 8192 )); then
       FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB=8192
     else
@@ -743,14 +774,18 @@ calc_autotune() {
   fi
 
   if [[ -z "${FRONTEND_FORK_TS_MEMORY_LIMIT_MB:-}" || "${FRONTEND_FORK_TS_MEMORY_LIMIT_MB}" == "auto" ]]; then
-    if (( TOTAL_MEM_MB >= 24576 )); then
+    if (( TOTAL_MEM_MB >= 32768 )); then
       FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=12288
+    elif (( TOTAL_MEM_MB >= 24576 )); then
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=10240
     elif (( TOTAL_MEM_MB >= 16384 )); then
-      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=6144
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=8192
     elif (( TOTAL_MEM_MB >= 12288 )); then
-      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=5120
-    else
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=6144
+    elif (( TOTAL_MEM_MB >= 8192 )); then
       FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=4096
+    else
+      FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB=3072
     fi
   else
     FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB="${FRONTEND_FORK_TS_MEMORY_LIMIT_MB}"
@@ -989,7 +1024,7 @@ build_frontend() {
 
   frontend_install_deps_if_needed "$FRONTEND_DIR" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
   frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
-  frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node "$PWD/node_modules/webpack-cli/bin/cli.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$FRONTEND_DIR" || return $?
+  frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$FRONTEND_DIR" || return $?
 
   ok "Frontend build complete"
 }
@@ -1358,7 +1393,7 @@ patch_frontend_webpack_memory_for_branch() {
   info "Patching frontend webpack memory settings"
 
   local frontend_dir="$INSTALL_DIR/superset-frontend"
-  local mem_limit="${FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB:-6144}"
+  local mem_limit="${FRONTEND_FORK_TS_MEMORY_LIMIT_EFFECTIVE_MB:-8192}"
 
   python3 - "$frontend_dir" "$mem_limit" <<'PY'
 import re
@@ -1374,25 +1409,24 @@ for path in list(frontend.rglob("webpack*.js")) + list(frontend.rglob("webpack.c
         txt = path.read_text(encoding="utf-8")
     except Exception:
         continue
-    if "ForkTsCheckerWebpackPlugin" not in txt:
+    if "ForkTsCheckerWebpackPlugin" not in txt and "TYPESCRIPT_MEMORY_LIMIT" not in txt:
         continue
 
     new = txt
-    # If memoryLimit already exists, replace it
+    new = re.sub(r'(const\s+TYPESCRIPT_MEMORY_LIMIT\s*=\s*)\d+(\s*;)', rf'\g<1>{mem_limit}\2', new)
     new = re.sub(r'(memoryLimit\s*:\s*)\d+', rf'\g<1>{mem_limit}', new)
 
-    # Otherwise inject a conservative typescript memory limit into the first plugin constructor
-    if new == txt:
+    if new == txt and "ForkTsCheckerWebpackPlugin" in txt:
         patterns = [
             r'ForkTsCheckerWebpackPlugin\(\s*\{',
             r'new\s+ForkTsCheckerWebpackPlugin\(\s*\{',
         ]
         replaced = False
         for pat in patterns:
-            m = re.search(pat, new)
-            if m:
-                inject = m.group(0) + f'\n      typescript: {{ memoryLimit: {mem_limit} }},'
-                new = new[:m.start()] + inject + new[m.end():]
+            mo = re.search(pat, new)
+            if mo:
+                inject = mo.group(0) + f'\n      typescript: {{ memoryLimit: {mem_limit} }},'
+                new = new[:mo.start()] + inject + new[mo.end():]
                 replaced = True
                 break
         if not replaced:
@@ -1429,7 +1463,7 @@ build_frontend_if_present_server() {
 
     frontend_install_deps_if_needed "$INSTALL_DIR/superset-frontend" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
     frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
-    frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node "$PWD/node_modules/webpack-cli/bin/cli.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$INSTALL_DIR/superset-frontend" || return $?
+    frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --progress --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$INSTALL_DIR/superset-frontend" || return $?
 
     [[ -d "$INSTALL_DIR/superset/static/assets" ]] || die "Frontend build did not produce $INSTALL_DIR/superset/static/assets"
     ok "Frontend assets built"
@@ -1445,36 +1479,42 @@ configure_redis_server() {
   ok "Redis tuned"
 }
 
+
+postgres_role_exists_server() {
+  sudo -u postgres psql -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER}'" 2>/dev/null | grep -q 1
+}
+
+postgres_database_exists_server() {
+  sudo -u postgres psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" 2>/dev/null | grep -q 1
+}
+
+ensure_postgres_role_and_database_server() {
+  [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
+  info "Ensuring PostgreSQL role and database exist"
+
+  if postgres_role_exists_server; then
+    sudo -u postgres psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE ${POSTGRES_USER} WITH LOGIN PASSWORD '${POSTGRES_PASSWORD}';" >/dev/null
+  else
+    sudo -u postgres psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE ${POSTGRES_USER} LOGIN PASSWORD '${POSTGRES_PASSWORD}';" >/dev/null
+  fi
+
+  if ! postgres_database_exists_server; then
+    sudo -u postgres createdb -O "${POSTGRES_USER}" -E UTF8 "${POSTGRES_DB}"
+  fi
+
+  sudo -u postgres psql -d postgres -v ON_ERROR_STOP=1 <<SQL >/dev/null
+ALTER DATABASE ${POSTGRES_DB} OWNER TO ${POSTGRES_USER};
+GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};
+SQL
+
+  ok "PostgreSQL role/database ensured"
+}
+
 configure_postgresql_server() {
   [[ "$POSTGRES_ENABLED" == "1" ]] || return 0
   info "Configuring PostgreSQL"
 
-  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${POSTGRES_USER}') THEN
-    CREATE ROLE ${POSTGRES_USER} LOGIN PASSWORD '${POSTGRES_PASSWORD}';
-  ELSE
-    ALTER ROLE ${POSTGRES_USER} WITH LOGIN PASSWORD '${POSTGRES_PASSWORD}';
-  END IF;
-END
-\$\$;
-SQL
-
-  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${POSTGRES_DB}') THEN
-    CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER} ENCODING 'UTF8';
-  END IF;
-END
-\$\$;
-SQL
-
-  sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres <<SQL
-ALTER DATABASE ${POSTGRES_DB} OWNER TO ${POSTGRES_USER};
-GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER};
-SQL
+  ensure_postgres_role_and_database_server || return $?
 
   if [[ "$POSTGRES_INSTALL_EXTENSIONS" == "1" ]]; then
     sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$POSTGRES_DB" <<'SQL'
@@ -1498,6 +1538,8 @@ SQL
   grep -q '^random_page_cost' "$pg_conf" && sudo sed -i 's/^random_page_cost =.*/random_page_cost = 1.1/' "$pg_conf" || echo 'random_page_cost = 1.1' | sudo tee -a "$pg_conf" >/dev/null
   grep -q '^effective_io_concurrency' "$pg_conf" && sudo sed -i 's/^effective_io_concurrency =.*/effective_io_concurrency = 200/' "$pg_conf" || echo 'effective_io_concurrency = 200' | sudo tee -a "$pg_conf" >/dev/null
   sudo systemctl restart postgresql
+
+  ensure_postgres_role_and_database_server || return $?
 
   PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c 'SELECT current_user, current_database();' >/dev/null
 
@@ -1620,7 +1662,7 @@ SUPERSET_WEBSERVER_TIMEOUT=${GUNICORN_TIMEOUT}
 SQLLAB_TIMEOUT=300
 SQLLAB_ASYNC_TIME_LIMIT_SEC=${SQLLAB_ASYNC_TIME_LIMIT_SEC}
 WTF_CSRF_ENABLED=true
-WTF_CSRF_EXEMPT_LIST=${csrf_exempt_json}
+WTF_CSRF_EXEMPT_LIST='${csrf_exempt_json}'
 MAPBOX_API_KEY=
 EMBEDDED_SUPERSET=true
 PUBLIC_ROLE_LIKE=Gamma
@@ -1633,7 +1675,7 @@ ENABLE_CORS=true
 CORS_SUPPORTS_CREDENTIALS=true
 CORS_ALLOW_HEADERS=${cors_allow_headers_json}
 CORS_RESOURCES=${cors_resources_json}
-CORS_ORIGINS_JSON=${cors_origins_json}
+CORS_ORIGINS_JSON='${cors_origins_json}'
 FF_EMBEDDED_SUPERSET=true
 FF_EMBEDDABLE_CHARTS=true
 FF_DASHBOARD_RBAC=true
@@ -1656,8 +1698,8 @@ AI_INSIGHTS_REQUEST_TIMEOUT_SECONDS=30
 AI_INSIGHTS_MAX_TOKENS=1200
 AI_INSIGHTS_TEMPERATURE=0.1
 AI_INSIGHTS_ENABLE_MOCK=1
-AI_INSIGHTS_ALLOWED_ROLES=${ai_allowed_roles_json}
-AI_INSIGHTS_MODE_ROLES=${ai_mode_roles_json}
+AI_INSIGHTS_ALLOWED_ROLES='${ai_allowed_roles_json}'
+AI_INSIGHTS_MODE_ROLES='${ai_mode_roles_json}'
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODELS=gpt-4.1-mini
@@ -1689,15 +1731,15 @@ CELERY_TIMEZONE=Africa/Kampala
 CELERY_ENABLE_UTC=true
 CELERY_WORKER_PREFETCH_MULTIPLIER=${WORKER_PREFETCH_MULTIPLIER}
 CELERY_TASK_ACKS_LATE=true
-CELERY_TASK_ANNOTATIONS=${celery_task_annotations_json}
-CELERY_TASK_ROUTES=${celery_task_routes_json}
+CELERY_TASK_ANNOTATIONS='${celery_task_annotations_json}'
+CELERY_TASK_ROUTES='${celery_task_routes_json}'
 DHIS2_SYNC_CRON_MINUTE=*/15
 REPORTS_SCHEDULER_MINUTE=*
 REPORTS_SCHEDULER_HOUR=*
 REPORTS_PRUNE_MINUTE=0
 REPORTS_PRUNE_HOUR=0
-PUBLIC_NAVBAR_TITLE=National Malaria Data Repository
-PUBLIC_NAVBAR_LOGO_ALT=National Malaria Data Repository
+PUBLIC_NAVBAR_TITLE="National Malaria Data Repository"
+PUBLIC_NAVBAR_LOGO_ALT="National Malaria Data Repository"
 PUBLIC_LOGIN_TEXT=Login
 PUBLIC_LOGIN_URL=/login/
 PUBLIC_LOGIN_TYPE=primary
@@ -1705,9 +1747,9 @@ PUBLIC_NAVBAR_CUSTOM_LINKS=${public_navbar_custom_links_json}
 PUBLIC_SIDEBAR_POSITION=left
 PUBLIC_SIDEBAR_TITLE=Categories
 PUBLIC_WELCOME_TITLE=Welcome
-PUBLIC_WELCOME_DESCRIPTION=Select a category from the sidebar to view dashboards.
-PUBLIC_FOOTER_TEXT=© 2026 Your Organization
-PUBLIC_FOOTER_LINKS=${public_footer_links_json}
+PUBLIC_WELCOME_DESCRIPTION="Select a category from the sidebar to view dashboards."
+PUBLIC_FOOTER_TEXT="© 2026 Your Organization"
+PUBLIC_FOOTER_LINKS='${public_footer_links_json}'
 DHIS2_CACHE_REFRESH_INTERVAL=21600
 DHIS2_CACHE_TTL_GEOJSON=21600
 DHIS2_CACHE_TTL_ORG_HIERARCHY=3600
@@ -1717,7 +1759,7 @@ DHIS2_CACHE_TTL_FILTER_OPTIONS=3600
 DHIS2_CACHE_TTL_NAME_TO_UID=3600
 DHIS2_CACHE_MAX_SIZE_MB=500
 ENABLE_UI_THEME_ADMINISTRATION=true
-THEME_DARK_JSON=${theme_dark_json}
+THEME_DARK_JSON="${theme_dark_json}"
 LOG_LEVEL=INFO
 LOG_FORMAT='%(asctime)s:%(levelname)s:%(name)s:%(message)s'
 SUPERSET_LOG_FILE=${INSTALL_DIR}/logs/superset.log
@@ -1736,7 +1778,7 @@ DHIS2_CLICKHOUSE_USER=${CLICKHOUSE_USER}
 DHIS2_CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
 DHIS2_CLICKHOUSE_SECURE=false
 DHIS2_CLICKHOUSE_HTTP_PROTOCOL=http
-DHIS2_CLICKHOUSE_SUPERSET_DB_NAME=${CLICKHOUSE_SUPERSET_DB_NAME}
+DHIS2_CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME}"
 DHIS2_CLICKHOUSE_REFRESH_STRATEGY=versioned_view_swap
 DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS=2
 
@@ -2587,6 +2629,8 @@ WHERE NOT EXISTS (
 
 
 ensure_alembic_version_table_server() {
+  ensure_postgres_role_and_database_server || return $?
+
   [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
   info "Ensuring alembic_version table exists with wide version_num and correct ownership"
   sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<SQL >/dev/null
@@ -2603,6 +2647,8 @@ SQL
 }
 
 ensure_alembic_version_width_server() {
+  ensure_postgres_role_and_database_server || return $?
+
   [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
   ensure_alembic_version_table_server || return $?
   info "Ensuring alembic_version.version_num is wide enough for long revision IDs"
@@ -2618,6 +2664,8 @@ SQL
 
 
 superset_db_upgrade_with_recovery_server() {
+  ensure_postgres_role_and_database_server || return $?
+
   local log_file="${1:-$LOG_DIR/superset-db-upgrade.log}"
 
   ensure_alembic_version_table_server || return $?
@@ -2699,6 +2747,8 @@ PY
 
 
 repair_alembic_version_privileges_server() {
+  ensure_postgres_role_and_database_server || return $?
+
   [[ "${POSTGRES_ENABLED:-1}" == "1" ]] || return 0
   info "Repairing alembic_version ownership and privileges"
   sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" <<'SQL' >/dev/null
@@ -2840,6 +2890,7 @@ initialize_superset_server() {
   mkdir -p "$LOG_DIR" "$RUN_DIR" "$DATA_DIR"
 
   stop_superset_services_before_upgrade_server || return $?
+  ensure_postgres_role_and_database_server || return $?
   ensure_alembic_version_table_server || return $?
   repair_alembic_version_privileges_server || return $?
   patch_problematic_postgres_migrations_server || return $?

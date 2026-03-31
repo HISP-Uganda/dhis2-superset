@@ -114,6 +114,181 @@ def _fetch_distinct_periods(
         return []
 
 
+def _resolve_superset_dataset_id(dataset: Any) -> int | None:
+    """Resolve the Superset SqlaTable id for a DHIS2 staged dataset.
+
+    The staged dataset creates a Superset virtual table whose ``table_name``
+    matches the serving table name.  Returns ``None`` if not found.
+    """
+    try:
+        from superset import db as superset_db  # pylint: disable=import-outside-toplevel
+        from superset.connectors.sqla.models import SqlaTable  # pylint: disable=import-outside-toplevel
+
+        engine = _get_engine(dataset.database_id)
+        serving_name = engine.get_serving_table_name(dataset)
+        if not serving_name:
+            return None
+
+        row = (
+            superset_db.session.query(SqlaTable.id)
+            .filter(SqlaTable.table_name == serving_name)
+            .first()
+        )
+        return row[0] if row else None
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("Could not resolve Superset dataset id for dataset %s", dataset.id)
+        return None
+
+
+def _build_filter_blueprint(dataset: Any) -> list[dict[str, Any]]:
+    """Build a filter blueprint from a staged dataset's serving column metadata.
+
+    Inspects column ``extra`` JSON to identify OU hierarchy, OU group,
+    OU group-set, and period hierarchy columns and returns them as an
+    ordered list of filter descriptors with cascading parent references.
+    """
+    from superset.dhis2.analytical_serving import (  # pylint: disable=import-outside-toplevel
+        build_serving_manifest,
+        dataset_columns_payload,
+    )
+
+    try:
+        manifest = build_serving_manifest(dataset)
+        columns = dataset_columns_payload(manifest["columns"])
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "filter_blueprint: could not build manifest for dataset %s", dataset.id
+        )
+        columns = []
+
+    filters: list[dict[str, Any]] = []
+    ou_hierarchy_cols: list[dict[str, Any]] = []
+    period_hierarchy_cols: list[dict[str, Any]] = []
+    ou_group_cols: list[dict[str, Any]] = []
+    ou_groupset_cols: list[dict[str, Any]] = []
+
+    for col in columns:
+        extra_raw = col.get("extra") or "{}"
+        if isinstance(extra_raw, str):
+            try:
+                extra = json.loads(extra_raw)
+            except (json.JSONDecodeError, TypeError):
+                extra = {}
+        else:
+            extra = extra_raw
+
+        col_name = col.get("column_name", "")
+        verbose_name = col.get("verbose_name") or col_name
+
+        if extra.get("dhis2_is_ou_hierarchy"):
+            ou_hierarchy_cols.append({
+                "column_name": col_name,
+                "verbose_name": verbose_name,
+                "level": extra.get("dhis2_ou_level", 0),
+                "extra": extra,
+            })
+        elif extra.get("dhis2_is_ou_group"):
+            ou_group_cols.append({
+                "column_name": col_name,
+                "verbose_name": verbose_name,
+                "extra": extra,
+            })
+        elif extra.get("dhis2_is_ou_group_set"):
+            ou_groupset_cols.append({
+                "column_name": col_name,
+                "verbose_name": verbose_name,
+                "extra": extra,
+            })
+        elif extra.get("dhis2_is_period_hierarchy"):
+            period_hierarchy_cols.append({
+                "column_name": col_name,
+                "verbose_name": verbose_name,
+                "period_key": extra.get("dhis2_period_key", ""),
+                "is_primary": bool(extra.get("dhis2_is_period")),
+                "extra": extra,
+            })
+
+    # OU hierarchy: sorted by level, each cascades from previous
+    ou_hierarchy_cols.sort(key=lambda c: c["level"])
+    prev_ou_key: str | None = None
+    for idx, col in enumerate(ou_hierarchy_cols):
+        key = f"ou_level_{col['level']}"
+        filters.append({
+            "key": key,
+            "label": col["verbose_name"],
+            "column_name": col["column_name"],
+            "filter_type": "filter_select",
+            "category": "ou_hierarchy",
+            "cascade_parent_key": prev_ou_key,
+            "order": idx + 1,
+            "extra": col["extra"],
+        })
+        prev_ou_key = key
+
+    # OU groups: no cascade, ordered after hierarchy
+    base_order = len(filters)
+    for idx, col in enumerate(ou_group_cols):
+        filters.append({
+            "key": f"ou_group_{col['extra'].get('dhis2_ou_group_id', idx)}",
+            "label": col["verbose_name"],
+            "column_name": col["column_name"],
+            "filter_type": "filter_select",
+            "category": "ou_group",
+            "cascade_parent_key": None,
+            "order": base_order + idx + 1,
+            "extra": col["extra"],
+        })
+
+    # OU group sets: no cascade, ordered after groups
+    base_order = len(filters)
+    for idx, col in enumerate(ou_groupset_cols):
+        filters.append({
+            "key": f"ou_groupset_{col['extra'].get('dhis2_ou_group_set_id', idx)}",
+            "label": col["verbose_name"],
+            "column_name": col["column_name"],
+            "filter_type": "filter_select",
+            "category": "ou_group_set",
+            "cascade_parent_key": None,
+            "order": base_order + idx + 1,
+            "extra": col["extra"],
+        })
+
+    # Period hierarchy: cascading Year → Quarter → Month, etc.
+    _PERIOD_HIERARCHY_ORDER = [
+        "period_year", "period_half", "period_quarter",
+        "period_bimonth", "period_month", "period_biweek",
+        "period_week", "period",
+    ]
+    period_hierarchy_cols.sort(
+        key=lambda c: (
+            _PERIOD_HIERARCHY_ORDER.index(c["period_key"])
+            if c["period_key"] in _PERIOD_HIERARCHY_ORDER
+            else 999
+        )
+    )
+    base_order = len(filters)
+    prev_period_key: str | None = None
+    for idx, col in enumerate(period_hierarchy_cols):
+        pkey = col["period_key"]
+        # Skip low-value period columns (variant, level, parent)
+        if pkey in ("period_variant", "period_level", "period_parent"):
+            continue
+        key = f"period_{pkey}"
+        filters.append({
+            "key": key,
+            "label": col["verbose_name"],
+            "column_name": col["column_name"],
+            "filter_type": "filter_select",
+            "category": "period_hierarchy",
+            "cascade_parent_key": prev_period_key,
+            "order": base_order + idx + 1,
+            "extra": col["extra"],
+        })
+        prev_period_key = key
+
+    return filters
+
+
 def _normalize_variable_mappings(
     variables_data: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
@@ -1138,6 +1313,14 @@ class DHIS2StagedDatasetApi(BaseApi):
         non-null values, ordered alphabetically, so the DHIS2Map filter control
         can show real values from the data without requiring free-form typing.
 
+        Optional cascading filter parameters:
+
+        - ``filter_column`` / ``filter_value`` — restrict results to rows
+          where ``filter_column`` matches one of the given ``filter_value``
+          entries.  Multiple ``filter_value`` params are accepted (OR).
+          Both ``filter_column`` and at least one ``filter_value`` must be
+          present for the filter to take effect.
+
         Returns::
 
             {"result": ["value1", "value2", ...]}
@@ -1147,15 +1330,29 @@ class DHIS2StagedDatasetApi(BaseApi):
             return self.response_400(message="'column' query parameter is required")
 
         # Reject obvious SQL-injection attempts — allow only identifier-safe chars
-        if not re.match(r"^[A-Za-z0-9_\- ]+$", column):
+        _IDENT_RE = re.compile(r"^[A-Za-z0-9_\- ]+$")
+        if not _IDENT_RE.match(column):
             return self.response_400(message="Invalid column name")
+
+        # Optional cascading parent filters
+        filter_column = (request.args.get("filter_column") or "").strip()
+        filter_values: list[str] = [
+            v.strip() for v in request.args.getlist("filter_value") if v.strip()
+        ]
+        if filter_column and not _IDENT_RE.match(filter_column):
+            return self.response_400(message="Invalid filter_column name")
+        has_cascade_filter = bool(filter_column and filter_values)
 
         dataset = svc.get_staged_dataset(pk)
         if dataset is None:
             return self.response_404()
 
         sync_ts = str(getattr(dataset, "last_sync_at", "") or "")
-        ck = _cache_key("cv", pk, sync_ts, column=column)
+        # Include cascade params in cache key so filtered results are cached separately
+        cascade_suffix = ""
+        if has_cascade_filter:
+            cascade_suffix = f"|fc={filter_column}|fv={','.join(sorted(filter_values))}"
+        ck = _cache_key("cv", pk, sync_ts, column=column + cascade_suffix)
         cache = _data_cache()
         if cache is not None:
             cached = cache.get(ck)
@@ -1175,17 +1372,29 @@ class DHIS2StagedDatasetApi(BaseApi):
             else:
                 return self.response(200, result=[])
 
-            # Use quoted identifier to avoid reserved-word clashes
+            # Build WHERE clause
+            where_parts = [f'"{column}" IS NOT NULL']
+            bind_params: dict[str, Any] = {}
+
+            if has_cascade_filter:
+                placeholders = ", ".join(
+                    f":fv_{i}" for i in range(len(filter_values))
+                )
+                where_parts.append(f'"{filter_column}" IN ({placeholders})')
+                for i, fv in enumerate(filter_values):
+                    bind_params[f"fv_{i}"] = fv
+
+            where_clause = " AND ".join(where_parts)
             sql = (
                 f'SELECT DISTINCT "{column}" AS v FROM {table_ref} '
-                f'WHERE "{column}" IS NOT NULL '
+                f"WHERE {where_clause} "
                 f'ORDER BY "{column}" LIMIT 2000'
             )
             with db.engine.connect() as conn:
                 DHIS2StagingEngine.apply_connection_optimizations(
                     conn, str(getattr(db.engine.dialect, "name", "") or "")
                 )
-                rows = conn.execute(text(sql)).fetchall()
+                rows = conn.execute(text(sql), bind_params).fetchall()
                 values = [str(row[0]) for row in rows if row[0] is not None]
         except Exception:  # pylint: disable=broad-except
             logger.exception(
@@ -1199,6 +1408,66 @@ class DHIS2StagedDatasetApi(BaseApi):
             except Exception:  # pylint: disable=broad-except
                 pass
         return self.response(200, result=values)
+
+    @expose("/<int:pk>/filter-blueprint", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def get_filter_blueprint(self, pk: int) -> Response:
+        """Return a native-filter configuration blueprint for this dataset.
+
+        Inspects the dataset's serving-table columns and returns a list of
+        filter descriptors for OU hierarchy levels, OU groups/group-sets,
+        and period hierarchy columns.  Each descriptor contains enough
+        information for the frontend to create a Superset native filter
+        entry (filter_select) with cascading parent references.
+
+        Returns::
+
+            {
+              "result": {
+                "dataset_id": 42,
+                "dataset_name": "...",
+                "superset_dataset_id": 99,
+                "filters": [
+                  {
+                    "key": "ou_level_1",
+                    "label": "National",
+                    "column_name": "ou_level_1",
+                    "filter_type": "filter_select",
+                    "category": "ou_hierarchy",
+                    "cascade_parent_key": null,
+                    "order": 1,
+                    "extra": {"dhis2_is_ou_hierarchy": true, "dhis2_ou_level": 1}
+                  },
+                  ...
+                ]
+              }
+            }
+        """
+        dataset = svc.get_staged_dataset(pk)
+        if dataset is None:
+            return self.response_404()
+
+        try:
+            filters = _build_filter_blueprint(dataset)
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(
+                "Failed to build filter blueprint for dataset id=%s", pk
+            )
+            return self.response_500(message="Failed to build filter blueprint")
+
+        superset_dataset_id = _resolve_superset_dataset_id(dataset)
+
+        return self.response(
+            200,
+            result={
+                "dataset_id": pk,
+                "dataset_name": dataset.name,
+                "superset_dataset_id": superset_dataset_id,
+                "filters": filters,
+            },
+        )
 
     @expose("/<int:pk>/filters", methods=["GET", "POST"])
     @protect()

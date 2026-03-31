@@ -3354,7 +3354,10 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             params: dict[str, Any] = {
                 "fields": (
                     "id,displayName,name,aggregationType,valueType,domainType,"
-                    "categoryCombo[id,displayName,name],"
+                    "categoryCombo[id,displayName,name,"
+                    "categories[id,displayName,name,dataDimensionType,"
+                    "categoryOptions[id,displayName,name,code]]],"
+                    "optionSet[id,displayName,name],"
                     "groups[id,displayName,name]"
                 ),
                 "paging": "false",
