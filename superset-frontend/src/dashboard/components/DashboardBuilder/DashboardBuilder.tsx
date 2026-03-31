@@ -333,7 +333,7 @@ const StyledDashboardContent = styled.div<{
     .dashboard-component-chart-holder {
       width: 100%;
       height: 100%;
-      background-color: ${theme.colorBgContainer};
+      background-color: transparent;
       position: relative;
       padding: ${theme.sizeUnit * 4}px;
       overflow-y: visible;

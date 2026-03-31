@@ -56,6 +56,8 @@ const baseProps: MarqueeChartProps = {
   showSubtitle: true,
   showDelta: true,
   showSeparators: false,
+  variant: 'default',
+  colorThresholds: [],
 };
 
 describe('MarqueeViz', () => {

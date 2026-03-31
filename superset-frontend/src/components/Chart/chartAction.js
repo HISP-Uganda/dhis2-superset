@@ -624,6 +624,7 @@ export function exploreJSON(
   key,
   dashboardId,
   ownState,
+  { silent = false } = {},
 ) {
   return async (dispatch, getState) => {
     const logStart = Logger.getTimestamp();
@@ -640,7 +641,11 @@ export function exploreJSON(
     const setDataMask = dataMask => {
       dispatch(updateDataMask(formData.slice_id, dataMask));
     };
-    dispatch(chartUpdateStarted(controller, formData, key));
+    // In silent mode, skip the loading state dispatch so charts don't
+    // show loading spinners during background data refreshes.
+    if (!silent) {
+      dispatch(chartUpdateStarted(controller, formData, key));
+    }
 
     const chartDataRequest = getChartDataRequest({
       setDataMask,
@@ -751,8 +756,9 @@ export function postChartFormData(
   key,
   dashboardId,
   ownState,
+  options,
 ) {
-  return exploreJSON(formData, force, timeout, key, dashboardId, ownState);
+  return exploreJSON(formData, force, timeout, key, dashboardId, ownState, options);
 }
 
 export function redirectSQLLab(formData, history) {
@@ -787,7 +793,7 @@ export function redirectSQLLab(formData, history) {
   };
 }
 
-export function refreshChart(chartKey, force, dashboardId) {
+export function refreshChart(chartKey, force, dashboardId, { silent = false } = {}) {
   return (dispatch, getState) => {
     const chart = (getState().charts || {})[chartKey];
     const timeout =
@@ -807,6 +813,7 @@ export function refreshChart(chartKey, force, dashboardId) {
         chart.id,
         dashboardId,
         getState().dataMask[chart.id]?.ownState,
+        { silent },
       ),
     );
   };

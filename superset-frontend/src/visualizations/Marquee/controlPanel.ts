@@ -55,6 +55,53 @@ const controlPanel: ControlPanelConfig = {
       ],
     },
     {
+      label: t('Style Variant'),
+      expanded: true,
+      controlSetRows: [
+        [
+          {
+            name: 'variant',
+            config: {
+              type: 'SelectControl',
+              label: t('Visual Variant'),
+              description: t(
+                'Default: light clean cards. Glass: frosted translucent cards. Dark: navy command-center style.',
+              ),
+              default: 'default',
+              choices: [
+                ['default', t('Default (Clean)')],
+                ['glass', t('Glass (Frosted)')],
+                ['dark', t('Dark (Command Center)')],
+              ],
+              renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
+      label: t('Conditional Coloring'),
+      expanded: false,
+      controlSetRows: [
+        [
+          {
+            name: 'color_thresholds',
+            config: {
+              type: 'TextControl',
+              label: t('Color Thresholds'),
+              description: t(
+                'Threshold-based value coloring. Format: value:color pairs separated by semicolons. ' +
+                'Example: "0:#D32F2F;50:#F9A825;80:#2E7D32" — red below 50, amber 50–80, green above 80. ' +
+                'Values are compared against the raw numeric metric value.',
+              ),
+              default: '',
+              renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
       label: t('Layout & Placement'),
       expanded: true,
       controlSetRows: [
@@ -111,8 +158,8 @@ const controlPanel: ControlPanelConfig = {
               type: 'SliderControl',
               label: t('Container Height (px)'),
               description: t('Height of the marquee container in pixels'),
-              default: 72,
-              min: 40,
+              default: 80,
+              min: 48,
               max: 200,
               step: 4,
             },
@@ -148,7 +195,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Item Min Width (px)'),
-              default: 140,
+              default: 160,
               min: 80,
               max: 400,
               step: 10,
@@ -159,7 +206,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Item Max Width (px)'),
-              default: 260,
+              default: 280,
               min: 100,
               max: 600,
               step: 10,
@@ -172,7 +219,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Gap Between Items (px)'),
-              default: 32,
+              default: 16,
               min: 0,
               max: 120,
               step: 4,
@@ -306,7 +353,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Label Font Size'),
-              default: 11,
+              default: 10,
               min: 8,
               max: 24,
               step: 1,
@@ -318,7 +365,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SelectControl',
               label: t('Label Font Weight'),
-              default: '500',
+              default: '600',
               choices: [
                 ['400', t('Regular')],
                 ['500', t('Medium')],
@@ -335,7 +382,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Label Color'),
-              default: { r: 107, g: 114, b: 128, a: 1 },
+              default: { r: 100, g: 116, b: 139, a: 1 },
               renderTrigger: true,
             },
           },
@@ -346,7 +393,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Value Font Size'),
-              default: 22,
+              default: 24,
               min: 10,
               max: 64,
               step: 1,
@@ -376,7 +423,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Value Color'),
-              default: { r: 17, g: 24, b: 39, a: 1 },
+              default: { r: 26, g: 31, b: 44, a: 1 },
               renderTrigger: true,
             },
           },
@@ -401,7 +448,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Subtitle Color'),
-              default: { r: 156, g: 163, b: 175, a: 1 },
+              default: { r: 148, g: 163, b: 184, a: 1 },
               renderTrigger: true,
             },
           },
@@ -438,7 +485,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Item Border Color'),
-              default: { r: 229, g: 231, b: 235, a: 1 },
+              default: { r: 229, g: 234, b: 240, a: 1 },
               renderTrigger: true,
             },
           },
@@ -461,7 +508,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'SliderControl',
               label: t('Item Border Radius (px)'),
-              default: 8,
+              default: 10,
               min: 0,
               max: 24,
               step: 2,
@@ -484,7 +531,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Delta Positive Color'),
-              default: { r: 16, g: 185, b: 129, a: 1 },
+              default: { r: 46, g: 125, b: 50, a: 1 },
               renderTrigger: true,
             },
           },
@@ -493,7 +540,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Delta Negative Color'),
-              default: { r: 239, g: 68, b: 68, a: 1 },
+              default: { r: 211, g: 47, b: 47, a: 1 },
               renderTrigger: true,
             },
           },
@@ -504,7 +551,7 @@ const controlPanel: ControlPanelConfig = {
             config: {
               type: 'ColorPickerControl',
               label: t('Divider Color'),
-              default: { r: 229, g: 231, b: 235, a: 1 },
+              default: { r: 229, g: 234, b: 240, a: 1 },
               renderTrigger: true,
             },
           },

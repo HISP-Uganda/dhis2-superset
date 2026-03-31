@@ -17,16 +17,23 @@
  * under the License.
  */
 
+/* eslint-disable theme-colors/no-literal-colors */
+
 import React, { FC, useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { styled, t } from '@superset-ui/core';
 import { MarqueeChartProps, MarqueeKpiItem, MarqueePlacement, MarqueeOrientation } from './types';
 
-// ─── Styled Components ───────────────────────────────────────────────────────
+// ─── Pro Theme CSS Variable Defaults ─────────────────────────────────────────
+// All visual properties fall back to --pro-* CSS variables, enabling automatic
+// theme integration across presets without per-chart reconfiguration.
+
+// ─── Styled Components — Command-Center / TV Ticker Design ──────────────────
 
 interface WrapperProps {
   $containerBackground: string;
   $containerHeight: number;
   $isVertical: boolean;
+  $variant: string;
 }
 
 const Wrapper = styled.div<WrapperProps>`
@@ -34,12 +41,37 @@ const Wrapper = styled.div<WrapperProps>`
   width: 100%;
   height: ${({ $isVertical, $containerHeight }) =>
     $isVertical ? '100%' : `${$containerHeight}px`};
-  background: ${({ $containerBackground }) => $containerBackground};
+  background: ${({ $containerBackground, $variant }) =>
+    $containerBackground !== 'transparent'
+      ? $containerBackground
+      : $variant === 'dark'
+        ? 'var(--pro-navy, #0D3B66)'
+        : $variant === 'glass'
+          ? 'linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(245,247,250,0.92) 100%)'
+          : 'var(--pro-bg-canvas, #F5F7FA)'};
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   box-sizing: border-box;
+  border-radius: var(--pro-radius-md, 12px);
+  ${({ $variant }) =>
+    $variant === 'glass'
+      ? `
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.25);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+  `
+      : $variant === 'dark'
+        ? `
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05);
+  `
+        : `
+    border: 1px solid var(--pro-border, #E5EAF0);
+    box-shadow: var(--pro-shadow-sm, 0 1px 3px rgba(0,0,0,0.06));
+  `}
 `;
 
 interface TrackProps {
@@ -96,7 +128,8 @@ interface ItemProps {
   $maxWidth: number;
   $isVertical: boolean;
   $gap: number;
-  $hoverBackground: string;
+  $variant: string;
+  $statusColor: string | null;
 }
 
 const Item = styled.div<ItemProps>`
@@ -104,9 +137,25 @@ const Item = styled.div<ItemProps>`
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  background: ${({ $background }) => $background};
-  border: ${({ $borderWidth, $borderColor }) =>
-    $borderWidth > 0 ? `${$borderWidth}px solid ${$borderColor}` : 'none'};
+  position: relative;
+  background: ${({ $background, $variant }) =>
+    $background !== '#ffffff' && $background !== 'rgba(255,255,255,1)'
+      ? $background
+      : $variant === 'dark'
+        ? 'rgba(255,255,255,0.06)'
+        : $variant === 'glass'
+          ? 'rgba(255,255,255,0.55)'
+          : 'var(--pro-bg-card, #ffffff)'};
+  border: ${({ $borderWidth, $borderColor, $variant }) =>
+    $borderWidth > 0
+      ? `${$borderWidth}px solid ${
+          $variant === 'dark'
+            ? 'rgba(255,255,255,0.08)'
+            : $variant === 'glass'
+              ? 'rgba(255,255,255,0.3)'
+              : $borderColor
+        }`
+      : 'none'};
   border-radius: ${({ $borderRadius }) => $borderRadius}px;
   padding: ${({ $padding }) => $padding}px ${({ $padding }) => Math.round($padding * 1.4)}px;
   min-width: ${({ $isVertical, $minWidth }) => ($isVertical ? 'auto' : `${$minWidth}px`)};
@@ -114,26 +163,59 @@ const Item = styled.div<ItemProps>`
   flex-shrink: 0;
   margin: ${({ $isVertical, $gap }) =>
     $isVertical ? `${Math.round($gap / 2)}px 4px` : `0 ${Math.round($gap / 2)}px`};
-  box-shadow: ${({ $shadow }) =>
-    $shadow ? '0 1px 3px 0 rgba(0,0,0,.08), 0 1px 2px -1px rgba(0,0,0,.06)' : 'none'};
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: ${({ $shadow, $variant }) =>
+    $shadow
+      ? $variant === 'dark'
+        ? '0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)'
+        : $variant === 'glass'
+          ? '0 2px 12px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)'
+          : 'var(--pro-shadow-sm, 0 1px 3px rgba(0,0,0,0.06))'
+      : 'none'};
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
   cursor: default;
+  overflow: hidden;
+
+  /* Status indicator bar on the left edge */
+  ${({ $statusColor }) =>
+    $statusColor
+      ? `
+    &::before {
+      content: '';
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      left: 0;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: ${$statusColor};
+    }
+    padding-left: ${20}px;
+  `
+      : ''}
 
   &:hover {
-    background: ${({ $hoverBackground }) => $hoverBackground};
-    box-shadow: ${({ $shadow }) =>
-      $shadow ? '0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.08)' : 'none'};
+    transform: translateY(-1px);
+    box-shadow: ${({ $variant }) =>
+      $variant === 'dark'
+        ? '0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)'
+        : 'var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.08))'};
   }
 `;
 
 interface SeparatorProps {
   $color: string;
   $isVertical: boolean;
+  $variant: string;
 }
 
 const Separator = styled.div<SeparatorProps>`
   flex-shrink: 0;
-  background: ${({ $color }) => $color};
+  background: ${({ $color, $variant }) =>
+    $variant === 'dark'
+      ? 'rgba(255,255,255,0.1)'
+      : $variant === 'glass'
+        ? 'rgba(0,0,0,0.06)'
+        : $color};
   ${({ $isVertical }) =>
     $isVertical
       ? 'width: 100%; height: 1px; margin: 4px 0;'
@@ -144,13 +226,18 @@ interface LabelTextProps {
   $fontSize: number;
   $fontWeight: string;
   $color: string;
+  $variant: string;
 }
 
 const LabelText = styled.div<LabelTextProps>`
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
   font-size: ${({ $fontSize }) => $fontSize}px;
   font-weight: ${({ $fontWeight }) => $fontWeight};
-  color: ${({ $color }) => $color};
-  letter-spacing: 0.02em;
+  color: ${({ $color, $variant }) =>
+    $variant === 'dark'
+      ? 'rgba(255,255,255,0.55)'
+      : $color};
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -163,18 +250,27 @@ interface ValueTextProps {
   $fontSize: number;
   $fontWeight: string;
   $color: string;
+  $variant: string;
+  $statusColor: string | null;
 }
 
 const ValueText = styled.div<ValueTextProps>`
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
   font-size: ${({ $fontSize }) => $fontSize}px;
   font-weight: ${({ $fontWeight }) => $fontWeight};
-  color: ${({ $color }) => $color};
+  color: ${({ $statusColor, $color, $variant }) =>
+    $statusColor
+      ? $statusColor
+      : $variant === 'dark'
+        ? '#ffffff'
+        : $color};
   line-height: 1.15;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 `;
 
 interface DeltaTextProps {
@@ -182,9 +278,11 @@ interface DeltaTextProps {
   $positiveColor: string;
   $negativeColor: string;
   $fontSize: number;
+  $variant: string;
 }
 
 const DeltaText = styled.span<DeltaTextProps>`
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
   font-size: ${({ $fontSize }) => $fontSize}px;
   font-weight: 600;
   color: ${({ $positive, $positiveColor, $negativeColor }) =>
@@ -193,16 +291,27 @@ const DeltaText = styled.span<DeltaTextProps>`
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: ${({ $positive, $positiveColor, $negativeColor }) =>
+    $positive
+      ? `${$positiveColor}14`
+      : `${$negativeColor}14`};
 `;
 
 interface SubtitleTextProps {
   $fontSize: number;
   $color: string;
+  $variant: string;
 }
 
 const SubtitleText = styled.div<SubtitleTextProps>`
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
   font-size: ${({ $fontSize }) => $fontSize}px;
-  color: ${({ $color }) => $color};
+  color: ${({ $color, $variant }) =>
+    $variant === 'dark'
+      ? 'rgba(255,255,255,0.4)'
+      : $color};
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -222,8 +331,9 @@ const EmptyState = styled.div`
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9ca3af;
+  color: var(--pro-text-muted, #9ca3af);
   font-size: 13px;
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
 `;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -234,7 +344,6 @@ export function resolveIsVertical(
 ): boolean {
   if (orientation === 'vertical') return true;
   if (orientation === 'horizontal') return false;
-  // auto: derive from placement
   return placement === 'left' || placement === 'right';
 }
 
@@ -246,6 +355,32 @@ function cssRgba(value: any): string {
     return `rgba(${r},${g},${b},${a})`;
   }
   return String(value);
+}
+
+/**
+ * Resolve a status color for a KPI value based on threshold breakpoints.
+ * Returns null if no thresholds configured or value is null.
+ */
+function resolveStatusColor(
+  value: number | null | undefined,
+  thresholds: Array<{ value: number; color: string }>,
+): string | null {
+  if (!thresholds || thresholds.length === 0 || value === null || value === undefined) {
+    return null;
+  }
+  // thresholds are sorted ascending; pick the last one where value >= threshold
+  const sorted = [...thresholds].sort((a, b) => a.value - b.value);
+  let color: string | null = null;
+  for (const t of sorted) {
+    if (value >= t.value) {
+      color = t.color;
+    }
+  }
+  // If value is below the lowest threshold, use the first color
+  if (color === null && sorted.length > 0) {
+    color = sorted[0].color;
+  }
+  return color;
 }
 
 // ─── KPI Item Card ────────────────────────────────────────────────────────────
@@ -267,7 +402,6 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
     itemMinWidth,
     itemMaxWidth,
     gapBetweenItems,
-    hoverBackground,
     labelFontSize,
     labelFontWeight,
     labelColor,
@@ -281,7 +415,14 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
     showLabel,
     showSubtitle,
     showDelta,
+    variant,
+    colorThresholds,
   } = props;
+
+  const statusColor = resolveStatusColor(
+    typeof item.value === 'number' ? item.value : null,
+    colorThresholds,
+  );
 
   return (
     <Item
@@ -295,13 +436,15 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
       $maxWidth={itemMaxWidth}
       $isVertical={isVertical}
       $gap={gapBetweenItems}
-      $hoverBackground={cssRgba(hoverBackground)}
+      $variant={variant}
+      $statusColor={statusColor}
     >
       {showLabel && (
         <LabelText
           $fontSize={labelFontSize}
           $fontWeight={labelFontWeight}
           $color={cssRgba(labelColor)}
+          $variant={variant}
           title={item.label}
         >
           {item.label}
@@ -312,6 +455,8 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
           $fontSize={valueFontSize}
           $fontWeight={valueFontWeight}
           $color={cssRgba(valueColor)}
+          $variant={variant}
+          $statusColor={statusColor}
           title={item.formattedValue}
         >
           {item.formattedValue}
@@ -322,6 +467,7 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
             $positiveColor={cssRgba(deltaPositiveColor)}
             $negativeColor={cssRgba(deltaNegativeColor)}
             $fontSize={Math.max(10, valueFontSize - 6)}
+            $variant={variant}
           >
             {item.deltaPositive ? '▲' : '▼'} {item.formattedDelta}
           </DeltaText>
@@ -331,6 +477,7 @@ const KpiCard: FC<KpiCardProps> = ({ item, props, isVertical }) => {
         <SubtitleText
           $fontSize={subtitleFontSize}
           $color={cssRgba(subtitleColor)}
+          $variant={variant}
           title={item.subtitle}
         >
           {item.subtitle}
@@ -357,6 +504,7 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
     showSeparators,
     height,
     width: _width,
+    variant,
   } = props;
 
   const [paused, setPaused] = useState(false);
@@ -369,7 +517,6 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
     [placement, orientation],
   );
 
-  // Measure the single-copy track size to compute animation duration
   useEffect(() => {
     if (!trackRef.current) return;
     const measure = () => {
@@ -384,7 +531,6 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
     return () => ro.disconnect();
   }, [isVertical, items.length]);
 
-  // Duration = trackSize / speed (pixels per second)
   const animationDuration = useMemo(() => {
     if (!trackSize || speed <= 0) return '20s';
     return `${(trackSize / speed).toFixed(2)}s`;
@@ -406,7 +552,6 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
     );
   }
 
-  // Duplicate items for seamless loop when autoLoop is enabled
   const displayItems = autoLoop ? [...items, ...items] : items;
 
   return (
@@ -415,6 +560,7 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
       $containerBackground={cssRgba(containerBackground)}
       $containerHeight={containerHeight}
       $isVertical={isVertical}
+      $variant={variant}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       style={{ height: isVertical ? height : containerHeight }}
@@ -432,6 +578,7 @@ const MarqueeViz: FC<MarqueeChartProps> = (props) => {
               <Separator
                 $color={cssRgba(dividerColor)}
                 $isVertical={isVertical}
+                $variant={variant}
               />
             )}
             <KpiCard item={item} props={props} isVertical={isVertical} />

@@ -20,6 +20,12 @@
 export type MarqueePlacement = 'top' | 'bottom' | 'left' | 'right' | 'custom_section';
 export type MarqueeOrientation = 'auto' | 'horizontal' | 'vertical';
 export type MarqueeDirection = 'forward' | 'reverse';
+export type MarqueeVariant = 'default' | 'glass' | 'dark';
+
+export interface ColorThreshold {
+  value: number;
+  color: string;
+}
 
 export interface MarqueeKpiItem {
   id: string;
@@ -93,6 +99,10 @@ export interface MarqueeFormData {
   show_delta: boolean;
   show_separators: boolean;
   responsive_wrap: boolean;
+  // Pro Theme
+  variant: MarqueeVariant;
+  // Conditional coloring — semicolon-separated threshold entries: "value:color;..."
+  color_thresholds: string;
 }
 
 export interface MarqueeChartProps {
@@ -138,4 +148,8 @@ export interface MarqueeChartProps {
   showSubtitle: boolean;
   showDelta: boolean;
   showSeparators: boolean;
+  // Pro Theme
+  variant: MarqueeVariant;
+  // Conditional coloring thresholds
+  colorThresholds: ColorThreshold[];
 }

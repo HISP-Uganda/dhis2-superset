@@ -23,7 +23,7 @@ import {
   getNumberFormatter,
   t,
 } from '@superset-ui/core';
-import { MarqueeChartProps, MarqueeFormData, MarqueeKpiItem } from './types';
+import { MarqueeChartProps, MarqueeFormData, MarqueeKpiItem, ColorThreshold } from './types';
 
 function resolveMetricLabel(metric: any, index: number): string {
   if (typeof metric === 'string') return metric;
@@ -79,6 +79,27 @@ function formatDelta(value: number | null | undefined): { str: string; positive:
   return { str, positive };
 }
 
+/**
+ * Parse color threshold string: "50:#D32F2F;80:#F9A825;100:#2E7D32"
+ * Each entry is value:hexColor separated by semicolons.
+ */
+function parseColorThresholds(raw: string | undefined | null): ColorThreshold[] {
+  if (!raw || typeof raw !== 'string') return [];
+  return raw
+    .split(';')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const colonIdx = entry.indexOf(':');
+      if (colonIdx === -1) return null;
+      const val = parseFloat(entry.slice(0, colonIdx).trim());
+      const color = entry.slice(colonIdx + 1).trim();
+      if (Number.isNaN(val) || !color) return null;
+      return { value: val, color };
+    })
+    .filter((t): t is ColorThreshold => t !== null);
+}
+
 export default function transformProps(chartProps: ChartProps): MarqueeChartProps {
   const { formData, queriesData, height, width } = chartProps;
   const fd = formData as MarqueeFormData;
@@ -90,7 +111,6 @@ export default function transformProps(chartProps: ChartProps): MarqueeChartProp
   const suffix = fd.suffix || '';
   const nullText = fd.null_text || t('N/A');
 
-  // Extract the first (aggregated) row from query results
   const row = queriesData?.[0]?.data?.[0] || {};
 
   const items: MarqueeKpiItem[] = metrics.map((metric, index) => {
@@ -138,31 +158,33 @@ export default function transformProps(chartProps: ChartProps): MarqueeChartProp
     scrollDirection: fd.scroll_direction || 'forward',
     itemSpacing: fd.item_spacing ?? 12,
     itemPadding: fd.item_padding ?? 16,
-    itemMinWidth: fd.item_min_width ?? 140,
-    itemMaxWidth: fd.item_max_width ?? 260,
-    containerHeight: fd.container_height ?? 72,
-    gapBetweenItems: fd.gap_between_items ?? 32,
-    labelFontSize: fd.label_font_size ?? 11,
-    labelFontWeight: fd.label_font_weight || '500',
-    labelColor: fd.label_color || '#6b7280',
-    valueFontSize: fd.value_font_size ?? 22,
+    itemMinWidth: fd.item_min_width ?? 160,
+    itemMaxWidth: fd.item_max_width ?? 280,
+    containerHeight: fd.container_height ?? 80,
+    gapBetweenItems: fd.gap_between_items ?? 16,
+    labelFontSize: fd.label_font_size ?? 10,
+    labelFontWeight: fd.label_font_weight || '600',
+    labelColor: fd.label_color || '#64748B',
+    valueFontSize: fd.value_font_size ?? 24,
     valueFontWeight: fd.value_font_weight || '700',
-    valueColor: fd.value_color || '#111827',
+    valueColor: fd.value_color || '#1A1F2C',
     subtitleFontSize: fd.subtitle_font_size ?? 11,
-    subtitleColor: fd.subtitle_color || '#9ca3af',
+    subtitleColor: fd.subtitle_color || '#94A3B8',
     containerBackground: fd.container_background || 'transparent',
     itemBackground: fd.item_background || '#ffffff',
-    itemBorderColor: fd.item_border_color || '#e5e7eb',
+    itemBorderColor: fd.item_border_color || '#E5EAF0',
     itemBorderWidth: fd.item_border_width ?? 1,
-    itemBorderRadius: fd.item_border_radius ?? 8,
+    itemBorderRadius: fd.item_border_radius ?? 10,
     showShadow: fd.show_shadow ?? true,
-    hoverBackground: fd.hover_background || '#f9fafb',
-    deltaPositiveColor: fd.delta_positive_color || '#10b981',
-    deltaNegativeColor: fd.delta_negative_color || '#ef4444',
-    dividerColor: fd.divider_color || '#e5e7eb',
+    hoverBackground: fd.hover_background || '#f8fafc',
+    deltaPositiveColor: fd.delta_positive_color || '#2E7D32',
+    deltaNegativeColor: fd.delta_negative_color || '#D32F2F',
+    dividerColor: fd.divider_color || '#E5EAF0',
     showLabel: fd.show_label ?? true,
     showSubtitle: fd.show_subtitle ?? true,
     showDelta: fd.show_delta ?? true,
     showSeparators: fd.show_separators ?? false,
+    variant: fd.variant || 'default',
+    colorThresholds: parseColorThresholds(fd.color_thresholds),
   };
 }

@@ -22,7 +22,7 @@ import {
   getNumberFormatter,
   t,
 } from '@superset-ui/core';
-import { SlideshowChartProps, SlideshowFormData, SlideshowSlide } from './types';
+import { SlideshowChartProps, SlideshowFormData, SlideshowSlide, ColorThreshold } from './types';
 
 function cssRgba(
   color: { r: number; g: number; b: number; a: number } | null | undefined,
@@ -77,6 +77,37 @@ function resolveMetricValue(row: Record<string, any>, metric: any, index: number
   return undefined;
 }
 
+function parseColorThresholds(raw: string | undefined | null): ColorThreshold[] {
+  if (!raw || typeof raw !== 'string') return [];
+  return raw
+    .split(';')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const colonIdx = entry.indexOf(':');
+      if (colonIdx === -1) return null;
+      const val = parseFloat(entry.slice(0, colonIdx).trim());
+      const color = entry.slice(colonIdx + 1).trim();
+      if (Number.isNaN(val) || !color) return null;
+      return { value: val, color };
+    })
+    .filter((t): t is ColorThreshold => t !== null);
+}
+
+function resolveStatusColor(
+  value: number | null,
+  thresholds: ColorThreshold[],
+): string | null {
+  if (!thresholds.length || value === null) return null;
+  const sorted = [...thresholds].sort((a, b) => a.value - b.value);
+  let color: string | null = null;
+  for (const t of sorted) {
+    if (value >= t.value) color = t.color;
+  }
+  if (color === null && sorted.length > 0) color = sorted[0].color;
+  return color;
+}
+
 export default function transformProps(
   chartProps: ChartProps,
 ): SlideshowChartProps {
@@ -93,19 +124,23 @@ export default function transformProps(
   const suffix = fd.suffix ?? '';
   const nullText = fd.nullText ?? '—';
 
+  const colorThresholds = parseColorThresholds(fd.colorThresholds);
+
   const slides: SlideshowSlide[] = metrics.map((metric, idx) => {
     const metricName = resolveMetricLabel(metric, idx);
     const raw = resolveMetricValue(row, metric, idx) ?? null;
     const rawNum = raw === null ? null : Number(raw);
     const isNull = rawNum === null || Number.isNaN(rawNum);
     const formatted = isNull ? nullText : `${prefix}${formatter(rawNum!)}${suffix}`;
+    const numericVal = isNull ? null : rawNum!;
 
     return {
       key: `slide-${idx}`,
       label: metricName,
       value: formatted,
-      rawValue: isNull ? null : rawNum,
+      rawValue: numericVal,
       metricName,
+      statusColor: resolveStatusColor(numericVal, colorThresholds),
     };
   });
 
@@ -151,5 +186,7 @@ export default function transformProps(
     progressBarColor: cssRgba(fd.progressBarColor),
 
     embeddedChartIds,
+
+    colorThresholds,
   };
 }

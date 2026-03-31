@@ -86,6 +86,15 @@ import DHIS2MapChartPlugin from '../DHIS2Map';
 import MarqueeChartPlugin from '../Marquee';
 import SlideshowChartPlugin from '../Slideshow';
 import VitalMapsChartPlugin from '@superset-ui/plugin-chart-vital-maps';
+import SummaryChartPlugin from '../Summary';
+import ComparisonKPIChartPlugin from '../ComparisonKPI';
+import ControlChartPlugin from '../ControlChart';
+import RankedVarianceChartPlugin from '../RankedVariance';
+import CohortCascadeChartPlugin from '../CohortCascade';
+import SmallMultiplesChartPlugin from '../SmallMultiples';
+import StockStatusChartPlugin from '../StockStatus';
+import AgeSexPyramidChartPlugin from '../AgeSexPyramid';
+import ViolinDistributionChartPlugin from '../ViolinDistribution';
 
 export default class MainPreset extends Preset {
   constructor() {
@@ -199,6 +208,15 @@ export default class MainPreset extends Preset {
         new MarqueeChartPlugin().configure({ key: 'marquee_kpi' }),
         new SlideshowChartPlugin().configure({ key: 'slideshow' }),
         new VitalMapsChartPlugin().configure({ key: 'vital_maps' }),
+        new SummaryChartPlugin().configure({ key: 'summary' }),
+        new ComparisonKPIChartPlugin().configure({ key: 'comparison_kpi' }),
+        new ControlChartPlugin().configure({ key: 'control_chart' }),
+        new RankedVarianceChartPlugin().configure({ key: 'ranked_variance' }),
+        new CohortCascadeChartPlugin().configure({ key: 'cohort_cascade' }),
+        new SmallMultiplesChartPlugin().configure({ key: 'small_multiples' }),
+        new StockStatusChartPlugin().configure({ key: 'stock_status' }),
+        new AgeSexPyramidChartPlugin().configure({ key: 'age_sex_pyramid' }),
+        new ViolinDistributionChartPlugin().configure({ key: 'violin_distribution' }),
         ...experimentalPlugins,
         ...agGridTablePlugin,
       ],

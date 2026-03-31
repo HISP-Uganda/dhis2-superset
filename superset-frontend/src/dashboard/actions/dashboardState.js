@@ -547,11 +547,12 @@ export function fetchCharts(
   force = false,
   interval = 0,
   dashboardId,
+  { silent = false } = {},
 ) {
   return (dispatch, getState) => {
     if (!interval) {
       chartList.forEach(chartKey =>
-        dispatch(refreshChart(chartKey, force, dashboardId)),
+        dispatch(refreshChart(chartKey, force, dashboardId, { silent })),
       );
       return;
     }
@@ -569,7 +570,7 @@ export function fetchCharts(
       : 0;
     chartList.forEach((chartKey, i) => {
       setTimeout(
-        () => dispatch(refreshChart(chartKey, force, dashboardId)),
+        () => dispatch(refreshChart(chartKey, force, dashboardId, { silent })),
         delay * i,
       );
     });

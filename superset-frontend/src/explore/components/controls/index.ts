@@ -61,6 +61,7 @@ import ColorBreakpointsControl from './ColorBreakpointsControl';
 import MetricColorControl from './MetricColorControl';
 import MatrixifyDimensionControl from './MatrixifyDimensionControl';
 import DHIS2ColumnFilterControl from './DHIS2ColumnFilterControl';
+import VariableConfigControl from './VariableConfigControl';
 
 const extensionsRegistry = getExtensionsRegistry();
 const DateFilterControlExtension = extensionsRegistry.get(
@@ -111,6 +112,7 @@ const controlMap = {
   TimeRangeControl,
   MatrixifyDimensionControl,
   DHIS2ColumnFilterControl,
+  VariableConfigControl,
   ...sharedControlComponents,
 };
 export default controlMap;

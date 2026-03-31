@@ -91,6 +91,13 @@ export function AppGlobalStyles() {
           --pro-shadow-dropdown: ${PRO_SHADOWS.dropdown};
           --pro-shadow-modal: ${PRO_SHADOWS.modal};
 
+          /* ── Chart-level aliases — referenced by viz Wrappers ──── */
+          --pro-bg-card: ${theme.colorBgContainer};
+          --pro-bg-canvas: ${theme.colorBgLayout};
+          --pro-shadow-sm: ${PRO_SHADOWS.card};
+          --pro-font-family: Inter, 'Segoe UI', Roboto, sans-serif;
+          --pro-text-primary: ${theme.colorText};
+
           /* ── Shape ──────────────────────────────────────────────── */
           --pro-radius-input: ${PRO_RADII.input}px;
           --pro-radius-button: ${PRO_RADII.button}px;
@@ -227,22 +234,33 @@ export function AppGlobalStyles() {
         }
 
         /* ============================================================
-           DASHBOARD CHART CONTAINERS — Soft shadow, compact
+           DASHBOARD CHART CONTAINERS — Single card layer only
+           Card chrome (bg / border / shadow / radius) lives on
+           .dashboard-component-chart-holder.  All inner wrappers
+           are transparent so background-color controls and
+           chart_background_color work without double-layering.
            ============================================================ */
-        .dragdroppable-chart,
-        .dashboard-chart-container,
-        .chart-slice,
-        .slice_container {
-          box-shadow: var(--pro-shadow-card) !important;
-          border: 1px solid var(--pro-border) !important;
-          border-radius: var(--pro-radius-card) !important;
+        .dashboard-component-chart-holder {
+          box-shadow: var(--pro-shadow-card);
+          border: 1px solid var(--pro-border);
+          border-radius: var(--pro-radius-card);
           background: var(--pro-surface);
           transition: box-shadow 0.2s ease;
         }
 
-        .dragdroppable-chart:hover,
-        .dashboard-chart-container:hover {
-          box-shadow: var(--pro-shadow-card-hover) !important;
+        .dashboard-component-chart-holder:hover {
+          box-shadow: var(--pro-shadow-card-hover);
+        }
+
+        /* Inner chart wrappers — transparent, no duplicate chrome */
+        .dragdroppable-chart,
+        .dashboard-chart-container,
+        .chart-slice,
+        .slice_container {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          border-radius: 0 !important;
         }
 
         /* Chart header / title area */

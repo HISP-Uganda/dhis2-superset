@@ -27,6 +27,27 @@ const config: ControlPanelConfig = {
       controlSetRows: [['metrics'], ['adhoc_filters']],
     },
     {
+      label: t('Conditional Coloring'),
+      expanded: false,
+      controlSetRows: [
+        [
+          {
+            name: 'color_thresholds',
+            config: {
+              type: 'TextControl',
+              label: t('Color Thresholds'),
+              description: t(
+                'Threshold-based value coloring. Format: value:color pairs separated by semicolons. ' +
+                'Example: "0:#D32F2F;50:#F9A825;80:#2E7D32" — red below 50, amber 50–80, green above 80.',
+              ),
+              default: '',
+              renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
       label: t('Playback'),
       expanded: true,
       controlSetRows: [

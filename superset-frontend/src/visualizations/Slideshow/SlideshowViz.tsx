@@ -38,6 +38,7 @@ function clamp(val: number, min: number, max: number) {
 // Styled components
 // ---------------------------------------------------------------------------
 
+/* eslint-disable theme-colors/no-literal-colors */
 const Wrapper = styled.div<{
   $height: number;
   $bgColor: string | null;
@@ -49,17 +50,18 @@ const Wrapper = styled.div<{
   position: relative;
   width: 100%;
   height: ${({ $height }) => $height}px;
-  background: ${({ $bgColor, theme }) => $bgColor ?? theme.colorBgContainer};
+  background: ${({ $bgColor }) => $bgColor ?? 'var(--pro-bg-card, #ffffff)'};
   border-radius: ${({ $borderRadius }) => $borderRadius}px;
   border: ${({ $showBorder, $borderColor }) =>
     $showBorder ? `1px solid ${$borderColor}` : 'none'};
   box-shadow: ${({ $showShadow }) =>
-    $showShadow ? '0 4px 20px rgba(0,0,0,0.12)' : 'none'};
+    $showShadow ? 'var(--pro-shadow-md, 0 4px 20px rgba(0,0,0,0.08))' : 'none'};
   overflow: hidden;
   display: flex;
   flex-direction: column;
   outline: none;
   user-select: none;
+  font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
 `;
 
 const SlideViewport = styled.div`
@@ -148,6 +150,7 @@ const MetricSlide = styled.div<{
   $padding: number;
   $valueColor: string | null;
   $labelColor: string | null;
+  $statusColor: string | null;
 }>`
   display: flex;
   flex-direction: column;
@@ -157,13 +160,13 @@ const MetricSlide = styled.div<{
   padding: ${({ $padding }) => $padding}px;
   width: 100%;
   height: 100%;
-  gap: 8px;
+  gap: 10px;
 
   .slide-label {
-    font-size: 14px;
-    font-weight: 500;
-    color: ${({ $labelColor, theme }) => $labelColor ?? theme.colorTextSecondary};
-    letter-spacing: 0.04em;
+    font-size: 12px;
+    font-weight: 600;
+    color: ${({ $labelColor }) => $labelColor ?? 'var(--pro-text-muted, #64748B)'};
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
@@ -171,28 +174,30 @@ const MetricSlide = styled.div<{
     font-size: clamp(2rem, 8vw, 4.5rem);
     font-weight: 700;
     line-height: 1;
-    color: ${({ $valueColor, theme }) => $valueColor ?? theme.colorText};
+    color: ${({ $statusColor, $valueColor }) =>
+      $statusColor ?? $valueColor ?? 'var(--pro-text-primary, #1A1F2C)'};
     letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
   }
 
   .slide-delta {
     font-size: 14px;
     font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 999px;
+    padding: 3px 10px;
+    border-radius: 6px;
     &.positive {
-      color: ${({ theme }) => theme.colorSuccess};
-      background: ${({ theme }) => theme.colorSuccessBg};
+      color: var(--pro-success, #2E7D32);
+      background: rgba(46, 125, 50, 0.08);
     }
     &.negative {
-      color: ${({ theme }) => theme.colorError};
-      background: ${({ theme }) => theme.colorErrorBg};
+      color: var(--pro-error, #D32F2F);
+      background: rgba(211, 47, 47, 0.08);
     }
   }
 
   .slide-subtitle {
     font-size: 13px;
-    color: ${({ theme }) => theme.colorTextTertiary};
+    color: var(--pro-text-muted, #94A3B8);
   }
 `;
 
@@ -227,9 +232,10 @@ const ControlsBar = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 8px 16px;
   flex-shrink: 0;
-  min-height: 36px;
+  min-height: 40px;
+  border-top: 1px solid var(--pro-border, rgba(0,0,0,0.06));
 `;
 
 const DotsContainer = styled.div`
@@ -245,17 +251,17 @@ const Dot = styled.button<{
   $dotColor: string | null;
   $activeDotColor: string;
 }>`
-  width: ${({ $active }) => ($active ? 20 : 8)}px;
+  width: ${({ $active }) => ($active ? 24 : 8)}px;
   height: 8px;
   border-radius: 4px;
   border: none;
   cursor: pointer;
   padding: 0;
-  transition: width 0.25s ease, background 0.25s ease;
+  transition: width 0.3s ease, background 0.3s ease;
   background: ${({ $active, $dotColor, $activeDotColor }) =>
-    $active ? ($dotColor ?? $activeDotColor) : 'rgba(0,0,0,0.2)'};
+    $active ? ($dotColor ?? $activeDotColor) : 'var(--pro-border, rgba(0,0,0,0.15))'};
   &:focus-visible {
-    outline: 2px solid ${({ theme }) => theme.colorPrimary};
+    outline: 2px solid var(--pro-accent, #1976D2);
     outline-offset: 2px;
   }
 `;
@@ -263,23 +269,24 @@ const Dot = styled.button<{
 const ArrowButton = styled.button<{ $arrowColor: string | null }>`
   width: 32px;
   height: 32px;
-  border-radius: 50%;
-  border: none;
+  border-radius: 8px;
+  border: 1px solid var(--pro-border, rgba(0,0,0,0.08));
   cursor: pointer;
-  background: rgba(0, 0, 0, 0.1);
-  color: ${({ $arrowColor, theme }) => $arrowColor ?? theme.colorText};
+  background: var(--pro-bg-card, rgba(255,255,255,0.8));
+  color: ${({ $arrowColor }) => $arrowColor ?? 'var(--pro-text-primary, #1A1F2C)'};
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
   line-height: 1;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
   flex-shrink: 0;
   &:hover {
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--pro-bg-canvas, #F5F7FA);
+    box-shadow: var(--pro-shadow-sm, 0 1px 3px rgba(0,0,0,0.06));
   }
   &:focus-visible {
-    outline: 2px solid ${({ theme }) => theme.colorPrimary};
+    outline: 2px solid var(--pro-accent, #1976D2);
     outline-offset: 2px;
   }
   &:disabled {
@@ -289,11 +296,13 @@ const ArrowButton = styled.button<{ $arrowColor: string | null }>`
 `;
 
 const Counter = styled.span`
-  font-size: 12px;
-  color: ${({ theme }) => theme.colorTextSecondary};
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--pro-text-muted, #94A3B8);
   min-width: 48px;
   text-align: right;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 `;
 
 // Progress bar
@@ -313,7 +322,7 @@ const ProgressBarFill = styled.div<{
   $active: boolean;
 }>`
   height: 100%;
-  background: ${({ $color, theme }) => $color ?? theme.colorPrimary};
+  background: ${({ $color }) => $color ?? 'var(--pro-accent, #1976D2)'};
   width: ${({ $active }) => ($active ? '100%' : '0%')};
   transition: ${({ $active, $duration }) =>
     $active ? `width ${$duration}ms linear` : 'none'};
@@ -594,6 +603,7 @@ const SlideshowViz: React.FC<SlideshowChartProps> = ({
                   $padding={contentPadding}
                   $valueColor={valueColor}
                   $labelColor={labelColor}
+                  $statusColor={entry.slide.statusColor ?? null}
                 >
                   <div className="slide-label">{entry.slide.label}</div>
                   <div className="slide-value">{entry.slide.value}</div>

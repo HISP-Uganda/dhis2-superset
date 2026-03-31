@@ -186,11 +186,14 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     position: absolute;
     top: 8px;
     right: 8px;
-    background: #ff4d4f;
+    background: var(--pro-error, #D32F2F);
     color: #ffffff;
     padding: 8px 16px;
-    border-radius: 4px;
+    border-radius: var(--pro-radius-sm, 6px);
     z-index: 999;
+    font-family: var(--pro-font-family, 'Inter', sans-serif);
+    font-size: 13px;
+    box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.15));
   }
 
   .auto-focus-button {
@@ -198,16 +201,18 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     bottom: 80px;
     right: 8px;
     z-index: 1000;
-    background: #ffffff;
-    border: 2px solid rgba(0, 0, 0, 0.2);
-    border-radius: 4px;
+    background: var(--pro-bg-card, #ffffff);
+    border: 1px solid var(--pro-border, rgba(0, 0, 0, 0.12));
+    border-radius: var(--pro-radius-sm, 6px);
     padding: 4px 8px;
     cursor: pointer;
     font-size: 16px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--pro-shadow-sm, 0 2px 6px rgba(0, 0, 0, 0.1));
+    transition: background 0.15s ease, box-shadow 0.15s ease;
 
     &:hover {
-      background: #f4f4f4;
+      background: var(--pro-bg-canvas, #F5F7FA);
+      box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.1));
     }
   }
 
@@ -222,7 +227,8 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     pointer-events: auto;
     font-size: 12px;
     font-weight: 500;
-    color: #333333;
+    color: var(--pro-text-primary, #1A1F2C);
+    font-family: var(--pro-font-family, 'Inter', sans-serif);
   }
 `;
 
@@ -233,10 +239,11 @@ const MapFooterBar = styled.div`
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 6px 10px;
+  padding: 6px 12px;
   min-height: 0;
-  background: rgba(248, 250, 252, 0.85);
-  border-top: 1px solid rgba(148, 163, 184, 0.15);
+  background: var(--pro-bg-canvas, rgba(248, 250, 252, 0.92));
+  border-top: 1px solid var(--pro-border, rgba(148, 163, 184, 0.15));
+  font-family: var(--pro-font-family, 'Inter', sans-serif);
 `;
 
 const MapFooterControlSlot = styled.div`
@@ -253,18 +260,23 @@ const FooterActionButton = styled.button<{ $active?: boolean }>`
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-radius: 999px;
+  border-radius: 6px;
   border: 1px solid ${({ $active }) =>
-    $active ? '#0066cc' : 'rgba(148, 163, 184, 0.45)'};
-  background: ${({ $active }) => ($active ? '#0066cc' : 'rgba(255, 255, 255, 0.96)')};
-  color: ${({ $active }) => ($active ? '#ffffff' : '#334155')};
+    $active ? 'var(--pro-accent, #1976D2)' : 'var(--pro-border, rgba(148, 163, 184, 0.35))'};
+  background: ${({ $active }) =>
+    $active ? 'var(--pro-accent, #1976D2)' : 'var(--pro-bg-card, rgba(255, 255, 255, 0.96))'};
+  color: ${({ $active }) =>
+    $active ? '#ffffff' : 'var(--pro-text-secondary, #334155)'};
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--pro-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.06));
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 
   &:hover {
-    background: ${({ $active }) => ($active ? '#0057ad' : 'rgba(241, 245, 249, 0.98)')};
+    background: ${({ $active }) =>
+      $active ? 'var(--pro-accent-hover, #1565C0)' : 'var(--pro-bg-canvas, #F5F7FA)'};
+    box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.08));
   }
 `;
 
@@ -272,11 +284,13 @@ const FooterStatusPill = styled.div<{ $cacheHit?: boolean }>`
   display: inline-flex;
   align-items: center;
   padding: 5px 10px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
-  background: ${({ $cacheHit }) => ($cacheHit ? '#d4edda' : '#cce5ff')};
-  color: ${({ $cacheHit }) => ($cacheHit ? '#155724' : '#004085')};
+  background: ${({ $cacheHit }) =>
+    $cacheHit ? 'rgba(46, 125, 50, 0.1)' : 'rgba(25, 118, 210, 0.1)'};
+  color: ${({ $cacheHit }) =>
+    $cacheHit ? 'var(--pro-success, #2E7D32)' : 'var(--pro-accent, #1976D2)'};
 `;
 /* eslint-enable theme-colors/no-literal-colors */
 

@@ -55,6 +55,7 @@ const DEFAULT_PROPS: SlideshowChartProps = {
   arrowColor: null,
   progressBarColor: null,
   embeddedChartIds: [],
+  colorThresholds: [],
 };
 
 function renderSlideshow(overrides: Partial<SlideshowChartProps> = {}) {

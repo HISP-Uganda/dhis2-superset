@@ -18,6 +18,11 @@
  */
 import { QueryFormData, QueryFormMetric } from '@superset-ui/core';
 
+export interface ColorThreshold {
+  value: number;
+  color: string;
+}
+
 export type TransitionType =
   | 'fade'
   | 'slide-horizontal'
@@ -43,6 +48,8 @@ export interface SlideshowSlide {
   subtitle?: string;
   /** Metric name used to fetch (for ordering) */
   metricName: string;
+  /** Status color resolved from thresholds */
+  statusColor?: string | null;
 }
 
 export type SlideshowFormData = QueryFormData & {
@@ -91,6 +98,9 @@ export type SlideshowFormData = QueryFormData & {
 
   // Optional embedded charts (comma-separated IDs)
   embeddedChartIds?: string;
+
+  // Conditional coloring — semicolon-separated threshold entries: "value:color;..."
+  colorThresholds?: string;
 };
 
 export interface SlideshowChartProps {
@@ -135,4 +145,7 @@ export interface SlideshowChartProps {
 
   // Embedded chart IDs
   embeddedChartIds: number[];
+
+  // Conditional coloring thresholds
+  colorThresholds: ColorThreshold[];
 }

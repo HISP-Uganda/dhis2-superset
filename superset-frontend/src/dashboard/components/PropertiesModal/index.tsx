@@ -52,6 +52,9 @@ import {
 } from 'src/dashboard/actions/dashboardState';
 import { areObjectsEqual } from 'src/reduxUtils';
 import { StandardModal, useModalValidation } from 'src/components/Modal';
+import { getPreset } from 'src/theme/presets';
+import { getLayout, layoutCssVars } from 'src/theme/layouts';
+import { densityCssVars } from 'src/theme/density';
 import {
   BasicInfoSection,
   AccessSection,
@@ -128,6 +131,8 @@ const PropertiesModal = ({
   const [customCss, setCustomCss] = useState('');
   const [refreshFrequency, setRefreshFrequency] = useState(0);
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null);
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [selectedLayoutId, setSelectedLayoutId] = useState<string | null>(null);
   const [themes, setThemes] = useState<
     Array<{
       id: number;
@@ -188,6 +193,8 @@ const PropertiesModal = ({
       setCustomCss(css || '');
       setCurrentColorScheme(metadata?.color_scheme);
       setSelectedThemeId(theme?.id || null);
+      setSelectedPresetId(metadata?.pro_preset_id || null);
+      setSelectedLayoutId(metadata?.pro_layout_id || null);
 
       const metaDataCopy = omit(metadata, [
         'positions',
@@ -505,6 +512,52 @@ const PropertiesModal = ({
   const handleRefreshFrequencyChange = (value: any) =>
     setRefreshFrequency(value);
 
+  const applyInlineCssVars = (cssText: string) => {
+    const root = document.documentElement;
+    cssText
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .forEach(line => {
+        const [key, val] = line.replace(';', '').split(':').map(s => s.trim());
+        if (key && val) root.style.setProperty(key, val);
+      });
+  };
+
+  const handlePresetChange = (presetId: string) => {
+    setSelectedPresetId(presetId || null);
+    const preset = presetId ? getPreset(presetId) : null;
+    if (preset) {
+      const root = document.documentElement;
+      Object.entries(preset.cssVars).forEach(([key, val]) => {
+        root.style.setProperty(key, val);
+      });
+      const jsonMetadataObj = getJsonMetadata();
+      jsonMetadataObj.pro_preset_id = presetId;
+      setJsonMetadata(jsonStringify(jsonMetadataObj));
+    }
+  };
+
+  const handleLayoutChange = (layoutId: string) => {
+    setSelectedLayoutId(layoutId || null);
+    const layout = layoutId ? getLayout(layoutId) : null;
+    if (layout) {
+      applyInlineCssVars(layoutCssVars(layout));
+      applyInlineCssVars(densityCssVars(layout.densityTier));
+      // Apply layout root class
+      const appEl = document.getElementById('app');
+      if (appEl) {
+        Array.from(appEl.classList)
+          .filter(c => c.startsWith('pro-layout-'))
+          .forEach(c => appEl.classList.remove(c));
+        appEl.classList.add(layout.rootClass);
+      }
+      const jsonMetadataObj = getJsonMetadata();
+      jsonMetadataObj.pro_layout_id = layoutId;
+      setJsonMetadata(jsonStringify(jsonMetadataObj));
+    }
+  };
+
   // Helper function for styling section
   const hasCustomLabelsColor = !!Object.keys(
     getJsonMetadata()?.label_colors || {},
@@ -709,6 +762,10 @@ const PropertiesModal = ({
                   onColorSchemeChange={onColorSchemeChange}
                   onCustomCssChange={setCustomCss}
                   addDangerToast={addDangerToast}
+                  selectedPresetId={selectedPresetId}
+                  selectedLayoutId={selectedLayoutId}
+                  onPresetChange={handlePresetChange}
+                  onLayoutChange={handleLayoutChange}
                 />
               ),
             },

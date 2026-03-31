@@ -271,14 +271,27 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
     [dispatch],
   );
 
+  // Use refs to avoid recreating the periodic callback when Redux state
+  // changes. Without refs, dashboardInfo/chartIds cause startPeriodicRender
+  // to be recreated on every Redux update, which restarts the timer in an
+  // infinite loop (timer fires → fetchCharts → state change → callback
+  // recreated → useEffect restarts timer → repeat).
+  const dashboardInfoRef = useRef(dashboardInfo);
+  dashboardInfoRef.current = dashboardInfo;
+  const chartIdsRef = useRef(chartIds);
+  chartIdsRef.current = chartIds;
+  const isPublicViewRef = useRef(isPublicView);
+  isPublicViewRef.current = isPublicView;
+
   const startPeriodicRender = useCallback(
     interval => {
       let intervalMessage;
 
       if (interval) {
         const periodicRefreshOptions =
-          dashboardInfo.common?.conf?.DASHBOARD_AUTO_REFRESH_INTERVALS;
-        const predefinedValue = periodicRefreshOptions.find(
+          dashboardInfoRef.current.common?.conf
+            ?.DASHBOARD_AUTO_REFRESH_INTERVALS;
+        const predefinedValue = periodicRefreshOptions?.find(
           option => Number(option[0]) === interval / 1000,
         );
 
@@ -291,18 +304,12 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
         }
       }
 
-      const fetchCharts = (charts, force = false) =>
-        boundActionCreators.fetchCharts(
-          charts,
-          force,
-          interval * 0.2,
-          dashboardInfo.id,
-        );
-
       const periodicRender = () => {
-        const { metadata } = dashboardInfo;
+        const info = dashboardInfoRef.current;
+        const currentChartIds = chartIdsRef.current;
+        const { metadata } = info;
         const immune = metadata.timed_refresh_immune_slices || [];
-        const affectedCharts = chartIds.filter(
+        const affectedCharts = currentChartIds.filter(
           chartId => immune.indexOf(chartId) === -1,
         );
 
@@ -310,19 +317,34 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
           interval,
           chartCount: affectedCharts.length,
         });
-        boundActionCreators.addWarningToast(
-          t(
-            `This dashboard is currently auto refreshing; the next auto refresh will be in %s.`,
-            intervalMessage,
-          ),
-        );
-        if (
-          dashboardInfo.common?.conf?.DASHBOARD_AUTO_REFRESH_MODE === 'fetch'
-        ) {
-          // force-refresh while auto-refresh in dashboard
-          return fetchCharts(affectedCharts);
+
+        // In public view, refresh silently without toast notifications
+        if (!isPublicViewRef.current) {
+          boundActionCreators.addWarningToast(
+            t(
+              `This dashboard is currently auto refreshing; the next auto refresh will be in %s.`,
+              intervalMessage,
+            ),
+          );
         }
-        return fetchCharts(affectedCharts, true);
+
+        // In public view, always use soft fetch (force=false) to avoid
+        // visible loading spinners. In authenticated view, respect the
+        // DASHBOARD_AUTO_REFRESH_MODE config.
+        const forceRefresh = isPublicViewRef.current
+          ? false
+          : info.common?.conf?.DASHBOARD_AUTO_REFRESH_MODE !== 'fetch';
+
+        // Pass silent=true for public views so charts refresh in the
+        // background without showing loading spinners.
+        const silent = !!isPublicViewRef.current;
+        return boundActionCreators.fetchCharts(
+          affectedCharts,
+          forceRefresh,
+          interval * 0.2,
+          info.id,
+          { silent },
+        );
       };
 
       refreshTimer.current = setPeriodicRunner({
@@ -331,7 +353,8 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
         refreshTimer: refreshTimer.current,
       });
     },
-    [boundActionCreators, chartIds, dashboardInfo],
+    // boundActionCreators is stable (memoized with [dispatch])
+    [boundActionCreators],
   );
 
   useEffect(() => {
