@@ -132,6 +132,7 @@ import KeyboardShortcutButton, {
   KeyboardShortcut,
 } from '../KeyboardShortcutButton';
 import AIInsightPanel from 'src/features/ai/AIInsightPanel';
+import { useAIEnabled } from 'src/features/ai/useAIEnabled';
 
 const bootstrapData = getBootstrapData();
 const scheduledQueriesConf = bootstrapData?.common?.conf?.SCHEDULED_QUERIES;
@@ -231,6 +232,7 @@ const SqlEditor: FC<Props> = ({
 }) => {
   const theme = useTheme();
   const dispatch = useDispatch();
+  const aiEnabled = useAIEnabled();
 
   const {
     database,
@@ -892,7 +894,7 @@ const SqlEditor: FC<Props> = ({
               <span>
                 <ShareSqlLabQuery queryEditorId={queryEditor.id} />
               </span>
-              {isFeatureEnabled(FeatureFlag.AiInsights) && database ? (
+              {aiEnabled && database ? (
                 <span>
                   <ModalTrigger
                     triggerNode={

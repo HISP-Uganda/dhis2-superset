@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import Any
 
 from flask import request
 from flask_appbuilder.api import expose, protect, safe
 from flask_appbuilder.security.decorators import permission_name
 from marshmallow import INCLUDE, Schema, ValidationError, fields
+from sqlalchemy import func
 
 from superset.ai_insights.config import get_ai_insights_config
+from superset.ai_insights.models import AIUsageLog
 from superset.ai_insights.providers import AIProviderError, ProviderRegistry
 from superset.ai_insights.settings import (
     build_ai_management_payload,
     save_ai_management_settings,
 )
 from superset.constants import MODEL_API_RW_METHOD_PERMISSION_MAP, PASSWORD_MASK
+from superset.extensions import db
 from superset.views.base_api import BaseSupersetApi
 
 
@@ -58,6 +62,8 @@ class AIManagementRestApi(BaseSupersetApi):
         "get_settings": "read",
         "update_settings": "write",
         "test_provider": "write",
+        "usage_stats": "read",
+        "usage_log": "read",
     }
     resource_name = "ai-management"
     openapi_spec_tag = "AI"
@@ -138,4 +144,126 @@ class AIManagementRestApi(BaseSupersetApi):
                 "text": result.text,
                 "duration_ms": result.duration_ms,
             },
+        )
+
+    @expose("/usage/stats", methods=("GET",))
+    @protect()
+    @safe
+    @permission_name("read")
+    def usage_stats(self) -> Any:
+        """Aggregate usage stats for the AI insights admin dashboard."""
+        days = int(request.args.get("days", 30))
+        since = datetime.utcnow() - timedelta(days=days)
+
+        base_q = db.session.query(AIUsageLog).filter(AIUsageLog.created_on >= since)
+
+        total_requests = base_q.count()
+        successful = base_q.filter(AIUsageLog.status == "success").count()
+        errors = base_q.filter(AIUsageLog.status != "success").count()
+
+        avg_duration = (
+            db.session.query(func.avg(AIUsageLog.duration_ms))
+            .filter(AIUsageLog.created_on >= since, AIUsageLog.status == "success")
+            .scalar()
+        ) or 0
+
+        # Breakdown by mode
+        by_mode = (
+            db.session.query(AIUsageLog.mode, func.count(AIUsageLog.id))
+            .filter(AIUsageLog.created_on >= since)
+            .group_by(AIUsageLog.mode)
+            .all()
+        )
+
+        # Breakdown by provider
+        by_provider = (
+            db.session.query(AIUsageLog.provider_id, func.count(AIUsageLog.id))
+            .filter(AIUsageLog.created_on >= since)
+            .group_by(AIUsageLog.provider_id)
+            .all()
+        )
+
+        # Daily request counts
+        daily = (
+            db.session.query(
+                func.date(AIUsageLog.created_on).label("date"),
+                func.count(AIUsageLog.id),
+            )
+            .filter(AIUsageLog.created_on >= since)
+            .group_by(func.date(AIUsageLog.created_on))
+            .order_by(func.date(AIUsageLog.created_on))
+            .all()
+        )
+
+        # Top users
+        top_users = (
+            db.session.query(AIUsageLog.user_id, func.count(AIUsageLog.id))
+            .filter(AIUsageLog.created_on >= since)
+            .group_by(AIUsageLog.user_id)
+            .order_by(func.count(AIUsageLog.id).desc())
+            .limit(10)
+            .all()
+        )
+
+        return self.response(
+            200,
+            result={
+                "period_days": days,
+                "total_requests": total_requests,
+                "successful": successful,
+                "errors": errors,
+                "avg_duration_ms": round(float(avg_duration), 1),
+                "by_mode": {mode: count for mode, count in by_mode},
+                "by_provider": {pid: count for pid, count in by_provider},
+                "daily": [
+                    {"date": str(d), "count": c} for d, c in daily
+                ],
+                "top_users": [
+                    {"user_id": uid, "count": c} for uid, c in top_users
+                ],
+            },
+        )
+
+    @expose("/usage/log", methods=("GET",))
+    @protect()
+    @safe
+    @permission_name("read")
+    def usage_log(self) -> Any:
+        """Recent usage log entries."""
+        limit = min(int(request.args.get("limit", 50)), 500)
+        offset = int(request.args.get("offset", 0))
+        mode = request.args.get("mode")
+        status = request.args.get("status")
+
+        query = db.session.query(AIUsageLog)
+        if mode:
+            query = query.filter(AIUsageLog.mode == mode)
+        if status:
+            query = query.filter(AIUsageLog.status == status)
+
+        entries = (
+            query.order_by(AIUsageLog.created_on.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return self.response(
+            200,
+            result=[
+                {
+                    "id": e.id,
+                    "user_id": e.user_id,
+                    "mode": e.mode,
+                    "provider_id": e.provider_id,
+                    "model_name": e.model_name,
+                    "question_length": e.question_length,
+                    "response_length": e.response_length,
+                    "duration_ms": e.duration_ms,
+                    "status": e.status,
+                    "error_message": e.error_message,
+                    "target_id": e.target_id,
+                    "created_on": e.created_on.isoformat() if e.created_on else None,
+                }
+                for e in entries
+            ],
         )

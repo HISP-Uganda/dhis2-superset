@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Thin frontend shell routes for public pages and authenticated CMS admin."""
+"""Thin frontend shell routes for public pages and authenticated dynamic pages admin."""
 
 from __future__ import annotations
 

@@ -156,16 +156,6 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.advanced_data_type.api import AdvancedDataTypeRestApi
         from superset.annotation_layers.annotations.api import AnnotationRestApi
         from superset.annotation_layers.api import AnnotationLayerRestApi
-        from superset.ai_insights.api import (
-            AIChartRestApi,
-            AIDashboardRestApi,
-            AISqlRestApi,
-        )
-        from superset.ai_insights.admin_api import AIManagementRestApi
-        from superset.ai_insights.admin_views import (
-            AIManagementView,
-            ai_management_frontend_blueprint,
-        )
         from superset.async_events.api import AsyncEventsRestApi
         from superset.available_domains.api import AvailableDomainsRestApi
         from superset.cachekeys.api import CacheRestApi
@@ -270,7 +260,12 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.views.health import health_blueprint
 
         self.superset_app.register_blueprint(health_blueprint)
-        self.superset_app.register_blueprint(ai_management_frontend_blueprint)
+        if feature_flag_manager.is_feature_enabled("AI_INSIGHTS"):
+            from superset.ai_insights.admin_views import (
+                ai_management_frontend_blueprint,
+            )
+
+            self.superset_app.register_blueprint(ai_management_frontend_blueprint)
         self.superset_app.register_blueprint(dhis2_frontend_blueprint)
         self.superset_app.register_blueprint(local_staging_blueprint)
         self.superset_app.register_blueprint(cms_frontend_blueprint)
@@ -282,10 +277,24 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(AnnotationRestApi)
         appbuilder.add_api(AnnotationLayerRestApi)
         appbuilder.add_api(AsyncEventsRestApi)
-        appbuilder.add_api(AIChartRestApi)
-        appbuilder.add_api(AIDashboardRestApi)
-        appbuilder.add_api(AISqlRestApi)
-        appbuilder.add_api(AIManagementRestApi)
+        if feature_flag_manager.is_feature_enabled("AI_INSIGHTS"):
+            from superset.ai_insights.api import (
+                AIChartRestApi,
+                AIDashboardRestApi,
+                AIPublicDashboardRestApi,
+                AISqlRestApi,
+            )
+            from superset.ai_insights.admin_api import AIManagementRestApi
+            from superset.ai_insights.conversation_api import AIConversationRestApi
+            from superset.ai_insights.push_analysis_api import AIPushAnalysisRestApi
+
+            appbuilder.add_api(AIChartRestApi)
+            appbuilder.add_api(AIDashboardRestApi)
+            appbuilder.add_api(AIPublicDashboardRestApi)
+            appbuilder.add_api(AISqlRestApi)
+            appbuilder.add_api(AIManagementRestApi)
+            appbuilder.add_api(AIConversationRestApi)
+            appbuilder.add_api(AIPushAnalysisRestApi)
         appbuilder.add_api(AdvancedDataTypeRestApi)
         appbuilder.add_api(AvailableDomainsRestApi)
         appbuilder.add_api(CacheRestApi)
@@ -517,14 +526,18 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
                 "ENABLE_EXTENSIONS"
             ),
         )
-        appbuilder.add_view(
-            AIManagementView,
-            "AI Management",
-            label=_("AI Management"),
-            icon="fa-robot",
-            category="AI",
-            category_label=_("AI"),
-        )
+        if feature_flag_manager.is_feature_enabled("AI_INSIGHTS"):
+            appbuilder.add_link(
+                "AI Management",
+                label=_("AI Management"),
+                href="/superset/ai-management/",
+                icon="fa-robot",
+                category="",
+                category_icon="",
+                cond=lambda: feature_flag_manager.is_feature_enabled(
+                    "AI_INSIGHTS"
+                ),
+            )
 
         #
         # Setup views with no menu

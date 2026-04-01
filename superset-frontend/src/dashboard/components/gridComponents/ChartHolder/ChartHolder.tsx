@@ -39,7 +39,7 @@ import {
   GRID_MIN_ROW_UNITS,
 } from 'src/dashboard/util/constants';
 
-export const CHART_MARGIN = 32;
+export const CHART_MARGIN = 16;
 
 interface ChartHolderProps {
   id: string;

@@ -6,8 +6,53 @@ import {
   QueryResponseSummary,
 } from './types';
 
-const DEFAULT_MAX_ROWS = 20;
-const DEFAULT_MAX_COLUMNS = 25;
+const DEFAULT_MAX_ROWS = 15;
+const DEFAULT_MAX_COLUMNS = 20;
+const DEFAULT_MAX_DASHBOARD_CHARTS = 12;
+
+/**
+ * Semantic form_data keys that are analytically meaningful.
+ * UI-styling keys (colors, label formats, legend settings, etc.)
+ * are stripped to save tokens.
+ */
+const FORM_DATA_KEEP_KEYS = new Set([
+  'datasource',
+  'viz_type',
+  'metrics',
+  'metric',
+  'percent_metrics',
+  'groupby',
+  'columns',
+  'all_columns',
+  'order_by_cols',
+  'row_limit',
+  'time_range',
+  'granularity_sqla',
+  'time_grain_sqla',
+  'adhoc_filters',
+  'where',
+  'having',
+  'order_desc',
+  'contribution',
+  'series',
+  'entity',
+  'x_axis',
+  'query_mode',
+  'include_time',
+]);
+
+function pruneFormData(
+  formData?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!formData) return undefined;
+  const pruned: Record<string, unknown> = {};
+  Object.keys(formData).forEach(key => {
+    if (FORM_DATA_KEEP_KEYS.has(key)) {
+      pruned[key] = formData[key];
+    }
+  });
+  return pruned;
+}
 
 function getSampleRows(
   queryResponse: QueryDataLike,
@@ -37,7 +82,7 @@ export function buildQueryResponseSummary(
     [];
   const trimmedColumns = columns.slice(0, maxColumns);
 
-  return {
+  const summary: QueryResponseSummary = {
     row_count: Number(
       typedResponse.rowcount ??
         typedResponse.sql_rowcount ??
@@ -50,6 +95,26 @@ export function buildQueryResponseSummary(
     rejected_filters: typedResponse.rejected_filters,
     error: typedResponse.error || null,
   };
+
+  // Drop empty filter arrays to save tokens
+  if (
+    !summary.applied_filters ||
+    (Array.isArray(summary.applied_filters) &&
+      summary.applied_filters.length === 0)
+  ) {
+    delete (summary as Record<string, unknown>).applied_filters;
+  }
+  if (
+    !summary.rejected_filters ||
+    (Array.isArray(summary.rejected_filters) &&
+      summary.rejected_filters.length === 0)
+  ) {
+    delete (summary as Record<string, unknown>).rejected_filters;
+  }
+  if (!summary.error) {
+    delete (summary as Record<string, unknown>).error;
+  }
+  return summary;
 }
 
 export function buildChartInsightContext(input: {
@@ -65,7 +130,7 @@ export function buildChartInsightContext(input: {
       id: input.chartId,
       name: input.sliceName,
       viz_type: input.vizType,
-      form_data: input.formData,
+      form_data: pruneFormData(input.formData),
     },
     datasource: input.datasource,
     query_result: buildQueryResponseSummary(input.queryResponse),
@@ -85,13 +150,16 @@ export function buildDashboardInsightContext(input: {
     queryResponse?: QueryDataLike;
   }>;
 }): DashboardInsightContext {
+  // Limit the number of charts sent to the AI to save tokens
+  const limitedCharts = input.charts.slice(0, DEFAULT_MAX_DASHBOARD_CHARTS);
+
   return {
     dashboard: {
       id: input.dashboardId,
       title: input.dashboardTitle,
       active_filters: input.activeFilters,
     },
-    charts: input.charts.map(chart =>
+    charts: limitedCharts.map(chart =>
       buildChartInsightContext({
         chartId: chart.id,
         sliceName: chart.slice_name,

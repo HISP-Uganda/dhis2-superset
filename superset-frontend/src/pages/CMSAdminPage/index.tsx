@@ -863,7 +863,7 @@ export default function CMSAdminPage() {
       }
       const messageText = await resolveApiErrorMessage(
         caughtError,
-        t('Failed to load CMS Pages.'),
+        t('Failed to load Dynamic Pages.'),
       );
       setError(messageText);
       return null;
@@ -3627,7 +3627,7 @@ export default function CMSAdminPage() {
     return (
       <Result
         status="403"
-        title={t('CMS access denied')}
+        title={t('Access denied')}
         subTitle={t('You do not have permission to manage portal pages.')}
       />
     );
@@ -3651,16 +3651,16 @@ export default function CMSAdminPage() {
   };
   const tabSubtitleMap: Record<AdminTab, string> = {
     overview: t(
-      'Track recent publishing activity, page volume, and CMS design-system coverage.',
+      'Track recent publishing activity, page volume, and design-system coverage.',
     ),
     pages: t(
-      'Search, filter, and manage CMS pages, routing, hierarchy, and publish state.',
+      'Search, filter, and manage dynamic pages, routing, hierarchy, and publish state.',
     ),
     studio: t(
       'Compose pages with reusable blocks, responsive regions, and typed content settings.',
     ),
     media: t(
-      'Upload and manage images, files, and downloadable resources for CMS-authored pages.',
+      'Upload and manage images, files, and downloadable resources for dynamic pages.',
     ),
     menus: t(
       'Configure header and footer navigation, nested menus, and page-linked items.',
@@ -3771,7 +3771,7 @@ export default function CMSAdminPage() {
               {t('Portal Administration')}
             </Eyebrow>
             <div style={{ fontSize: 20, fontWeight: 700 }}>
-              {t('CMS Pages')}
+              {t('Dynamic Pages')}
             </div>
           </div>
         </TopBarBrand>

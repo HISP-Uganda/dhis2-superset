@@ -1,4 +1,4 @@
-ATTACH TABLE _ UUID 'f88eb37c-74cb-45c5-82cb-97dbe48b6ec7'
+ATTACH TABLE _ UUID 'd585cbc8-c8d5-49bb-98fd-258b9009a9bc'
 (
     `national` LowCardinality(String),
     `district` LowCardinality(String),

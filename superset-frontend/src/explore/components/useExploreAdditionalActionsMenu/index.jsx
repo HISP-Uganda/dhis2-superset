@@ -55,6 +55,7 @@ import EmbedCodeContent from '../EmbedCodeContent';
 import { useDashboardsMenuItems } from './DashboardsSubMenu';
 import AIInsightPanel from 'src/features/ai/AIInsightPanel';
 import { buildChartInsightContext } from 'src/features/ai/context';
+import { useAIEnabled } from 'src/features/ai/useAIEnabled';
 
 export const SEARCH_THRESHOLD = 10;
 
@@ -143,6 +144,7 @@ export const useExploreAdditionalActionsMenu = (
   const chart = useSelector(
     state => state.charts?.[getChartKey(state.explore)],
   );
+  const aiEnabled = useAIEnabled();
 
   // Use the updated report menu items hook
   const reportMenuItem = useHeaderReportMenuItems({
@@ -503,7 +505,7 @@ export const useExploreAdditionalActionsMenu = (
       menuItems.push(reportMenuItem);
     }
 
-    if (slice && isFeatureEnabled(FeatureFlag.AiInsights)) {
+    if (slice && aiEnabled) {
       menuItems.push({
         key: MENU_KEYS.AI_INSIGHTS,
         label: (

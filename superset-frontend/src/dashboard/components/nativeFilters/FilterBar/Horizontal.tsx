@@ -39,6 +39,8 @@ const HorizontalBar = styled.div`
     }px ${theme.sizeUnit * 4}px;
     background: ${theme.colorBgBase};
     box-shadow: inset 0px -2px 2px -1px ${theme.colorSplit};
+    position: relative;
+    z-index: 10;
   `}
 `;
 

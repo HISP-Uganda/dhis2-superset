@@ -19,7 +19,7 @@
 import { Behavior, t, ChartMetadata, ChartPlugin } from '@superset-ui/core';
 import transformProps from './transformProps';
 import controlPanel from './controlPanel';
-import thumbnail from './images/thumbnail.png';
+import thumbnail from './images/thumbnailUrl';
 
 export default class ControlChartPlugin extends ChartPlugin {
   constructor() {

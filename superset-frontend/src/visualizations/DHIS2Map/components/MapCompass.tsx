@@ -30,7 +30,7 @@ interface MapCompassProps {
 function getPositionStyle(position: MapCornerPosition): React.CSSProperties {
   const base: React.CSSProperties = {
     position: 'absolute',
-    zIndex: 900,
+    zIndex: 3,
     pointerEvents: 'none',
   };
   switch (position) {

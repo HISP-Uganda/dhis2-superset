@@ -65,6 +65,7 @@ import { useDatasetDrillInfo } from 'src/hooks/apiResources/datasets';
 import { ResourceStatus } from 'src/hooks/apiResources/apiResources';
 import AIInsightPanel from 'src/features/ai/AIInsightPanel';
 import { buildChartInsightContext } from 'src/features/ai/context';
+import { useAIEnabled } from 'src/features/ai/useAIEnabled';
 import { useCrossFiltersScopingModal } from '../nativeFilters/FilterBar/CrossFilters/ScopingModal/useCrossFiltersScopingModal';
 import { ViewResultsModalTrigger } from './ViewResultsModalTrigger';
 import { isEmbedded } from 'src/dashboard/util/isEmbedded';
@@ -179,6 +180,7 @@ const SliceHeaderControls = (
     [],
   );
   const theme = useTheme();
+  const aiEnabled = useAIEnabled();
 
   useEffect(
     () => () => {
@@ -526,7 +528,7 @@ const SliceHeaderControls = (
     });
   }
 
-  if (!isPublicView && isFeatureEnabled(FeatureFlag.AiInsights) && canExplore) {
+  if (!isPublicView && aiEnabled && canExplore) {
     const chartInsightContext = buildChartInsightContext({
       chartId: props.slice.slice_id,
       sliceName: props.slice.slice_name,

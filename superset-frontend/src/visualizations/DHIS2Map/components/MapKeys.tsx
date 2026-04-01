@@ -47,7 +47,7 @@ const KeysContainer = styled.div<{ position?: string }>`
   padding: 10px;
   border-radius: 4px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-  z-index: 1001;
+  z-index: 4;
   min-width: 140px;
   max-height: 400px;
   overflow-y: auto;

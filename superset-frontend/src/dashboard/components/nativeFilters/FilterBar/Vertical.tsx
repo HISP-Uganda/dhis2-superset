@@ -32,7 +32,7 @@ import {
 import { useSelector } from 'react-redux';
 import cx from 'classnames';
 import { styled, t, useTheme, DataMaskStateWithId } from '@superset-ui/core';
-import { RootState } from 'src/dashboard/types';
+import { FilterBarOrientation, RootState } from 'src/dashboard/types';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { EmptyState, Loading } from '@superset-ui/core/components';
 import { useChartLayoutItems } from 'src/dashboard/util/useChartLayoutItems';
@@ -225,6 +225,7 @@ const VerticalFilterBar: FC<VerticalBarProps> = ({
           dataMaskSelected={dataMaskSelected}
           onFilterSelectionChange={onSelectionChange}
           hideHeader={hasOnlyOneSectionType}
+          orientation={FilterBarOrientation.Vertical}
         />
       </FilterControlsWrapper>
     ) : (

@@ -2585,7 +2585,7 @@ class PublicPageRestApi(BaseApi):
                 continue
             if not self._chart_uses_serving_tables(chart):
                 continue
-            # Public CMS pages render charts through the public embed path, so
+            # Public dynamic pages render charts through the public embed path, so
             # referenced serving-table charts must become public at publish time.
             chart.is_public = True
 
@@ -4461,9 +4461,9 @@ class PublicPageRestApi(BaseApi):
     @cms_auth_required
     @safe
     def get_admin_bootstrap(self) -> Response:
-        """Combined authenticated CMS bootstrap payload."""
+        """Combined authenticated dynamic pages bootstrap payload."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         try:
             payload = self._get_admin_payload(
                 page_slug=request.args.get("page") or request.args.get("slug"),
@@ -4592,9 +4592,9 @@ class PublicPageRestApi(BaseApi):
     @cms_auth_required
     @safe
     def get_admin_pages(self) -> Response:
-        """List CMS pages or fetch a single page for editing."""
+        """List dynamic pages or fetch a single page for editing."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         try:
             page_slug = request.args.get("slug")
             page_id = request.args.get("page_id", type=int)
@@ -4621,7 +4621,7 @@ class PublicPageRestApi(BaseApi):
                 count=len(pages),
             )
         except Exception as ex:  # pylint: disable=broad-except
-            logger.exception("Error fetching CMS pages")
+            logger.exception("Error fetching dynamic pages")
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages", methods=("POST",))
@@ -4655,7 +4655,7 @@ class PublicPageRestApi(BaseApi):
     def get_admin_block_types(self) -> Response:
         """List available block definitions for the CMS editor."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         return self.response(200, result=list_block_definitions(), count=len(list_block_definitions()))
 
     @expose("/admin/reusable-blocks", methods=("GET",))
@@ -4847,7 +4847,7 @@ class PublicPageRestApi(BaseApi):
     def get_admin_page_revisions(self, page_id: int) -> Response:
         """Return revision history for a CMS page."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         page = self._find_page(page_id=page_id, admin=True)
         if page is None:
             return self.response_404(message="Page not found")
@@ -4873,7 +4873,7 @@ class PublicPageRestApi(BaseApi):
     def get_admin_menus(self) -> Response:
         """List CMS menus for the authenticated studio."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         menus = (
             db.session.query(NavigationMenu)
             .order_by(NavigationMenu.display_order.asc(), NavigationMenu.id.asc())
@@ -4928,7 +4928,7 @@ class PublicPageRestApi(BaseApi):
     def get_admin_layout(self) -> Response:
         """Return the global portal layout config for CMS administration."""
         if not _can_manage_pages():
-            return self.response(403, message="You do not have access to CMS Pages")
+            return self.response(403, message="You do not have access to Dynamic Pages")
         layout_config = self._get_or_create_layout_config()
         return self.response(
             200,
@@ -5095,6 +5095,103 @@ class PublicPageRestApi(BaseApi):
         except Exception as ex:  # pylint: disable=broad-except
             db.session.rollback()
             logger.exception("Error archiving CMS theme")
+            return self.response_500(message=str(ex))
+
+    @expose("/admin/themes/sync-preset", methods=("POST",))
+    @cms_auth_required
+    @safe
+    def sync_preset_to_default_theme(self) -> Response:
+        """Sync pro theme preset colors to the default public page theme.
+
+        Accepts the preset's CSS variable overrides and maps them to the
+        portal theme token structure so public dashboards and pages
+        inherit the admin-selected colour scheme.
+        """
+        if not _can_manage_themes():
+            return self.response(403, message="You do not have permission to manage themes")
+        try:
+            payload = request.json or {}
+            preset_id = payload.get("preset_id", "")
+            css_vars: dict[str, str] = payload.get("css_vars", {})
+            tokens_patch: dict[str, str] = payload.get("tokens", {})
+            is_dark = bool(payload.get("is_dark", False))
+
+            default_theme = self._default_theme(admin=True)
+            if default_theme is None:
+                default_theme = self._ensure_default_theme_exists()
+            if default_theme is None:
+                return self.response_500(message="Could not resolve default theme")
+
+            current_tokens = default_theme.get_tokens() or {}
+
+            # Map pro-theme preset colors into portal token structure
+            accent = css_vars.get("--pro-accent") or tokens_patch.get("colorPrimary", "")
+            navy = css_vars.get("--pro-navy", "")
+            navy_light = css_vars.get("--pro-navy-light", "")
+
+            if accent:
+                current_tokens.setdefault("colors", {})
+                current_tokens["colors"]["accent"] = accent
+                current_tokens["colors"]["link"] = accent
+                current_tokens["colors"]["linkHover"] = css_vars.get(
+                    "--pro-accent-hover", accent
+                )
+                current_tokens.setdefault("buttons", {})
+                current_tokens["buttons"]["primaryBg"] = accent
+                current_tokens["buttons"]["primaryHover"] = css_vars.get(
+                    "--pro-accent-hover", accent
+                )
+
+            if navy:
+                current_tokens.setdefault("backgrounds", {})
+                current_tokens["backgrounds"]["hero"] = navy
+
+            if tokens_patch.get("colorSuccess"):
+                current_tokens.setdefault("colors", {})
+                current_tokens["colors"]["secondary"] = tokens_patch["colorSuccess"]
+
+            if is_dark:
+                current_tokens.setdefault("colors", {})
+                current_tokens["colors"]["background"] = navy or "#0D1B2A"
+                current_tokens["colors"]["backgroundElevated"] = navy_light or "#1B2838"
+                current_tokens["colors"]["surface"] = navy_light or "#1B2838"
+                current_tokens["colors"]["text"] = "#E2E8F0"
+                current_tokens["colors"]["muted"] = "#94A3B8"
+                current_tokens["colors"]["border"] = "rgba(255, 255, 255, 0.12)"
+                current_tokens["colors"]["borderStrong"] = "rgba(255, 255, 255, 0.2)"
+                current_tokens.setdefault("forms", {})
+                current_tokens["forms"]["inputBg"] = navy_light or "#1B2838"
+                current_tokens["forms"]["inputBorder"] = "rgba(255, 255, 255, 0.15)"
+                current_tokens.setdefault("buttons", {})
+                current_tokens["buttons"]["secondaryBg"] = "rgba(255, 255, 255, 0.06)"
+                current_tokens["buttons"]["secondaryText"] = "#E2E8F0"
+                current_tokens["buttons"]["secondaryHover"] = "rgba(255, 255, 255, 0.1)"
+                current_tokens.setdefault("backgrounds", {})
+                current_tokens["backgrounds"]["section"] = navy_light or "#1B2838"
+                current_tokens["backgrounds"]["card"] = navy_light or "#1B2838"
+            else:
+                current_tokens.setdefault("colors", {})
+                current_tokens["colors"].setdefault("background", "#ffffff")
+                current_tokens["colors"].setdefault("surface", "#ffffff")
+                current_tokens["colors"].setdefault("text", "#0f172a")
+
+            default_theme.set_tokens(current_tokens)
+
+            # Store the preset ID in theme settings for reference
+            settings = default_theme.get_settings() or {}
+            settings["synced_preset_id"] = preset_id
+            default_theme.set_settings(settings)
+            default_theme.changed_by_fk = get_user_id()
+            db.session.commit()
+
+            return self.response(200, result={
+                "synced": True,
+                "preset_id": preset_id,
+                "theme_id": default_theme.id,
+            })
+        except Exception as ex:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.exception("Error syncing preset to default theme")
             return self.response_500(message=str(ex))
 
     @expose("/admin/templates", methods=("GET",))

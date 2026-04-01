@@ -67,28 +67,31 @@ def build_mart_schema_context(
     database_id: int,
     schema: str | None = None,
     *,
-    max_tables: int = 40,
-    max_columns: int = 30,
+    max_tables: int = 20,
+    max_columns: int = 25,
 ) -> list[dict[str, Any]]:
     context: list[dict[str, Any]] = []
     for table in list_mart_tables(database_id, schema)[:max_tables]:
         resolved_schema, resolved_table = _resolve_dataset_table_ref(table)
-        context.append(
-            {
-                "table": resolved_table,
-                "schema": resolved_schema,
-                "dataset_name": table.table_name,
-                "description": table.description,
-                "columns": [
-                    {
-                        "name": column.column_name,
-                        "type": column.type,
-                        "description": column.description,
-                    }
-                    for column in (table.columns or [])[:max_columns]
-                ],
-            }
-        )
+        cols = []
+        for column in (table.columns or [])[:max_columns]:
+            col_entry: dict[str, Any] = {"name": column.column_name}
+            if column.type:
+                col_entry["type"] = column.type
+            if column.description:
+                col_entry["description"] = column.description[:100]
+            cols.append(col_entry)
+
+        entry: dict[str, Any] = {
+            "table": resolved_table,
+            "schema": resolved_schema,
+            "columns": cols,
+        }
+        if table.table_name and table.table_name != resolved_table:
+            entry["dataset_name"] = table.table_name
+        if table.description:
+            entry["description"] = table.description[:200]
+        context.append(entry)
     return context
 
 

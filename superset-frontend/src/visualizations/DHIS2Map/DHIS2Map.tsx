@@ -133,6 +133,8 @@ const MapWrapper = styled.div`
   display: flex;
   flex-direction: column;
   min-height: 0;
+  isolation: isolate;
+  z-index: 0;
 `;
 
 const MapCanvas = styled.div<{ $backgroundColor?: string }>`
@@ -179,7 +181,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     justify-content: center;
     flex-direction: column;
     gap: 16px;
-    z-index: 999;
+    z-index: 4;
   }
 
   .map-error-message {
@@ -190,7 +192,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     color: #ffffff;
     padding: 8px 16px;
     border-radius: var(--pro-radius-sm, 6px);
-    z-index: 999;
+    z-index: 4;
     font-family: var(--pro-font-family, 'Inter', sans-serif);
     font-size: 13px;
     box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.15));
@@ -200,7 +202,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     position: absolute;
     bottom: 80px;
     right: 8px;
-    z-index: 1000;
+    z-index: 4;
     background: var(--pro-bg-card, #ffffff);
     border: 1px solid var(--pro-border, rgba(0, 0, 0, 0.12));
     border-radius: var(--pro-radius-sm, 6px);
@@ -219,7 +221,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
   .map-interaction-overlay {
     position: absolute;
     inset: 0;
-    z-index: 900;
+    z-index: 3;
     background: rgba(255, 255, 255, 0.55);
     display: flex;
     align-items: center;
@@ -976,7 +978,11 @@ function DHIS2Map({
     if (!databaseId) return;
     let cancelled = false;
 
-    syncDHIS2LegendSchemesForDatabase(databaseId)
+    syncDHIS2LegendSchemesForDatabase(databaseId, {
+      isPublicView: true,
+      chartId,
+      dashboardId,
+    })
       .then(() => {
         if (cancelled) return;
         const cachedSets = readCachedLegendSets(databaseId);
@@ -1014,7 +1020,7 @@ function DHIS2Map({
     return () => {
       cancelled = true;
     };
-  }, [databaseId, metric, datasourceColumns]);
+  }, [databaseId, metric, datasourceColumns, chartId, dashboardId]);
 
   const effectiveStagedLegendDefinition = useMemo(() => {
     // Use staged DHIS2 legend ranges by default, but leave explicit manual
@@ -2590,25 +2596,15 @@ function DHIS2Map({
         onDrillDown(feature.id, feature.properties.name);
       }
 
-      if (setDataMask) {
+      // Apply drill-down as a local filter on this chart only (not cross-chart)
+      if (effectiveOrgUnitDataColumn) {
         const filterValues = Array.from(
           new Set([feature.properties.name, feature.id].filter(Boolean)),
         );
-        setDataMask({
-          extraFormData: {
-            filters: [
-              {
-                col: effectiveOrgUnitDataColumn,
-                op: 'IN',
-                val: filterValues,
-              },
-            ],
-          },
-          filterState: {
-            value: filterValues,
-            label: feature.properties.name,
-          },
-        });
+        setLocalFilters(prev => ({
+          ...prev,
+          [effectiveOrgUnitDataColumn]: filterValues,
+        }));
       }
     },
     [
@@ -2616,7 +2612,6 @@ function DHIS2Map({
       enableDrill,
       drillState,
       onDrillDown,
-      setDataMask,
     ],
   );
 
@@ -2654,14 +2649,16 @@ function DHIS2Map({
         breadcrumbs: newBreadcrumbs,
       });
 
-      if (setDataMask) {
-        setDataMask({
-          extraFormData: {},
-          filterState: {},
+      // Clear OU local filter on drill-up
+      if (effectiveOrgUnitDataColumn) {
+        setLocalFilters(prev => {
+          const next = { ...prev };
+          delete next[effectiveOrgUnitDataColumn];
+          return next;
         });
       }
     },
-    [drillState, resolvedPrimaryBoundaryLevel, setDataMask],
+    [drillState, resolvedPrimaryBoundaryLevel, effectiveOrgUnitDataColumn],
   );
 
   const selectedBoundaryIds = useMemo(() => {
@@ -3067,7 +3064,7 @@ function DHIS2Map({
             position: 'absolute',
             bottom: 12,
             right: 12,
-            zIndex: 1000,
+            zIndex: 4,
             background: 'rgba(255,255,255,0.85)',
             borderRadius: 6,
             padding: '4px 10px',
@@ -3097,7 +3094,7 @@ function DHIS2Map({
             padding: '20px 30px',
             borderRadius: '8px',
             boxShadow: '0 2px 10px rgba(0,0,0,0.15)',
-            zIndex: 1000,
+            zIndex: 4,
             textAlign: 'center',
             maxWidth: '400px',
           }}
@@ -3196,7 +3193,7 @@ function DHIS2Map({
             cursor: 'pointer',
             fontSize: '12px',
             fontWeight: 500,
-            zIndex: 1001,
+            zIndex: 5,
             boxShadow: '0 2px 6px rgba(0, 0, 0, 0.15)',
           }}
           title="Toggle data preview panel"
@@ -3217,7 +3214,33 @@ function DHIS2Map({
       {showFilters && (
         <FiltersPanel
           data={unfilteredEffectiveData}
-          columns={[...(periodColumns || []), ...(ouHierarchyColumns || [])]}
+          columns={(() => {
+            // Start with OU hierarchy and period columns
+            const known = new Set([
+              ...(ouHierarchyColumns || []),
+              ...(periodColumns || []),
+            ]);
+            // Add other string dimension columns from the data
+            // (exclude metric/numeric-only columns)
+            if (unfilteredEffectiveData.length > 0) {
+              const sample = unfilteredEffectiveData[0];
+              Object.keys(sample).forEach(col => {
+                if (known.has(col)) return;
+                if (col === metric || col === 'value') return;
+                const val = sample[col];
+                if (typeof val === 'string' || val === null || val === undefined) {
+                  known.add(col);
+                }
+              });
+            }
+            // Return OU hierarchy first, then periods, then others
+            const ouCols = ouHierarchyColumns || [];
+            const pCols = (periodColumns || []).filter(c => !ouCols.includes(c));
+            const rest = Array.from(known).filter(
+              c => !ouCols.includes(c) && !pCols.includes(c),
+            );
+            return [...ouCols, ...pCols, ...rest];
+          })()}
           filters={localFilters}
           onChange={(col, values) => {
             setLocalFilters(prev => ({

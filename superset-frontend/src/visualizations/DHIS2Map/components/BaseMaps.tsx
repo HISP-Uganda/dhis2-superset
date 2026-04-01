@@ -86,7 +86,7 @@ export function BaseMapLayer({ mapType }: BaseMapLayerProps): React.ReactElement
 /* eslint-disable theme-colors/no-literal-colors */
 const SelectorWrapper = styled.div`
   position: relative;
-  z-index: 1001;
+  z-index: 4;
 `;
 
 const SelectorButton = styled.button`
@@ -119,7 +119,7 @@ const DropdownMenu = styled.div`
   min-width: 196px;
   max-height: 300px;
   overflow-y: auto;
-  z-index: 1002;
+  z-index: 5;
 `;
 
 const MapOption = styled.button<{ $isActive: boolean }>`

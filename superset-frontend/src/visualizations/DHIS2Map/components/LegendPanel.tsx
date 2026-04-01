@@ -50,7 +50,7 @@ interface LegendPanelProps {
 function getPositionStyle(position: MapCornerPosition): React.CSSProperties {
   const base: React.CSSProperties = {
     position: 'absolute',
-    zIndex: 800,
+    zIndex: 3,
     maxWidth: 220,
     maxHeight: '70%',
     overflowY: 'auto',

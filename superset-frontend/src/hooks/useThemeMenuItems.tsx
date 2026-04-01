@@ -16,10 +16,16 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+/* eslint-disable theme-colors/no-literal-colors */
 import { useMemo } from 'react';
 import { Icons, Tooltip } from '@superset-ui/core/components';
 import type { MenuItem } from '@superset-ui/core/components/Menu';
 import { t, ThemeMode, ThemeAlgorithm } from '@superset-ui/core';
+import {
+  PRESETS_BY_CATEGORY,
+  type PresetCategory,
+  type ThemePreset,
+} from 'src/theme/presets';
 
 export interface ThemeSubMenuOption {
   key: ThemeMode;
@@ -34,7 +40,47 @@ export interface ThemeSubMenuProps {
   hasLocalOverride?: boolean;
   onClearLocalSettings?: () => void;
   allowOSPreference?: boolean;
+  /** Apply a preset theme (uses setTemporaryTheme under the hood) */
+  onApplyPreset?: (preset: ThemePreset) => void;
+  /** Currently applied preset ID (for checkmark display) */
+  appliedPresetId?: string | null;
 }
+
+const CategoryLabel: Record<PresetCategory, string> = {
+  clinical: 'Clinical / Health',
+  earth: 'Earth / Natural',
+  corporate: 'Corporate / Formal',
+  vibrant: 'Vibrant / Modern',
+  monochrome: 'Monochrome',
+  'high-contrast': 'High Contrast',
+  dark: 'Dark Variants',
+  regional: 'Regional / Cultural',
+};
+
+const SwatchBar = ({ colors }: { colors: string[] }) => (
+  <span
+    style={{
+      display: 'inline-flex',
+      gap: 2,
+      marginLeft: 8,
+      verticalAlign: 'middle',
+    }}
+  >
+    {colors.slice(0, 5).map((c, i) => (
+      <span
+        key={i}
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: 2,
+          background: c,
+          border: '1px solid rgba(0,0,0,0.1)',
+          display: 'inline-block',
+        }}
+      />
+    ))}
+  </span>
+);
 
 export const useThemeMenuItems = ({
   setThemeMode,
@@ -42,6 +88,8 @@ export const useThemeMenuItems = ({
   hasLocalOverride = false,
   onClearLocalSettings,
   allowOSPreference = true,
+  onApplyPreset,
+  appliedPresetId,
 }: ThemeSubMenuProps): MenuItem => {
   const handleSelect = (mode: ThemeMode) => {
     setThemeMode(mode);
@@ -70,6 +118,7 @@ export const useThemeMenuItems = ({
     [hasLocalOverride, themeIconMap, themeMode],
   );
 
+  /* ── Mode options (Light / Dark / System) ──────────── */
   const themeOptions: MenuItem[] = [
     {
       key: ThemeMode.DEFAULT,
@@ -104,7 +153,6 @@ export const useThemeMenuItems = ({
       : []),
   ];
 
-  // Add clear settings option to theme options if there's a local theme active
   const themeGroupOptions = [...themeOptions];
   if (onClearLocalSettings && hasLocalOverride) {
     themeGroupOptions.push({
@@ -122,14 +170,69 @@ export const useThemeMenuItems = ({
     });
   }
 
+  /* ── Preset options (categorized) ──────────────────── */
+  const presetChildren: MenuItem[] = useMemo(() => {
+    if (!onApplyPreset) return [];
+
+    const categories = Object.keys(PRESETS_BY_CATEGORY) as PresetCategory[];
+    const items: MenuItem[] = [];
+
+    categories.forEach((cat, catIdx) => {
+      const presets = PRESETS_BY_CATEGORY[cat];
+      if (!presets?.length) return;
+
+      if (catIdx > 0) {
+        items.push({ type: 'divider', key: `preset-div-${cat}` });
+      }
+
+      items.push({
+        type: 'group',
+        label: CategoryLabel[cat],
+        key: `preset-cat-${cat}`,
+        children: presets.map(preset => ({
+          key: `preset-${preset.id}`,
+          label: (
+            <span style={{ display: 'flex', alignItems: 'center' }}>
+              {appliedPresetId === preset.id && (
+                <Icons.CheckOutlined
+                  iconSize="xs"
+                  css={{ marginRight: 6, color: '#1976D2' }}
+                />
+              )}
+              <span style={{ flex: 1 }}>{preset.name}</span>
+              <SwatchBar colors={preset.chartPalette} />
+            </span>
+          ),
+          onClick: () => onApplyPreset(preset),
+        })),
+      });
+    });
+
+    return items;
+  }, [onApplyPreset, appliedPresetId]);
+
+  /* ── Build final children ──────────────────────────── */
   const children: MenuItem[] = [
     {
       type: 'group' as const,
-      label: t('Theme'),
+      label: t('Mode'),
       key: 'theme-group',
       children: themeGroupOptions,
     },
   ];
+
+  if (presetChildren.length > 0) {
+    children.push({ type: 'divider', key: 'mode-preset-divider' });
+    children.push({
+      key: 'pro-theme-presets',
+      label: (
+        <>
+          <Icons.FormatPainterOutlined /> {t('Pro Theme Presets')}
+        </>
+      ),
+      children: presetChildren,
+    });
+  }
 
   return {
     key: 'theme-sub-menu',

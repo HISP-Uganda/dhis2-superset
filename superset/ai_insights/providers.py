@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Generator
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -23,6 +24,12 @@ class ProviderResponse:
     model: str
     text: str
     duration_ms: int
+
+
+@dataclass(frozen=True)
+class StreamChunk:
+    text: str
+    done: bool = False
 
 
 def _normalize_openai_message_content(content: Any) -> str:
@@ -101,6 +108,74 @@ class BaseProvider:
     ) -> ProviderResponse:
         raise NotImplementedError
 
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        """Default: fall back to non-streaming generate and yield one chunk."""
+        response = self.generate(
+            messages=messages,
+            model=model,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        yield StreamChunk(text=response.text, done=True)
+
+    def _post_chat_completion_stream(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        selected_model: str,
+        messages: list[dict[str, str]],
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> Generator[StreamChunk, None, None]:
+        """Stream OpenAI-compatible chat completions via SSE."""
+        response = requests.post(
+            url,
+            headers=headers,
+            json={
+                "model": selected_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+                **(extra_payload or {}),
+            },
+            timeout=timeout,
+            stream=True,
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            raise AIProviderError(f"HTTP {response.status_code} Error") from ex
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                yield StreamChunk(text="", done=True)
+                return
+            try:
+                chunk = json.loads(data_str)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    yield StreamChunk(text=content)
+            except (json.JSONDecodeError, IndexError, KeyError):
+                continue
+        yield StreamChunk(text="", done=True)
+
     def _post_chat_completion(
         self,
         *,
@@ -165,6 +240,27 @@ class OpenAIProvider(BaseProvider):
     def is_available(self) -> bool:
         return super().is_available()
 
+    def _openai_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if secret := resolve_provider_secret(self.config):
+            headers["Authorization"] = f"Bearer {secret}"
+        if organization := str(self.config.get("organization_id") or "").strip():
+            headers["OpenAI-Organization"] = organization
+        return headers
+
+    def _openai_url(self) -> str:
+        return str(
+            self.config.get("base_url") or "https://api.openai.com/v1"
+        ).rstrip("/")
+
+    def _validate(self, model: str | None) -> str:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        return selected_model
+
     def generate(
         self,
         *,
@@ -174,25 +270,30 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
     ) -> ProviderResponse:
-        if not self.is_available():
-            raise AIProviderError(f"Provider {self.provider_id} is not configured")
-
-        selected_model = model or self.default_model
-        if not selected_model:
-            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
-
-        headers = {"Content-Type": "application/json"}
-        if secret := resolve_provider_secret(self.config):
-            headers["Authorization"] = f"Bearer {secret}"
-        if organization := str(self.config.get("organization_id") or "").strip():
-            headers["OpenAI-Organization"] = organization
-
-        base_url = str(self.config.get("base_url") or "https://api.openai.com/v1").rstrip(
-            "/"
-        )
+        selected_model = self._validate(model)
         return self._post_chat_completion(
-            url=f"{base_url}/chat/completions",
-            headers=headers,
+            url=f"{self._openai_url()}/chat/completions",
+            headers=self._openai_headers(),
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = self._validate(model)
+        yield from self._post_chat_completion_stream(
+            url=f"{self._openai_url()}/chat/completions",
+            headers=self._openai_headers(),
             selected_model=selected_model,
             messages=messages,
             timeout=timeout,
@@ -207,6 +308,20 @@ class OpenAICompatibleProvider(BaseProvider):
     def is_available(self) -> bool:
         return super().is_available() and bool(self.config.get("base_url"))
 
+    def _compat_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if secret := resolve_provider_secret(self.config):
+            headers["Authorization"] = f"Bearer {secret}"
+        return headers
+
+    def _compat_validate(self, model: str | None) -> str:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        return selected_model
+
     def generate(
         self,
         *,
@@ -216,21 +331,32 @@ class OpenAICompatibleProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
     ) -> ProviderResponse:
-        if not self.is_available():
-            raise AIProviderError(f"Provider {self.provider_id} is not configured")
-
+        selected_model = self._compat_validate(model)
         base_url = str(self.config["base_url"]).rstrip("/")
-        selected_model = model or self.default_model
-        if not selected_model:
-            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
-
-        headers = {"Content-Type": "application/json"}
-        if secret := resolve_provider_secret(self.config):
-            headers["Authorization"] = f"Bearer {secret}"
-
         return self._post_chat_completion(
             url=f"{base_url}/chat/completions",
-            headers=headers,
+            headers=self._compat_headers(),
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = self._compat_validate(model)
+        base_url = str(self.config["base_url"]).rstrip("/")
+        yield from self._post_chat_completion_stream(
+            url=f"{base_url}/chat/completions",
+            headers=self._compat_headers(),
             selected_model=selected_model,
             messages=messages,
             timeout=timeout,
@@ -253,22 +379,7 @@ class AnthropicProvider(BaseProvider):
     def is_available(self) -> bool:
         return super().is_available()
 
-    def generate(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str | None,
-        timeout: int,
-        max_tokens: int,
-        temperature: float,
-    ) -> ProviderResponse:
-        if not self.is_available():
-            raise AIProviderError(f"Provider {self.provider_id} is not configured")
-
-        selected_model = model or self.default_model
-        if not selected_model:
-            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
-
+    def _anthropic_headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "anthropic-version": str(
@@ -277,7 +388,28 @@ class AnthropicProvider(BaseProvider):
         }
         if secret := resolve_provider_secret(self.config):
             headers["x-api-key"] = secret
+        return headers
 
+    def _anthropic_url(self) -> str:
+        return str(
+            self.config.get("base_url") or "https://api.anthropic.com"
+        ).rstrip("/")
+
+    def _anthropic_validate(self, model: str | None) -> str:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        return selected_model
+
+    def _prepare_anthropic_payload(
+        self,
+        messages: list[dict[str, str]],
+        selected_model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
         anthropic_messages: list[dict[str, str]] = []
         system_prompts: list[str] = []
         for message in messages:
@@ -308,14 +440,25 @@ class AnthropicProvider(BaseProvider):
         }
         if system_prompts:
             payload["system"] = "\n\n".join(system_prompts)
+        return payload
 
-        started_at = perf_counter()
-        base_url = str(self.config.get("base_url") or "https://api.anthropic.com").rstrip(
-            "/"
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        selected_model = self._anthropic_validate(model)
+        payload = self._prepare_anthropic_payload(
+            messages, selected_model, max_tokens, temperature
         )
+        started_at = perf_counter()
         response = requests.post(
-            f"{base_url}/v1/messages",
-            headers=headers,
+            f"{self._anthropic_url()}/v1/messages",
+            headers=self._anthropic_headers(),
             json=payload,
             timeout=timeout,
         )
@@ -348,12 +491,66 @@ class AnthropicProvider(BaseProvider):
             duration_ms=int((perf_counter() - started_at) * 1000),
         )
 
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = self._anthropic_validate(model)
+        payload = self._prepare_anthropic_payload(
+            messages, selected_model, max_tokens, temperature
+        )
+        payload["stream"] = True
+
+        response = requests.post(
+            f"{self._anthropic_url()}/v1/messages",
+            headers=self._anthropic_headers(),
+            json=payload,
+            timeout=timeout,
+            stream=True,
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            raise AIProviderError(f"HTTP {response.status_code} Error") from ex
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            try:
+                event = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            event_type = event.get("type", "")
+            if event_type == "content_block_delta":
+                delta = event.get("delta", {})
+                text = delta.get("text", "")
+                if text:
+                    yield StreamChunk(text=text)
+            elif event_type == "message_stop":
+                yield StreamChunk(text="", done=True)
+                return
+        yield StreamChunk(text="", done=True)
+
 
 class OllamaProvider(BaseProvider):
     provider_type = "ollama"
 
     def is_available(self) -> bool:
         return super().is_available() and bool(self.config.get("base_url"))
+
+    def _ollama_validate(self, model: str | None) -> str:
+        if not self.is_available():
+            raise AIProviderError(f"Provider {self.provider_id} is not configured")
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        return selected_model
 
     def generate(
         self,
@@ -364,13 +561,8 @@ class OllamaProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
     ) -> ProviderResponse:
-        if not self.is_available():
-            raise AIProviderError(f"Provider {self.provider_id} is not configured")
-
+        selected_model = self._ollama_validate(model)
         base_url = str(self.config["base_url"]).rstrip("/")
-        selected_model = model or self.default_model
-        if not selected_model:
-            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
 
         started_at = perf_counter()
         response = requests.post(
@@ -415,6 +607,52 @@ class OllamaProvider(BaseProvider):
             text=text,
             duration_ms=int((perf_counter() - started_at) * 1000),
         )
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = self._ollama_validate(model)
+        base_url = str(self.config["base_url"]).rstrip("/")
+
+        response = requests.post(
+            f"{base_url}/api/chat",
+            json={
+                "model": selected_model,
+                "messages": messages,
+                "stream": True,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                },
+            },
+            timeout=timeout,
+            stream=True,
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            raise AIProviderError(f"HTTP {response.status_code} Error") from ex
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            content = chunk.get("message", {}).get("content", "")
+            if content:
+                yield StreamChunk(text=content)
+            if chunk.get("done"):
+                yield StreamChunk(text="", done=True)
+                return
+        yield StreamChunk(text="", done=True)
 
 
 class MockProvider(BaseProvider):
@@ -552,6 +790,23 @@ class ProviderRegistry:
         provider = self._resolve_provider(provider_id)
         selected_model = model or self._default_model
         return provider.generate(
+            messages=messages,
+            model=selected_model,
+            timeout=self._timeout,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+        )
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        provider_id: str | None = None,
+        model: str | None = None,
+    ) -> Generator[StreamChunk, None, None]:
+        provider = self._resolve_provider(provider_id)
+        selected_model = model or self._default_model
+        yield from provider.generate_stream(
             messages=messages,
             model=selected_model,
             timeout=self._timeout,

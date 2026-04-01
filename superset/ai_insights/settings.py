@@ -518,6 +518,11 @@ def _normalize_for_storage(
         "temperature": float(payload.get("temperature") or 0.1),
         "default_provider": str(payload.get("default_provider") or "").strip() or None,
         "default_model": str(payload.get("default_model") or "").strip() or None,
+        "allow_public_dashboard_ai": bool(payload.get("allow_public_dashboard_ai")),
+        "public_ai_max_tokens": int(payload.get("public_ai_max_tokens") or 600),
+        "public_ai_rate_limit_per_minute": int(
+            payload.get("public_ai_rate_limit_per_minute") or 10
+        ),
         "allowed_roles": _normalize_string_list(payload.get("allowed_roles")),
         "mode_roles": {
             "chart": _normalize_string_list(

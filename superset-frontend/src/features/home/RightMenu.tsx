@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useState, useEffect, FC, PureComponent, useMemo } from 'react';
+import { useState, useEffect, useCallback, FC, PureComponent, useMemo } from 'react';
 import rison from 'rison';
 import { useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
@@ -54,6 +54,7 @@ import UploadDataModal from 'src/features/databases/UploadDataModel';
 import { uploadUserPerms } from 'src/views/CRUD/utils';
 import { useThemeContext } from 'src/theme/ThemeProvider';
 import { useThemeMenuItems } from 'src/hooks/useThemeMenuItems';
+import type { ThemePreset } from 'src/theme/presets';
 import { useLanguageMenuItems } from './LanguagePicker';
 import {
   ExtensionConfigs,
@@ -142,6 +143,27 @@ const RightMenu = ({
   const [showColumnarUploadModal, setShowColumnarUploadModal] =
     useState<boolean>(false);
   const [engine, setEngine] = useState<string>('');
+
+  /* ── Public dashboards for anonymous select ──────── */
+  const [publicDashboards, setPublicDashboards] = useState<
+    { id: number; dashboard_title: string; slug: string | null; url: string }[]
+  >([]);
+  useEffect(() => {
+    if (!navbarRight.user_is_anonymous) return;
+    SupersetClient.get({ endpoint: '/api/v1/dashboard/public/' })
+      .then(({ json }: any) => {
+        setPublicDashboards(
+          (json?.result || []).map((d: any) => ({
+            id: d.id,
+            dashboard_title: d.dashboard_title,
+            slug: d.slug,
+            url: d.url || `/superset/dashboard/${d.slug || d.id}/`,
+          })),
+        );
+      })
+      .catch(() => {});
+  }, [navbarRight.user_is_anonymous]);
+
   const canSql = findPermission('can_sqllab', 'Superset', roles);
   const canDashboard = findPermission('can_write', 'Dashboard', roles);
   const canChart = findPermission('can_write', 'Chart', roles);
@@ -166,9 +188,9 @@ const RightMenu = ({
   const {
     setThemeMode,
     themeMode,
+    setTemporaryTheme,
     clearLocalOverrides,
     hasDevOverride,
-    canSetMode,
     canDetectOSPreference,
   } = useThemeContext();
   const dropdownItems: MenuObjectProps[] = [
@@ -351,6 +373,62 @@ const RightMenu = ({
     localStorage.removeItem('redux');
   };
 
+  // Apply a pro theme preset via the theme controller
+  const handleApplyPreset = useCallback(
+    (preset: ThemePreset) => {
+      const config: Record<string, any> = {
+        token: { ...preset.tokens },
+      };
+      if (preset.isDark) {
+        config.algorithm = 'dark';
+      }
+      setTemporaryTheme(config);
+
+      // Apply CSS variable overrides to document root
+      const root = document.documentElement;
+      Object.entries(preset.cssVars).forEach(([key, value]) => {
+        root.style.setProperty(key, value);
+      });
+
+      // Apply chart palette as CSS variable for downstream consumers
+      root.style.setProperty(
+        '--pro-chart-palette',
+        preset.chartPalette.join(','),
+      );
+
+      // Persist which preset ID was applied (for checkmark in menu)
+      try {
+        localStorage.setItem('superset-applied-preset-id', preset.id);
+      } catch {
+        // ignore
+      }
+
+      // Sync preset colors to the default public page theme so public
+      // dashboards and dynamic pages inherit the selected colour scheme.
+      SupersetClient.post({
+        endpoint: '/api/v1/public-page/admin/themes/sync-preset',
+        jsonPayload: {
+          preset_id: preset.id,
+          css_vars: preset.cssVars,
+          tokens: preset.tokens,
+          is_dark: preset.isDark || false,
+        },
+      }).catch(() => {
+        // Non-critical — admin preset still applied locally
+      });
+    },
+    [setTemporaryTheme],
+  );
+
+  const appliedPresetId = useMemo(() => {
+    if (!hasDevOverride()) return null;
+    try {
+      return localStorage.getItem('superset-applied-preset-id');
+    } catch {
+      return null;
+    }
+  }, [hasDevOverride]);
+
   // Use the theme menu hook
   const themeMenuItem = useThemeMenuItems({
     setThemeMode,
@@ -358,6 +436,8 @@ const RightMenu = ({
     hasLocalOverride: hasDevOverride(),
     onClearLocalSettings: clearLocalOverrides,
     allowOSPreference: canDetectOSPreference(),
+    onApplyPreset: handleApplyPreset,
+    appliedPresetId,
   });
 
   const languageMenuItem = useLanguageMenuItems({
@@ -577,9 +657,8 @@ const RightMenu = ({
       });
     }
 
-    if (canSetMode()) {
-      items.push(themeMenuItem);
-    }
+    // Always show theme menu — presets work regardless of dark mode availability
+    items.push(themeMenuItem);
 
     if (navbarRight.show_language_picker && languageMenuItem) {
       items.push(languageMenuItem);
@@ -598,7 +677,6 @@ const RightMenu = ({
     RightMenuExtension,
     navbarRight,
     showActionDropdown,
-    canSetMode,
     theme.colorPrimary,
     themeMenuItem,
     languageMenuItem,
@@ -770,6 +848,74 @@ const RightMenu = ({
           </StyledAnchor>
           <span>&nbsp;</span>
         </>
+      )}
+      {navbarRight.user_is_anonymous && publicDashboards.length > 0 && (
+        <div
+          css={css`
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: 12px;
+          `}
+        >
+          <span
+            css={css`
+              font-size: 13px;
+              font-weight: 600;
+              color: rgba(255, 255, 255, 0.8);
+              white-space: nowrap;
+            `}
+          >
+            {t('Select a Dashboard')}
+          </span>
+          <select
+            aria-label={t('Public Dashboards')}
+            onChange={e => {
+              if (e.target.value) {
+                window.location.href = e.target.value;
+              }
+            }}
+            defaultValue=""
+            css={css`
+              height: 34px;
+              min-width: 260px;
+              max-width: 400px;
+              padding: 0 28px 0 10px;
+              font-size: 13px;
+              font-weight: 500;
+              color: rgba(255, 255, 255, 0.95);
+              background: rgba(255, 255, 255, 0.12);
+              border: 1px solid rgba(255, 255, 255, 0.25);
+              border-radius: 0;
+              cursor: pointer;
+              appearance: none;
+              background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='rgba(255,255,255,0.8)' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+              background-repeat: no-repeat;
+              background-position: right 8px center;
+
+              &:hover {
+                background-color: rgba(255, 255, 255, 0.18);
+                border-color: rgba(255, 255, 255, 0.4);
+              }
+              &:focus {
+                outline: none;
+                border-color: var(--pro-accent, #4da3ff);
+                box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.25);
+              }
+              option {
+                background: #1a3c5e;
+                color: #ffffff;
+              }
+            `}
+          >
+            <option value="">{t('Search dashboards...')}</option>
+            {publicDashboards.map(d => (
+              <option key={d.id} value={d.url}>
+                {d.dashboard_title}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
       {navbarRight.user_is_anonymous && (
         <StyledAnchor href={navbarRight.user_login_url}>

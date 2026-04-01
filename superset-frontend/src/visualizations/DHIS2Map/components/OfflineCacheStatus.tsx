@@ -38,7 +38,7 @@ const StatusContainer = styled.div<{ position?: string }>`
   padding: 10px;
   border-radius: 4px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-  z-index: 997;
+  z-index: 4;
   font-size: 11px;
   color: #333;
   min-width: 150px;

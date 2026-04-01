@@ -1,4 +1,4 @@
-ATTACH TABLE _ UUID 'a60dbe7f-d571-429a-8bfd-6b14d13a5929'
+ATTACH TABLE _ UUID 'a5085bce-0c1c-4276-95b1-1e35116e8a1d'
 (
     `national` LowCardinality(String),
     `district` LowCardinality(String),
@@ -6,6 +6,13 @@ ATTACH TABLE _ UUID 'a60dbe7f-d571-429a-8bfd-6b14d13a5929'
     `facility` LowCardinality(String),
     `period` LowCardinality(String),
     `ou_level` UInt16,
+    `co_uid` LowCardinality(String),
+    `disaggregation` LowCardinality(String),
+    `aoc_uid` LowCardinality(String),
+    `attribute_option_combo` LowCardinality(String),
+    `morbidity_age` LowCardinality(String),
+    `referrals_age` LowCardinality(String),
+    `under_5_5_and_above_of_age` LowCardinality(String),
     `malaria_treated_at_phu_with_act_24_hrs_new` Nullable(Float64) CODEC(ZSTD(3)),
     `malaria_treated_at_phu_with_act_24_hrs_f_up` Nullable(Float64) CODEC(ZSTD(3)),
     `malaria_treated_at_phu_without_act_24_hrs_new` Nullable(Float64) CODEC(ZSTD(3)),
@@ -32,5 +39,5 @@ ATTACH TABLE _ UUID 'a60dbe7f-d571-429a-8bfd-6b14d13a5929'
 )
 ENGINE = MergeTree
 PARTITION BY toUInt16OrZero(substring(replaceRegexpAll(ifNull(period, ''), '[^0-9]', ''), 1, 4))
-ORDER BY (period, ou_level, national, district, chiefdom, facility)
+ORDER BY (period, ou_level, co_uid, disaggregation, national, district, chiefdom, facility)
 SETTINGS allow_nullable_key = 1, index_granularity = 8192

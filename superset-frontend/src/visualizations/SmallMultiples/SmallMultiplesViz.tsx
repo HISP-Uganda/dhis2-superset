@@ -17,16 +17,31 @@
  * under the License.
  */
 /* eslint-disable theme-colors/no-literal-colors */
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useCallback } from 'react';
 import * as echarts from 'echarts';
 import { styled, getNumberFormatter } from '@superset-ui/core';
-import { SmallMultiplesChartProps, PanelData, MiniChartType } from './types';
+import {
+  SmallMultiplesChartProps,
+  PanelData,
+  MiniChartType,
+} from './types';
+import { buildOption, MiniPanelConfig } from './chartOptions';
+import SharedLegend from './SharedLegend';
+
+/* ── Styled components ────────────────────────────────── */
 
 const Wrapper = styled.div`
   width: 100%;
   height: 100%;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   font-family: var(--pro-font-family, Inter, 'Segoe UI', Roboto, sans-serif);
+`;
+
+const ScrollArea = styled.div`
+  flex: 1;
+  overflow: auto;
 `;
 
 interface GridContainerProps {
@@ -39,29 +54,41 @@ const GridContainer = styled.div<GridContainerProps>`
   grid-template-columns: repeat(${({ $columns }) => $columns}, 1fr);
   gap: ${({ $gap }) => $gap}px;
   padding: ${({ $gap }) => $gap}px;
-  height: 100%;
   width: 100%;
   align-content: start;
 `;
 
 interface PanelCardProps {
   $padding: number;
+  $borderRadius: number;
 }
 
 const PanelCard = styled.div<PanelCardProps>`
   background: var(--pro-bg-card, #FFFFFF);
   border: 1px solid var(--pro-border, #E5EAF0);
-  border-radius: 8px;
+  border-radius: ${({ $borderRadius }) => $borderRadius}px;
   padding: ${({ $padding }) => $padding}px;
   overflow: hidden;
-  min-height: 100px;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
 `;
 
 const PanelTitle = styled.div`
   font-size: 11px;
   font-weight: 600;
   color: var(--pro-text-secondary, #6B7280);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const PanelSubtitle = styled.div`
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--pro-text-muted, #9CA3AF);
+  margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,117 +103,134 @@ const EmptyState = styled.div`
   font-size: 14px;
 `;
 
-/* ── Mini EChart panel ─────────────────────────────── */
+/* ── Big Number panel (no ECharts) ────────────────────── */
+
+const BigNumberPanel = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 4px;
+`;
+
+const BigNumberValue = styled.div`
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--pro-navy, #0D3B66);
+  line-height: 1.1;
+`;
+
+const BigNumberLabel = styled.div`
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--pro-text-muted, #9CA3AF);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+`;
+
+/* ── Mini EChart panel ────────────────────────────────── */
 
 function MiniPanel({
   panel,
-  chartType,
-  syncYMin,
-  syncYMax,
-  showXAxis,
-  showYAxis,
-  lineWidth,
-  yAxisFormat,
+  config,
   chartHeight,
+  groupId,
 }: {
   panel: PanelData;
-  chartType: MiniChartType;
-  syncYMin: number | undefined;
-  syncYMax: number | undefined;
-  showXAxis: boolean;
-  showYAxis: boolean;
-  lineWidth: number;
-  yAxisFormat: string;
+  config: MiniPanelConfig;
   chartHeight: number;
+  groupId: string;
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
 
-  const yFmt = useMemo(() => getNumberFormatter(yAxisFormat), [yAxisFormat]);
-  const color = 'var(--pro-accent, #1976D2)';
-
   useEffect(() => {
-    if (!chartRef.current) return;
+    if (!chartRef.current) return undefined;
+
     if (!instanceRef.current) {
       instanceRef.current = echarts.init(chartRef.current);
+      // Connect for tooltip sync
+      if (groupId) {
+        echarts.connect(groupId);
+      }
     }
 
-    const seriesBase: any = {
-      data: panel.yValues,
-      smooth: chartType === 'line',
-      lineStyle: { width: lineWidth, color },
-      itemStyle: { color },
-      symbol: 'none',
-    };
-
-    let series: any;
-    if (chartType === 'bar') {
-      series = { ...seriesBase, type: 'bar', barMaxWidth: 8 };
-    } else if (chartType === 'area') {
-      series = {
-        ...seriesBase,
-        type: 'line',
-        areaStyle: { color: 'rgba(25,118,210,0.12)' },
-      };
-    } else {
-      series = { ...seriesBase, type: 'line' };
-    }
-
-    instanceRef.current.setOption(
-      {
-        grid: {
-          top: 4,
-          right: 4,
-          bottom: showXAxis ? 20 : 4,
-          left: showYAxis ? 32 : 4,
-        },
-        xAxis: {
-          type: 'category',
-          data: panel.xValues,
-          show: showXAxis,
-          axisLabel: { fontSize: 8, color: '#9CA3AF' },
-          axisLine: { show: false },
-          axisTick: { show: false },
-        },
-        yAxis: {
-          type: 'value',
-          show: showYAxis,
-          min: syncYMin,
-          max: syncYMax,
-          axisLabel: {
-            fontSize: 8,
-            color: '#9CA3AF',
-            formatter: (v: number) => yFmt(v),
-          },
-          splitLine: {
-            lineStyle: { color: '#E5EAF0', type: 'dashed', width: 0.5 },
-          },
-        },
-        series: [series],
-        animation: false,
-      },
-      true,
-    );
+    const option = buildOption(panel, config);
+    instanceRef.current.setOption(option, true);
 
     return () => {
       instanceRef.current?.dispose();
       instanceRef.current = null;
     };
-  }, [panel, chartType, syncYMin, syncYMax, showXAxis, showYAxis, lineWidth, yFmt]);
+  }, [panel, config, groupId]);
+
+  // Resize when dimensions change
+  useEffect(() => {
+    instanceRef.current?.resize();
+  }, [chartHeight]);
 
   return (
-    <div ref={chartRef} style={{ width: '100%', height: chartHeight }} />
+    <div
+      ref={chartRef}
+      style={{ width: '100%', height: chartHeight, flexShrink: 0 }}
+    />
   );
 }
 
-/* ── Main Component ────────────────────────────────── */
+/* ── Big Number render ────────────────────────────────── */
+
+function BigNumberMiniPanel({
+  panel,
+  formatter,
+  nullText,
+  chartHeight,
+}: {
+  panel: PanelData;
+  formatter: (v: number) => string;
+  nullText: string;
+  chartHeight: number;
+}) {
+  const primarySeries = panel.series[0];
+  if (!primarySeries) return null;
+
+  const latestVal =
+    panel.latestValues[primarySeries.metricLabel];
+  const displayVal =
+    latestVal != null && Number.isFinite(latestVal)
+      ? formatter(latestVal)
+      : nullText;
+
+  return (
+    <BigNumberPanel style={{ height: chartHeight }}>
+      <BigNumberValue style={{ color: primarySeries.color }}>
+        {displayVal}
+      </BigNumberValue>
+      {panel.series.length > 1 &&
+        panel.series.slice(1).map(s => {
+          const val = panel.latestValues[s.metricLabel];
+          return (
+            <BigNumberLabel key={s.metricLabel} style={{ color: s.color }}>
+              {s.metricLabel}:{' '}
+              {val != null && Number.isFinite(val)
+                ? formatter(val)
+                : nullText}
+            </BigNumberLabel>
+          );
+        })}
+      <BigNumberLabel>{primarySeries.metricLabel}</BigNumberLabel>
+    </BigNumberPanel>
+  );
+}
+
+/* ── Main Component ───────────────────────────────────── */
 
 export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
   const {
     width,
     height,
     panels,
-    columns,
+    columns: maxColumns,
     miniChartType,
     syncYAxis,
     showPanelTitle,
@@ -197,7 +241,108 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
     globalYMin,
     globalYMax,
     yAxisFormat,
+    showReferenceLine,
+    referenceValue,
+    referenceLineMode,
+    referenceColor,
+    showPanelSubtitle,
+    panelBorderRadius,
+    nullValueText,
+    showLegend,
+    legendPosition,
+    syncTooltips,
+    responsiveColumns,
+    minPanelWidth,
+    metricLabels,
+    metricColors,
   } = props;
+
+  const yFormatter = useMemo(
+    () => getNumberFormatter(yAxisFormat),
+    [yAxisFormat],
+  );
+
+  // Stable group ID for tooltip sync
+  const groupIdRef = useRef(
+    `sm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  const groupId = syncTooltips ? groupIdRef.current : '';
+
+  // Responsive columns: auto-reduce based on available width
+  const effectiveColumns = useMemo(() => {
+    if (!responsiveColumns) return maxColumns;
+    const available = width - panelPadding * 2;
+    const fitColumns = Math.max(
+      1,
+      Math.floor(available / minPanelWidth),
+    );
+    return Math.min(maxColumns, fitColumns);
+  }, [width, maxColumns, responsiveColumns, minPanelWidth, panelPadding]);
+
+  // Panel config shared across all mini panels
+  const panelConfig: MiniPanelConfig = useMemo(
+    () => ({
+      chartType: miniChartType,
+      syncYMin: syncYAxis ? globalYMin : undefined,
+      syncYMax: syncYAxis ? globalYMax : undefined,
+      showXAxis,
+      showYAxis,
+      lineWidth,
+      yAxisFormat,
+      yFormatter,
+      referenceValue: showReferenceLine ? referenceValue : null,
+      referenceColor,
+    }),
+    [
+      miniChartType,
+      syncYAxis,
+      globalYMin,
+      globalYMax,
+      showXAxis,
+      showYAxis,
+      lineWidth,
+      yAxisFormat,
+      yFormatter,
+      showReferenceLine,
+      referenceValue,
+      referenceColor,
+    ],
+  );
+
+  // Calculate panel height
+  const legendHeight = showLegend && metricLabels.length > 1 ? 32 : 0;
+  const availableHeight = height - legendHeight;
+  const rows = Math.ceil(panels.length / effectiveColumns);
+  const panelHeight = Math.max(
+    60,
+    (availableHeight - panelPadding * (rows + 1)) / rows -
+      (showPanelTitle ? 18 : 0) -
+      (showPanelSubtitle ? 14 : 0) -
+      panelPadding * 2,
+  );
+
+  // Build subtitle text
+  const getSubtitle = useCallback(
+    (panel: PanelData): string => {
+      const parts = metricLabels.map((ml: string) => {
+        const val = panel.latestValues[ml];
+        if (val == null || !Number.isFinite(val)) return `${ml}: ${nullValueText}`;
+        return `${ml}: ${yFormatter(val)}`;
+      });
+      return parts.join('  ·  ');
+    },
+    [metricLabels, nullValueText, yFormatter],
+  );
+
+  // Legend items
+  const legendItems = useMemo(
+    () =>
+      metricLabels.map((label: string, i: number) => ({
+        label,
+        color: metricColors[i],
+      })),
+    [metricLabels, metricColors],
+  );
 
   if (!panels || panels.length === 0) {
     return (
@@ -207,32 +352,47 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
     );
   }
 
-  const rows = Math.ceil(panels.length / columns);
-  const panelHeight = Math.max(
-    60,
-    (height - panelPadding * (rows + 1)) / rows - (showPanelTitle ? 20 : 0) - panelPadding * 2,
-  );
+  const isBigNumber = miniChartType === 'big_number';
 
   return (
     <Wrapper style={{ width, height }}>
-      <GridContainer $columns={columns} $gap={panelPadding}>
-        {panels.map(panel => (
-          <PanelCard key={panel.title} $padding={panelPadding}>
-            {showPanelTitle && <PanelTitle>{panel.title}</PanelTitle>}
-            <MiniPanel
-              panel={panel}
-              chartType={miniChartType}
-              syncYMin={syncYAxis ? globalYMin : undefined}
-              syncYMax={syncYAxis ? globalYMax : undefined}
-              showXAxis={showXAxis}
-              showYAxis={showYAxis}
-              lineWidth={lineWidth}
-              yAxisFormat={yAxisFormat}
-              chartHeight={panelHeight}
-            />
-          </PanelCard>
-        ))}
-      </GridContainer>
+      {showLegend && legendPosition === 'top' && (
+        <SharedLegend items={legendItems} position="top" />
+      )}
+      <ScrollArea>
+        <GridContainer $columns={effectiveColumns} $gap={panelPadding}>
+          {panels.map(panel => (
+            <PanelCard
+              key={panel.title}
+              $padding={panelPadding}
+              $borderRadius={panelBorderRadius}
+            >
+              {showPanelTitle && <PanelTitle>{panel.title}</PanelTitle>}
+              {showPanelSubtitle && (
+                <PanelSubtitle>{getSubtitle(panel)}</PanelSubtitle>
+              )}
+              {isBigNumber ? (
+                <BigNumberMiniPanel
+                  panel={panel}
+                  formatter={yFormatter}
+                  nullText={nullValueText}
+                  chartHeight={panelHeight}
+                />
+              ) : (
+                <MiniPanel
+                  panel={panel}
+                  config={panelConfig}
+                  chartHeight={panelHeight}
+                  groupId={groupId}
+                />
+              )}
+            </PanelCard>
+          ))}
+        </GridContainer>
+      </ScrollArea>
+      {showLegend && legendPosition === 'bottom' && (
+        <SharedLegend items={legendItems} position="bottom" />
+      )}
     </Wrapper>
   );
 }

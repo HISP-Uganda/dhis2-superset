@@ -173,7 +173,16 @@ export async function syncDHIS2LegendSchemesForDatabase(
     const { SupersetClient } = await import('@superset-ui/core');
     const { isPublicView, chartId, dashboardId } = options;
 
-    const protectedEndpoint = `/api/v1/database/${dbId}/dhis2_metadata/?type=legendSets&staged=true`;
+    // Include chart/dashboard context in the primary endpoint so the
+    // backend can resolve public-dashboard access for anonymous users
+    // without needing a separate fallback request.
+    const chartParams = [
+      chartId != null ? `slice_id=${chartId}` : '',
+      dashboardId != null ? `dashboard_id=${dashboardId}` : '',
+    ]
+      .filter(Boolean)
+      .join('&');
+    const primaryEndpoint = `/api/v1/database/${dbId}/dhis2_metadata/?type=legendSets&staged=true${chartParams ? `&${chartParams}` : ''}`;
     const publicEndpoint =
       chartId != null
         ? `/api/v1/database/${dbId}/dhis2_metadata_public/?type=legendSets&staged=true&slice_id=${chartId}${
@@ -184,7 +193,7 @@ export async function syncDHIS2LegendSchemesForDatabase(
     let response;
     try {
       response = await SupersetClient.get({
-        endpoint: protectedEndpoint,
+        endpoint: primaryEndpoint,
         ignoreUnauthorized: true,
       });
     } catch (error) {

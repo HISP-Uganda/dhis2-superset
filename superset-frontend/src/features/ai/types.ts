@@ -5,6 +5,7 @@ export type AIInsightMode = 'chart' | 'dashboard' | 'sql';
 export type AIConversationMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  duration_ms?: number;
 };
 
 export type AIProviderCapability = {
@@ -18,6 +19,7 @@ export type AIProviderCapability = {
 };
 
 export type AICapabilities = {
+  enabled?: boolean;
   default_provider?: string | null;
   default_model?: string | null;
   providers: AIProviderCapability[];
@@ -76,3 +78,24 @@ export type DashboardInsightContext = {
 
 export type QueryDataLike = QueryData | Record<string, any> | null | undefined;
 
+export type AIConversationSummary = {
+  id: number;
+  user_id: number;
+  mode: string;
+  target_id?: string | null;
+  title?: string | null;
+  provider_id?: string | null;
+  model_name?: string | null;
+  created_on: string;
+  updated_on: string;
+  message_count: number;
+};
+
+/** A single chat bubble in the panel UI */
+export type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  streaming?: boolean;
+};

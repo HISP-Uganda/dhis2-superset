@@ -57,6 +57,25 @@ def _resolve_dataset_table_ref(dataset: SqlaTable) -> tuple[str | None, str]:
     return schema_name, table_name
 
 
+import re
+
+_INTERNAL_STAGING_RE = re.compile(
+    r"^(sv_\d+_|ds_\d+_)",
+    re.IGNORECASE,
+)
+
+
+def _is_internal_staging_table(table_name: str) -> bool:
+    """Return True for internal staging/serving physical tables.
+
+    These follow the naming convention ``sv_{id}_{name}`` (serving) or
+    ``ds_{id}_{name}`` (staging) and should not be exposed to end users
+    in SQL Lab — users should query the friendly ``[MART]`` datasets
+    instead.
+    """
+    return bool(_INTERNAL_STAGING_RE.match(table_name))
+
+
 class TablesDatabaseCommand(BaseCommand):
     _model: Database
 
@@ -76,6 +95,7 @@ class TablesDatabaseCommand(BaseCommand):
         self.validate()
         self._catalog_name = self._catalog_name or self._model.get_default_catalog()
         requested_schema = _normalize_schema_name(self._schema_name)
+        is_staging_db = getattr(self._model, "is_dhis2_staging_internal", False)
         try:
             tables = security_manager.get_datasources_accessible_by_user(
                 database=self._model,
@@ -147,6 +167,7 @@ class TablesDatabaseCommand(BaseCommand):
                         SqlaTable.table_name,
                         SqlaTable.extra,
                         SqlaTable.sql,
+                        SqlaTable.dataset_role,
                     ),
                     lazyload(SqlaTable.columns),
                     lazyload(SqlaTable.metrics),
@@ -159,26 +180,49 @@ class TablesDatabaseCommand(BaseCommand):
 
             datasets = datasets_query.all()
 
-            # Map virtual datasets to options
-            dataset_options = [
-                {
-                    "id": ds.id,
-                    "label": ds.table_name,
-                    "value": _resolve_dataset_table_ref(ds)[1],
-                    "type": "dataset",
-                    "extra": ds.extra_dict,
-                    "sql": ds.sql,
-                }
-                for ds in datasets
-                if ds.sql
-                and (
-                    requested_schema is None
-                    or _resolve_dataset_table_ref(ds)[0] == requested_schema
+            # Map virtual datasets to options.  On staging-internal
+            # databases only expose MART-role datasets (not raw SOURCE
+            # registrations) so users see the curated analytical tables.
+            dataset_options = []
+            for ds in datasets:
+                if not ds.sql:
+                    continue
+                resolved_schema, resolved_table = _resolve_dataset_table_ref(ds)
+                if requested_schema is not None and resolved_schema != requested_schema:
+                    continue
+                ds_role = str(getattr(ds, "dataset_role", "") or "").upper()
+                if is_staging_db and ds_role == "SOURCE":
+                    continue
+                dataset_options.append(
+                    {
+                        "id": ds.id,
+                        "label": ds.table_name,
+                        "value": resolved_table,
+                        "type": "dataset",
+                        "extra": ds.extra_dict,
+                        "sql": ds.sql,
+                    }
                 )
-            ]
+
+            # Collect the physical table names that are backing MART
+            # datasets so they can be hidden from the sidebar when the
+            # database is the staging-internal database.  Users should
+            # interact with the friendly "[MART]" dataset names instead.
+            dataset_backing_tables: set[str] = set()
+            if is_staging_db:
+                for opt in dataset_options:
+                    dataset_backing_tables.add(opt["value"])
 
             options_by_value: dict[str, dict[str, Any]] = {}
+
             for table in tables:
+                # On staging databases, hide raw physical tables that have
+                # a registered MART dataset, as well as internal staging
+                # tables (sv_*, ds_*) that users should never query directly.
+                if is_staging_db and _is_internal_staging_table(table.table):
+                    continue
+                if table.table in dataset_backing_tables:
+                    continue
                 options_by_value.setdefault(
                     table.table,
                     {
@@ -187,6 +231,8 @@ class TablesDatabaseCommand(BaseCommand):
                     },
                 )
             for view in views:
+                if is_staging_db and _is_internal_staging_table(view.table):
+                    continue
                 options_by_value.setdefault(
                     view.table,
                     {
@@ -195,6 +241,8 @@ class TablesDatabaseCommand(BaseCommand):
                     },
                 )
             for mv in materialized_views:
+                if is_staging_db and _is_internal_staging_table(mv.table):
+                    continue
                 options_by_value.setdefault(
                     mv.table,
                     {

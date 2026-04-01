@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import { FeatureFlag, isFeatureEnabled, styled, css, t } from '@superset-ui/core';
+import { styled, css, t } from '@superset-ui/core';
 import { Button, ModalTrigger } from '@superset-ui/core/components';
 import { useSelector } from 'react-redux';
 import { RootState } from 'src/dashboard/types';
 import type Chart from 'src/types/Chart';
 import AIInsightPanel from './AIInsightPanel';
 import { buildDashboardInsightContext } from './context';
+import { useAIEnabled } from './useAIEnabled';
 
 const FloatingButton = styled.div`
   ${({ theme }) => css`
@@ -29,6 +30,7 @@ export default function DashboardInsightsButton({
   charts,
   activeFilters,
 }: Props) {
+  const aiEnabled = useAIEnabled();
   const chartStates = useSelector((state: RootState) => state.charts);
 
   const context = useMemo(
@@ -48,7 +50,7 @@ export default function DashboardInsightsButton({
     [activeFilters, chartStates, charts, dashboardId, dashboardTitle],
   );
 
-  if (!isFeatureEnabled(FeatureFlag.AiInsights)) {
+  if (!aiEnabled) {
     return null;
   }
 

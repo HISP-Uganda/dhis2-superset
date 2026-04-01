@@ -38,7 +38,7 @@ const ControlsContainer = styled.div`
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 1000;
+  z-index: 4;
   display: flex;
   flex-direction: column;
   gap: 8px;

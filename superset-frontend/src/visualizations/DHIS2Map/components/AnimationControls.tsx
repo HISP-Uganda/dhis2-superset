@@ -36,7 +36,7 @@ const ControlsContainer = styled.div`
   padding: 10px;
   border-radius: 4px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-  z-index: 999;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 10px;

@@ -1222,8 +1222,11 @@ class DHIS2Dialect(default.DefaultDialect):
 
     def create_connect_args(self, url):
         """
-        Parse URL and return connection arguments for DHIS2Connection
-        This is called by SQLAlchemy to convert the URL into connection parameters
+        Parse URL and return connection arguments for DHIS2Connection.
+
+        When the URL is a shell URI (``dhis2://`` with no host), the primary
+        DHIS2 instance for the parent database is resolved automatically so
+        that SQL Lab queries work against logical databases.
         """
         safe_url = (
             url.render_as_string(hide_password=True)
@@ -1232,12 +1235,27 @@ class DHIS2Dialect(default.DefaultDialect):
         )
         logger.debug(f"create_connect_args called with URL: {safe_url}")
 
-        # Extract connection details from URL
+        host = url.host
+        username = url.username
+        password = url.password
+        database = url.database  # path like /stable-2-42-2/api
+
+        # ── Shell URI guard ──────────────────────────────────────────
+        # A shell URI (dhis2:// with no host) is normally resolved in
+        # Database._get_sqla_engine before the dialect is reached.  If it
+        # still arrives here without a host, the resolution failed.
+        if not host:
+            raise Exception(
+                "This DHIS2 database is a logical shell with no "
+                "configured instances. Add at least one DHIS2 instance "
+                "with a valid URL in the database connections page."
+            )
+
         opts = {
-            "host": url.host,
-            "username": url.username,
-            "password": url.password,
-            "database": url.database,  # This will be the path like /stable-2-42-2/api
+            "host": host,
+            "username": username,
+            "password": password,
+            "database": database,
         }
 
         safe_opts = dict(opts)
@@ -1675,6 +1693,13 @@ class DHIS2Connection:
                 - page_size: Default page size
         """
         logger.debug(f"DHIS2Connection init - host: {host}, database: {database}, kwargs: {kwargs}")
+
+        if not host:
+            raise Exception(
+                "DHIS2 connection requires a valid server hostname. "
+                "If this is a logical database, ensure at least one DHIS2 "
+                "instance is configured with a valid URL."
+            )
 
         self.host = host
         self.username = username or ""

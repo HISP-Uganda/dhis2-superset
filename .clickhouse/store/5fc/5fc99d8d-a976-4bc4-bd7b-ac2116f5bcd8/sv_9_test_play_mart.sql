@@ -1,4 +1,4 @@
-ATTACH TABLE _ UUID '85fa1d92-ebac-446f-9c9b-6edf4c3bfbce'
+ATTACH TABLE _ UUID '9646d929-20ce-4d8a-b249-d85027981aec'
 (
     `national` LowCardinality(String),
     `district` LowCardinality(String),
@@ -6,6 +6,13 @@ ATTACH TABLE _ UUID '85fa1d92-ebac-446f-9c9b-6edf4c3bfbce'
     `facility` LowCardinality(String),
     `period` LowCardinality(String),
     `ou_level` UInt16,
+    `co_uid` LowCardinality(String),
+    `disaggregation` LowCardinality(String),
+    `aoc_uid` LowCardinality(String),
+    `attribute_option_combo` LowCardinality(String),
+    `morbidity_age` LowCardinality(String),
+    `referrals_age` LowCardinality(String),
+    `under_5_5_and_above_of_age` LowCardinality(String),
     `malaria_treated_at_phu_with_act_24_hrs_new` Nullable(Float64),
     `malaria_treated_at_phu_with_act_24_hrs_f_up` Nullable(Float64),
     `malaria_treated_at_phu_without_act_24_hrs_new` Nullable(Float64),
@@ -30,5 +37,5 @@ ATTACH TABLE _ UUID '85fa1d92-ebac-446f-9c9b-6edf4c3bfbce'
     `malaria_treated_in_community_with_act_24_hrs_new_2` Nullable(Float64)
 )
 ENGINE = MergeTree
-ORDER BY (period, ou_level, national, district, chiefdom, facility)
+ORDER BY (period, ou_level, national, district, chiefdom, facility, co_uid, disaggregation, aoc_uid, attribute_option_combo, morbidity_age, referrals_age, under_5_5_and_above_of_age)
 SETTINGS allow_nullable_key = 1, index_granularity = 8192

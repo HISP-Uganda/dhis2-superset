@@ -2436,7 +2436,6 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             return self.response_400(message=str(exc))
 
     @expose("/<int:pk>/dhis2_metadata/", methods=["GET"])
-    @protect()
     @safe
     @statsd_metrics
     @event_logger.log_this_with_context(
@@ -2446,6 +2445,11 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
     )
     def dhis2_metadata(self, pk: int) -> Response:
         """Fetch DHIS2 metadata (dataElements, indicators, orgUnits).
+
+        Works for both authenticated users and anonymous/guest access to
+        public dashboards.  Removes the need for the frontend to make a
+        separate fallback request to ``dhis2_metadata_public``, which
+        previously caused noisy 401 errors in the browser console.
         ---
         get:
           summary: Fetch DHIS2 metadata for visual query builder
@@ -2504,7 +2508,26 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         database = DatabaseDAO.find_by_id(pk)
         if not database:
             return self.response_404()
-        chart = self._resolve_authenticated_dhis2_chart()
+
+        # Decide auth path: fully authenticated users get direct chart
+        # resolution; anonymous or guest-token users go through the public
+        # chart resolver which validates the chart sits on a published /
+        # guest-accessible dashboard.
+        from flask_login import current_user as _cu
+
+        is_fully_authenticated = (
+            getattr(_cu, "is_authenticated", False)
+            and not security_manager.is_guest_user()
+        )
+
+        if is_fully_authenticated:
+            chart = self._resolve_authenticated_dhis2_chart()
+        else:
+            result = self._resolve_public_dhis2_chart()
+            if isinstance(result, Response):
+                return result
+            chart = result
+
         resolved_database = (
             self._resolve_dhis2_database_from_chart_context(
                 database=database,

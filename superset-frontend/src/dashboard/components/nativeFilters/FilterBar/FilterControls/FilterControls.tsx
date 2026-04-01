@@ -74,6 +74,7 @@ type FilterControlsProps = {
   clearAllTriggers?: Record<string, boolean>;
   onClearAllComplete?: (filterId: string) => void;
   hideHeader?: boolean;
+  orientation?: FilterBarOrientation;
 };
 
 const SectionContainer = styled.div`
@@ -126,11 +127,13 @@ const FilterControls: FC<FilterControlsProps> = ({
   clearAllTriggers,
   onClearAllComplete,
   hideHeader = false,
+  orientation,
 }) => {
   const theme = useTheme();
-  const filterBarOrientation = useSelector<RootState, FilterBarOrientation>(
+  const storeOrientation = useSelector<RootState, FilterBarOrientation>(
     ({ dashboardInfo }) => dashboardInfo.filterBarOrientation,
   );
+  const filterBarOrientation = orientation ?? storeOrientation;
 
   const { outlinedFilterId, lastUpdated } = useFilterOutlined();
 

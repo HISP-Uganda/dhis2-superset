@@ -629,6 +629,19 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
         sqlalchemy_url = make_url_safe(
             sqlalchemy_uri if sqlalchemy_uri else self.sqlalchemy_uri_decrypted
         )
+
+        # ── DHIS2 shell URI resolution ──────────────────────────────
+        # A shell URI (dhis2://) is used for logical DHIS2 databases whose
+        # real connection details live in child DHIS2Instance rows.  Resolve
+        # the primary instance's URI so the engine reaches a real server.
+        if (
+            sqlalchemy_url.get_backend_name() == "dhis2"
+            and not sqlalchemy_url.host
+        ):
+            resolved_uri = self._resolve_dhis2_shell_uri()
+            if resolved_uri:
+                sqlalchemy_url = make_url_safe(resolved_uri)
+
         self.db_engine_spec.validate_database_uri(sqlalchemy_url)
 
         extra = self.get_extra(source)
@@ -690,6 +703,70 @@ class Database(Model, AuditMixinNullable, ImportExportMixin):  # pylint: disable
             return create_engine(sqlalchemy_url, **engine_kwargs)
         except Exception as ex:
             raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
+
+    def _resolve_dhis2_shell_uri(self) -> str | None:
+        """Resolve a DHIS2 shell URI to the primary instance's real URI.
+
+        Returns a ``dhis2://...`` URI string, or ``None`` when no instance
+        can be resolved.
+        """
+        try:
+            from superset.dhis2.models import DHIS2Instance
+            from urllib.parse import urlparse, quote_plus
+
+            instance = None
+            if self.primary_instance_id:
+                instance = db.session.get(DHIS2Instance, self.primary_instance_id)
+
+            # Fallback: first active instance for this database
+            if instance is None:
+                instance = (
+                    db.session.query(DHIS2Instance)
+                    .filter(
+                        DHIS2Instance.database_id == self.id,
+                        DHIS2Instance.is_active.is_(True),
+                    )
+                    .order_by(DHIS2Instance.display_order, DHIS2Instance.id)
+                    .first()
+                )
+
+            if instance is None:
+                return None
+
+            instance_url = instance.url or ""
+            if not instance_url.startswith(("http://", "https://")):
+                instance_url = f"https://{instance_url}"
+            parsed = urlparse(instance_url)
+            hostname = parsed.hostname
+            if not hostname:
+                return None
+
+            netloc = hostname
+            if parsed.port and parsed.port != 443:
+                netloc = f"{hostname}:{parsed.port}"
+
+            path = parsed.path or ""
+            if not path.endswith("/api"):
+                path = path.rstrip("/") + "/api"
+
+            # Build credentials
+            credentials = ""
+            if instance.auth_type == "pat" and instance.access_token:
+                credentials = f":{quote_plus(instance.access_token)}"
+            elif instance.username:
+                u = quote_plus(instance.username)
+                p = quote_plus(instance.password) if instance.password else ""
+                credentials = f"{u}:{p}" if p else u
+
+            cred_part = f"{credentials}@" if credentials else ""
+            return f"dhis2://{cred_part}{netloc}{path}"
+        except Exception:
+            logger.warning(
+                "Failed to resolve primary DHIS2 instance for database id=%s",
+                self.id,
+                exc_info=True,
+            )
+            return None
 
     def add_database_to_signature(
         self,

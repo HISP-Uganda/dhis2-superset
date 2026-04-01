@@ -7,13 +7,18 @@ jest.mock('./AIInsightPanel', () => ({
   default: () => <div data-test="mock-ai-insight-panel" />,
 }));
 
+const mockUseAIEnabled = jest.fn();
+jest.mock('./useAIEnabled', () => ({
+  useAIEnabled: () => mockUseAIEnabled(),
+}));
+
 describe('DashboardInsightsButton', () => {
   afterEach(() => {
-    (global as any).featureFlags = {};
+    mockUseAIEnabled.mockReset();
   });
 
-  test('renders when the AI feature flag is enabled', async () => {
-    (global as any).featureFlags = { AI_INSIGHTS: true };
+  test('renders when AI is enabled', async () => {
+    mockUseAIEnabled.mockReturnValue(true);
 
     render(
       <DashboardInsightsButton
@@ -34,8 +39,8 @@ describe('DashboardInsightsButton', () => {
     expect(screen.getAllByRole('button', { name: /ai insights/i })).not.toHaveLength(0);
   });
 
-  test('does not render when the AI feature flag is disabled', () => {
-    (global as any).featureFlags = { AI_INSIGHTS: false };
+  test('does not render when AI is disabled', () => {
+    mockUseAIEnabled.mockReturnValue(false);
 
     render(
       <DashboardInsightsButton

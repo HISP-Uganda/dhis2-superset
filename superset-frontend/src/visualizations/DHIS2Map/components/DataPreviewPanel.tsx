@@ -12,7 +12,7 @@ const PanelWrapper = styled.div`
   max-width: 600px;
   max-height: 400px;
   overflow: auto;
-  z-index: 500;
+  z-index: 4;
   font-size: 12px;
 
   .panel-header {

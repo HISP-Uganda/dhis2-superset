@@ -62,6 +62,9 @@ import ReportModal from 'src/features/reports/ReportModal';
 import { deleteActiveReport } from 'src/features/reports/ReportModal/actions';
 import { PageHeaderWithActions } from '@superset-ui/core/components/PageHeaderWithActions';
 import { useUnsavedChangesPrompt } from 'src/hooks/useUnsavedChangesPrompt';
+import { Drawer } from 'antd';
+import FilterBar from 'src/dashboard/components/nativeFilters/FilterBar';
+import { FilterBarOrientation } from 'src/dashboard/types';
 import DashboardEmbedModal from '../EmbeddedModal';
 import OverwriteConfirm from '../OverwriteConfirm';
 import {
@@ -99,6 +102,60 @@ import { useHeaderActionsMenu } from './useHeaderActionsDropdownMenu';
 
 const extensionsRegistry = getExtensionsRegistry();
 
+/**
+ * Extracts a human-readable "OrgUnit · Period" context line from the active
+ * native dashboard filters.  Looks for filters whose target column name
+ * contains typical OU/period identifiers and returns the first applied
+ * value for each.
+ */
+function useActiveFilterContext(dataMask, nativeFilters) {
+  return useMemo(() => {
+    if (!nativeFilters || !dataMask) return null;
+
+    const ouKeywords = [
+      'national', 'region', 'district', 'county', 'province',
+      'org_unit', 'orgunit', 'ou_', 'facility',
+    ];
+    const periodKeywords = ['period', 'quarter', 'month', 'year', 'date', 'time'];
+
+    let ouLabel = null;
+    let periodLabel = null;
+
+    const filters = Object.values(nativeFilters);
+    for (const filter of filters) {
+      if (filter.type !== 'NATIVE_FILTER') continue;
+
+      const filterState = dataMask[filter.id]?.filterState;
+      if (!filterState) continue;
+
+      const label =
+        filterState.label && !filterState.label.includes('undefined')
+          ? filterState.label
+          : Array.isArray(filterState.value)
+            ? filterState.value.join(', ')
+            : filterState.value || null;
+
+      if (!label) continue;
+
+      const columnName = (
+        filter.targets?.[0]?.column?.name || filter.name || ''
+      ).toLowerCase();
+
+      if (!ouLabel && ouKeywords.some(k => columnName.includes(k))) {
+        ouLabel = label;
+      }
+      if (!periodLabel && periodKeywords.some(k => columnName.includes(k))) {
+        periodLabel = label;
+      }
+      if (ouLabel && periodLabel) break;
+    }
+
+    if (!ouLabel && !periodLabel) return null;
+    const parts = [ouLabel, periodLabel].filter(Boolean);
+    return parts.join('  ·  ');
+  }, [dataMask, nativeFilters]);
+}
+
 const headerContainerStyle = theme => css`
   border-bottom: 1px solid ${theme.colorBorder};
 
@@ -113,6 +170,606 @@ const headerContainerStyle = theme => css`
 
   .header-with-actions .title-panel > div {
     padding-left: ${theme.sizeUnit}px;
+  }
+`;
+
+const publicHeaderStyle = theme => css`
+  border-bottom: 2px solid var(--pro-accent, #1976D2);
+  background: ${theme.colorBgBase};
+  width: 100%;
+
+  .header-with-actions {
+    height: 48px;
+    padding: 0 24px;
+    background: ${theme.colorBgBase};
+    max-width: 100%;
+    margin-left: 0;
+  }
+
+  .title-panel {
+    margin-right: ${theme.sizeUnit}px;
+    margin-left: 0;
+    flex: 1 1 0%;
+    min-width: 0;
+    max-width: 85%;
+    overflow: hidden;
+  }
+
+  /* Force the editable-title wrapper to fill its parent */
+  .title-panel .editable-title {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  /* Override the dynamically-calculated pixel width so the input/textarea
+     stretches to fill the title-panel instead of being sized to text width */
+  .header-with-actions .editable-title input,
+  .header-with-actions .editable-title textarea,
+  .header-with-actions .editable-title span[data-test="span-title"],
+  .header-with-actions .editable-title [data-test="editable-title"],
+  .header-with-actions .dynamic-title-input {
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.025em;
+    color: var(--pro-navy, #0D3B66) !important;
+    background-color: transparent !important;
+    font-family: var(--pro-font-family, ${theme.fontFamily});
+    line-height: 1.3;
+    width: 100% !important;
+    max-width: 100% !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    resize: none;
+  }
+
+  .header-with-actions .title-panel > div {
+    padding-left: 0;
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .right-button-panel {
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  /* ── Tablet ──────────────────────────────────────────────────────── */
+  @media (max-width: 1024px) {
+    .header-with-actions {
+      height: 44px;
+      padding: 0 16px;
+    }
+    .header-with-actions .editable-title input,
+    .header-with-actions .editable-title textarea,
+    .header-with-actions .editable-title span[data-test="span-title"],
+    .header-with-actions .editable-title [data-test="editable-title"],
+    .header-with-actions .dynamic-title-input {
+      font-size: 16px !important;
+    }
+  }
+
+  /* ── Mobile ──────────────────────────────────────────────────────── */
+  @media (max-width: 767px) {
+    .header-with-actions {
+      height: auto;
+      min-height: 40px;
+      padding: 6px 12px;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .title-panel {
+      flex: 1 1 100%;
+      max-width: 100%;
+      margin-right: 0;
+    }
+    .header-with-actions .editable-title input,
+    .header-with-actions .editable-title textarea,
+    .header-with-actions .editable-title span[data-test="span-title"],
+    .header-with-actions .editable-title [data-test="editable-title"],
+    .header-with-actions .dynamic-title-input {
+      font-size: 14px !important;
+    }
+    .right-button-panel {
+      flex: 1 1 100%;
+      justify-content: flex-end;
+    }
+  }
+`;
+
+const filterDrawerBtnStyle = theme => css`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 4px;
+  border: 1px solid var(--pro-border, ${theme.colorBorder});
+  background: var(--pro-surface, #fff);
+  color: var(--pro-navy, #0D3B66);
+
+  &:hover, &:focus {
+    background: var(--pro-sub-surface, #F8FAFC);
+    border-color: var(--pro-accent, #1976D2);
+    color: var(--pro-accent, #1976D2);
+  }
+
+  @media (max-width: 767px) {
+    font-size: 11px;
+    padding: 4px 8px;
+    gap: 4px;
+  }
+`;
+
+/* Pro-themed filter drawer overrides — ensures cascading filters,
+   selects, and action buttons look polished inside the drawer. */
+const filterDrawerGlobalStyles = theme => css`
+  /* Ensure the drawer root sits above everything including map controls */
+  .pro-filter-drawer.ant-drawer {
+    z-index: 1100 !important;
+  }
+
+  .pro-filter-drawer {
+    .ant-drawer-header {
+      background: var(--pro-surface, ${theme.colorBgContainer});
+      border-bottom: 1px solid var(--pro-border, ${theme.colorBorder});
+      padding: 16px 20px;
+    }
+
+    .ant-drawer-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--pro-text, ${theme.colorText});
+    }
+
+    .ant-drawer-close {
+      color: var(--pro-text-secondary, ${theme.colorTextSecondary});
+    }
+
+    .ant-drawer-body {
+      background: var(--pro-canvas, ${theme.colorBgLayout});
+      padding: 0;
+    }
+
+    /* FilterBar wrapper — make it fill the drawer cleanly */
+    .ant-drawer-body > div {
+      position: relative !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-height: 100% !important;
+    }
+
+    /* Override position: absolute on the Bar so it flows in the drawer */
+    .ant-drawer-body [class*="Bar-"] {
+      position: relative !important;
+      display: flex !important;
+      flex-direction: column;
+      width: 100% !important;
+      min-height: 100% !important;
+      border-right: none !important;
+    }
+
+    /* BarWrapper — fill drawer */
+    .ant-drawer-body [class*="BarWrapper"] {
+      width: 100% !important;
+    }
+
+    /* Filter controls wrapper — better spacing */
+    .ant-drawer-body [class*="FilterControlsWrapper"],
+    .ant-drawer-body [class*="filter-controls-wrapper"] {
+      padding: 16px 20px 100px;
+      gap: 16px;
+    }
+
+    /* Individual filter items */
+    .ant-drawer-body [class*="FilterValue"],
+    .ant-drawer-body [class*="filter-item-wrapper"] {
+      background: var(--pro-surface, ${theme.colorBgContainer});
+      border: 1px solid var(--pro-border, ${theme.colorBorder});
+      border-radius: 0;
+      padding: 14px 16px;
+    }
+
+    /* Filter labels */
+    .ant-drawer-body .filter-item-wrapper label,
+    .ant-drawer-body [class*="StyledFilterTitle"],
+    .ant-drawer-body [class*="FilterName"] {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--pro-text-secondary, ${theme.colorTextSecondary});
+      margin-bottom: 6px;
+    }
+
+    /* Select inputs inside filters */
+    .ant-drawer-body .ant-select-selector {
+      border-radius: 0 !important;
+      border-color: var(--pro-border, ${theme.colorBorder}) !important;
+      background: var(--pro-surface, ${theme.colorBgContainer}) !important;
+    }
+
+    .ant-drawer-body .ant-select-focused .ant-select-selector {
+      border-color: var(--pro-accent, ${theme.colorPrimary}) !important;
+      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.12) !important;
+    }
+
+    /* Input fields */
+    .ant-drawer-body .ant-input,
+    .ant-drawer-body .ant-input-number {
+      border-radius: 0;
+      border-color: var(--pro-border, ${theme.colorBorder});
+    }
+
+    .ant-drawer-body .ant-input:focus,
+    .ant-drawer-body .ant-input-number:focus {
+      border-color: var(--pro-accent, ${theme.colorPrimary});
+      box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.12);
+    }
+
+    /* Date pickers */
+    .ant-drawer-body .ant-picker {
+      border-radius: 0;
+      border-color: var(--pro-border, ${theme.colorBorder});
+    }
+
+    /* Action buttons at the bottom */
+    .ant-drawer-body [class*="ActionButtons"],
+    .ant-drawer-body [class*="action-buttons"] {
+      background: var(--pro-surface, ${theme.colorBgContainer});
+      border-top: 1px solid var(--pro-border, ${theme.colorBorder});
+      padding: 12px 20px;
+    }
+
+    .ant-drawer-body .ant-btn {
+      border-radius: 0;
+    }
+
+    .ant-drawer-body .ant-btn-primary {
+      background: var(--pro-accent, ${theme.colorPrimary});
+      border-color: var(--pro-accent, ${theme.colorPrimary});
+    }
+
+    /* FilterBar header (Apply / Clear buttons row) */
+    .ant-drawer-body [class*="Header"] > div {
+      padding: 12px 20px;
+    }
+
+    /* Hide collapse toggle inside drawer — not needed */
+    .ant-drawer-body [class*="CollapsedBar"],
+    .ant-drawer-body [data-test="filter-bar-collapse-button"] {
+      display: none !important;
+    }
+
+    /* Tab navigation (Filters / Cross Filters) */
+    .ant-drawer-body .ant-tabs-nav {
+      padding: 0 20px;
+      margin-bottom: 0;
+    }
+
+    .ant-drawer-body .ant-tabs-tab {
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    /* Scrollable area */
+    .ant-drawer-body [class*="StyledScrollContainer"] {
+      overflow-y: auto;
+    }
+
+    /* ── Responsive drawer — full width on mobile ── */
+    @media (max-width: 767px) {
+      .ant-drawer-content-wrapper {
+        width: 100% !important;
+        max-width: 100vw !important;
+      }
+
+      .ant-drawer-header {
+        padding: 12px 16px;
+      }
+
+      .ant-drawer-title {
+        font-size: 14px;
+      }
+
+      .ant-drawer-body [class*="FilterControlsWrapper"],
+      .ant-drawer-body [class*="filter-controls-wrapper"] {
+        padding: 12px 16px 80px;
+        gap: 12px;
+      }
+
+      .ant-drawer-body [class*="FilterValue"],
+      .ant-drawer-body [class*="filter-item-wrapper"] {
+        padding: 10px 12px;
+      }
+    }
+
+    @media (max-width: 1024px) {
+      .ant-drawer-content-wrapper {
+        width: 360px !important;
+      }
+    }
+  }
+`;
+
+/* Pro theme — public dashboard overrides.
+   Overrides density vars for larger titles, tighter chart headers,
+   visible card separation, and subtle color accent areas. */
+const proPublicPageStyles = theme => css`
+  /* ── Override density vars for public view ────────────────────────── */
+  :root {
+    --pro-density-chart-title: 14px;
+    --pro-density-header-v: 4px;
+    --pro-density-header-h: 12px;
+    --pro-density-body-font: 13px;
+    --pro-density-kpi-value: 32px;
+    --pro-density-kpi-label: 12px;
+  }
+
+  /* ── Page canvas ──────────────────────────────────────────────────── */
+  .dashboard-content {
+    background-color: #EFF3F8 !important;
+  }
+
+  /* Grid rows — transparent so canvas shows between cards */
+  .grid-row,
+  .dragdroppable-row {
+    background: transparent !important;
+  }
+
+  /* ── Chart cards — clean surface, no shadow, no radius ─────────────── */
+  .dashboard-component-chart-holder,
+  .dashboard-content .dashboard-component-chart-holder,
+  .dashboard-content .resizable-container .dashboard-component-chart-holder {
+    border-radius: 0 !important;
+    border: 1px solid var(--pro-border, ${theme.colorBorderSecondary}) !important;
+    background-color: #fff;
+    box-shadow: none !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+  }
+
+  .dashboard-component-chart-holder:hover {
+    border-color: var(--pro-accent, #1976D2) !important;
+    box-shadow: none !important;
+  }
+
+  /* ── Chart header — compact bar with accent left-edge ────────────── */
+  .chart-header,
+  .slice-header,
+  [class*="ChartHeaderStyles"] {
+    padding: 4px 12px !important;
+    margin-bottom: 0 !important;
+    border-bottom: 1px solid var(--pro-border, ${theme.colorBorderSecondary}) !important;
+    border-top: none !important;
+    border-left: 3px solid var(--pro-accent, #1976D2) !important;
+    background: var(--pro-sub-surface, #F8FAFC) !important;
+    min-height: 0 !important;
+  }
+
+  /* ── Chart title text — no truncation, wrap long titles ──────────── */
+  .header-title,
+  .slice_container .header-title,
+  [data-test="slice-header-title"],
+  .chart-header .header-title span,
+  .chart-label,
+  .chart-title {
+    font-family: var(--pro-font-family, ${theme.fontFamily}) !important;
+    font-size: var(--pro-density-chart-title, 14px) !important;
+    font-weight: 700 !important;
+    color: var(--pro-navy, #0D3B66) !important;
+    letter-spacing: -0.01em;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    -webkit-line-clamp: unset !important;
+    word-break: break-word;
+    line-height: 1.3;
+  }
+
+  /* ── EditableTitle inner element — allow wrapping ─────────────────── */
+  .dynamic-title-input,
+  [data-test="editable-title-input"] {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    word-break: break-word;
+    display: block !important;
+  }
+
+  /* ── Filter context subtitle under chart titles ──────────────────── */
+  .chart-filter-context {
+    font-family: var(--pro-font-family, ${theme.fontFamily});
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--pro-text-secondary, #6B7280);
+    letter-spacing: 0;
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    .context-separator {
+      color: var(--pro-border-strong, #CBD5E1);
+    }
+  }
+
+  /* ── Dashboard section headers (row headers) ──────────────────────── */
+  .dashboard-component-header [class*="HeaderStyles"] {
+    font-family: var(--pro-font-family, ${theme.fontFamily}) !important;
+    color: var(--pro-navy, #0D3B66) !important;
+    font-weight: 700 !important;
+    font-size: 18px !important;
+  }
+
+  /* ── Chart content area — white fallback, no !important so charts
+     with their own background colors (KPI, summary cards) are preserved ── */
+  .slice_container,
+  .chart-container {
+    background-color: #fff;
+  }
+
+  /* ── Tab components ───────────────────────────────────────────────── */
+  .dashboard-component-tabs .ant-tabs-tab {
+    font-family: var(--pro-font-family, ${theme.fontFamily});
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .dashboard-component-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+    color: var(--pro-accent, #1976D2) !important;
+  }
+
+  .dashboard-component-tabs .ant-tabs-ink-bar {
+    background: var(--pro-accent, #1976D2) !important;
+  }
+
+  /* ── Markdown / text components ───────────────────────────────────── */
+  .dashboard-markdown .markdown-container,
+  .dashboard-component-header {
+    font-family: var(--pro-font-family, ${theme.fontFamily});
+    font-size: 14px;
+    color: var(--pro-text, ${theme.colorText});
+  }
+
+  /* ── ECharts & SVG text ───────────────────────────────────────────── */
+  .echarts-for-react text,
+  .superset-legacy-chart text,
+  .chart-container text {
+    font-family: var(--pro-font-family, ${theme.fontFamily}) !important;
+  }
+
+  /* ── Table charts ─────────────────────────────────────────────────── */
+  .superset-legacy-chart-table td,
+  .superset-legacy-chart-table th,
+  table.table td,
+  table.table th {
+    font-family: var(--pro-font-family, ${theme.fontFamily});
+    font-size: 13px;
+  }
+
+  /* ── KPI / Big Number charts ──────────────────────────────────────── */
+  [class*="BigNumber"] [class*="kpi-value"],
+  [class*="kpi_value"],
+  .big-number-vis .header-line {
+    font-size: var(--pro-density-kpi-value, 32px) !important;
+    font-weight: 700 !important;
+    color: var(--pro-navy, #0D3B66) !important;
+  }
+
+  [class*="BigNumber"] [class*="kpi-label"],
+  [class*="kpi_label"],
+  .big-number-vis .subheader-line {
+    font-size: var(--pro-density-kpi-label, 12px) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--pro-text-secondary, ${theme.colorTextSecondary}) !important;
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     RESPONSIVE — Tablet (≤ 1024px)
+     ══════════════════════════════════════════════════════════════════ */
+  @media (max-width: 1024px) {
+    :root {
+      --pro-density-chart-title: 14px;
+      --pro-density-kpi-value: 28px;
+      --pro-density-kpi-label: 12px;
+    }
+
+    .dashboard-component-chart-holder {
+      padding: ${theme.sizeUnit * 2}px !important;
+    }
+
+    .chart-header,
+    .slice-header,
+    [class*="ChartHeaderStyles"] {
+      padding: 3px 10px !important;
+    }
+
+    .header-title,
+    .chart-label,
+    .chart-title {
+      font-size: 14px !important;
+    }
+
+    [class*="BigNumber"] [class*="kpi-value"],
+    [class*="kpi_value"],
+    .big-number-vis .header-line {
+      font-size: 28px !important;
+    }
+
+    .chart-filter-context {
+      font-size: 11px;
+    }
+
+    .dashboard-component-header [class*="HeaderStyles"] {
+      font-size: 16px !important;
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+     RESPONSIVE — Mobile (≤ 767px)
+     ══════════════════════════════════════════════════════════════════ */
+  @media (max-width: 767px) {
+    :root {
+      --pro-density-chart-title: 13px;
+      --pro-density-kpi-value: 22px;
+      --pro-density-kpi-label: 11px;
+    }
+
+    .dashboard-component-chart-holder {
+      padding: ${theme.sizeUnit}px !important;
+    }
+
+    .chart-header,
+    .slice-header,
+    [class*="ChartHeaderStyles"] {
+      padding: 2px 8px !important;
+      border-left-width: 2px !important;
+    }
+
+    .header-title,
+    .chart-label,
+    .chart-title {
+      font-size: 13px !important;
+    }
+
+    [class*="BigNumber"] [class*="kpi-value"],
+    [class*="kpi_value"],
+    .big-number-vis .header-line {
+      font-size: 22px !important;
+    }
+
+    [class*="BigNumber"] [class*="kpi-label"],
+    [class*="kpi_label"],
+    .big-number-vis .subheader-line {
+      font-size: 11px !important;
+    }
+
+    .chart-filter-context {
+      font-size: 10px;
+      gap: 4px;
+    }
+
+    .dashboard-component-header [class*="HeaderStyles"] {
+      font-size: 14px !important;
+    }
+
+    /* Tabs — smaller on mobile */
+    .dashboard-component-tabs .ant-tabs-tab {
+      font-size: 12px;
+      padding: 6px 10px;
+    }
+
+    /* Table charts — tighter on mobile */
+    .superset-legacy-chart-table td,
+    .superset-legacy-chart-table th,
+    table.table td,
+    table.table th {
+      font-size: 11px;
+      padding: 4px 6px;
+    }
   }
 `;
 
@@ -188,11 +845,14 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
   const [showingEmbedModal, setShowingEmbedModal] = useState(false);
   const [showingReportModal, setShowingReportModal] = useState(false);
   const [currentReportDeleting, setCurrentReportDeleting] = useState(null);
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const dashboardInfo = useSelector(state => state.dashboardInfo);
   const layout = useSelector(state => state.dashboardLayout.present);
   const undoLength = useSelector(state => state.dashboardLayout.past.length);
   const redoLength = useSelector(state => state.dashboardLayout.future.length);
   const dataMask = useSelector(state => state.dataMask);
+  const nativeFilters = useSelector(state => state.nativeFilters?.filters);
+  const activeFilterContext = useActiveFilterContext(dataMask, nativeFilters);
   const user = useSelector(state => state.user);
   const chartIds = useChartIds();
 
@@ -639,39 +1299,32 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
       const items = [];
 
       if (isPublicView) {
-        if (badge) {
-          items.push(
-            <span
-              key="public-badge"
-              css={theme => css`
-                display: inline-flex;
-                align-items: center;
-                padding: 4px 8px;
-                border-radius: 999px;
-                background: rgba(15, 118, 110, 0.1);
-                color: var(--portal-accent, ${theme.colorPrimary});
-                font-size: 12px;
-                font-weight: 700;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-                margin-left: 4px;
-              `}
-            >
-              {badge}
-            </span>
-          );
-        }
-        if (subtitle) {
+        // Show active OU/Period filter context (or explicit subtitle) as
+        // a compact line next to the dashboard title.
+        const contextText = activeFilterContext || subtitle;
+        if (contextText) {
           items.push(
             <span
               key="public-subtitle"
-              css={theme => css`
+              css={() => css`
                 margin-left: 12px;
-                font-size: 14px;
-                color: ${theme.colorTextSecondary};
+                font-size: 12px;
+                font-weight: 500;
+                color: var(--pro-text-secondary, #6B7280);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 50%;
+
+                @media (max-width: 767px) {
+                  margin-left: 0;
+                  font-size: 11px;
+                  max-width: 100%;
+                  display: block;
+                }
               `}
             >
-              {subtitle}
+              {contextText}
             </span>
           );
         }
@@ -710,6 +1363,7 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
       isPublicView,
       badge,
       subtitle,
+      activeFilterContext,
     ],
   );
 
@@ -718,31 +1372,16 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
       if (isPublicView) {
         return (
           <div className="button-container">
-            {onBack && (
-              <a
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onBack();
-                }}
-                css={theme => css`
-                  color: var(--portal-muted-strong, ${theme.colorTextSecondary});
-                  font-weight: 600;
-                  font-size: 14px;
-                  text-decoration: none;
-                  margin-right: 16px;
-                  display: inline-flex;
-                  align-items: center;
-                  gap: 6px;
-                  &:hover {
-                    color: var(--portal-text, ${theme.colorText});
-                  }
-                `}
-              >
-                <Icons.LeftOutlined iconSize="s" />
-                {backLabel || t('Back')}
-              </a>
-            )}
+            <Button
+              buttonStyle="secondary"
+              buttonSize="small"
+              css={filterDrawerBtnStyle}
+              onClick={() => setFilterDrawerOpen(true)}
+              aria-label={t('Filters')}
+            >
+              <Icons.FilterOutlined iconSize="m" />
+              {t('Filters')}
+            </Button>
           </div>
         );
       }
@@ -867,8 +1506,7 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
       userCanEdit,
       userCanSaveAs,
       isPublicView,
-      onBack,
-      backLabel,
+      setFilterDrawerOpen,
     ],
   );
 
@@ -910,7 +1548,7 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
   });
   return (
     <div
-      css={headerContainerStyle}
+      css={publicHeaderStyle}
       data-test="dashboard-header-container"
       data-test-id={dashboardInfo.id}
       className="dashboard-header-container"
@@ -925,10 +1563,37 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
           open: isDropdownVisible,
           onOpenChange: setIsDropdownVisible,
         }}
-        additionalActionsMenu={isPublicView ? null : menu}
+        additionalActionsMenu={menu}
+        showMenuDropdown={!isPublicView}
         showFaveStar={!isPublicView && user?.userId && dashboardInfo?.id}
         showTitlePanelItems
       />
+      {isPublicView && (
+        <Drawer
+          rootClassName="pro-filter-drawer"
+          title={t('Dashboard Filters')}
+          placement="right"
+          width={380}
+          open={filterDrawerOpen}
+          onClose={() => setFilterDrawerOpen(false)}
+          styles={{
+            body: {
+              padding: 0,
+            },
+          }}
+        >
+          <FilterBar
+            orientation={FilterBarOrientation.Vertical}
+            verticalConfig={{
+              filtersOpen: true,
+              toggleFiltersBar: () => setFilterDrawerOpen(false),
+              width: 360,
+              height: 'calc(100vh - 64px)',
+              offset: 0,
+            }}
+          />
+        </Drawer>
+      )}
       {showingPropertiesModal && (
         <PropertiesModal
           dashboardId={dashboardInfo.id}
@@ -1001,6 +1666,8 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
           }
         `}
       />
+      {isPublicView && <Global styles={filterDrawerGlobalStyles} />}
+      <Global styles={proPublicPageStyles} />
 
       <UnsavedChangesModal
         title={t('Save changes to your dashboard?')}
