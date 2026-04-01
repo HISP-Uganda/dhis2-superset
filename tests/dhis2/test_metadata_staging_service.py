@@ -1907,3 +1907,69 @@ def test_get_staged_geo_payload_serves_existing_snapshot_without_live_fallback_w
         metadata_types=["geoJSON", "orgUnitHierarchy"],
         reason="staged_request:geoJSON",
     )
+
+
+# ---------------------------------------------------------------------------
+# _matches_search – multi-UID support
+# ---------------------------------------------------------------------------
+class TestMatchesSearch:
+    """Verify single-UID, multi-UID, and substring search modes."""
+
+    @staticmethod
+    def _call(item: dict, search_term: str) -> bool:
+        from superset.dhis2.metadata_staging_service import _matches_search
+
+        return _matches_search(item, search_term)
+
+    def test_empty_search_matches_everything(self):
+        assert self._call({"id": "abc1234567A"}, "") is True
+
+    def test_single_uid_exact_match(self):
+        assert self._call({"id": "UwnR5kr982Y"}, "UwnR5kr982Y") is True
+
+    def test_single_uid_no_match(self):
+        assert self._call({"id": "OtherUID0001"}, "UwnR5kr982Y") is False
+
+    def test_multi_uid_space_separated(self):
+        search = "UwnR5kr982Y BWZFz9RJRPI AuAOIfCuBUp"
+        assert self._call({"id": "BWZFz9RJRPI"}, search) is True
+        assert self._call({"id": "UwnR5kr982Y"}, search) is True
+        assert self._call({"id": "XxxxxXxxxx1"}, search) is False
+
+    def test_multi_uid_comma_separated(self):
+        search = "UwnR5kr982Y,BWZFz9RJRPI"
+        assert self._call({"id": "BWZFz9RJRPI"}, search) is True
+
+    def test_multi_uid_newline_separated(self):
+        search = "UwnR5kr982Y\nBWZFz9RJRPI\nAuAOIfCuBUp"
+        assert self._call({"id": "AuAOIfCuBUp"}, search) is True
+        assert self._call({"id": "NotInList01"}, search) is False
+
+    def test_multi_uid_tab_separated(self):
+        search = "UwnR5kr982Y\tBWZFz9RJRPI"
+        assert self._call({"id": "UwnR5kr982Y"}, search) is True
+
+    def test_multi_uid_semicolon_separated(self):
+        search = "UwnR5kr982Y;BWZFz9RJRPI"
+        assert self._call({"id": "BWZFz9RJRPI"}, search) is True
+
+    def test_multi_token_not_all_uids_falls_back_to_substring(self):
+        """If tokens are not all valid UIDs, use substring search."""
+        search = "108-CI02 admissions"
+        assert (
+            self._call(
+                {"id": "x", "displayName": "108-CI02. No. of admissions"},
+                search,
+            )
+            is False
+        )  # substring "108-CI02 admissions" not in name
+
+    def test_substring_search_single_non_uid(self):
+        item = {"id": "abc", "displayName": "Malaria cases confirmed", "name": ""}
+        assert self._call(item, "malaria") is True
+        assert self._call(item, "CONFIRMED") is True
+        assert self._call(item, "dengue") is False
+
+    def test_duplicates_in_multi_uid(self):
+        search = "UwnR5kr982Y UwnR5kr982Y BWZFz9RJRPI"
+        assert self._call({"id": "UwnR5kr982Y"}, search) is True

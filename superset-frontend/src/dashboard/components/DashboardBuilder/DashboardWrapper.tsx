@@ -34,7 +34,17 @@ const StyledDiv = styled.div`
     grid-template-columns: auto 1fr;
     grid-template-rows: auto 1fr;
     flex: 1;
-    gap: var(--pro-density-gutter, 8px);
+    gap: 0;
+    max-width: 100vw;
+    overflow-x: clip;
+    isolation: isolate;
+
+    @media (max-width: 767px) {
+      grid-template-columns: 1fr;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
     /* Special cases */
 
     &.dragdroppable--dragging {

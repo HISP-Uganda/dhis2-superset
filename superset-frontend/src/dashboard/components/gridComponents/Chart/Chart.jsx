@@ -79,12 +79,10 @@ const RESIZE_TIMEOUT = 500;
 const DEFAULT_HEADER_HEIGHT = 22;
 
 const ChartWrapper = styled.div`
-  overflow: hidden;
+  overflow: clip;
   position: relative;
-
-  &.dashboard-chart--overflowable {
-    overflow: visible;
-  }
+  isolation: isolate;
+  z-index: 0;
 `;
 
 const ChartOverlay = styled.div`

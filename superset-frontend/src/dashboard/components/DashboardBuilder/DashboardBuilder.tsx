@@ -98,6 +98,10 @@ const FiltersPanel = styled.div<{ width: number; hidden: boolean }>`
   z-index: 11;
   width: ${({ width }) => width}px;
   ${({ hidden }) => hidden && `display: none;`}
+
+  @media (max-width: 767px) {
+    display: none;
+  }
 `;
 
 const StickyPanel = styled.div<{ width: number }>`
@@ -108,14 +112,19 @@ const StickyPanel = styled.div<{ width: number }>`
 `;
 
 // @z-index-above-dashboard-popovers (99) + 1 = 100
-const StyledHeader = styled.div`
-  ${({ theme }) => css`
+const StyledHeader = styled.div<{ $isPublicView?: boolean }>`
+  ${({ theme, $isPublicView }) => css`
     grid-column: 2;
     grid-row: 1;
     position: sticky;
-    top: 0;
+    top: ${$isPublicView ? 'var(--portal-header-height, 0px)' : '0'};
     z-index: 99;
     max-width: 100vw;
+    background: ${theme.colorBgBase};
+
+    @media (max-width: 767px) {
+      grid-column: 1;
+    }
 
     .empty-droptarget:before {
       position: absolute;
@@ -137,8 +146,13 @@ const StyledContent = styled.div<{
 }>`
   grid-column: 2;
   grid-row: 2;
-  // @z-index-above-dashboard-header (100) + 1 = 101
-  ${({ fullSizeChartId }) => fullSizeChartId && `z-index: 101;`}
+  position: relative;
+  z-index: ${({ fullSizeChartId }) => (fullSizeChartId ? 101 : 1)};
+  isolation: isolate;
+
+  @media (max-width: 767px) {
+    grid-column: 1;
+  }
 `;
 
 const DashboardContentWrapper = styled.div`
@@ -330,13 +344,30 @@ const StyledDashboardContent = styled.div<{
       max-width: 100% !important;
     }
 
+    /* ── Responsive grid ── */
+    @media (max-width: 1024px) {
+      .grid-container {
+        margin: ${theme.sizeUnit * 2}px;
+        margin-left: ${theme.sizeUnit * 2}px;
+      }
+    }
+
+    @media (max-width: 767px) {
+      .grid-container {
+        margin: ${theme.sizeUnit}px;
+        margin-left: ${theme.sizeUnit}px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+    }
+
     .dashboard-component-chart-holder {
       width: 100%;
       height: 100%;
       background-color: transparent;
       position: relative;
       padding: ${theme.sizeUnit * 4}px;
-      overflow-y: visible;
+      overflow: clip;
 
       // transitionable traits to show filter relevance
       transition:
@@ -488,7 +519,9 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
     ELEMENT_ON_SCREEN_OPTIONS,
   );
 
-  const showFilterBar = !editMode && nativeFiltersEnabled;
+  // In public view, hide the inline filter bars — filters are accessed via
+  // a drawer button in the header instead.
+  const showFilterBar = !editMode && nativeFiltersEnabled && !isPublicView;
 
   const offset =
     FILTER_BAR_HEADER_HEIGHT +
@@ -500,6 +533,7 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
   const draggableStyle = useMemo(
     () => ({
       marginLeft:
+        isPublicView ||
         dashboardFiltersOpen ||
         editMode ||
         !nativeFiltersEnabled ||
@@ -508,6 +542,7 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
           : -32,
     }),
     [
+      isPublicView,
       dashboardFiltersOpen,
       editMode,
       filterBarOrientation,
@@ -600,9 +635,11 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
     ],
   );
 
-  const dashboardContentMarginLeft = !editMode
+  const dashboardContentMarginLeft = isPublicView
     ? theme.sizeUnit * 4
-    : theme.sizeUnit * 8;
+    : !editMode
+      ? theme.sizeUnit * 4
+      : theme.sizeUnit * 8;
 
   const renderChild = useCallback(
     adjustedWidth => {
@@ -657,7 +694,7 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
             </ResizableSidebar>
           </>
         )}
-      <StyledHeader ref={headerRef}>
+      <StyledHeader ref={headerRef} $isPublicView={isPublicView}>
         {/* @ts-ignore */}
         <Droppable
           data-test="top-level-tabs"

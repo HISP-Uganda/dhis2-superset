@@ -2127,13 +2127,24 @@ def _matches_group_filter(
     return bool(candidate_group_labels.intersection(group_filter_labels))
 
 
+_MULTI_UID_SPLIT_RE = re.compile(r"[\s,;\t\n]+")
+
+
 def _matches_search(item: dict[str, Any], search_term: str) -> bool:
     if not search_term:
         return True
 
+    # Single UID — exact match (existing behaviour).
     if _SEARCH_ID_RE.match(search_term):
         return item.get("id") == search_term
 
+    # Multi-UID: split on whitespace / comma / semicolon / tab / newline,
+    # and if every token looks like a DHIS2 UID treat as a batch lookup.
+    tokens = _MULTI_UID_SPLIT_RE.split(search_term.strip())
+    if len(tokens) > 1 and all(_SEARCH_ID_RE.match(t) for t in tokens):
+        return item.get("id") in set(tokens)
+
+    # Fallback — case-insensitive substring search across name fields.
     haystacks = [
         str(item.get("displayName") or ""),
         str(item.get("name") or ""),

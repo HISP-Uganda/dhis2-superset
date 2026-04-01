@@ -1059,6 +1059,21 @@ export default function WizardStepDataElements({
     setPagination(current => ({ ...current, page: 1 }));
   };
 
+  const DHIS2_UID_RE = /^[a-zA-Z][a-zA-Z0-9]{10}$/;
+  const handleSearchPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = event.clipboardData.getData('text');
+    const tokens = pasted
+      .split(/[\s,;\t\n]+/)
+      .map(t => t.trim())
+      .filter(Boolean);
+    // Only intercept when there are multiple valid DHIS2 UIDs.
+    if (tokens.length > 1 && tokens.every(t => DHIS2_UID_RE.test(t))) {
+      event.preventDefault();
+      const unique = [...new Set(tokens)];
+      applyFilterUpdates({ searchText: unique.join(' ') });
+    }
+  };
+
   useEffect(() => {
     setFilters(current => ({
       ...current,
@@ -1744,7 +1759,10 @@ export default function WizardStepDataElements({
               onChange={event =>
                 applyFilterUpdates({ searchText: event.target.value })
               }
-              placeholder={t('Search variables by name or UID')}
+              onPaste={handleSearchPaste}
+              placeholder={t(
+                'Search by name or UID — paste multiple UIDs to batch search',
+              )}
               value={filters.searchText}
             />
           </FilterField>
