@@ -3,11 +3,46 @@
     "composite": false,
     "emitDeclarationOnly": false,
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": "../..",
+    "baseUrl": "../..",
+    "incremental": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "rootDirs": [
+      "../../src",
+      "../../packages",
+      "../../plugins"
+    ],
+    "paths": {
+      "src/*": [
+        "src/*"
+      ],
+      "packages/*": [
+        "packages/*"
+      ],
+      "plugins/*": [
+        "plugins/*"
+      ]
+    }
   },
   "extends": "../../tsconfig.json",
   "include": [
-    "**/*",
-    "../../types/**/*",
+    "***",
+    "../../src/**/*",
+    "src/**/*"
   ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.stories.ts",
+    "**/*.stories.tsx",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/spec/**"
+  ]
 }

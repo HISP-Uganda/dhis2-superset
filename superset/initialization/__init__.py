@@ -279,6 +279,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(AsyncEventsRestApi)
         if feature_flag_manager.is_feature_enabled("AI_INSIGHTS"):
             from superset.ai_insights.api import (
+                AIChartGenerateRestApi,
                 AIChartRestApi,
                 AIDashboardRestApi,
                 AIPublicDashboardRestApi,
@@ -289,6 +290,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             from superset.ai_insights.push_analysis_api import AIPushAnalysisRestApi
 
             appbuilder.add_api(AIChartRestApi)
+            appbuilder.add_api(AIChartGenerateRestApi)
             appbuilder.add_api(AIDashboardRestApi)
             appbuilder.add_api(AIPublicDashboardRestApi)
             appbuilder.add_api(AISqlRestApi)

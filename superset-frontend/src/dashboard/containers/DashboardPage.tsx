@@ -28,6 +28,8 @@ import {
   useDashboard,
   useDashboardCharts,
   useDashboardDatasets,
+  usePublicDashboard,
+  usePublicDashboardCharts,
 } from 'src/hooks/apiResources';
 import { hydrateDashboard } from 'src/dashboard/actions/hydrate';
 import { setDatasources } from 'src/dashboard/actions/datasources';
@@ -132,15 +134,24 @@ export const DashboardPage: FC<PageProps> = ({
     (state: RootState) => state.dashboardInfo.theme,
   );
   const { addDangerToast } = useToasts();
-  const { result: dashboard, error: dashboardApiError } =
-    useDashboard(idOrSlug);
-  const { result: charts, error: chartsApiError } =
-    useDashboardCharts(idOrSlug);
+  const publicDashboardResource = usePublicDashboard(idOrSlug, !!isPublicView);
+  const privateDashboardResource = useDashboard(idOrSlug, !isPublicView);
+  const publicChartsResource = usePublicDashboardCharts(
+    idOrSlug,
+    !!isPublicView,
+  );
+  const privateChartsResource = useDashboardCharts(idOrSlug, !isPublicView);
+  const { result: dashboard, error: dashboardApiError } = isPublicView
+    ? publicDashboardResource
+    : privateDashboardResource;
+  const { result: charts, error: chartsApiError } = isPublicView
+    ? publicChartsResource
+    : privateChartsResource;
   const {
     result: datasets,
     error: datasetsApiError,
     status,
-  } = useDashboardDatasets(idOrSlug);
+  } = useDashboardDatasets(idOrSlug, !isPublicView);
   const isDashboardHydrated = useRef(false);
 
   const error = dashboardApiError || chartsApiError;

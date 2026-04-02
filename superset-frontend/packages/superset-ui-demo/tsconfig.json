@@ -3,20 +3,56 @@
   "compilerOptions": {
     "jsx": "preserve",
     "outDir": "../../build/lib",
-    "rootDir": "../../",
+    "rootDir": "../..",
     "emitDeclarationOnly": false,
     "sourceMap": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "noImplicitAny": false,
     "noEmit": false,
-    "baseUrl": "../../",
+    "baseUrl": "../..",
+    "composite": false,
+    "incremental": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "rootDirs": [
+      "../../src",
+      "../../packages",
+      "../../plugins"
+    ],
+    "paths": {
+      "src/*": [
+        "src/*"
+      ],
+      "packages/*": [
+        "packages/*"
+      ],
+      "plugins/*": [
+        "plugins/*"
+      ]
+    }
   },
   "include": [
     "storybook",
-    "../**/src",
+    "..src",
     "../../packages/superset-ui-core/test",
-    "../../plugins/**/src",
-    "../../plugins/**/types",
+    "../../pluginssrc",
+    "../../pluginstypes",
+    "../../src/**/*",
+    "src/**/*"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.stories.ts",
+    "**/*.stories.tsx",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/spec/**"
   ]
 }

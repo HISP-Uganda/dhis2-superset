@@ -63,6 +63,67 @@ def list_mart_tables(database_id: int, schema: str | None = None) -> list[SqlaTa
     return mart_tables
 
 
+def list_all_mart_tables(schema: str | None = None) -> list[SqlaTable]:
+    """List ALL MART tables across all databases."""
+    requested_schema = _normalize_schema_name(schema)
+    all_tables = db.session.query(SqlaTable).all()
+    mart_tables: list[SqlaTable] = []
+    for table in all_tables:
+        if not is_mart_table(table):
+            continue
+        resolved_schema, _ = _resolve_dataset_table_ref(table)
+        if requested_schema is None or resolved_schema == requested_schema:
+            mart_tables.append(table)
+    return mart_tables
+
+
+def resolve_mart_execution_database(
+    database_id: int | None = None,
+) -> "Database | None":
+    """Resolve the correct database for executing MART queries.
+
+    MART tables registered against a DHIS2 source database are actually
+    served from a local staging database. This function resolves the
+    correct execution target:
+
+    1. If a MART dataset has ``dhis2_serving_database_id`` in extra,
+       use that staging database.
+    2. If the system has a configured staging database, use it.
+    3. Otherwise fall back to the provided ``database_id``.
+    """
+    from superset.daos.database import DatabaseDAO
+
+    # Try to find a MART dataset and check if it has a serving database
+    if database_id:
+        mart_tables = list_mart_tables(database_id)
+    else:
+        mart_tables = list_all_mart_tables()
+
+    for table in mart_tables:
+        extra = getattr(table, "extra_dict", None) or {}
+        serving_db_id = extra.get("dhis2_serving_database_id")
+        if serving_db_id:
+            serving_db = DatabaseDAO.find_by_id(int(serving_db_id))
+            if serving_db:
+                return serving_db
+
+    # Try the global staging database
+    try:
+        from superset.dhis2.staging_database_service import get_staging_database
+
+        staging_db = get_staging_database(always_create=False)
+        if staging_db:
+            return staging_db
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    # Fall back to the provided database
+    if database_id:
+        return DatabaseDAO.find_by_id(database_id)
+
+    return None
+
+
 def build_mart_schema_context(
     database_id: int,
     schema: str | None = None,
@@ -70,8 +131,19 @@ def build_mart_schema_context(
     max_tables: int = 20,
     max_columns: int = 25,
 ) -> list[dict[str, Any]]:
+    """Build schema context for MART tables.
+
+    Searches for MART tables registered against ``database_id`` first,
+    then falls back to all MART tables across all databases.
+    """
+    tables = list_mart_tables(database_id, schema)
+    if not tables:
+        # Fallback: MART datasets may be registered against a different
+        # database (e.g., DHIS2 source) but served from staging.
+        tables = list_all_mart_tables(schema)
+
     context: list[dict[str, Any]] = []
-    for table in list_mart_tables(database_id, schema)[:max_tables]:
+    for table in tables[:max_tables]:
         resolved_schema, resolved_table = _resolve_dataset_table_ref(table)
         cols = []
         for column in (table.columns or [])[:max_columns]:

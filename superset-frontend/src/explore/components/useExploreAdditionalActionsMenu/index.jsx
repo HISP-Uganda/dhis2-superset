@@ -68,6 +68,9 @@ const MENU_KEYS = {
   EXPORT_TO_JSON: 'export_to_json',
   EXPORT_TO_XLSX: 'export_to_xlsx',
   DOWNLOAD_AS_IMAGE: 'download_as_image',
+  DOWNLOAD_AS_PNG: 'download_as_png',
+  DOWNLOAD_AS_SVG: 'download_as_svg',
+  DOWNLOAD_AS_JPEG: 'download_as_jpeg',
   SHARE_SUBMENU: 'share_submenu',
   COPY_PERMALINK: 'copy_permalink',
   EMBED_CODE: 'embed_code',
@@ -403,23 +406,71 @@ export const useExploreAdditionalActionsMenu = (
       },
       {
         key: MENU_KEYS.DOWNLOAD_AS_IMAGE,
+        type: 'submenu',
         label: t('Download as image'),
         icon: <Icons.FileImageOutlined />,
-        onClick: e => {
-          downloadAsImage(
-            '.panel-body .chart-container',
-            slice?.slice_name ?? t('New chart'),
-            true,
-            theme,
-          )(e.domEvent);
-          setIsDropdownVisible(false);
-          dispatch(
-            logEvent(LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE, {
-              chartId: slice?.slice_id,
-              chartName: slice?.slice_name,
-            }),
-          );
-        },
+        children: [
+          {
+            key: MENU_KEYS.DOWNLOAD_AS_PNG,
+            label: t('PNG'),
+            onClick: e => {
+              downloadAsImage(
+                '.panel-body .chart-container',
+                slice?.slice_name ?? t('New chart'),
+                true,
+                theme,
+                'png',
+              )(e.domEvent);
+              setIsDropdownVisible(false);
+              dispatch(
+                logEvent(LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE, {
+                  chartId: slice?.slice_id,
+                  chartName: slice?.slice_name,
+                }),
+              );
+            },
+          },
+          {
+            key: MENU_KEYS.DOWNLOAD_AS_JPEG,
+            label: t('JPG'),
+            onClick: e => {
+              downloadAsImage(
+                '.panel-body .chart-container',
+                slice?.slice_name ?? t('New chart'),
+                true,
+                theme,
+                'jpg',
+              )(e.domEvent);
+              setIsDropdownVisible(false);
+              dispatch(
+                logEvent(LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE, {
+                  chartId: slice?.slice_id,
+                  chartName: slice?.slice_name,
+                }),
+              );
+            },
+          },
+          {
+            key: MENU_KEYS.DOWNLOAD_AS_SVG,
+            label: t('SVG'),
+            onClick: e => {
+              downloadAsImage(
+                '.panel-body .chart-container',
+                slice?.slice_name ?? t('New chart'),
+                true,
+                theme,
+                'svg',
+              )(e.domEvent);
+              setIsDropdownVisible(false);
+              dispatch(
+                logEvent(LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE, {
+                  chartId: slice?.slice_id,
+                  chartName: slice?.slice_name,
+                }),
+              );
+            },
+          },
+        ],
       },
       {
         key: MENU_KEYS.EXPORT_TO_XLSX,
@@ -519,7 +570,8 @@ export const useExploreAdditionalActionsMenu = (
                 mode="chart"
                 targetId={slice.slice_id}
                 context={chartInsightContext}
-                defaultQuestion={t('Summarize this chart')}
+                defaultQuestion={t('Summary')}
+                chartNodeSelector=".panel-body .chart-container"
               />
             }
             responsive

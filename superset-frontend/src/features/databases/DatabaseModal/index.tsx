@@ -1648,8 +1648,8 @@ const DatabaseModal: FunctionComponent<DatabaseModalProps> = ({
                 buttonStyle="primary"
                 onClick={() => setDhis2CreateStage('review')}
                 disabled={
-                  !repositoryReportingUnitsValue ||
-                  !!repositoryReportingUnitsValue.validationError
+                  !effectiveRepositoryReportingUnitsValue ||
+                  !!effectiveRepositoryReportingUnitsValue.validationError
                 }
               >
                 {t('Continue')}

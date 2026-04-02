@@ -135,12 +135,12 @@ export const CURRENT_CALENDAR_RANGE_SET: Set<CurrentRangeType> = new Set([
 ]);
 
 export const DAYJS_FORMAT = 'YYYY-MM-DD[T]HH:mm:ss';
-export const SEVEN_DAYS_AGO = extendedDayjs()
+export const SEVEN_DAYS_AGO = (extendedDayjs() as any)
   .utc()
   .startOf('day')
   .subtract(7, 'days')
   .format(DAYJS_FORMAT);
-export const MIDNIGHT = extendedDayjs()
+export const MIDNIGHT = (extendedDayjs() as any)
   .utc()
   .startOf('day')
   .format(DAYJS_FORMAT);

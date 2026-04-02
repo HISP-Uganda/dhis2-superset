@@ -365,8 +365,198 @@ class OpenAICompatibleProvider(BaseProvider):
         )
 
 
-class GeminiProvider(OpenAICompatibleProvider):
+class GeminiProvider(BaseProvider):
+    """Native Google Gemini API provider.
+
+    Uses ``generateContent`` / ``streamGenerateContent`` instead of the
+    OpenAI-compatible shim so that all model versions (including 3.x) are
+    supported as soon as Google publishes them.
+
+    Expects the API key via the standard ``api_key`` / ``api_key_env``
+    config.  ``base_url`` defaults to
+    ``https://generativelanguage.googleapis.com`` and is *not* user-
+    editable (the preset sets ``supports_base_url: false``).
+    """
+
     provider_type = "gemini"
+
+    # ── helpers ─────────────────────────────────────────────────
+
+    def _gemini_base(self) -> str:
+        raw = str(self.config.get("base_url") or "").strip().rstrip("/")
+        # Strip the old /v1beta/openai suffix if still stored from previous
+        # config so we always hit the native endpoint.
+        for suffix in ("/openai", "/v1beta/openai", "/v1beta"):
+            if raw.endswith(suffix):
+                raw = raw[: -len(suffix)]
+        return raw or "https://generativelanguage.googleapis.com"
+
+    def _gemini_url(self, model: str, *, stream: bool = False) -> str:
+        base = self._gemini_base()
+        action = "streamGenerateContent" if stream else "generateContent"
+        url = f"{base}/v1beta/models/{model}:{action}"
+        if stream:
+            url += "?alt=sse"
+        return url
+
+    def _gemini_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if secret := resolve_provider_secret(self.config):
+            headers["x-goog-api-key"] = secret
+        return headers
+
+    def _validate(self, model: str | None) -> str:
+        if not self.is_available():
+            raise AIProviderError(
+                f"Provider {self.provider_id} is not configured"
+            )
+        selected = model or self.default_model
+        if not selected:
+            raise AIProviderError(
+                f"Provider {self.provider_id} has no configured model"
+            )
+        return selected
+
+    @staticmethod
+    def _build_payload(
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
+        """Convert OpenAI-style messages to native Gemini format."""
+        system_parts: list[str] = []
+        contents: list[dict[str, Any]] = []
+
+        for msg in messages:
+            role = str(msg.get("role") or "user").strip().lower()
+            text = str(msg.get("content") or "").strip()
+            if not text:
+                continue
+            if role == "system":
+                system_parts.append(text)
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append(
+                {"role": gemini_role, "parts": [{"text": text}]}
+            )
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            },
+        }
+        if system_parts:
+            payload["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(system_parts)}]
+            }
+        return payload
+
+    @staticmethod
+    def _extract_text(body: dict[str, Any]) -> str:
+        """Pull the assistant text from a Gemini generateContent response."""
+        try:
+            candidates = body.get("candidates") or []
+            parts = candidates[0].get("content", {}).get("parts", [])
+            return "".join(
+                str(p.get("text", "")) for p in parts if isinstance(p, dict)
+            ).strip()
+        except (IndexError, KeyError, TypeError):
+            return ""
+
+    def _raise_for_status(
+        self, response: requests.Response, selected_model: str
+    ) -> None:
+        if response.ok:
+            return
+        error_msg = f"HTTP {response.status_code} Error"
+        try:
+            body = response.json()
+            err = body.get("error", {})
+            if isinstance(err, dict) and err.get("message"):
+                error_msg += f": {err['message']}"
+        except Exception:  # pylint: disable=broad-except
+            pass
+        if response.status_code == 503:
+            error_msg = (
+                f"Model '{selected_model}' is not available ({error_msg}). "
+                "It may not be released yet or is temporarily overloaded."
+            )
+        raise AIProviderError(error_msg)
+
+    # ── generate (non-streaming) ────────────────────────────────
+
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        selected_model = self._validate(model)
+        payload = self._build_payload(messages, max_tokens, temperature)
+        started_at = perf_counter()
+
+        response = requests.post(
+            self._gemini_url(selected_model),
+            headers=self._gemini_headers(),
+            json=payload,
+            timeout=timeout,
+        )
+        self._raise_for_status(response, selected_model)
+
+        text = self._extract_text(response.json())
+        if not text:
+            raise AIProviderError(
+                f"Provider {self.provider_id} returned an empty response"
+            )
+
+        return ProviderResponse(
+            provider_id=self.provider_id,
+            model=selected_model,
+            text=text,
+            duration_ms=int((perf_counter() - started_at) * 1000),
+        )
+
+    # ── generate_stream (SSE) ───────────────────────────────────
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = self._validate(model)
+        payload = self._build_payload(messages, max_tokens, temperature)
+
+        response = requests.post(
+            self._gemini_url(selected_model, stream=True),
+            headers=self._gemini_headers(),
+            json=payload,
+            timeout=timeout,
+            stream=True,
+        )
+        self._raise_for_status(response, selected_model)
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            text = self._extract_text(chunk)
+            if text:
+                yield StreamChunk(text=text)
+
+        yield StreamChunk(text="", done=True)
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
@@ -753,7 +943,7 @@ class ProviderRegistry:
         self._default_provider = config.get("default_provider")
         self._default_model = config.get("default_model")
         self._timeout = int(config.get("request_timeout_seconds") or 30)
-        self._max_tokens = int(config.get("max_tokens") or 1200)
+        self._max_tokens = int(config.get("max_tokens") or 4096)
         self._temperature = float(config.get("temperature") or 0.1)
 
     def capabilities(self) -> dict[str, Any]:

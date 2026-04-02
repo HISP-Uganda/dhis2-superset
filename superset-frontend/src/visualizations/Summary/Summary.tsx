@@ -17,10 +17,12 @@
  * under the License.
  */
 /* eslint-disable theme-colors/no-literal-colors */
-import { styled } from '@superset-ui/core';
+import React, { useState, useCallback, useMemo } from 'react';
+import { styled, t } from '@superset-ui/core';
 import {
   SummaryTransformedProps,
   SummaryItem,
+  SummaryGroup,
   TrendDisplay,
   TrendLogic,
   Layout,
@@ -337,6 +339,73 @@ const EmptyState = styled.div`
   font-size: 14px;
 `;
 
+/* ── Group header ──────────────────────────────────── */
+
+const GroupSection = styled.div`
+  &:not(:first-of-type) {
+    margin-top: 6px;
+  }
+`;
+
+const GroupHeader = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--pro-text-secondary, #6B7280);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--pro-border, #E5EAF0);
+  margin-bottom: 4px;
+`;
+
+/* ── Pagination controls ──────────────────────────── */
+
+const PaginationBar = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 8px;
+  flex-shrink: 0;
+`;
+
+const PageButton = styled.button<{ $disabled?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--pro-border, #E5EAF0);
+  border-radius: 6px;
+  background: ${({ $disabled }) =>
+    $disabled ? 'var(--pro-bg-card, #F9FAFB)' : 'var(--pro-bg-card, #FFFFFF)'};
+  color: ${({ $disabled }) =>
+    $disabled
+      ? 'var(--pro-text-muted, #9CA3AF)'
+      : 'var(--pro-text-primary, #1A1F2C)'};
+  font-size: 12px;
+  font-weight: 600;
+  cursor: ${({ $disabled }) => ($disabled ? 'default' : 'pointer')};
+  pointer-events: ${({ $disabled }) => ($disabled ? 'none' : 'auto')};
+  transition: background 0.15s ease, border-color 0.15s ease;
+
+  &:hover {
+    background: var(--pro-bg-hover, #F3F4F6);
+    border-color: var(--pro-border-hover, #D1D5DB);
+  }
+`;
+
+const PageInfo = styled.span`
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--pro-text-secondary, #6B7280);
+  white-space: nowrap;
+`;
+
 /* ── Sparkline SVG ─────────────────────────────────── */
 
 function Sparkline({
@@ -513,6 +582,8 @@ export default function Summary(props: SummaryTransformedProps) {
     width,
     height,
     items,
+    groups,
+    groupsPerPage = 6,
     layoutMode,
     gridColumns,
     valuePosition,
@@ -543,10 +614,31 @@ export default function Summary(props: SummaryTransformedProps) {
     borderStyle,
   } = props;
 
-  if (!items || items.length === 0) {
+  const isGrouped = groups && groups.length > 0;
+  const totalGroups = groups?.length ?? 0;
+  const totalPages = isGrouped
+    ? Math.ceil(totalGroups / groupsPerPage)
+    : 1;
+
+  const [page, setPage] = useState(0);
+  const safeSetPage = useCallback(
+    (p: number) => setPage(Math.max(0, Math.min(p, totalPages - 1))),
+    [totalPages],
+  );
+
+  const visibleGroups = useMemo(() => {
+    if (!isGrouped) return [];
+    const start = page * groupsPerPage;
+    return groups!.slice(start, start + groupsPerPage);
+  }, [isGrouped, groups, page, groupsPerPage]);
+
+  if (
+    (!isGrouped && (!items || items.length === 0)) ||
+    (isGrouped && totalGroups === 0)
+  ) {
     return (
       <Wrapper $fontFamily={fontFamily} style={{ width, height }}>
-        <EmptyState>No metrics configured</EmptyState>
+        <EmptyState>{t('No metrics configured')}</EmptyState>
       </Wrapper>
     );
   }
@@ -698,48 +790,93 @@ export default function Summary(props: SummaryTransformedProps) {
     );
   };
 
+  const renderCards = (cardItems: SummaryItem[]) => (
+    <Grid
+      $layout={layoutMode}
+      $columns={gridColumns}
+      $gap={itemGap}
+      $padding={itemPadding}
+      $alignment={alignment}
+    >
+      {cardItems.map((item, idx) => (
+        <Card
+          key={item.key}
+          $cardStyle={cardStyle}
+          $borderRadius={itemBorderRadius}
+          $padding={
+            cardStyle !== 'transparent' ? itemPadding : itemPadding / 2
+          }
+          $showDivider={showDividers && idx < cardItems.length - 1}
+          $statusColor={item.statusColor}
+          $borderWidth={borderWidth}
+          $borderColor={item.borderColor || borderColor}
+          $borderStyle={borderStyle}
+          $alignment={alignment}
+          $cardBgColor={item.cardColor}
+        >
+          {renderContent(item)}
+
+          {showTrendIndicator && item.trendValue !== undefined && (
+            <TrendRow>
+              <TrendIndicator
+                direction={item.trendDirection}
+                formattedValue={item.formattedTrendValue}
+                display={trendDisplay}
+                logic={trendLogic}
+              />
+            </TrendRow>
+          )}
+
+          {renderMicroViz(item)}
+        </Card>
+      ))}
+    </Grid>
+  );
+
+  /* ── Flat mode (no groupby) ──────────────────────── */
+  if (!isGrouped) {
+    return (
+      <Wrapper $fontFamily={fontFamily} style={{ width, height }}>
+        {renderCards(items)}
+      </Wrapper>
+    );
+  }
+
+  /* ── Grouped + paginated mode ────────────────────── */
   return (
-    <Wrapper $fontFamily={fontFamily} style={{ width, height }}>
-      <Grid
-        $layout={layoutMode}
-        $columns={gridColumns}
-        $gap={itemGap}
-        $padding={itemPadding}
-        $alignment={alignment}
-      >
-        {items.map((item, idx) => (
-          <Card
-            key={item.key}
-            $cardStyle={cardStyle}
-            $borderRadius={itemBorderRadius}
-            $padding={
-              cardStyle !== 'transparent' ? itemPadding : itemPadding / 2
-            }
-            $showDivider={showDividers && idx < items.length - 1}
-            $statusColor={item.statusColor}
-            $borderWidth={borderWidth}
-            $borderColor={item.borderColor || borderColor}
-            $borderStyle={borderStyle}
-            $alignment={alignment}
-            $cardBgColor={item.cardColor}
-          >
-            {renderContent(item)}
-
-            {showTrendIndicator && item.trendValue !== undefined && (
-              <TrendRow>
-                <TrendIndicator
-                  direction={item.trendDirection}
-                  formattedValue={item.formattedTrendValue}
-                  display={trendDisplay}
-                  logic={trendLogic}
-                />
-              </TrendRow>
-            )}
-
-            {renderMicroViz(item)}
-          </Card>
+    <Wrapper
+      $fontFamily={fontFamily}
+      style={{ width, height, display: 'flex', flexDirection: 'column' }}
+    >
+      <div style={{ flex: '1 1 auto', overflow: 'auto' }}>
+        {visibleGroups.map((group: SummaryGroup) => (
+          <GroupSection key={group.groupKey}>
+            <GroupHeader>{group.groupLabel}</GroupHeader>
+            {renderCards(group.items)}
+          </GroupSection>
         ))}
-      </Grid>
+      </div>
+
+      {totalPages > 1 && (
+        <PaginationBar>
+          <PageButton
+            $disabled={page === 0}
+            onClick={() => safeSetPage(page - 1)}
+          >
+            ‹
+          </PageButton>
+          <PageInfo>
+            {page + 1} / {totalPages}
+            {' '}({totalGroups} {t('groups')})
+          </PageInfo>
+          <PageButton
+            $disabled={page >= totalPages - 1}
+            onClick={() => safeSetPage(page + 1)}
+          >
+            ›
+          </PageButton>
+        </PaginationBar>
+      )}
     </Wrapper>
   );
 }

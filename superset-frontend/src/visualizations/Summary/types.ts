@@ -156,6 +156,9 @@ export interface SummaryChartFormData extends QueryFormData {
 
   /* Color */
   colorScheme?: string;
+
+  /* Pagination (when groupby active) */
+  groupsPerPage?: number;
 }
 
 /* ── Chart props (extends core ChartProps) ─────────── */
@@ -186,12 +189,24 @@ export interface SummaryItem {
   imageUrl?: string;
 }
 
+/* ── Group of items for a single group-by value ────── */
+
+export interface SummaryGroup {
+  groupKey: string;
+  groupLabel: string;
+  items: SummaryItem[];
+}
+
 /* ── Props passed to the React rendering component ─── */
 
 export interface SummaryTransformedProps {
   width: number;
   height: number;
   items: SummaryItem[];
+
+  /* Grouped data (present when groupby is active) */
+  groups?: SummaryGroup[];
+  groupsPerPage?: number;
 
   /* Layout */
   layoutMode: Layout;

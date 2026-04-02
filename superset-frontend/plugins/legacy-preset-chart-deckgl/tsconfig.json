@@ -1,21 +1,49 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    // Path Resolution: Override baseUrl to maintain correct path mappings from parent config
-    // (e.g., "@apache-superset/core" -> "./packages/superset-core/src")
     "baseUrl": "../..",
-
-    // Directory Overrides: Parent config paths are relative to frontend root,
-    // but packages need paths relative to their own directory
     "outDir": "lib",
-    "rootDir": "src",
-    "declarationDir": "lib"
+    "rootDir": "../..",
+    "declarationDir": "lib",
+    "composite": false,
+    "incremental": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "rootDirs": [
+      "../../src",
+      "../../packages",
+      "../../plugins"
+    ],
+    "paths": {
+      "src/*": [
+        "src/*"
+      ],
+      "packages/*": [
+        "packages/*"
+      ],
+      "plugins/*": [
+        "plugins/*"
+      ]
+    }
   },
-  "include": ["src/**/*", "types/**/*"],
-  "exclude": ["src/**/*.test.*", "src/**/*.stories.*"],
-  "references": [
-    { "path": "../../packages/superset-core" },
-    { "path": "../../packages/superset-ui-core" },
-    { "path": "../../packages/superset-ui-chart-controls" }
+  "include": [
+    "../../src/**/*",
+    "../../packages/**/src/**/*",
+    "../../plugins/**/src/**/*",
+    "src/**/*"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.stories.ts",
+    "**/*.stories.tsx",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/spec/**"
   ]
 }

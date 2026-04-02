@@ -68,7 +68,12 @@ export default function DashboardInsightsButton({
             mode="dashboard"
             targetId={dashboardId}
             context={context}
-            defaultQuestion={t('Summarize this dashboard')}
+            defaultQuestion={t('Summary')}
+            dashboardCharts={charts.map(chart => ({
+              chartId: chart.id,
+              sliceName: chart.slice_name,
+              vizType: chart.viz_type,
+            }))}
           />
         }
         responsive

@@ -23,6 +23,7 @@ import {
 } from '@superset-ui/core';
 import {
   SummaryChartFormData,
+  SummaryGroup,
   SummaryItem,
   SummaryTransformedProps,
   RGBColor,
@@ -111,7 +112,6 @@ export default function transformProps(
   const { width, height, formData, queriesData } = chartProps;
   const fd = formData as SummaryChartFormData;
   const data = queriesData?.[0]?.data || [];
-  const lastRow = data[data.length - 1] || {};
 
   /* Per-variable config map */
   const varConfig: VariableConfigMap = fd.variableConfig || {};
@@ -146,110 +146,133 @@ export default function transformProps(
       : null;
 
   const metrics = fd.metrics || [];
+  const groupbyColumns: string[] = fd.groupby || [];
+  const hasGroupby = groupbyColumns.length > 0 && data.length > 0;
 
-  /* Build items */
-  const items: SummaryItem[] = metrics.map((metric: any, idx: number) => {
-    const metricLabel = getMetricLabel(metric);
-    const cfg = varConfig[metricLabel] || {};
+  /* ── Helper: build SummaryItem[] for a single data row ─── */
+  function buildItems(
+    row: Record<string, any>,
+    keyPrefix: string,
+    allRowsForSparkline?: Record<string, any>[],
+  ): SummaryItem[] {
+    return metrics.map((metric: any, idx: number) => {
+      const metricLabel = getMetricLabel(metric);
+      const cfg = varConfig[metricLabel] || {};
 
-    /* Per-variable label & subtitle */
-    const label = cfg.label || metricLabel;
-    const subtitle = cfg.subtitle || undefined;
+      const label = cfg.label || metricLabel;
+      const subtitle = cfg.subtitle || undefined;
+      const itemFmt = cfg.numberFormat
+        ? getNumberFormatter(cfg.numberFormat)
+        : globalFmt;
+      const itemPrefix = cfg.prefix ?? '';
+      const itemSuffix = cfg.suffix ?? '';
+      const itemNullText = cfg.nullText || globalNullText;
 
-    /* Per-variable formatter */
-    const itemFmt = cfg.numberFormat
-      ? getNumberFormatter(cfg.numberFormat)
-      : globalFmt;
-    const itemPrefix = cfg.prefix ?? '';
-    const itemSuffix = cfg.suffix ?? '';
-    const itemNullText = cfg.nullText || globalNullText;
+      const raw = row[metricLabel];
+      const rawValue: number | null =
+        raw === null || raw === undefined ? null : Number(raw);
+      const formattedValue =
+        rawValue !== null
+          ? `${itemPrefix}${itemFmt(rawValue)}${itemSuffix}`
+          : itemNullText;
 
-    const raw = lastRow[metricLabel];
-    const rawValue: number | null =
-      raw === null || raw === undefined ? null : Number(raw);
+      /* Trend — not available in grouped mode (single row per group) */
+      let trendValue: number | undefined;
+      let formattedTrendValue: string | undefined;
+      let trendDirection: 'up' | 'down' | 'flat' = 'flat';
 
-    const formattedValue =
-      rawValue !== null
-        ? `${itemPrefix}${itemFmt(rawValue)}${itemSuffix}`
-        : itemNullText;
-
-    /* Trend — auto-calculated from last two data rows */
-    let trendValue: number | undefined;
-    let formattedTrendValue: string | undefined;
-    let trendDirection: 'up' | 'down' | 'flat' = 'flat';
-
-    if (data.length >= 2 && rawValue !== null) {
-      const prevRow = data[data.length - 2];
-      const prevVal = Number(prevRow[metricLabel] ?? 0);
-      if (prevVal !== 0) {
-        trendValue = (rawValue - prevVal) / Math.abs(prevVal);
-        formattedTrendValue = trendFmt(trendValue);
-        if (trendValue > 0) trendDirection = 'up';
-        else if (trendValue < 0) trendDirection = 'down';
+      if (!hasGroupby && data.length >= 2 && rawValue !== null) {
+        const prevRow = data[data.length - 2];
+        const prevVal = Number(prevRow[metricLabel] ?? 0);
+        if (prevVal !== 0) {
+          trendValue = (rawValue - prevVal) / Math.abs(prevVal);
+          formattedTrendValue = trendFmt(trendValue);
+          if (trendValue > 0) trendDirection = 'up';
+          else if (trendValue < 0) trendDirection = 'down';
+        }
       }
-    }
 
-    /* Sparkline / mini-bar data — all rows for this metric */
-    const sparklineData: number[] | undefined =
-      microVisualType === 'sparkline' || microVisualType === 'mini-bar'
-        ? data.map((row: any) => Number(row[metricLabel] ?? 0))
-        : undefined;
+      /* Sparkline / mini-bar data */
+      const sparkRows = allRowsForSparkline || data;
+      const sparklineData: number[] | undefined =
+        microVisualType === 'sparkline' || microVisualType === 'mini-bar'
+          ? sparkRows.map((r: any) => Number(r[metricLabel] ?? 0))
+          : undefined;
 
-    /* Progress / bullet percentage */
-    let progressPercent: number | undefined;
-    if (
-      (microVisualType === 'progress-bar' || microVisualType === 'bullet') &&
-      rawValue !== null
-    ) {
-      const maxVal =
-        progressMax > 0
-          ? progressMax
-          : Math.max(
-              ...metrics.map(
-                (m: any) => Number(lastRow[getMetricLabel(m)] ?? 0),
-              ),
-              1,
-            );
-      progressPercent = Math.min(100, (rawValue / maxVal) * 100);
-    }
+      /* Progress / bullet percentage */
+      let progressPercent: number | undefined;
+      if (
+        (microVisualType === 'progress-bar' || microVisualType === 'bullet') &&
+        rawValue !== null
+      ) {
+        const maxVal =
+          progressMax > 0
+            ? progressMax
+            : Math.max(
+                ...metrics.map(
+                  (m: any) => Number(row[getMetricLabel(m)] ?? 0),
+                ),
+                1,
+              );
+        progressPercent = Math.min(100, (rawValue / maxVal) * 100);
+      }
 
-    /* Color resolution based on valueColorMode */
-    const accentColor = colorScale(metricLabel);
-    let statusColor: string | null = null;
+      /* Color resolution */
+      const accentColor = colorScale(metricLabel);
+      let statusColor: string | null = null;
+      if (valueColorMode === 'threshold') {
+        statusColor = resolveStatusColor(
+          rawValue,
+          thresholdUpper,
+          thresholdLower,
+          invertSemanticColors,
+        );
+      } else if (valueColorMode === 'metric') {
+        statusColor = accentColor;
+      } else if (valueColorMode === 'fixed') {
+        statusColor = rgbToCss(fd.fixedValueColor) || null;
+      }
 
-    if (valueColorMode === 'threshold') {
-      statusColor = resolveStatusColor(
+      return {
+        key: `${keyPrefix}-${idx}`,
+        label,
+        subtitle,
         rawValue,
-        thresholdUpper,
-        thresholdLower,
-        invertSemanticColors,
-      );
-    } else if (valueColorMode === 'metric') {
-      statusColor = accentColor;
-    } else if (valueColorMode === 'fixed') {
-      statusColor = rgbToCss(fd.fixedValueColor) || null;
-    }
-    // 'scheme' → statusColor stays null, uses theme default text color
+        formattedValue,
+        trendValue,
+        formattedTrendValue,
+        trendDirection,
+        sparklineData,
+        progressPercent,
+        statusColor,
+        accentColor,
+        cardColor: cfg.cardColor || undefined,
+        labelColor: cfg.labelColor || undefined,
+        borderColor: cfg.borderColor || undefined,
+        imageUrl: cfg.imageUrl || undefined,
+      };
+    });
+  }
 
-    return {
-      key: `summary-${idx}`,
-      label,
-      subtitle,
-      rawValue,
-      formattedValue,
-      trendValue,
-      formattedTrendValue,
-      trendDirection,
-      sparklineData,
-      progressPercent,
-      statusColor,
-      accentColor,
-      cardColor: cfg.cardColor || undefined,
-      labelColor: cfg.labelColor || undefined,
-      borderColor: cfg.borderColor || undefined,
-      imageUrl: cfg.imageUrl || undefined,
-    };
-  });
+  /* ── Build flat items (no groupby or legacy fallback) ── */
+  const lastRow = data[data.length - 1] || {};
+  const items: SummaryItem[] = hasGroupby ? [] : buildItems(lastRow, 'summary');
+
+  /* ── Build grouped items when groupby is active ──────── */
+  let groups: SummaryGroup[] | undefined;
+  if (hasGroupby) {
+    groups = data.map((row: Record<string, any>, rowIdx: number) => {
+      const groupLabel = groupbyColumns
+        .map(col => String(row[col] ?? ''))
+        .join(' / ');
+      const groupKey = `group-${rowIdx}`;
+      return {
+        groupKey,
+        groupLabel,
+        items: buildItems(row, groupKey),
+      };
+    });
+  }
 
   /* Density defaults */
   const densityTier = fd.densityTier || 'compact';
@@ -264,6 +287,8 @@ export default function transformProps(
     width,
     height,
     items,
+    groups,
+    groupsPerPage: fd.groupsPerPage ?? 6,
 
     /* Layout */
     layoutMode: fd.layoutMode || 'grid',

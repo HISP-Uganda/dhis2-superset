@@ -1,16 +1,61 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
+    "baseUrl": "..",
     "allowSyntheticDefaultImports": true,
     "moduleResolution": "Node",
     "strict": true,
     "target": "es2019",
-    "lib": ["es2019", "DOM"],
-    "types": ["cypress", "@applitools/eyes-cypress", "node"],
+    "lib": [
+      "es2019",
+      "DOM"
+    ],
+    "types": [
+      "cypress",
+      "@applitools/eyes-cypress",
+      "node"
+    ],
     "allowJs": true,
-    "noEmit": true
+    "noEmit": true,
+    "rootDir": "..",
+    "composite": false,
+    "incremental": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "resolveJsonModule": true,
+    "rootDirs": [
+      "../src",
+      "../packages",
+      "../plugins"
+    ],
+    "paths": {
+      "src/*": [
+        "src/*"
+      ],
+      "packages/*": [
+        "packages/*"
+      ],
+      "plugins/*": [
+        "plugins/*"
+      ]
+    }
   },
-  "files": ["cypress/support/index.d.ts", "./node_modules/@applitools/eyes-cypress/types/index.d.ts"],
-  "include": ["cypress/**/*.ts", "./cypress.config.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "cypress*.ts",
+    "./cypress.config.ts",
+    "../src/**/*",
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/*.stories.ts",
+    "**/*.stories.tsx",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "**/test/**",
+    "**/spec/**"
+  ]
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from flask import Response, g, request
+from flask import Response, g, make_response, request
 from flask_appbuilder.api import expose, protect, safe
 from marshmallow import Schema, fields, ValidationError
 
@@ -20,6 +20,11 @@ from superset.views.base_api import (
 )
 
 
+class RecipientSchema(Schema):
+    type = fields.String(required=True)  # email | slack
+    target = fields.String(required=True)  # email address or channel
+
+
 class CreateScheduleSchema(Schema):
     name = fields.String(required=True)
     schedule_type = fields.String(load_default="periodic")
@@ -29,6 +34,10 @@ class CreateScheduleSchema(Schema):
     provider_id = fields.String(load_default=None, allow_none=True)
     model_name = fields.String(load_default=None, allow_none=True)
     question = fields.String(load_default=None, allow_none=True)
+    recipients = fields.List(fields.Nested(RecipientSchema), load_default=list)
+    report_format = fields.String(load_default="pdf")
+    include_charts = fields.Boolean(load_default=True)
+    subject_line = fields.String(load_default=None, allow_none=True)
     config = fields.Dict(load_default=dict)
     enabled = fields.Boolean(load_default=True)
 
@@ -78,6 +87,10 @@ class AIPushAnalysisRestApi(BaseSupersetApi):
             provider_id=payload.get("provider_id"),
             model_name=payload.get("model_name"),
             question=payload.get("question"),
+            recipients_json=json.dumps(payload.get("recipients", [])),
+            report_format=payload.get("report_format", "pdf"),
+            include_charts=payload.get("include_charts", True),
+            subject_line=payload.get("subject_line"),
             config_json=json.dumps(payload.get("config", {})),
             enabled=payload.get("enabled", True),
             created_on=now,
@@ -116,10 +129,13 @@ class AIPushAnalysisRestApi(BaseSupersetApi):
         payload = request.json or {}
         for field in (
             "name", "schedule_type", "crontab", "dashboard_id", "chart_id",
-            "provider_id", "model_name", "question", "enabled",
+            "provider_id", "model_name", "question", "report_format",
+            "include_charts", "subject_line", "enabled",
         ):
             if field in payload:
                 setattr(schedule, field, payload[field])
+        if "recipients" in payload:
+            schedule.recipients_json = json.dumps(payload["recipients"])
         if "config" in payload:
             schedule.config_json = json.dumps(payload["config"])
         schedule.updated_on = datetime.utcnow()
@@ -149,3 +165,81 @@ class AIPushAnalysisRestApi(BaseSupersetApi):
             return self.response_404()
         execute_push_analysis_schedule.delay(schedule.id)
         return self.response(202, message="Push analysis triggered")
+
+    @expose("/results/<int:result_id>/pdf", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    @validate_feature_flags([AI_INSIGHTS_FEATURE_FLAG])
+    def download_pdf(self, result_id: int) -> Response:
+        """Download the PDF report for a push analysis result."""
+        result = db.session.query(PushAnalysisResult).get(result_id)
+        if not result:
+            return self.response_404()
+        # Verify ownership
+        schedule = db.session.query(PushAnalysisSchedule).get(result.schedule_id)
+        if not schedule or schedule.owner_id != g.user.id:
+            return self.response_404()
+        if not result.report_pdf:
+            return self.response_400(message="No PDF available for this result")
+
+        resp = make_response(result.report_pdf)
+        resp.headers["Content-Type"] = "application/pdf"
+        safe_name = schedule.name.replace(" ", "_")[:50]
+        date_str = result.created_on.strftime("%Y%m%d") if result.created_on else "report"
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="{safe_name}_{date_str}.pdf"'
+        )
+        return resp
+
+    @expose("/dashboards", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    @validate_feature_flags([AI_INSIGHTS_FEATURE_FLAG])
+    def list_dashboards(self) -> Response:
+        """List available dashboards for push analysis configuration."""
+        from superset.daos.dashboard import DashboardDAO
+
+        dashboards = DashboardDAO.find_all()
+        result = []
+        for d in (dashboards or [])[:200]:
+            result.append({
+                "id": d.id,
+                "title": d.dashboard_title,
+                "slug": d.slug,
+                "chart_count": len(d.slices or []),
+            })
+        return self.response(200, result=result)
+
+    @expose("/charts", methods=("GET",))
+    @protect()
+    @safe
+    @statsd_metrics
+    @validate_feature_flags([AI_INSIGHTS_FEATURE_FLAG])
+    def list_charts(self) -> Response:
+        """List available charts for push analysis configuration."""
+        from superset.daos.chart import ChartDAO
+
+        dashboard_id = request.args.get("dashboard_id", type=int)
+        if dashboard_id:
+            from superset.daos.dashboard import DashboardDAO
+
+            dashboard = DashboardDAO.find_by_id(dashboard_id)
+            if not dashboard:
+                return self.response(200, result=[])
+            charts = dashboard.slices or []
+        else:
+            charts = ChartDAO.find_all()[:200]
+
+        result = []
+        for c in charts:
+            result.append({
+                "id": c.id,
+                "name": c.slice_name,
+                "viz_type": c.viz_type,
+                "datasource": getattr(
+                    c.datasource, "table_name", None
+                ) if c.datasource else None,
+            })
+        return self.response(200, result=result)

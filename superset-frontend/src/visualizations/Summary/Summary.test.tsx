@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { ThemeProvider, supersetTheme } from '@superset-ui/core';
 import Summary from './Summary';
 import { SummaryTransformedProps } from './types';
@@ -281,5 +281,85 @@ describe('Summary Plugin', () => {
       ],
     });
     expect(container.firstChild).toBeInTheDocument();
+  });
+
+  /* ── Group By tests ─────────────────────────────── */
+
+  test('renders grouped sections with headers', () => {
+    renderSummary({
+      items: [],
+      groups: [
+        {
+          groupKey: 'group-0',
+          groupLabel: 'Kampala',
+          items: [
+            { ...BASE_PROPS.items[0], key: 'g0-0', formattedValue: '100' },
+          ],
+        },
+        {
+          groupKey: 'group-1',
+          groupLabel: 'Gulu',
+          items: [
+            { ...BASE_PROPS.items[0], key: 'g1-0', formattedValue: '200' },
+          ],
+        },
+      ],
+      groupsPerPage: 6,
+    });
+    expect(screen.getByText('Kampala')).toBeInTheDocument();
+    expect(screen.getByText('Gulu')).toBeInTheDocument();
+    expect(screen.getByText('100')).toBeInTheDocument();
+    expect(screen.getByText('200')).toBeInTheDocument();
+  });
+
+  test('paginates groups when exceeding groupsPerPage', () => {
+    const groups = Array.from({ length: 8 }, (_, i) => ({
+      groupKey: `group-${i}`,
+      groupLabel: `District ${i}`,
+      items: [
+        {
+          ...BASE_PROPS.items[0],
+          key: `g${i}-0`,
+          formattedValue: `${(i + 1) * 100}`,
+        },
+      ],
+    }));
+
+    renderSummary({
+      items: [],
+      groups,
+      groupsPerPage: 4,
+    });
+
+    // Page 1: first 4 groups visible
+    expect(screen.getByText('District 0')).toBeInTheDocument();
+    expect(screen.getByText('District 3')).toBeInTheDocument();
+    expect(screen.queryByText('District 4')).not.toBeInTheDocument();
+
+    // Pagination info visible
+    expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument();
+
+    // Click next page
+    fireEvent.click(screen.getByText('›'));
+    expect(screen.getByText('District 4')).toBeInTheDocument();
+    expect(screen.getByText('District 7')).toBeInTheDocument();
+    expect(screen.queryByText('District 0')).not.toBeInTheDocument();
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+  });
+
+  test('shows no pagination when groups fit on one page', () => {
+    renderSummary({
+      items: [],
+      groups: [
+        {
+          groupKey: 'group-0',
+          groupLabel: 'Only Group',
+          items: [BASE_PROPS.items[0]],
+        },
+      ],
+      groupsPerPage: 6,
+    });
+    expect(screen.getByText('Only Group')).toBeInTheDocument();
+    expect(screen.queryByText('›')).not.toBeInTheDocument();
   });
 });

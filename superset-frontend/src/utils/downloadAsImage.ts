@@ -253,11 +253,14 @@ const createEnhancedClone = (
   return { clone, cleanup };
 };
 
+export type ImageFormat = 'jpg' | 'png' | 'svg' | 'jpeg';
+
 export default function downloadAsImageOptimized(
   selector: string,
   description: string,
   isExactSelector = false,
   theme?: SupersetTheme,
+  format: ImageFormat = 'jpg',
 ) {
   return async (event: SyntheticEvent) => {
     const elementToPrint = isExactSelector
@@ -283,20 +286,40 @@ export default function downloadAsImageOptimized(
             !node.className.includes('header-controls')
           : true;
 
-      const dataUrl = await domToImage.toJpeg(clone, {
+      const domOptions = {
         bgcolor: theme?.colorBgContainer,
         filter,
         quality: IMAGE_DOWNLOAD_QUALITY,
         height: clone.scrollHeight,
         width: clone.scrollWidth,
         cacheBust: true,
-      });
+      };
+
+      let dataUrl: string;
+      let ext: string;
+
+      switch (format) {
+        case 'png':
+          dataUrl = await domToImage.toPng(clone, domOptions);
+          ext = 'png';
+          break;
+        case 'svg':
+          dataUrl = await domToImage.toSvg(clone, domOptions);
+          ext = 'svg';
+          break;
+        case 'jpeg':
+        case 'jpg':
+        default:
+          dataUrl = await domToImage.toJpeg(clone, domOptions);
+          ext = 'jpg';
+          break;
+      }
 
       cleanup();
       cleanup = null;
 
       const link = document.createElement('a');
-      link.download = `${generateFileStem(description)}.jpg`;
+      link.download = `${generateFileStem(description)}.${ext}`;
       link.href = dataUrl;
       link.click();
     } catch (error) {

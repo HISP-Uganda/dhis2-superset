@@ -59,6 +59,32 @@ LOCAL_PROJECT_DIR="${LOCAL_PROJECT_DIR:-$PROJECT_DIR}"
 BACKEND_DIR="${BACKEND_DIR:-$PROJECT_DIR}"
 FRONTEND_DIR="${FRONTEND_DIR:-$PROJECT_DIR/superset-frontend}"
 
+use_local_runtime_layout() {
+  INSTALL_DIR="$PROJECT_DIR"
+  CONFIG_DIR="$PROJECT_DIR/config"
+  DATA_DIR="$PROJECT_DIR/data"
+  LOG_DIR="$PROJECT_DIR/logs"
+  RUN_DIR="$PROJECT_DIR/.run"
+  ENV_FILE="$PROJECT_DIR/.env"
+  SUPERSET_CONFIG_FILE="$CONFIG_DIR/superset_config.py"
+  GUNICORN_LOG="$LOG_DIR/gunicorn.log"
+  GUNICORN_PID_FILE="$RUN_DIR/gunicorn.pid"
+  CELERY_WORKER_LOG="$LOG_DIR/celery-worker.log"
+  CELERY_BEAT_LOG="$LOG_DIR/celery-beat.log"
+  BACKEND_LOG_FILE="$LOG_DIR/superset_backend.log"
+  FRONTEND_LOG_FILE="$LOG_DIR/superset_frontend.log"
+  REDIS_LOG_FILE="$LOG_DIR/redis.log"
+  CELERY_WORKER_LOG_FILE="$LOG_DIR/celery_worker.log"
+  CELERY_BEAT_LOG_FILE="$LOG_DIR/celery_beat.log"
+  BACKEND_PID_FILE="$RUN_DIR/superset_backend.pid"
+  FRONTEND_PID_FILE="$RUN_DIR/superset_frontend.pid"
+  CELERY_WORKER_PID_FILE="$RUN_DIR/celery_worker.pid"
+  CELERY_BEAT_PID_FILE="$RUN_DIR/celery_beat.pid"
+  CELERY_BEAT_SCHEDULE="$RUN_DIR/celerybeat-schedule"
+  FRONTEND_BUILD_LOG_FILE="$LOG_DIR/frontend-build.log"
+  FRONTEND_DEP_FINGERPRINT_FILE="$RUN_DIR/frontend-deps.sha256"
+}
+
 # ------------------------------------------------------------------------------
 # Network / domain / app settings
 # ------------------------------------------------------------------------------
@@ -878,6 +904,7 @@ stop_redis() {
 
 start_backend() {
   header "Starting Superset Backend"
+  use_local_runtime_layout
   validate_backend
   ensure_dirs
   backend_running && { warn "Backend already running on port $BACKEND_PORT"; return 0; }
@@ -913,6 +940,7 @@ restart_backend() { stop_backend || true; sleep 1; start_backend; }
 
 start_frontend() {
   header "Starting Superset Frontend Dev Server"
+  use_local_runtime_layout
   validate_frontend
   ensure_dirs
   frontend_running && { warn "Frontend already running on port $FRONTEND_PORT"; return 0; }
@@ -1005,12 +1033,12 @@ restart_celery() { stop_celery_beat || true; stop_celery_worker || true; sleep 1
 
 build_frontend() {
   header "Building Superset Frontend"
+  use_local_runtime_layout
   if [[ "${FRONTEND_SKIP_IF_ASSETS_EXIST:-1}" == "1" && -d "$PROJECT_DIR/superset/static/assets" ]]; then
     info "Skipping frontend build because assets already exist at $PROJECT_DIR/superset/static/assets"
     return 0
   fi
   validate_frontend
-  export INSTALL_DIR="$PROJECT_DIR"
   patch_frontend_workspace_for_custom_branch
   patch_frontend_webpack_memory_for_branch
   cd "$FRONTEND_DIR"
@@ -1024,7 +1052,7 @@ build_frontend() {
 
   frontend_install_deps_if_needed "$FRONTEND_DIR" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
   frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
-  frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$FRONTEND_DIR" || return $?
+  frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}" DISABLE_TYPE_CHECK="${DISABLE_TYPE_CHECK:-$FRONTEND_DISABLE_TYPE_CHECK}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$FRONTEND_DIR" || return $?
 
   ok "Frontend build complete"
 }
@@ -1463,7 +1491,7 @@ build_frontend_if_present_server() {
 
     frontend_install_deps_if_needed "$INSTALL_DIR/superset-frontend" "$build_log" "$heartbeat" "$timeout_minutes" "$fingerprint_file" || return $?
     frontend_run_optional_checks "$build_log" "$heartbeat" "$timeout_minutes" || return $?
-    frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --progress --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$INSTALL_DIR/superset-frontend" || return $?
+    frontend_run_step "webpack production build" "$build_log" "$heartbeat" "$timeout_minutes" bash -lc 'cd "$0" && export PATH="$PWD/node_modules/.bin:$PATH" NODE_OPTIONS="${NODE_OPTIONS:-$FRONTEND_NODE_OPTIONS}" NODE_ENV=production BABEL_ENV="${BABEL_ENV:-production}" DISABLE_TYPE_CHECK="${DISABLE_TYPE_CHECK:-$FRONTEND_DISABLE_TYPE_CHECK}"; HEAP="${FRONTEND_NODE_OLD_SPACE_SIZE_EFFECTIVE_MB:-14336}"; if [[ -f "$PWD/node_modules/webpack-cli/bin/cli.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/bin/cli.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack-cli/lib/bootstrap.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack-cli/lib/bootstrap.js" --color --progress --mode production; elif [[ -f "$PWD/node_modules/webpack/bin/webpack.js" ]]; then exec node --max_old_space_size="$HEAP" "$PWD/node_modules/webpack/bin/webpack.js" --color --progress --mode production; else echo "ERROR: webpack package files missing under $PWD/node_modules" >&2; exit 127; fi' "$INSTALL_DIR/superset-frontend" || return $?
 
     [[ -d "$INSTALL_DIR/superset/static/assets" ]] || die "Frontend build did not produce $INSTALL_DIR/superset/static/assets"
     ok "Frontend assets built"
@@ -1559,10 +1587,10 @@ preserve_existing_runtime_secrets_server() {
   existing_pg="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${POSTGRES_PASSWORD:-}"' _ "$ENV_FILE" 2>/dev/null || true)"
   existing_ch="$(bash -lc 'set -a; source "$1" >/dev/null 2>&1; set +a; printf "%s" "${CLICKHOUSE_PASSWORD:-}"' _ "$ENV_FILE" 2>/dev/null || true)"
 
-  [[ -n "$existing_secret" ]] && SUPERSET_SECRET_KEY="$existing_secret"
-  [[ -n "$existing_guest" ]] && GUEST_TOKEN_JWT_SECRET="$existing_guest"
-  [[ -n "$existing_pg" ]] && POSTGRES_PASSWORD="$existing_pg"
-  [[ -n "$existing_ch" ]] && CLICKHOUSE_PASSWORD="$existing_ch"
+  [[ -n "$existing_secret" && -z "${SUPERSET_SECRET_KEY:-}" ]] && SUPERSET_SECRET_KEY="$existing_secret"
+  [[ -n "$existing_guest" && -z "${GUEST_TOKEN_JWT_SECRET:-}" ]] && GUEST_TOKEN_JWT_SECRET="$existing_guest"
+  [[ -n "$existing_pg" && -z "${POSTGRES_PASSWORD:-}" ]] && POSTGRES_PASSWORD="$existing_pg"
+  [[ -n "$existing_ch" && -z "${CLICKHOUSE_PASSWORD:-}" ]] && CLICKHOUSE_PASSWORD="$existing_ch"
 
   ok "Existing runtime secrets preserved"
 }
@@ -1626,6 +1654,8 @@ generate_env_server() {
   local celery_task_annotations_json='{"sql_lab.get_sql_results":{"rate_limit":"100/s"}}'
   local celery_task_routes_json='{"superset.tasks.dhis2_sync.*":{"queue":"dhis2"},"superset.tasks.dhis2_cache.*":{"queue":"dhis2"},"superset.tasks.dhis2_metadata.*":{"queue":"dhis2"},"dhis2.finalize_repository_org_units":{"queue":"dhis2"}}'
   local theme_dark_json='{"algorithm":"dark","token":{"colorPrimary":"#2893B3","colorLink":"#2893B3","colorError":"#e04355","colorWarning":"#fcc700","colorSuccess":"#5ac189","colorInfo":"#66bcfe","fontFamily":"Inter, Helvetica, Arial","fontFamilyCode":"'\''Fira Code'\'', '\''Courier New'\'', monospace","transitionTiming":0.3,"brandIconMaxWidth":37,"fontSizeXS":"8","fontSizeXXL":"28","fontWeightNormal":"400","fontWeightLight":"300","fontWeightStrong":"500","colorBgBase":"#111827"}}'
+  local theme_dark_json_escaped="${theme_dark_json//\\/\\\\}"
+  theme_dark_json_escaped="${theme_dark_json_escaped//\"/\\\"}"
 
   cat > "$ENV_FILE" <<EOF
 DOMAIN=${runtime_domain}
@@ -1759,7 +1789,7 @@ DHIS2_CACHE_TTL_FILTER_OPTIONS=3600
 DHIS2_CACHE_TTL_NAME_TO_UID=3600
 DHIS2_CACHE_MAX_SIZE_MB=500
 ENABLE_UI_THEME_ADMINISTRATION=true
-THEME_DARK_JSON="${theme_dark_json}"
+THEME_DARK_JSON="${theme_dark_json_escaped}"
 LOG_LEVEL=INFO
 LOG_FORMAT='%(asctime)s:%(levelname)s:%(name)s:%(message)s'
 SUPERSET_LOG_FILE=${INSTALL_DIR}/logs/superset.log
@@ -2693,6 +2723,18 @@ superset_db_upgrade_with_recovery_server() {
     fi
   fi
 
+  if grep -q "Can't locate revision identified by '2026_04_02_push_analysis_enhancements'" "$log_file" 2>/dev/null; then
+    warn "Detected missing custom alembic revision 2026_04_02_push_analysis_enhancements; restamping to 2026_04_01_ai_conversations_and_usage and retrying"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${POSTGRES_DB:-superset}" \
+      -c "UPDATE public.alembic_version SET version_num='2026_04_01_ai_conversations_and_usage' WHERE version_num='2026_04_02_push_analysis_enhancements';" \
+      >/dev/null
+    ensure_alembic_version_table_server || return $?
+    ensure_alembic_version_width_server || return $?
+    if superset_db_upgrade_once_server "$log_file"; then
+      return 0
+    fi
+  fi
+
   return 1
 }
 
@@ -3432,7 +3474,9 @@ if [[ -d "\$REMOTE_INSTALL_DIR/.git" ]]; then
 
   # Remove deployment-time drift before syncing from Git.
   rm -f "\$REMOTE_INSTALL_DIR/superset-manager.sh" "\$REMOTE_INSTALL_DIR/superset-manager-v2.sh" || true
-  git reset --hard HEAD
+  if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git reset --hard HEAD
+  fi
   git clean -fd -e config -e data -e logs -e run -e venv -e .env || true
 
   git remote set-url origin "\$GIT_REPO_URL"
@@ -3447,8 +3491,34 @@ if [[ -d "\$REMOTE_INSTALL_DIR/.git" ]]; then
 else
   if (( \${#non_runtime[@]} > 0 )); then
     echo "Install dir exists and contains non-runtime content: \${non_runtime[*]}" >&2
-    echo "Refusing to overwrite existing contents automatically." >&2
-    exit 1
+    echo "Bootstrapping existing install dir into a git-managed checkout." >&2
+    cd "\$REMOTE_INSTALL_DIR"
+    git init
+    git config --global --add safe.directory "\$REMOTE_INSTALL_DIR" >/dev/null 2>&1 || true
+    if git remote get-url origin >/dev/null 2>&1; then
+      git remote set-url origin "\$GIT_REPO_URL"
+    else
+      git remote add origin "\$GIT_REPO_URL"
+    fi
+    git fetch --all --tags
+    git clean -fdx \
+      -e config \
+      -e data \
+      -e logs \
+      -e run \
+      -e venv \
+      -e .env \
+      -e .clickhouse \
+      -e superset_home || true
+    if [[ -n "\$GIT_REF" ]]; then
+      git checkout -f "\$GIT_REF"
+      git reset --hard "\$GIT_REF" || true
+    else
+      git checkout -B "\$GIT_BRANCH" "origin/\$GIT_BRANCH"
+      git reset --hard "origin/\$GIT_BRANCH"
+    fi
+    git clean -fd -e config -e data -e logs -e run -e venv -e .env || true
+    exit 0
   fi
   git clone --depth "\$GIT_CLONE_DEPTH" --branch "\$GIT_BRANCH" "\$GIT_REPO_URL" "\$REMOTE_INSTALL_DIR/src"
   shopt -s dotglob nullglob

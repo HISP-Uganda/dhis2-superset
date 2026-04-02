@@ -208,7 +208,12 @@ function normalizeProviderForUI(
   catalogItems?: ModelCatalogItem[],
 ): AIProviderConfig {
   const catalogIds = (catalogItems || []).map(item => item.id);
-  const models = provider.models?.length ? provider.models : catalogIds;
+  // Merge: keep every saved model, then append any new catalog models
+  // so newly added models automatically appear in the allowed list.
+  const saved = provider.models?.length ? provider.models : [];
+  const savedSet = new Set(saved);
+  const newFromCatalog = catalogIds.filter(id => !savedSet.has(id));
+  const models = saved.length > 0 ? [...saved, ...newFromCatalog] : catalogIds;
   return {
     enabled: Boolean(provider.enabled),
     type: provider.type || preset?.provider_type || 'openai_compatible',
@@ -425,7 +430,19 @@ export default function AIManagement() {
         t('Provider test succeeded: %s', json.result?.text || 'OK'),
       );
     } catch (error: any) {
-      addDangerToast(error?.message || t('Provider test failed'));
+      // SupersetClient rejects with the raw Response object on non-OK status.
+      let msg = t('Provider test failed');
+      try {
+        if (typeof error?.json === 'function') {
+          const body = await error.json();
+          if (body?.message) msg = `${msg}: ${body.message}`;
+        } else if (error?.message) {
+          msg = `${msg}: ${error.message}`;
+        }
+      } catch {
+        // ignore parse errors
+      }
+      addDangerToast(msg);
     } finally {
       setTestingProviderId(null);
     }
@@ -948,13 +965,33 @@ export default function AIManagement() {
                               preset?.catalog_key ||
                               ''
                           ] || [];
-                        const modelOptions =
+                        const catalogOptions =
                           catalogItems.length > 0
                             ? buildGroupedOptions(catalogItems)
-                            : provider.models.map(modelId => ({
-                                label: modelId,
-                                value: modelId,
-                              }));
+                            : [];
+                        // Ensure every selected model appears in the
+                        // options so rc-select never triggers an
+                        // internal setState during render reconciliation.
+                        const knownValues = new Set(
+                          catalogItems.map(ci => ci.id),
+                        );
+                        const extraModels = provider.models.filter(
+                          m => !knownValues.has(m),
+                        );
+                        const modelOptions = [
+                          ...catalogOptions,
+                          ...(extraModels.length > 0
+                            ? [
+                                {
+                                  label: t('Custom'),
+                                  options: extraModels.map(m => ({
+                                    label: m,
+                                    value: m,
+                                  })),
+                                },
+                              ]
+                            : []),
+                        ];
                         return (
                           <ProviderCard
                             key={providerId}
@@ -1105,16 +1142,22 @@ export default function AIManagement() {
                                       ? modelOptions
                                       : []
                                   }
-                                  onChange={value =>
-                                    updateProvider(providerId, {
-                                      models: value,
-                                      default_model: value.includes(
-                                        provider.default_model || '',
-                                      )
-                                        ? provider.default_model
-                                        : value[0] || null,
-                                    })
-                                  }
+                                  onChange={value => {
+                                    // Defer state update to avoid React
+                                    // "setState during render" warning
+                                    // triggered by Ant Design Select
+                                    // reconciling tags internally.
+                                    queueMicrotask(() =>
+                                      updateProvider(providerId, {
+                                        models: value,
+                                        default_model: value.includes(
+                                          provider.default_model || '',
+                                        )
+                                          ? provider.default_model
+                                          : value[0] || null,
+                                      }),
+                                    );
+                                  }}
                                 />
                               </Form.Item>
                               <Form.Item label={t('Default model')}>
@@ -1129,9 +1172,11 @@ export default function AIManagement() {
                                     }),
                                   )}
                                   onChange={value =>
-                                    updateProvider(providerId, {
-                                      default_model: value || null,
-                                    })
+                                    queueMicrotask(() =>
+                                      updateProvider(providerId, {
+                                        default_model: value || null,
+                                      }),
+                                    )
                                   }
                                 />
                               </Form.Item>

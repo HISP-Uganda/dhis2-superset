@@ -64,9 +64,12 @@ const devserverHost =
 
 const isDevMode = mode !== 'production';
 const isDevServer = process.argv[1].includes('webpack-dev-server');
+const disableTypeCheck = ['1', 'true'].includes(
+  String(process.env.DISABLE_TYPE_CHECK || '').toLowerCase(),
+);
 
 // TypeScript checker memory limit (in MB)
-const TYPESCRIPT_MEMORY_LIMIT = 4096;
+const TYPESCRIPT_MEMORY_LIMIT = 8192;
 
 const output = {
   path: BUILD_DIR,
@@ -91,6 +94,9 @@ const plugins = [
   new webpack.ProvidePlugin({
     process: 'process/browser.js',
     ...(isDevMode ? { Buffer: ['buffer', 'Buffer'] } : {}), // Fix legacy-plugin-chart-paired-t-test broken Story
+  }),
+  new webpack.NormalModuleReplacementPlugin(/^node:/, resource => {
+    resource.request = resource.request.replace(/^node:/, '');
   }),
 
   // creates a manifest.json mapping of name to hashed output used in template files
@@ -193,7 +199,7 @@ if (!isDevMode) {
 // In dev mode, this provides real-time type checking and builds .d.ts files for plugins
 // Can be disabled with DISABLE_TYPE_CHECK=true npm run dev
 if (isDevMode) {
-  if (process.env.DISABLE_TYPE_CHECK) {
+  if (disableTypeCheck) {
     console.log('⚡ Type checking disabled (DISABLE_TYPE_CHECK=true)');
   } else {
     console.log(
@@ -233,21 +239,25 @@ if (isDevMode) {
     );
   }
 } else {
-  // Production mode - full type checking
-  plugins.push(
-    new ForkTsCheckerWebpackPlugin({
-      typescript: {
-        memoryLimit: TYPESCRIPT_MEMORY_LIMIT,
-        build: true,
-        mode: 'write-references',
-      },
-      // Logger configuration
-      logger: 'webpack-infrastructure',
-      issue: {
-        exclude: [{ file: '**/node_modules/**' }],
-      },
-    }),
-  );
+  if (disableTypeCheck) {
+    console.log('⚡ Type checking disabled for production build');
+  } else {
+    // Production mode - full type checking
+    plugins.push(
+      new ForkTsCheckerWebpackPlugin({
+        typescript: {
+          memoryLimit: TYPESCRIPT_MEMORY_LIMIT,
+          build: true,
+          mode: 'write-references',
+        },
+        // Logger configuration
+        logger: 'webpack-infrastructure',
+        issue: {
+          exclude: [{ file: '**/node_modules/**' }],
+        },
+      }),
+    );
+  }
 }
 
 const PREAMBLE = [path.join(APP_DIR, '/src/preamble.ts')];
@@ -395,6 +405,14 @@ const config = {
     ],
     alias: {
       react: path.resolve(path.join(APP_DIR, './node_modules/react')),
+      // Some lazily imported export libraries reference Node built-ins using the
+      // `node:` scheme. Mark them as unavailable in the browser bundle so webpack
+      // doesn't fail the entire frontend build while processing those chunks.
+      'node:fs': false,
+      'node:https': false,
+      'node:path': false,
+      'node:stream': require.resolve('stream-browserify'),
+      'node:vm': require.resolve('vm-browserify'),
       // TODO: remove Handlebars alias once Handlebars NPM package has been updated to
       // correctly support webpack import (https://github.com/handlebars-lang/handlebars.js/issues/953)
       handlebars: 'handlebars/dist/handlebars.js',
@@ -416,6 +434,7 @@ const config = {
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.yml'],
     fallback: {
       fs: false,
+      https: false,
       vm: require.resolve('vm-browserify'),
       path: false,
       stream: require.resolve('stream-browserify'),

@@ -109,10 +109,7 @@ export async function requestAIInsightStream(input: {
   }
 
   const endpoint = getStreamEndpoint(input.mode, input.targetId);
-  const csrfToken = document.cookie
-    .split('; ')
-    .find(row => row.startsWith('csrf_access_token='))
-    ?.split('=')[1];
+  const csrfToken = await SupersetClient.getCSRFToken();
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -240,4 +237,118 @@ export async function deleteConversation(
   await SupersetClient.delete({
     endpoint: `/api/v1/ai/conversations/${conversationId}`,
   });
+}
+
+/* ── AI Chart Generation API ─────────────────────────── */
+
+export type AltVizType = {
+  viz_type: string;
+  label: string;
+  reason: string;
+};
+
+export type AIGeneratedChart = {
+  id: number | null;
+  slice_name: string;
+  viz_type?: string;
+  description?: string;
+  url?: string;
+  error?: string;
+};
+
+export type AIProposedChart = {
+  slice_name: string;
+  viz_type: string;
+  description: string;
+  datasource_id: number;
+  datasource_type: string;
+  datasource_name?: string;
+  alt_viz_types: AltVizType[];
+  params: Record<string, unknown>;
+};
+
+export type AIChartGenerateResult = {
+  charts: AIGeneratedChart[];
+  generated: number;
+};
+
+export type AIChartProposeResult = {
+  charts: AIProposedChart[];
+  generated: number;
+};
+
+export type MartDataset = {
+  id: number;
+  table_name: string;
+  schema?: string;
+  database_name?: string;
+  description?: string;
+  column_count?: number;
+};
+
+export async function proposeAICharts(input: {
+  datasetId?: number | null;
+  prompt?: string | null;
+  numCharts?: number;
+  providerId?: string | null;
+  model?: string | null;
+}): Promise<AIChartProposeResult> {
+  const { json } = await SupersetClient.post({
+    endpoint: '/api/v1/ai/chart-generate/',
+    jsonPayload: {
+      dataset_id: input.datasetId || null,
+      prompt: input.prompt || null,
+      num_charts: input.numCharts ?? 6,
+      save: false,
+      provider_id: input.providerId || null,
+      model: input.model || null,
+    },
+  });
+  return json.result;
+}
+
+export async function saveConfirmedCharts(
+  charts: Array<{
+    slice_name: string;
+    viz_type: string;
+    description: string;
+    datasource_id: number;
+    datasource_type: string;
+    params: Record<string, unknown>;
+  }>,
+): Promise<AIChartGenerateResult> {
+  const { json } = await SupersetClient.post({
+    endpoint: '/api/v1/ai/chart-generate/save',
+    jsonPayload: { charts },
+  });
+  return json.result;
+}
+
+export async function generateAICharts(input: {
+  datasetId?: number | null;
+  prompt?: string | null;
+  numCharts?: number;
+  save?: boolean;
+  providerId?: string | null;
+  model?: string | null;
+}): Promise<AIChartGenerateResult> {
+  const { json } = await SupersetClient.post({
+    endpoint: '/api/v1/ai/chart-generate/',
+    jsonPayload: {
+      dataset_id: input.datasetId || null,
+      prompt: input.prompt || null,
+      num_charts: input.numCharts ?? 6,
+      save: input.save ?? true,
+      provider_id: input.providerId || null,
+      model: input.model || null,
+    },
+  });
+  return json.result;
+}
+
+export async function fetchMartDatasets(): Promise<MartDataset[]> {
+  const { json } = await SupersetClient.get({
+    endpoint: '/api/v1/ai/chart-generate/mart-datasets',
+  });
+  return json.result || [];
 }

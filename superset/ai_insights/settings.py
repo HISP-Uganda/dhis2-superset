@@ -177,14 +177,36 @@ OPENAI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
 ]
 
 GEMINI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
-    # Based on Google's official Gemini model catalog as of 2026-03-29.
-    # https://ai.google.dev/models/gemini
+    # Based on Google's official Gemini model catalog as of 2026-04.
+    # https://ai.google.dev/gemini-api/docs/models
+    #
+    # ── Gemini 3.x (Preview) ──
+    {
+        "id": "gemini-3.1-pro-preview",
+        "label": "Gemini 3.1 Pro",
+        "group": "Frontier",
+        "description": "Reasoning-first model for complex agentic workflows, coding, and deep analytics.",
+        "is_latest": True,
+    },
+    {
+        "id": "gemini-3-flash-preview",
+        "label": "Gemini 3 Flash",
+        "group": "Frontier",
+        "description": "Best model for complex multimodal understanding and agentic tasks.",
+    },
+    {
+        "id": "gemini-3.1-flash-lite-preview",
+        "label": "Gemini 3.1 Flash Lite",
+        "group": "Frontier",
+        "description": "Most cost-efficient Gemini 3 model for high-volume, low-latency tasks.",
+    },
+    #
+    # ── Gemini 2.5 (Stable) ──
     {
         "id": "gemini-2.5-pro",
         "label": "Gemini 2.5 Pro",
         "group": "Reasoning",
-        "description": "Google's state-of-the-art thinking model for complex analytics, code, and large-context reasoning.",
-        "is_latest": True,
+        "description": "Thinking model for complex analytics, code, and large-context reasoning.",
     },
     {
         "id": "gemini-2.5-flash",
@@ -194,10 +216,38 @@ GEMINI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
         "is_recommended": True,
     },
     {
-        "id": "gemini-2.5-flash-lite-preview-09-2025",
-        "label": "Gemini 2.5 Flash Lite Preview",
-        "group": "Preview",
-        "description": "Lowest-cost Gemini 2.5 text model for high-volume workloads.",
+        "id": "gemini-2.5-flash-lite",
+        "label": "Gemini 2.5 Flash Lite",
+        "group": "Balanced",
+        "description": "Lowest-cost stable Gemini model for high-volume workloads.",
+    },
+    #
+    # ── Gemini 2.0 ──
+    {
+        "id": "gemini-2.0-flash",
+        "label": "Gemini 2.0 Flash",
+        "group": "Fast",
+        "description": "Fast Gemini 2.0 model with multimodal capabilities and tool use.",
+    },
+    {
+        "id": "gemini-2.0-flash-lite",
+        "label": "Gemini 2.0 Flash Lite",
+        "group": "Fast",
+        "description": "Cost-efficient Gemini 2.0 model for high-throughput tasks.",
+    },
+    #
+    # ── Gemini 1.5 (Legacy) ──
+    {
+        "id": "gemini-1.5-pro",
+        "label": "Gemini 1.5 Pro",
+        "group": "Legacy",
+        "description": "Previous-generation Gemini model with 2M token context window.",
+    },
+    {
+        "id": "gemini-1.5-flash",
+        "label": "Gemini 1.5 Flash",
+        "group": "Legacy",
+        "description": "Previous-generation fast Gemini model for lighter workloads.",
     },
 ]
 
@@ -304,9 +354,9 @@ PROVIDER_PRESETS: list[dict[str, Any]] = [
         "id": "gemini",
         "provider_type": "gemini",
         "label": "Google Gemini",
-        "description": "Official Gemini API using Google's OpenAI-compatible chat-completions endpoint.",
+        "description": "Official Gemini API using Google's native generateContent endpoint.",
         "catalog_key": "gemini_text",
-        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_base_url": "https://generativelanguage.googleapis.com",
         "default_model": "gemini-2.5-flash",
         "is_local": False,
         "supports_base_url": False,
@@ -476,10 +526,17 @@ def _ensure_provider_defaults(
             provider.setdefault("base_url", preset["default_base_url"])
         provider.setdefault("default_model", preset["default_model"])
         provider.setdefault("is_local", bool(preset["is_local"]))
+        catalog_models = _catalog_models(preset.get("catalog_key")) or [
+            str(preset["default_model"])
+        ]
         if not provider.get("models"):
-            provider["models"] = _catalog_models(preset.get("catalog_key")) or [
-                str(preset["default_model"])
-            ]
+            provider["models"] = catalog_models
+        else:
+            # Merge: keep saved models, append any new catalog entries.
+            saved_set = set(provider["models"])
+            for cid in catalog_models:
+                if cid not in saved_set:
+                    provider["models"].append(cid)
         provider["catalog_key"] = preset.get("catalog_key")
     else:
         provider.setdefault("type", "openai_compatible")
@@ -513,13 +570,13 @@ def _normalize_for_storage(
         "max_dashboard_charts": int(payload.get("max_dashboard_charts") or 12),
         "max_follow_up_messages": int(payload.get("max_follow_up_messages") or 6),
         "max_generated_sql_rows": int(payload.get("max_generated_sql_rows") or 200),
-        "request_timeout_seconds": int(payload.get("request_timeout_seconds") or 30),
-        "max_tokens": int(payload.get("max_tokens") or 1200),
+        "request_timeout_seconds": int(payload.get("request_timeout_seconds") or 60),
+        "max_tokens": int(payload.get("max_tokens") or 4096),
         "temperature": float(payload.get("temperature") or 0.1),
         "default_provider": str(payload.get("default_provider") or "").strip() or None,
         "default_model": str(payload.get("default_model") or "").strip() or None,
         "allow_public_dashboard_ai": bool(payload.get("allow_public_dashboard_ai")),
-        "public_ai_max_tokens": int(payload.get("public_ai_max_tokens") or 600),
+        "public_ai_max_tokens": int(payload.get("public_ai_max_tokens") or 2048),
         "public_ai_rate_limit_per_minute": int(
             payload.get("public_ai_rate_limit_per_minute") or 10
         ),

@@ -698,6 +698,7 @@ function buildStepValue(params: {
   enabledDimensions: DatabaseRepositoryEnabledDimensions;
   activeInstances: DHIS2Instance[];
   suppressMissingInstancesValidation?: boolean;
+  hasPersistedOrgUnits?: boolean;
 }): RepositoryReportingUnitsStepValue {
   const {
     approach,
@@ -709,6 +710,7 @@ function buildStepValue(params: {
     enabledDimensions,
     activeInstances,
     suppressMissingInstancesValidation = false,
+    hasPersistedOrgUnits = false,
   } = params;
 
   const activeInstanceIds = activeInstances.map(instance => instance.id);
@@ -775,7 +777,7 @@ function buildStepValue(params: {
       ? t('Add and activate at least one DHIS2 instance before managing repository reporting units.')
       : approach === 'primary_instance' && primaryInstanceId == null
         ? t('Choose the primary DHIS2 instance that will define the repository hierarchy.')
-        : repositoryOrgUnits.length === 0
+        : repositoryOrgUnits.length === 0 && !hasPersistedOrgUnits
           ? t('Select reporting units to build the repository hierarchy before continuing.')
           : null;
 
@@ -797,6 +799,16 @@ function buildStepValue(params: {
     prunedSelectedOrgUnitDetailsSet.has(detail.selectionKey || detail.id || ''),
   );
 
+  // Filter out enabled dimensions that have no source_refs — the backend
+  // rejects them with "must retain source-instance references".  This can
+  // happen when persisted groups/group-sets lose their instance linkage
+  // after an instance is removed or metadata changes.
+  const sanitizedEnabledDimensions: DatabaseRepositoryEnabledDimensions = {
+    levels: enabledDimensions.levels?.filter(d => d.source_refs?.length > 0),
+    groups: enabledDimensions.groups?.filter(d => d.source_refs?.length > 0),
+    group_sets: enabledDimensions.group_sets?.filter(d => d.source_refs?.length > 0),
+  };
+
   const repositoryOrgUnitConfig: DatabaseRepositoryOrgUnitConfig = {
     selected_org_units: prunedSharedSelectedOrgUnits,
     selected_org_unit_details: prunedSelectedOrgUnitDetails,
@@ -810,7 +822,7 @@ function buildStepValue(params: {
     },
     auto_merge: approach === 'auto_merge' ? autoMerge : null,
     separate_instance_configs: approach === 'separate' ? separateInstanceConfigs : [],
-    enabled_dimensions: enabledDimensions,
+    enabled_dimensions: sanitizedEnabledDimensions,
     repository_org_units: repositoryOrgUnits,
   };
 
@@ -1246,6 +1258,10 @@ export default function DHIS2RepositoryReportingUnitsStep({
     ],
   );
 
+  const hasPersistedOrgUnits =
+    (initialValue?.repository_org_unit_config?.selected_org_units?.length ?? 0) > 0 ||
+    (initialValue?.repository_org_units?.length ?? 0) > 0;
+
   const stepValue = useMemo(
     () =>
       buildStepValue({
@@ -1256,14 +1272,16 @@ export default function DHIS2RepositoryReportingUnitsStep({
         separateMetadata,
         autoMerge,
         enabledDimensions,
-      activeInstances,
-      suppressMissingInstancesValidation: waitingForPersistedInstances,
-    }),
+        activeInstances,
+        suppressMissingInstancesValidation: waitingForPersistedInstances,
+        hasPersistedOrgUnits,
+      }),
     [
       activeInstances,
       approach,
       autoMerge,
       enabledDimensions,
+      hasPersistedOrgUnits,
       waitingForPersistedInstances,
       separateMetadata,
       separateWizardStates,

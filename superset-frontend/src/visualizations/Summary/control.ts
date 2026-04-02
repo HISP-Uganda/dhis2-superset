@@ -56,6 +56,31 @@ const config: ControlPanelConfig = {
             },
           },
         ],
+        [
+          {
+            name: 'groups_per_page',
+            config: {
+              type: 'SelectControl',
+              label: t('Groups Per Page'),
+              description: t(
+                'How many group-by sections to show per page. Only applies when Group By is set.',
+              ),
+              default: 6,
+              choices: [
+                [4, '4'],
+                [6, '6'],
+                [8, '8'],
+                [10, '10'],
+                [12, '12'],
+                [20, '20'],
+                [50, '50'],
+              ],
+              renderTrigger: true,
+              visibility: ({ controls }: any) =>
+                (controls?.groupby?.value || []).length > 0,
+            },
+          },
+        ],
         ['adhoc_filters'],
         ['row_limit'],
       ],
