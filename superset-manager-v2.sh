@@ -2036,7 +2036,8 @@ WEBDRIVER_BASEURL = os.getenv("WEBDRIVER_BASEURL", "http://127.0.0.1:8088/")
 WEBDRIVER_BASEURL_USER_FRIENDLY = os.getenv("WEBDRIVER_BASEURL_USER_FRIENDLY", SUPERSET_BASE_URL)
 
 DEBUG = env_bool("SUPERSET_DEBUG", False)
-WEBPACK_DEV_SERVER_URL = os.getenv("WEBPACK_DEV_SERVER_URL", "http://localhost:9001")
+if os.getenv("WEBPACK_DEV_SERVER_URL"):
+    WEBPACK_DEV_SERVER_URL = os.getenv("WEBPACK_DEV_SERVER_URL")
 
 # -----------------------------------------------------------------------------
 # Proxy / security / CSRF
@@ -2196,10 +2197,6 @@ _default_csp = {
     "worker-src": ["'self'", "blob:"],
     "connect-src": [
         "'self'",
-        "ws://localhost:8081",
-        "ws://localhost:8088",
-        "ws://localhost:9000",
-        "ws://localhost:9001",
         "https://a.basemaps.cartocdn.com",
         "https://b.basemaps.cartocdn.com",
         "https://c.basemaps.cartocdn.com",
@@ -2226,6 +2223,14 @@ _CSP_CONFIG = {
     "force_https": env_bool("TALISMAN_FORCE_HTTPS", False),
     "session_cookie_secure": env_bool("SESSION_COOKIE_SECURE", False),
 }
+
+if os.getenv("WEBPACK_DEV_SERVER_URL"):
+    _CSP_CONFIG["content_security_policy"]["connect-src"].extend([
+        "ws://localhost:8081",
+        "ws://localhost:8088",
+        "ws://localhost:9000",
+        "ws://localhost:9001",
+    ])
 TALISMAN_CONFIG = _CSP_CONFIG
 TALISMAN_DEV_CONFIG = _CSP_CONFIG
 

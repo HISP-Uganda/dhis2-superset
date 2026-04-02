@@ -59,7 +59,8 @@ SECRET_KEY = (
 
 # Keep backend startup stable by default; enable debug explicitly when needed.
 DEBUG = os.environ.get("SUPERSET_DEBUG", "0") == "1"
-WEBPACK_DEV_SERVER_URL = "http://localhost:9001"
+if os.environ.get("WEBPACK_DEV_SERVER_URL"):
+    WEBPACK_DEV_SERVER_URL = os.environ["WEBPACK_DEV_SERVER_URL"]
 
 # Enable embedding dashboards (for /superset/public/)
 EMBEDDED_SUPERSET = True
@@ -226,11 +227,6 @@ _CSP_CONFIG = {
         "worker-src": ["'self'", "blob:"],
         "connect-src": [
             "'self'",
-            # Webpack dev server WebSocket
-            "ws://localhost:8081",
-            "ws://localhost:8088",
-            "ws://localhost:9000",
-            "ws://localhost:9001",
             # Map tile providers
             "https://a.basemaps.cartocdn.com",
             "https://b.basemaps.cartocdn.com",
@@ -265,6 +261,16 @@ _CSP_CONFIG = {
 # Use same CSP for both production and development
 TALISMAN_CONFIG = _CSP_CONFIG
 TALISMAN_DEV_CONFIG = _CSP_CONFIG
+
+if os.environ.get("WEBPACK_DEV_SERVER_URL"):
+    _CSP_CONFIG["content_security_policy"]["connect-src"].extend(
+        [
+            "ws://localhost:8081",
+            "ws://localhost:8088",
+            "ws://localhost:9000",
+            "ws://localhost:9001",
+        ]
+    )
 
 # ============================================================================
 # PUBLIC PAGE CONFIGURATION
