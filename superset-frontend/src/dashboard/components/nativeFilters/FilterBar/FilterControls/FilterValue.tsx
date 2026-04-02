@@ -216,12 +216,6 @@ const FilterValue: FC<FilterControlProps> = ({
         dataMaskSelected?.[resolvedCascadeParentId]?.filterState?.value;
 
       if (!hasSelectedValue(parentValue)) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          '[NativeFilter] skip fetch: cascade parent not selected',
-          filter.id,
-          { resolvedCascadeParentId },
-        );
         return;
       }
     } else if (filter?.cascadeParentIds?.length) {
@@ -232,12 +226,6 @@ const FilterValue: FC<FilterControlProps> = ({
       const depsCount = filter.cascadeParentIds.length;
 
       if (selectedParentFiltersWithValue !== depsCount) {
-        // eslint-disable-next-line no-console
-        console.warn('[NativeFilter] skip fetch: deps not met', filter.id, {
-          selectedParentFiltersWithValue,
-          depsCount,
-          dependencies,
-        });
         return;
       }
     }
@@ -260,13 +248,6 @@ const FilterValue: FC<FilterControlProps> = ({
       if (!hasDataSource) {
         return;
       }
-      // eslint-disable-next-line no-console
-      console.warn('[NativeFilter] fetching options', filter.id, {
-        groupby,
-        datasetId,
-        cascadeParentInfo,
-        formData: newFormData,
-      });
       setIsRefreshing(true);
       getChartDataRequest({
         formData: newFormData,

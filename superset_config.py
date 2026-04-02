@@ -276,6 +276,20 @@ _CSP_CONFIG["content_security_policy"]["connect-src"].extend(
 )
 
 # ============================================================================
+# STATIC ASSET PERFORMANCE
+# ============================================================================
+# Long-lived cache for hashed static assets (webpack adds contenthash to filenames)
+SEND_FILE_MAX_AGE_DEFAULT = int(timedelta(days=365).total_seconds())
+
+# Enable Flask-Compress for gzip/brotli response compression
+COMPRESS_MIMETYPES = [
+    "text/html", "text/css", "text/xml", "text/javascript",
+    "application/json", "application/javascript", "application/xml",
+    "image/svg+xml",
+]
+COMPRESS_MIN_SIZE = 256  # Don't compress tiny responses
+
+# ============================================================================
 # PUBLIC PAGE CONFIGURATION
 # ============================================================================
 # Configure the look and feel of the public landing page at /superset/public/

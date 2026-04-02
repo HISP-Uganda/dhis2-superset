@@ -67,6 +67,14 @@ const initialState: LoadingState = {
   error: null,
 };
 
+function splitEndpointSearch(endpoint: string) {
+  const [path, queryString = ''] = endpoint.split(/\?(.*)/s, 2);
+  return {
+    path,
+    searchParams: new URLSearchParams(queryString),
+  };
+}
+
 /**
  * A general-purpose hook to fetch the response from an endpoint.
  * Returns the full response body from the API, including metadata.
@@ -109,12 +117,13 @@ export function useApiResourceFullBody<RESULT>(
       cancelled = true;
     };
 
-    const fetchResource = makeApi<{}, RESULT>({
+    const { path, searchParams } = splitEndpointSearch(endpoint);
+    const fetchResource = makeApi<URLSearchParams, RESULT>({
       method: 'GET',
-      endpoint,
+      endpoint: path,
     });
 
-    fetchResource({})
+    fetchResource(searchParams)
       .then(result => {
         if (!cancelled) {
           setResource({

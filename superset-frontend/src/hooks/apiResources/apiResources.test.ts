@@ -97,6 +97,24 @@ describe('apiResource hooks', () => {
         error: fakeError,
       });
     });
+
+    test('preserves inline query strings on GET requests', async () => {
+      const fetcher = jest.fn().mockResolvedValue(fakeApiResult);
+      (makeApi as any).mockReturnValue(fetcher);
+
+      renderHook(() => useApiResourceFullBody('/test/endpoint?dashboard_id=1'));
+
+      await act(async () => {
+        jest.runAllTimers();
+      });
+
+      expect(makeApi).toHaveBeenCalledWith({
+        method: 'GET',
+        endpoint: '/test/endpoint',
+      });
+      expect(fetcher).toHaveBeenCalledWith(expect.any(URLSearchParams));
+      expect(fetcher.mock.calls[0][0].get('dashboard_id')).toBe('1');
+    });
   });
 
   // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks

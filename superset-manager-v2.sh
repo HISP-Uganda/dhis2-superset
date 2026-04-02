@@ -3147,6 +3147,27 @@ server {
 
     client_max_body_size 100m;
 
+    # ── Gzip compression ──
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_min_length 256;
+    gzip_types
+        text/plain text/css text/javascript text/xml
+        application/javascript application/json application/xml
+        application/manifest+json image/svg+xml font/woff2;
+
+    # ── Static assets with long-lived cache ──
+    # Webpack-hashed files (contain contenthash/chunkhash in filename)
+    location /static/assets/ {
+        alias ${INSTALL_DIR:-/opt/superset}/superset/static/assets/;
+        expires 1y;
+        add_header Cache-Control \"public, immutable\";
+        access_log off;
+    }
+
+    # ── Application proxy ──
     location / {
         proxy_pass http://127.0.0.1:${superset_port};
         proxy_http_version 1.1;

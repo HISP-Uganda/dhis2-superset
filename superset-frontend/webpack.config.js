@@ -331,6 +331,14 @@ const config = {
     {
       message: /Can't resolve.*superset_text/,
     },
+    // Suppress node: scheme warnings from lazy-imported export libs (docx, pptxgenjs)
+    {
+      message: /Can't resolve 'node:/,
+    },
+    // Suppress critical dependency warnings from dynamic requires in third-party libs
+    {
+      message: /Critical dependency: the request of a dependency is an expression/,
+    },
   ],
   performance: {
     hints: false,
@@ -631,10 +639,11 @@ const config = {
     ? {
         // Watch all plugin and package source directories
         ignored: ['**/node_modules', '**/.git', '**/lib', '**/esm', '**/dist'],
-        // Poll less frequently to reduce file handles
-        poll: 2000,
-        // Aggregate changes for 500ms before rebuilding
-        aggregateTimeout: 500,
+        // Use native filesystem events (fsevents on macOS, inotify on Linux)
+        // instead of polling — much faster change detection
+        poll: false,
+        // Aggregate changes for 300ms before rebuilding
+        aggregateTimeout: 300,
       }
     : undefined,
 };

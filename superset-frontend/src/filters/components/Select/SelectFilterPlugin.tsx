@@ -641,7 +641,9 @@ function reducer(draft: DataMask, action: DataMaskAction) {
   }
 }
 
-const StyledSpace = styled(Space)<{
+const StyledSpace = styled(Space).withConfig({
+  shouldForwardProp: prop => !['inverseSelection', 'appSection'].includes(prop),
+})<{
   inverseSelection: boolean;
   appSection: AppSection;
 }>`

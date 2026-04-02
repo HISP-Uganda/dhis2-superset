@@ -325,9 +325,11 @@ export const GroupByBadge = ({ chartId }: GroupByBadgeProps) => {
         border: `1px solid ${theme.colorBorder}`,
         boxShadow: theme.boxShadow,
       }}
-      overlayInnerStyle={{
-        color: theme.colorText,
-        backgroundColor: theme.colorBgContainer,
+      styles={{
+        body: {
+          color: theme.colorText,
+          backgroundColor: theme.colorBgContainer,
+        },
       }}
     >
       <StyledTag

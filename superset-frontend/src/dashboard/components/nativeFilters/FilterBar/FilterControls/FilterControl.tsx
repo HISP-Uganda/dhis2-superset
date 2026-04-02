@@ -258,13 +258,15 @@ const DescriptionToolTip = ({ description }: { description: string }) => (
     <Tooltip
       title={description}
       placement="right"
-      overlayInnerStyle={{
-        display: '-webkit-box',
-        WebkitLineClamp: 10,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'normal',
+      styles={{
+        body: {
+          display: '-webkit-box',
+          WebkitLineClamp: 10,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'normal',
+        },
       }}
     >
       <Icons.InfoCircleOutlined
