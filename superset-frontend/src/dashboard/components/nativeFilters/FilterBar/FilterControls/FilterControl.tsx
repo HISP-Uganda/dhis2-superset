@@ -125,7 +125,7 @@ const HorizontalOverflowFilterControlContainer = styled(
 `;
 
 const VerticalFormItem = styled(StyledFormItem)<{
-  inverseSelection: boolean;
+  $inverseSelection: boolean;
 }>`
   .ant-form-item-label {
     overflow: visible;
@@ -137,16 +137,16 @@ const VerticalFormItem = styled(StyledFormItem)<{
   }
 
   .select-container {
-    ${({ inverseSelection }) =>
-      inverseSelection &&
+    ${({ $inverseSelection }) =>
+      $inverseSelection &&
       `
       width: 140px;
     `}
   }
 
   .select-bulk-actions {
-    ${({ inverseSelection }) =>
-      inverseSelection &&
+    ${({ $inverseSelection }) =>
+      $inverseSelection &&
       `
       flex-direction: column;
     `}
@@ -154,7 +154,7 @@ const VerticalFormItem = styled(StyledFormItem)<{
 `;
 
 const HorizontalFormItem = styled(StyledFormItem)<{
-  inverseSelection: boolean;
+  $inverseSelection: boolean;
 }>`
   && {
     margin-bottom: 0;
@@ -179,12 +179,12 @@ const HorizontalFormItem = styled(StyledFormItem)<{
   }
 
   .ant-form-item-control {
-    min-width: ${({ inverseSelection }) => (inverseSelection ? 252 : 164)}px;
+    min-width: ${({ $inverseSelection }) => ($inverseSelection ? 252 : 164)}px;
   }
 
   .select-container {
-    ${({ inverseSelection }) =>
-      inverseSelection &&
+    ${({ $inverseSelection }) =>
+      $inverseSelection &&
       `
       width: 164px;
     `}
@@ -210,7 +210,7 @@ const useFilterControlDisplay = (
           FormItem: (props: any) => (
             <HorizontalOverflowFormItem
               {...props}
-              inverseSelection={inverseSelection}
+              $inverseSelection={inverseSelection}
             />
           ),
           FilterControlTitleBox: HorizontalOverflowFilterControlTitleBox,
@@ -220,7 +220,7 @@ const useFilterControlDisplay = (
       return {
         FilterControlContainer: HorizontalFilterControlContainer,
         FormItem: (props: any) => (
-          <HorizontalFormItem {...props} inverseSelection={inverseSelection} />
+          <HorizontalFormItem {...props} $inverseSelection={inverseSelection} />
         ),
         FilterControlTitleBox: HorizontalFilterControlTitleBox,
         FilterControlTitle: HorizontalFilterControlTitle,
@@ -229,7 +229,7 @@ const useFilterControlDisplay = (
     return {
       FilterControlContainer: VerticalFilterControlContainer,
       FormItem: (props: any) => (
-        <VerticalFormItem {...props} inverseSelection={inverseSelection} />
+        <VerticalFormItem {...props} $inverseSelection={inverseSelection} />
       ),
       FilterControlTitleBox: VerticalFilterControlTitleBox,
       FilterControlTitle: VerticalFilterControlTitle,

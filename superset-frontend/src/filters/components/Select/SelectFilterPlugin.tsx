@@ -641,11 +641,9 @@ function reducer(draft: DataMask, action: DataMaskAction) {
   }
 }
 
-const StyledSpace = styled(Space).withConfig({
-  shouldForwardProp: prop => !['inverseSelection', 'appSection'].includes(prop),
-})<{
-  inverseSelection: boolean;
-  appSection: AppSection;
+const StyledSpace = styled(Space)<{
+  $inverseSelection: boolean;
+  $appSection: AppSection;
 }>`
   display: flex;
   align-items: center;
@@ -658,7 +656,7 @@ const StyledSpace = styled(Space).withConfig({
 
   &.ant-space {
     .ant-space-item {
-      width: ${({ inverseSelection }) => (!inverseSelection ? '100%' : 'auto')};
+      width: ${({ $inverseSelection }) => (!$inverseSelection ? '100%' : 'auto')};
     }
   }
 `;
@@ -1472,8 +1470,8 @@ export default function PluginFilterSelect(props: PluginFilterSelectProps) {
         extra={formItemExtra}
       >
         <StyledSpace
-          appSection={appSection}
-          inverseSelection={inverseSelection}
+          $appSection={appSection}
+          $inverseSelection={inverseSelection}
         >
           {appSection !== AppSection.FilterConfigModal && inverseSelection && (
             <Select
