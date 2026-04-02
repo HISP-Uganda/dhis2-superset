@@ -3606,12 +3606,16 @@ rsync_local_code_to_remote() {
     remote_exec "mkdir -p /tmp/${APP_NAME}-sync"
     rsync -az --delete -e "$RSYNC_SSH" \
       --exclude '.git' \
+      --exclude '.clickhouse' \
       --exclude 'venv' \
       --exclude 'node_modules' \
       --exclude 'dist' \
       --exclude 'build' \
       --exclude '__pycache__' \
       --exclude '*.pyc' \
+      --exclude 'superset.db' \
+      --exclude 'superset.db-shm' \
+      --exclude 'superset.db-wal' \
       --exclude 'logs' \
       --exclude 'run' \
       --exclude 'data' \
@@ -3623,12 +3627,16 @@ rsync_local_code_to_remote() {
     remote_exec "mkdir -p '${REMOTE_INSTALL_DIR}'"
     rsync -az --delete -e "$RSYNC_SSH" \
       --exclude '.git' \
+      --exclude '.clickhouse' \
       --exclude 'venv' \
       --exclude 'node_modules' \
       --exclude 'dist' \
       --exclude 'build' \
       --exclude '__pycache__' \
       --exclude '*.pyc' \
+      --exclude 'superset.db' \
+      --exclude 'superset.db-shm' \
+      --exclude 'superset.db-wal' \
       --exclude 'logs' \
       --exclude 'run' \
       --exclude 'data' \
