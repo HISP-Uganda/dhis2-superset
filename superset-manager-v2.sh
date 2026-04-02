@@ -3616,9 +3616,9 @@ rsync_local_code_to_remote() {
       --exclude 'superset.db' \
       --exclude 'superset.db-shm' \
       --exclude 'superset.db-wal' \
-      --exclude 'logs' \
-      --exclude 'run' \
-      --exclude 'data' \
+      --exclude '/logs' \
+      --exclude '/run' \
+      --exclude '/data' \
       --exclude '.DS_Store' \
       "$LOCAL_PROJECT_DIR"/ "$remote_target"
     remote_exec "mkdir -p '${REMOTE_INSTALL_DIR}' && rsync -az --delete /tmp/${APP_NAME}-sync/ '${REMOTE_INSTALL_DIR}/' && chown -R '${REMOTE_APP_USER}:${REMOTE_APP_USER}' '${REMOTE_INSTALL_DIR}'"
@@ -3637,9 +3637,9 @@ rsync_local_code_to_remote() {
       --exclude 'superset.db' \
       --exclude 'superset.db-shm' \
       --exclude 'superset.db-wal' \
-      --exclude 'logs' \
-      --exclude 'run' \
-      --exclude 'data' \
+      --exclude '/logs' \
+      --exclude '/run' \
+      --exclude '/data' \
       --exclude '.DS_Store' \
       "$LOCAL_PROJECT_DIR"/ "$remote_target"
   fi
