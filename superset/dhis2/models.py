@@ -148,6 +148,7 @@ class DHIS2Instance(Model):
         backref=sa.orm.backref(
             "dhis2_instances",
             cascade="all, delete-orphan",
+            passive_deletes=True,
         ),
     )
     logical_database: DHIS2LogicalDatabase = relationship(
@@ -224,8 +225,10 @@ class DHIS2Instance(Model):
             "url": self.url,
             "auth_type": self.auth_type,
             "username": self.username,
-            "password": _REDACTED if self.password else None,
-            "access_token": _REDACTED if self.access_token else None,
+            # Avoid forcing decryption during list/detail serialization. Legacy
+            # rows may carry ciphertext written with an older secret key.
+            "password": None,
+            "access_token": None,
             "is_active": self.is_active,
             "display_order": self.display_order,
             "description": self.description,

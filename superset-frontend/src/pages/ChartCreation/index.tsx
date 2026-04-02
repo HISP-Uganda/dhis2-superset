@@ -213,11 +213,25 @@ export class ChartCreation extends PureComponent<
 
   exploreUrl() {
     const dashboardId = getUrlParam(URL_PARAMS.dashboardId);
-    let url = `/explore/?viz_type=${this.state.vizType}&datasource=${this.state.datasource?.value}`;
-    if (isDefined(dashboardId)) {
-      url += `&dashboard_id=${dashboardId}`;
+    const datasourceValue = this.state.datasource?.value;
+    const [datasetId, datasetType = 'table'] = datasourceValue
+      ? datasourceValue.split('__')
+      : [];
+    const params = new URLSearchParams();
+    if (this.state.vizType) {
+      params.set('viz_type', this.state.vizType);
     }
-    return url;
+    if (datasourceValue) {
+      params.set('datasource', datasourceValue);
+    }
+    if (datasetId) {
+      params.set('dataset_id', datasetId);
+      params.set('dataset_type', datasetType);
+    }
+    if (isDefined(dashboardId)) {
+      params.set('dashboard_id', String(dashboardId));
+    }
+    return `/explore/?${params.toString()}`;
   }
 
   gotoSlice() {
@@ -245,7 +259,15 @@ export class ChartCreation extends PureComponent<
   mapDatasetToOption(item: Dataset) {
     const dbName = item.database?.database_name;
     const datasetLabel = getDatasetDisplayName(item);
-    const label = dbName ? `${datasetLabel} — ${dbName}` : datasetLabel;
+    const rawTableName = `${item.table_name || ''}`.trim();
+    const martSuffix = /_mart$/i.test(rawTableName);
+    const tableHint =
+      martSuffix && rawTableName && rawTableName !== datasetLabel
+        ? ` (${rawTableName})`
+        : '';
+    const label = dbName
+      ? `${datasetLabel}${tableHint} — ${dbName}`
+      : `${datasetLabel}${tableHint}`;
     return {
       id: item.id,
       value: `${item.id}__${item.datasource_type || 'table'}`,

@@ -33,6 +33,7 @@ from datetime import datetime
 from typing import Any
 
 import requests
+from sqlalchemy.orm import defer
 
 from superset import db
 from superset.dhis2.metadata_staging_service import schedule_database_metadata_refresh
@@ -75,6 +76,9 @@ def get_instances(
     """
     query = db.session.query(DHIS2Instance).filter(
         DHIS2Instance.database_id == database_id
+    ).options(
+        defer(DHIS2Instance.password),
+        defer(DHIS2Instance.access_token),
     )
     if not include_inactive:
         query = query.filter(DHIS2Instance.is_active.is_(True))
@@ -121,7 +125,15 @@ def get_instance(instance_id: int) -> DHIS2Instance | None:
         The matching :class:`~superset.dhis2.models.DHIS2Instance` or
         ``None`` when not found.
     """
-    return db.session.get(DHIS2Instance, instance_id)
+    return (
+        db.session.query(DHIS2Instance)
+        .options(
+            defer(DHIS2Instance.password),
+            defer(DHIS2Instance.access_token),
+        )
+        .filter(DHIS2Instance.id == instance_id)
+        .one_or_none()
+    )
 
 
 # ---------------------------------------------------------------------------

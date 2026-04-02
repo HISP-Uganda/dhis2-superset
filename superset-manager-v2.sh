@@ -61,6 +61,7 @@ FRONTEND_DIR="${FRONTEND_DIR:-$PROJECT_DIR/superset-frontend}"
 
 use_local_runtime_layout() {
   INSTALL_DIR="$PROJECT_DIR"
+  VENV_DIR="$PROJECT_DIR/venv"
   CONFIG_DIR="$PROJECT_DIR/config"
   DATA_DIR="$PROJECT_DIR/data"
   LOG_DIR="$PROJECT_DIR/logs"
@@ -125,6 +126,7 @@ BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8088}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-9001}"
+LOCAL_FRONTEND_DEV_SERVER="${LOCAL_FRONTEND_DEV_SERVER:-0}"
 
 # ------------------------------------------------------------------------------
 # Remote deployment config
@@ -321,6 +323,17 @@ source_runtime_env() {
 read_pid_file() { [[ -f "$1" ]] && cat "$1"; }
 pid_is_running() { [[ -n "${1:-}" ]] && ps -p "$1" >/dev/null 2>&1; }
 port_is_in_use() { lsof -tiTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+kill_process_tree() {
+  local pid="$1"
+  [[ -n "${pid:-}" ]] || return 0
+  local child
+  while IFS= read -r child; do
+    [[ -n "${child:-}" ]] || continue
+    kill_process_tree "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+  kill -9 "$pid" 2>/dev/null || true
+}
 
 
 run_step() {
@@ -626,7 +639,10 @@ kill_port() {
   pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN || true)"
   if [[ -n "${pids:-}" ]]; then
     info "Killing listeners on port $port"
-    echo "$pids" | xargs kill -9 2>/dev/null || true
+    while IFS= read -r pid; do
+      [[ -n "${pid:-}" ]] || continue
+      kill_process_tree "$pid"
+    done <<< "$pids"
   fi
 }
 
@@ -971,11 +987,46 @@ start_frontend() {
 stop_frontend() {
   header "Stopping Superset Frontend"
   kill_pid_file "$FRONTEND_PID_FILE" "Superset frontend"
+  local listener_pid=""
+  listener_pid="$(lsof -tiTCP:"$FRONTEND_PORT" -sTCP:LISTEN | head -n 1 || true)"
   kill_port "$FRONTEND_PORT"
+  if [[ -n "${listener_pid:-}" ]]; then
+    local ancestor_pid="$listener_pid"
+    local hops=0
+    while [[ -n "${ancestor_pid:-}" && "$ancestor_pid" != "1" && $hops -lt 8 ]]; do
+      kill -9 "$ancestor_pid" 2>/dev/null || true
+      ancestor_pid="$(ps -o ppid= -p "$ancestor_pid" 2>/dev/null | tr -d ' ' || true)"
+      hops=$((hops+1))
+    done
+  fi
+  pkill -f "WEBPACK_DEVSERVER_PORT=\"$FRONTEND_PORT\"" 2>/dev/null || true
+  pkill -f "webpack-dev-server.js --mode=development --port $FRONTEND_PORT" 2>/dev/null || true
+  pkill -f "npm run dev-server --port $FRONTEND_PORT" 2>/dev/null || true
+  pkill -f "npm run dev-server -- --port $FRONTEND_PORT" 2>/dev/null || true
+  pkill -f "npm run dev -- --port $FRONTEND_PORT" 2>/dev/null || true
+  local i=0
+  while [[ $i -lt 10 ]]; do
+    frontend_running || break
+    sleep 1
+    i=$((i+1))
+  done
   frontend_running && die "Frontend still appears to be running"
   ok "Frontend stopped"
 }
 restart_frontend() { stop_frontend || true; sleep 1; start_frontend; }
+
+local_should_start_frontend_dev() {
+  if [[ "$LOCAL_FRONTEND_DEV_SERVER" == "1" ]]; then
+    return 0
+  fi
+
+  local assets_dir="$PROJECT_DIR/superset/static/assets"
+  if [[ ! -d "$assets_dir" ]]; then
+    return 0
+  fi
+
+  find "$assets_dir" -maxdepth 1 -name 'spa*.entry.js' -print -quit | grep -q .
+}
 
 start_celery_worker() {
   header "Starting Celery Worker"
@@ -1171,7 +1222,11 @@ start_all_local() {
   start_backend
   start_celery_worker
   start_celery_beat
-  start_frontend || true
+  if local_should_start_frontend_dev; then
+    start_frontend || true
+  else
+    info "Skipping local frontend dev server; backend will serve built static assets"
+  fi
   ok "Local services started"
 }
 stop_all_local() {

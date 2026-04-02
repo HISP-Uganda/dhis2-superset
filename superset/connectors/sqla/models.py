@@ -1357,11 +1357,13 @@ class SqlaTable(
                     return base_ref
                 
                 from superset.dhis2.staged_dataset_service import get_staged_dataset
-                from superset.dhis2.staging_engine import DHIS2StagingEngine
+                from superset.local_staging.engine_factory import (
+                    get_active_staging_engine,
+                )
 
                 staged_dataset = get_staged_dataset(staged_dataset_id)
                 if staged_dataset is not None:
-                    base_ref = DHIS2StagingEngine(
+                    base_ref = get_active_staging_engine(
                         staged_dataset.database_id
                     ).get_serving_sql_table_ref(staged_dataset)
                     if base_ref and suffix:

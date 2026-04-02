@@ -358,11 +358,26 @@ class DHIS2DiagnosticsApi(BaseApi):
         # in the repo root (one level above the `superset/` package directory).
         _this_dir = os.path.dirname(os.path.abspath(__file__))
         _project_root = os.path.abspath(os.path.join(_this_dir, "..", ".."))
+        _env_roots = [
+            os.getenv("PROJECT_DIR"),
+            os.getenv("INSTALL_DIR"),
+            _project_root,
+            os.getcwd(),
+        ]
         _beat_pid_candidates = [
-            os.path.join(_project_root, "celery_beat.pid"),
-            os.path.join(os.getcwd(), "celery_beat.pid"),
             "/tmp/celery_beat.pid",
         ]
+        for _root in _env_roots:
+            if not _root:
+                continue
+            _beat_pid_candidates.extend(
+                [
+                    os.path.join(_root, "run", "celerybeat.pid"),
+                    os.path.join(_root, "run", "celery-beat.pid"),
+                    os.path.join(_root, "celery_beat.pid"),
+                    os.path.join(_root, "celerybeat.pid"),
+                ]
+            )
         for _pid_path in _beat_pid_candidates:
             try:
                 with open(_pid_path) as _f:
