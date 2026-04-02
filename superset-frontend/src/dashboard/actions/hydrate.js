@@ -65,6 +65,7 @@ export const hydrateDashboard =
     const editMode = isPublicView ? false : reservedUrlParams.edit === 'true';
 
     charts.forEach(chart => {
+      if (!chart.form_data) return;
       // eslint-disable-next-line no-param-reassign
       chart.slice_id = chart.form_data.slice_id;
     });
@@ -95,7 +96,7 @@ export const hydrateDashboard =
     const sliceIds = new Set();
     const slicesFromExploreCount = new Map();
 
-    charts.forEach(slice => {
+    charts.filter(s => s.form_data).forEach(slice => {
       const key = slice.slice_id;
       const formData = {
         ...slice.form_data,

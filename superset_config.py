@@ -262,15 +262,18 @@ _CSP_CONFIG = {
 TALISMAN_CONFIG = _CSP_CONFIG
 TALISMAN_DEV_CONFIG = _CSP_CONFIG
 
-if os.environ.get("WEBPACK_DEV_SERVER_URL"):
-    _CSP_CONFIG["content_security_policy"]["connect-src"].extend(
-        [
-            "ws://localhost:8081",
-            "ws://localhost:8088",
-            "ws://localhost:9000",
-            "ws://localhost:9001",
-        ]
-    )
+# Always include websocket URLs for webpack dev server HMR
+# (harmless in production — nothing listens on these ports)
+_CSP_CONFIG["content_security_policy"]["connect-src"].extend(
+    [
+        "ws://localhost:8081",
+        "ws://localhost:8088",
+        "ws://localhost:9000",
+        "ws://localhost:9001",
+        "http://localhost:9000",
+        "http://localhost:9001",
+    ]
+)
 
 # ============================================================================
 # PUBLIC PAGE CONFIGURATION
