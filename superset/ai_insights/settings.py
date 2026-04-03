@@ -8,6 +8,7 @@ from typing import Any
 
 import sqlalchemy as sa
 from flask_appbuilder.security.sqla.models import Role
+from sqlalchemy.orm import defer
 
 from superset import db, is_feature_enabled
 from superset.constants import PASSWORD_MASK
@@ -647,11 +648,30 @@ class AIInsightsSettings(db.Model):  # type: ignore[name-defined]
     def get_config(self) -> dict[str, Any]:
         return _json_loads(self.config_json)
 
+    def get_config_safe(self) -> dict[str, Any]:
+        try:
+            return self.get_config()
+        except Exception:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.warning("Unable to load AI insights config_json; using defaults")
+            return {}
+
     def set_config(self, config: dict[str, Any]) -> None:
         self.config_json = _json_dumps(config)
 
     def get_secrets(self) -> dict[str, Any]:
         return _json_loads(self.encrypted_secrets)
+
+    def get_secrets_safe(self) -> dict[str, Any]:
+        try:
+            return self.get_secrets()
+        except Exception:  # pylint: disable=broad-except
+            db.session.rollback()
+            logger.warning(
+                "Unable to decrypt AI insights secrets; treating stored secrets as empty",
+                exc_info=True,
+            )
+            return {}
 
     def set_secrets(self, secrets: dict[str, Any]) -> None:
         self.encrypted_secrets = _json_dumps(secrets)
@@ -659,7 +679,12 @@ class AIInsightsSettings(db.Model):  # type: ignore[name-defined]
     @classmethod
     def get(cls) -> "AIInsightsSettings | None":
         try:
-            row = db.session.get(cls, 1)
+            row = (
+                db.session.query(cls)
+                .options(defer(cls.encrypted_secrets))
+                .filter_by(id=1)
+                .one_or_none()
+            )
         except Exception:  # pylint: disable=broad-except
             db.session.rollback()
             return None
@@ -680,8 +705,8 @@ def load_ai_settings_override() -> dict[str, Any]:
     if row is None:
         return {}
 
-    config = row.get_config()
-    secrets = row.get_secrets()
+    config = row.get_config_safe()
+    secrets = row.get_secrets_safe()
     return _merge_provider_secrets(config, secrets)
 
 
@@ -739,7 +764,7 @@ def save_ai_management_settings(payload: dict[str, Any]) -> dict[str, Any]:
 
     normalized, secrets = _normalize_for_storage(
         payload,
-        existing_secrets=row.get_secrets() if row else None,
+        existing_secrets=row.get_secrets_safe() if row else None,
     )
     row.set_config(normalized)
     row.set_secrets(secrets)
