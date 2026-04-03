@@ -84,10 +84,15 @@ const GridRow = styled.div`
     position: relative;
     display: flex;
     flex-direction: row;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: flex-start;
     width: 100%;
     height: fit-content;
+
+    /* Smooth reflow animation */
+    & > .dragdroppable {
+      transition: width 0.15s ease, transform 0.15s ease;
+    }
 
     & > :not(:last-child):not(.hover-menu) {
       ${!editMode && `margin-right: ${theme.sizeUnit * 4}px;`}

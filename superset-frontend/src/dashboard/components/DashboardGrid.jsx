@@ -42,6 +42,8 @@ import DashboardComponent from '../containers/DashboardComponent';
 import { Droppable } from './dnd/DragDroppable';
 import { GRID_GUTTER_SIZE, GRID_COLUMN_COUNT } from '../util/constants';
 import { TAB_TYPE } from '../util/componentTypes';
+import GridOverlay from './GridOverlay';
+import AddRowButton from './AddRowButton';
 
 const propTypes = {
   depth: PropTypes.number.isRequired,
@@ -53,6 +55,7 @@ const propTypes = {
   setDirectPathToChild: PropTypes.func.isRequired,
   width: PropTypes.number.isRequired,
   dashboardId: PropTypes.number,
+  addRow: PropTypes.func,
 };
 
 const defaultProps = {};
@@ -70,11 +73,17 @@ const DashboardEmptyStateContainer = styled.div`
 
 const GridContent = styled.div`
   ${({ theme, editMode }) => css`
+    position: relative;
     display: flex;
     flex-direction: column;
     /* gutters between rows */
     & > div:not(:last-child):not(.empty-droptarget) {
       ${!editMode && `margin-bottom: ${theme.sizeUnit * 4}px`};
+    }
+
+    /* Smooth transitions for layout reflow */
+    & > .dragdroppable {
+      transition: transform 0.15s ease, margin 0.15s ease;
     }
 
     .empty-droptarget {
@@ -203,6 +212,7 @@ class DashboardGrid extends PureComponent {
       setEditMode,
       dashboardId,
       theme,
+      addRow,
     } = this.props;
     const columnPlusGutterWidth =
       (width + GRID_GUTTER_SIZE) / GRID_COLUMN_COUNT;
@@ -341,7 +351,8 @@ class DashboardGrid extends PureComponent {
                 )}
               </Fragment>
             ))}
-            {isResizing &&
+            {/* Column guides: show during resize (strong) and edit mode (subtle) */}
+            {(isResizing || editMode) &&
               Array(GRID_COLUMN_COUNT)
                 .fill(null)
                 .map((_, i) => (
@@ -351,10 +362,17 @@ class DashboardGrid extends PureComponent {
                     style={{
                       left: i * GRID_GUTTER_SIZE + i * columnWidth,
                       width: columnWidth,
+                      opacity: isResizing ? 1 : 0.3,
                     }}
                   />
                 ))}
+            {/* Grid overlay for subtle guides during edit mode */}
+            {editMode && <GridOverlay width={width} visible={editMode} />}
           </GridContent>
+          {/* Add Row button in edit mode */}
+          {editMode && addRow && !shouldDisplayEmptyState && (
+            <AddRowButton onClick={addRow} />
+          )}
         </div>
       </>
     );

@@ -31,6 +31,7 @@ import newEntitiesFromDrop from '../util/newEntitiesFromDrop';
 import reorderItem from '../util/dnd-reorder';
 import shouldWrapChildInRow from '../util/shouldWrapChildInRow';
 import { ROW_TYPE, TAB_TYPE, TABS_TYPE } from '../util/componentTypes';
+import { reflowLayout } from '../util/layoutEngine';
 
 import {
   UPDATE_COMPONENTS,
@@ -41,6 +42,7 @@ import {
   CREATE_TOP_LEVEL_TABS,
   DELETE_TOP_LEVEL_TABS,
   DASHBOARD_TITLE_CHANGED,
+  REFLOW_LAYOUT,
 } from '../actions/dashboardLayout';
 
 import { HYDRATE_DASHBOARD } from '../actions/hydrate';
@@ -179,10 +181,12 @@ const actionHandlers = {
       nextEntities[newRow.id] = newRow;
     }
 
-    return {
+    // Run reflow after move to fix any overflow
+    const movedState = {
       ...state,
       ...nextEntities,
     };
+    return reflowLayout(movedState);
   },
 
   [CREATE_TOP_LEVEL_TABS](state, action) {
@@ -291,6 +295,10 @@ const actionHandlers = {
     return {
       ...nextState,
     };
+  },
+
+  [REFLOW_LAYOUT](state) {
+    return reflowLayout(state);
   },
 
   [DASHBOARD_TITLE_CHANGED](state, action) {

@@ -281,6 +281,15 @@ const DashboardContentWrapper = styled.div`
       .contract-trigger:before {
         display: none;
       }
+
+      /* Smooth layout reflow transitions in edit mode */
+      .dragdroppable-row {
+        transition: margin 0.15s ease, padding 0.15s ease;
+      }
+
+      .resizable-container {
+        transition: width 0.15s ease;
+      }
     }
 
     & .dashboard-component-tabs-content {

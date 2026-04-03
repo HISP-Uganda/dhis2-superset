@@ -16,10 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { ResizeCallback, ResizeStartCallback, Resizable } from 're-resizable';
 import cx from 'classnames';
-import { css, styled } from '@superset-ui/core';
+import { css, styled, useTheme } from '@superset-ui/core';
 
 import {
   RightResizeHandle,
@@ -149,6 +149,24 @@ const StyledResizable = styled(Resizable)`
   }
 `;
 
+const ResizeTooltip = styled.div`
+  ${({ theme }) => css`
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: ${theme.colorPrimary};
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: ${theme.borderRadiusSM}px;
+    pointer-events: none;
+    z-index: 20;
+    white-space: nowrap;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  `}
+`;
+
 export default function ResizableContainer({
   id,
   children,
@@ -173,9 +191,11 @@ export default function ResizableContainer({
   maxHeightMultiple = proxyToInfinity,
 }: ResizableContainerProps) {
   const [isResizing, setIsResizing] = useState<boolean>(false);
+  const [resizeDelta, setResizeDelta] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
   const handleResize = useCallback<ResizeCallback>(
     (event, direction, elementRef, delta) => {
+      setResizeDelta(delta);
       if (onResize) onResize(event, direction, elementRef, delta);
     },
     [onResize],
@@ -315,6 +335,11 @@ export default function ResizableContainer({
       )}
       handleClasses={HANDLE_CLASSES}
     >
+      {isResizing && adjustableWidth && (
+        <ResizeTooltip>
+          {widthMultiple + Math.round(resizeDelta.width / (widthStep + gutterWidth))}/{12} cols
+        </ResizeTooltip>
+      )}
       {children}
     </StyledResizable>
   );

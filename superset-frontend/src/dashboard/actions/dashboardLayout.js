@@ -25,9 +25,9 @@ import {
   NEW_COMPONENTS_SOURCE_ID,
   DASHBOARD_HEADER_ID,
 } from 'src/dashboard/util/constants';
-import dropOverflowsParent from 'src/dashboard/util/dropOverflowsParent';
 import findParentId from 'src/dashboard/util/findParentId';
 import isInDifferentFilterScopes from 'src/dashboard/util/isInDifferentFilterScopes';
+import newComponentFactory from 'src/dashboard/util/newComponentFactory';
 import { updateLayoutComponents } from './dashboardFilters';
 import { setUnsavedChanges } from './dashboardState';
 
@@ -132,6 +132,13 @@ export const deleteTopLevelTabs = setUnsavedChangesAfterAction(() => ({
   payload: {},
 }));
 
+// Reflow ---------------------------------------------------------------------
+export const REFLOW_LAYOUT = 'REFLOW_LAYOUT';
+export const reflowDashboardLayout = setUnsavedChangesAfterAction(() => ({
+  type: REFLOW_LAYOUT,
+  payload: {},
+}));
+
 // Resize ---------------------------------------------------------------------
 export const RESIZE_COMPONENT = 'RESIZE_COMPONENT';
 export function resizeComponent({ id, width, height }) {
@@ -155,6 +162,9 @@ export function resizeComponent({ id, width, height }) {
       };
 
       dispatch(updateComponents(updatedComponents));
+
+      // Run reflow after resize to handle any overflow
+      dispatch(reflowDashboardLayout());
     }
   };
 }
@@ -171,21 +181,9 @@ const moveComponent = setUnsavedChangesAfterAction(dropResult => ({
 export const HANDLE_COMPONENT_DROP = 'HANDLE_COMPONENT_DROP';
 export function handleComponentDrop(dropResult) {
   return (dispatch, getState) => {
-    const overflowsParent = dropOverflowsParent(
-      dropResult,
-      getState().dashboardLayout.present,
-    );
-
-    if (overflowsParent) {
-      return dispatch(
-        addWarningToast(
-          t(
-            `There is not enough space for this component. Try decreasing its width, or increasing the destination width.`,
-          ),
-        ),
-      );
-    }
-
+    // Note: we no longer block drops that would overflow.
+    // The reflow engine in the reducer will automatically push
+    // overflowing items to the next row after the move.
     const { source, destination } = dropResult;
     const droppedOnRoot = destination && destination.id === DASHBOARD_ROOT_ID;
     const isNewComponent = source.id === NEW_COMPONENTS_SOURCE_ID;
@@ -288,6 +286,53 @@ export function undoLayoutAction() {
 
 export const redoLayoutAction = setUnsavedChangesAfterAction(
   UndoActionCreators.redo,
+);
+
+// Add Row --------------------------------------------------------------------
+export const ADD_ROW = 'ADD_ROW';
+export const addRow = setUnsavedChangesAfterAction(
+  (gridId = undefined) =>
+    (dispatch, getState) => {
+      const { dashboardLayout: undoableLayout } = getState();
+      const layout = undoableLayout.present;
+
+      // Find the grid/tab container to add a row to
+      let targetId = gridId;
+      if (!targetId) {
+        // Find the first GRID or active TAB
+        const root = layout.ROOT_ID;
+        if (root) {
+          const topLevelId = root.children[0];
+          const topLevel = layout[topLevelId];
+          if (topLevel?.type === 'TABS') {
+            // Use first tab
+            targetId = topLevel.children[0] || topLevelId;
+          } else {
+            targetId = topLevelId;
+          }
+        }
+      }
+      if (!targetId) return;
+
+      const newRow = newComponentFactory('ROW');
+      const container = layout[targetId];
+      if (!container) return;
+
+      newRow.parents = (container.parents || []).concat(targetId);
+
+      dispatch({
+        type: UPDATE_COMPONENTS,
+        payload: {
+          nextComponents: {
+            [newRow.id]: newRow,
+            [targetId]: {
+              ...container,
+              children: [...(container.children || []), newRow.id],
+            },
+          },
+        },
+      });
+    },
 );
 
 // Update component parents list ----------------------------------------------

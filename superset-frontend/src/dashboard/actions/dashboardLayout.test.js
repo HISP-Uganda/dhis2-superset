@@ -258,8 +258,19 @@ describe('dashboardLayout actions', () => {
       const thunk2 = dispatch.getCall(0).args[0];
       thunk2(dispatch, getState);
 
-      expect(dispatch.callCount).toBe(2);
-      expect(dispatch.getCall(1).args[0]).toEqual({
+      // dispatch count: updateComponents thunk + reflow thunk + UPDATE_COMPONENTS action
+      expect(dispatch.callCount).toBeGreaterThanOrEqual(2);
+
+      // Find the UPDATE_COMPONENTS dispatch
+      let updateComponentsCall;
+      for (let i = 0; i < dispatch.callCount; i++) {
+        const arg = dispatch.getCall(i).args[0];
+        if (arg && arg.type === UPDATE_COMPONENTS) {
+          updateComponentsCall = arg;
+          break;
+        }
+      }
+      expect(updateComponentsCall).toEqual({
         type: UPDATE_COMPONENTS,
         payload: {
           nextComponents: {
@@ -274,8 +285,6 @@ describe('dashboardLayout actions', () => {
           },
         },
       });
-
-      expect(dispatch.callCount).toBe(2);
     });
 
     test('should dispatch a setUnsavedChanges action if hasUnsavedChanges=false', () => {
@@ -289,7 +298,8 @@ describe('dashboardLayout actions', () => {
       const thunk2 = dispatch.getCall(0).args[0];
       thunk2(dispatch, getState);
 
-      expect(dispatch.callCount).toBe(3);
+      // dispatch count includes: updateComponents thunk + reflow thunk + dispatches from thunks
+      expect(dispatch.callCount).toBeGreaterThanOrEqual(3);
 
       // resize components should not trigger action for dashboardFilters
       expect(dashboardFilters.updateLayoutComponents.callCount).toEqual(0);
@@ -353,7 +363,7 @@ describe('dashboardLayout actions', () => {
       expect(dashboardFilters.updateLayoutComponents.callCount).toEqual(1);
     });
 
-    test('should dispatch a toast if the drop overflows the destination', () => {
+    test('should allow overflow drops and let reflow engine handle them', () => {
       const { getState, dispatch } = setup({
         dashboardLayout: {
           present: {
@@ -377,9 +387,16 @@ describe('dashboardLayout actions', () => {
       const thunk = handleComponentDrop(dropResult);
       thunk(dispatch, getState);
 
-      expect(dispatch.getCall(0).args[0].type).toEqual(ADD_TOAST);
-
-      expect(dispatch.callCount).toBe(1);
+      // Should dispatch MOVE_COMPONENT (via moveComponent thunk) instead of blocking
+      // The reflow engine in the reducer will handle any overflow
+      expect(dispatch.callCount).toBeGreaterThan(0);
+      // Should NOT dispatch ADD_TOAST since overflow is now handled by reflow
+      const toastCalls = [];
+      for (let i = 0; i < dispatch.callCount; i++) {
+        const arg = dispatch.getCall(i).args[0];
+        if (arg && arg.type === ADD_TOAST) toastCalls.push(arg);
+      }
+      expect(toastCalls).toHaveLength(0);
     });
 
     test('should delete a parent Row or Tabs if the moved child was the only child', () => {

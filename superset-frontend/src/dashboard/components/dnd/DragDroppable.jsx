@@ -83,7 +83,10 @@ const DragDroppableStyles = styled.div`
     position: relative;
 
     &.dragdroppable--dragging {
-      opacity: 0.2;
+      opacity: 0.3;
+      outline: 2px dashed ${theme.colorPrimary};
+      outline-offset: -2px;
+      border-radius: ${theme.borderRadiusSM}px;
     }
 
     &.dragdroppable-row {
@@ -103,10 +106,21 @@ const DragDroppableStyles = styled.div`
         opacity: 0.3;
         width: 100%;
         height: 100%;
+        border-radius: ${theme.borderRadiusSM}px;
+        transition: opacity 0.1s ease;
+        /* Pulsing animation for better visibility */
+        animation: dropPulse 1s ease-in-out infinite;
         &.drop-indicator--forbidden {
-          background-color: ${theme.colorErrorBg};
+          background-color: ${theme.colorError};
+          opacity: 0.15;
+          animation: none;
         }
       }
+    }
+
+    @keyframes dropPulse {
+      0%, 100% { opacity: 0.2; }
+      50% { opacity: 0.4; }
     }
   `};
 `;
