@@ -598,13 +598,148 @@ function preprocessAlertTags(text: string): string {
  */
 function sanitizeNonAscii(text: string): string {
   // Remove emoji and miscellaneous symbols (U+2600..U+FFFF surrogate pairs, etc.)
-  return text
+  const cleaned = text
     .replace(
       /[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]|[\u{20E3}]|[\u{E0020}-\u{E007F}]/gu,
       '',
     )
     // Collapse any resulting double-spaces
     .replace(/ {2,}/g, ' ');
+  // Fix concatenated words and missing punctuation spacing
+  return fixWordSpacing(cleaned);
+}
+
+/**
+ * Fix common word-spacing and punctuation issues in AI-generated text.
+ *
+ * AI models sometimes concatenate words ("treatedfor", "highlightsa")
+ * or omit spaces after punctuation ("value,but", "system.The").
+ * This function repairs those issues while preserving markdown syntax,
+ * URLs, numbers, and common abbreviations.
+ */
+function fixWordSpacing(text: string): string {
+  // Common English words that the AI joins onto a preceding word.
+  // Only words 3+ chars to avoid false positives with short fragments.
+  // Sorted longest-first so "through" matches before "the".
+  const BOUNDARY_WORDS = [
+    'between', 'through', 'without', 'against', 'because', 'however',
+    'significant', 'important', 'concerning', 'including', 'according',
+    'quality', 'surveillance', 'adherence', 'preventive', 'treatment',
+    'clinical', 'national', 'diagnostic', 'supply', 'system',
+    'before', 'during', 'within', 'around', 'across',
+    'about', 'after', 'which', 'where', 'while', 'their', 'there',
+    'these', 'those', 'would', 'could', 'should', 'other',
+    'being', 'still', 'under', 'until', 'since',
+    'from', 'with', 'into', 'upon', 'over', 'than', 'then',
+    'when', 'what', 'this', 'that', 'have', 'been', 'were',
+    'more', 'some', 'will', 'only', 'just', 'each', 'both',
+    'also', 'very', 'much', 'such', 'most', 'must',
+    'like', 'even', 'well', 'many', 'high', 'poor',
+    'for', 'but', 'and', 'the', 'not', 'are', 'was', 'has',
+    'had', 'can', 'may', 'all', 'its', 'per', 'yet', 'nor',
+  ];
+  // Build a single regex: (3+ lowercase)(boundary word) at word-like boundary
+  const boundaryPattern = new RegExp(
+    `([a-z]{3,})(${BOUNDARY_WORDS.join('|')})(?=[^a-z]|$)`,
+    'gi',
+  );
+
+  return text
+    .split('\n')
+    .map(line => {
+      const trimmed = line.trim();
+      // Skip code blocks, table rows, image links, raw URLs
+      if (
+        trimmed.startsWith('```') ||
+        trimmed.startsWith('|') ||
+        trimmed.startsWith('![') ||
+        /^https?:\/\//.test(trimmed)
+      ) {
+        return line;
+      }
+
+      let fixed = line;
+
+      // 1. Punctuation spacing: comma/semicolon followed by letter
+      //    "value,but" → "value, but"
+      fixed = fixed.replace(/([a-zA-Z])([,;])([a-zA-Z])/g, '$1$2 $3');
+
+      // 2. Period + uppercase = sentence boundary: "system.The" → "system. The"
+      fixed = fixed.replace(/([a-z])\.([A-Z])/g, '$1. $2');
+
+      // 3. Colon + letter (not time like 12:30): "key:value" → "key: value"
+      fixed = fixed.replace(/([a-zA-Z]):([a-zA-Z])/g, '$1: $2');
+
+      // 4. Space before opening paren: "rate(95%)" → "rate (95%)"
+      fixed = fixed.replace(/([a-zA-Z])\((?!\))/g, '$1 (');
+
+      // 5. camelCase mid-sentence: lowercase + Uppercase word
+      //    "highlightsA" → "highlights A", "treatedFor" → "treated For"
+      //    Preserve actual camelCase inside backticks
+      fixed = fixed.replace(
+        /(?<!`)([a-z]{2,})([A-Z][a-z])(?!`)/g,
+        '$1 $2',
+      );
+
+      // 6. Concatenated common words: "treatedfor" → "treated for"
+      //    Apply the boundary word list. Guard against false positives
+      //    by requiring the prefix to be 3+ lowercase chars.
+      fixed = fixed.replace(boundaryPattern, (match, prefix, word) => {
+        // Skip if the whole match is itself a known word (e.g., "performed" contains "for")
+        // Simple heuristic: if prefix + word together form a very common word, skip
+        const combined = (prefix + word).toLowerCase();
+        // Allow splitting only if the combined form is likely NOT a real word.
+        // Check: if word starts right at a boundary the AI likely missed.
+        // We only split when prefix is 3+ chars AND word is 3+ chars.
+        if (word.length < 3) return match;
+        // Common false positives to skip
+        const falsePositives = [
+          'therefore', 'perform', 'performed', 'performer', 'before',
+          'inform', 'informed', 'information', 'informal', 'transform',
+          'platform', 'reform', 'uniform', 'comfortable', 'furthermore',
+          'moreover', 'otherwise', 'somewhere', 'everywhere', 'nowhere',
+          'anywhere', 'whoever', 'whatever', 'however', 'whenever',
+          'wherever', 'whether', 'together', 'altogether', 'another',
+          'mother', 'father', 'brother', 'bother', 'other', 'rather',
+          'gather', 'weather', 'feather', 'leather', 'either', 'neither',
+          'further', 'perhaps', 'overall', 'overhaul', 'overcome',
+          'within', 'forthwith', 'hitherto', 'withdraw', 'withstand',
+          'withhold', 'notwithstanding', 'although', 'also',
+          'already', 'always', 'almost', 'itself', 'himself', 'herself',
+          'themselves', 'ourselves', 'yourself', 'myself',
+          'percent', 'percentage', 'perennial', 'period', 'periodic',
+          'permission', 'personal', 'personnel', 'perspective',
+          'format', 'formula', 'formal', 'formation', 'formerly',
+          'thermal', 'normal', 'abnormal',
+        ];
+        if (falsePositives.includes(combined)) return match;
+        return `${prefix} ${word}`;
+      });
+
+      // 7. Single-letter article/word concatenated onto previous word
+      //    "highlightsa " → "highlights a ", "revealsa " → "reveals a "
+      //    Pattern: 3+ lowercase letters + "a" followed by space/punctuation/end
+      fixed = fixed.replace(/([a-z]{3,})(a)\s/g, (match, prefix, article) => {
+        // Skip known words ending in 'a': "data", "visa", "extra", "quota", etc.
+        const wordsEndingInA = [
+          'data', 'visa', 'extra', 'ultra', 'meta', 'quota', 'alpha',
+          'beta', 'delta', 'gamma', 'sigma', 'omega', 'flora', 'fauna',
+          'drama', 'comma', 'dilemma', 'plasma', 'schema', 'stigma',
+          'criteria', 'phenomena', 'area', 'idea', 'era', 'via',
+          'formula', 'antenna', 'banana', 'camera', 'china', 'cola',
+          'opera', 'pizza', 'saliva', 'sofa', 'toga', 'yoga', 'zebra',
+          'manga', 'panda', 'propaganda', 'malaria', 'anda',
+        ];
+        if (wordsEndingInA.includes(prefix.toLowerCase() + 'a')) return match;
+        return `${prefix} a `;
+      });
+
+      // 8. Collapse double-spaces
+      fixed = fixed.replace(/ {2,}/g, ' ');
+
+      return fixed;
+    })
+    .join('\n');
 }
 
 function RenderedMarkdown({ text }: { text: string }) {
@@ -678,15 +813,15 @@ function renderMarkdownToPdf(
   const bottomMargin = 22;
   let y = startY;
 
-  // Professional spacing constants (mm)
-  const LINE_HEIGHT = 1.5; // multiplier for font size → line step
-  const PARA_SPACE_BEFORE = 3;
-  const PARA_SPACE_AFTER = 2;
-  const BODY_FONT = 10;
-  const H1_FONT = 16;
-  const H2_FONT = 13;
-  const H3_FONT = 11;
-  const CODE_FONT = 8.5;
+  // Professional spacing constants (mm) — compact but readable
+  const LINE_HEIGHT = 1.35; // multiplier for font size → line step
+  const PARA_SPACE_BEFORE = 1.5;
+  const PARA_SPACE_AFTER = 1.5;
+  const BODY_FONT = 9.5;
+  const H1_FONT = 14;
+  const H2_FONT = 12;
+  const H3_FONT = 10.5;
+  const CODE_FONT = 8;
 
   const clean = sanitizeNonAscii(text);
   const lines = clean.split('\n');
@@ -790,86 +925,100 @@ function renderMarkdownToPdf(
       continue;
     }
 
-    // Empty line → paragraph break
+    // Empty line → paragraph break (compact)
     if (!trimmed) {
-      y += PARA_SPACE_BEFORE + PARA_SPACE_AFTER;
+      y += PARA_SPACE_BEFORE;
       continue;
     }
 
-    // Alert tags
+    // Alert tags — rendered as compact single-line callouts
     const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
     if (alertMatch) {
       const [, tag, body] = alertMatch;
       const colors = ALERT_PDF_COLORS[tag] || ALERT_PDF_COLORS.INFO;
-      const label = ALERT_TAGS[tag]?.label || tag;
+      const label = (ALERT_TAGS[tag]?.label || tag).toUpperCase();
 
-      pdf.setFont('helvetica', 'normal');
+      // Measure alert block height
+      pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(BODY_FONT);
-      const wrappedAlert: string[] = pdf.splitTextToSize(body, contentWidth - 24);
-      const textH = wrappedAlert.length * (BODY_FONT * LINE_HEIGHT * 0.352);
-      const blockHeight = textH + 12;
+      const labelW_ = pdf.getTextWidth(`${label}: `);
+      pdf.setFont('helvetica', 'normal');
+      const bodyLines_: string[] = pdf.splitTextToSize(body, contentWidth - 10 - labelW_);
+      const lineH = BODY_FONT * LINE_HEIGHT * 0.352;
+      const totalLines = Math.max(1, bodyLines_.length);
+      const blockHeight = totalLines * lineH + 3;
 
-      y += PARA_SPACE_BEFORE;
-      ensureSpace(blockHeight + 2);
+      y += 1;
+      ensureSpace(blockHeight + 1);
 
-      // Background
+      // Background + left accent (compact)
       const [bgR, bgG, bgB] = hexToRgb(colors.bg);
       pdf.setFillColor(bgR, bgG, bgB);
-      pdf.roundedRect(margin, y - 3, contentWidth, blockHeight, 2, 2, 'F');
-      // Left accent border
+      pdf.roundedRect(margin, y - 1.5, contentWidth, blockHeight, 1, 1, 'F');
       const [brR, brG, brB] = hexToRgb(colors.border);
       pdf.setFillColor(brR, brG, brB);
-      pdf.rect(margin, y - 3, 2.5, blockHeight, 'F');
-      // Badge
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(7);
-      const badgeW = pdf.getTextWidth(label.toUpperCase()) + 8;
-      pdf.setFillColor(brR, brG, brB);
-      pdf.roundedRect(margin + 7, y - 0.5, badgeW, 5, 1, 1, 'F');
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(label.toUpperCase(), margin + 11, y + 2.8);
-      // Body text
+      pdf.rect(margin, y - 1.5, 2, blockHeight, 'F');
+
+      // Render bold label then body text inline
       const [txR, txG, txB] = hexToRgb(colors.text);
+      let alertY = y + 1;
+
+      // Draw bold label on first position
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(BODY_FONT);
+      pdf.setTextColor(brR, brG, brB);
+      const labelText = `${label}: `;
+      pdf.text(labelText, margin + 5, alertY);
+      const labelW = pdf.getTextWidth(labelText);
+
+      // Wrap and draw body text separately (avoids duplication from combined string)
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(BODY_FONT);
       pdf.setTextColor(txR, txG, txB);
-      let alertY = y + 8;
-      const alertLineH = BODY_FONT * LINE_HEIGHT * 0.352;
-      for (const wl of wrappedAlert) {
-        pdf.text(wl, margin + 10, alertY);
-        alertY += alertLineH;
+      const bodyWrapped: string[] = pdf.splitTextToSize(body, contentWidth - 10 - labelW);
+      if (bodyWrapped.length > 0) {
+        // First line starts after the label
+        pdf.text(bodyWrapped[0], margin + 5 + labelW, alertY);
+        alertY += lineH;
+        // Subsequent lines at full indent
+        for (let wi = 1; wi < bodyWrapped.length; wi++) {
+          pdf.text(bodyWrapped[wi], margin + 5, alertY);
+          alertY += lineH;
+        }
+      } else {
+        alertY += lineH;
       }
-      y += blockHeight + PARA_SPACE_AFTER + 2;
+      y += blockHeight + 1;
       continue;
     }
 
     // Headers
     const h1 = trimmed.match(/^# (.+)/);
     if (h1) {
-      y += 6;
+      y += 4;
       ensureSpace(14);
       renderFormattedLine(h1[1], H1_FONT, 'bold', [25, 118, 210]);
       // Underline
       pdf.setDrawColor(200, 212, 228);
       pdf.setLineWidth(0.5);
       pdf.line(margin, y + 1, margin + contentWidth, y + 1);
-      y += 5;
+      y += 3;
       continue;
     }
     const h2 = trimmed.match(/^## (.+)/);
     if (h2) {
-      y += 5;
+      y += 3;
       ensureSpace(12);
       renderFormattedLine(h2[1], H2_FONT, 'bold', [25, 118, 210]);
-      y += 3;
+      y += 1.5;
       continue;
     }
     const h3 = trimmed.match(/^### (.+)/);
     if (h3) {
-      y += 4;
+      y += 2.5;
       ensureSpace(10);
       renderFormattedLine(h3[1], H3_FONT, 'bold', [55, 65, 81]);
-      y += 2;
+      y += 1;
       continue;
     }
 
@@ -881,7 +1030,7 @@ function renderMarkdownToPdf(
       pdf.setTextColor(55, 65, 81);
       pdf.text('\u2022', margin + 5, y);
       renderFormattedLine(bulletMatch[1], BODY_FONT, 'normal', [55, 65, 81], 12);
-      y += 1;
+      y += 0.5;
       continue;
     }
 
@@ -895,7 +1044,7 @@ function renderMarkdownToPdf(
       pdf.text(`${numMatch[1]}.`, margin + 4, y);
       pdf.setFont('helvetica', 'normal');
       renderFormattedLine(numMatch[2], BODY_FONT, 'normal', [55, 65, 81], 14);
-      y += 1;
+      y += 0.5;
       continue;
     }
 
