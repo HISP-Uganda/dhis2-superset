@@ -27,7 +27,7 @@ export const TooltipWithTruncation = ({
   <Tooltip
     title={title}
     placement="bottom"
-    overlayClassName="filter-card-tooltip"
+    classNames={{ root: "filter-card-tooltip" }}
     {...props}
   >
     <TooltipTrigger>{children}</TooltipTrigger>

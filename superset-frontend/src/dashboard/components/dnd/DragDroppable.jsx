@@ -31,8 +31,8 @@ import { DROP_FORBIDDEN } from '../../util/getDropPosition';
 const propTypes = {
   children: PropTypes.func,
   className: PropTypes.string,
-  component: componentShape,
-  parentComponent: componentShape,
+  component: PropTypes.oneOfType([componentShape, PropTypes.any]),
+  parentComponent: PropTypes.oneOfType([componentShape, PropTypes.any]),
   depth: PropTypes.number.isRequired,
   disableDragDrop: PropTypes.bool,
   dropToChild: PropTypes.bool,

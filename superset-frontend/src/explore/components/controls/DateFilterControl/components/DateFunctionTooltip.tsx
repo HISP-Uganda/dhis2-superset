@@ -109,7 +109,7 @@ const StyledTooltip = (props: any) => {
     <ClassNames>
       {({ css }) => (
         <Tooltip
-          overlayClassName={css`
+          classNames={{ root: css`
             .ant-tooltip-content {
               min-width: ${theme.sizeUnit * 125}px;
               max-height: 410px;
@@ -133,7 +133,7 @@ const StyledTooltip = (props: any) => {
                 }
               }
             }
-          `}
+          ` }}
           {...props}
         />
       )}

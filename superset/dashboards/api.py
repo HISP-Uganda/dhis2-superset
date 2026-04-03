@@ -2250,7 +2250,11 @@ class DashboardRestApi(BaseSupersetModelRestApi):
                 "dashboard_title": dash.dashboard_title,
                 "slug": dash.slug or "",
                 "position_json": dash.position_json,
-                "metadata": dash.params,
+                "json_metadata": dash.params,
+                "css": dash.css or "",
+                "published": dash.published,
+                "changed_on": dash.changed_on.isoformat() if dash.changed_on else None,
+                "owners": [{"id": o.id, "first_name": o.first_name, "last_name": o.last_name} for o in (dash.owners or [])],
                 "is_public_entry": getattr(dash, "is_public_entry", False),
             }
             return self.response(200, result=result)

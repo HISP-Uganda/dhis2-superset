@@ -112,12 +112,14 @@ const StickyPanel = styled.div<{ width: number }>`
 `;
 
 // @z-index-above-dashboard-popovers (99) + 1 = 100
-const StyledHeader = styled.div<{ $isPublicView?: boolean }>`
-  ${({ theme, $isPublicView }) => css`
+const StyledHeader = styled('div', {
+  shouldForwardProp: prop => prop !== 'isPublicView',
+})<{ isPublicView?: boolean }>`
+  ${({ theme, isPublicView }) => css`
     grid-column: 2;
     grid-row: 1;
     position: sticky;
-    top: ${$isPublicView ? 'var(--portal-header-height, 0px)' : '0'};
+    top: ${isPublicView ? 'var(--portal-header-height, 0px)' : '0'};
     z-index: 99;
     max-width: 100vw;
     background: ${theme.colorBgBase};
@@ -196,6 +198,8 @@ const DashboardContentWrapper = styled.div`
         left: 0;
         z-index: 1;
         pointer-events: none;
+        border-radius: ${theme.borderRadiusLG}px;
+        transition: border-color ${theme.motionDurationFast} ease;
       }
 
       .grid-row.grid-row--hovered:after,
@@ -208,7 +212,8 @@ const DashboardContentWrapper = styled.div`
           .dashboard-chart {
             .chart-container {
               cursor: move;
-              opacity: 0.2;
+              opacity: 0.3;
+              transition: opacity ${theme.motionDurationMid} ease;
             }
 
             .slice_container {
@@ -218,7 +223,7 @@ const DashboardContentWrapper = styled.div`
           }
 
           &:hover .dashboard-chart .chart-container {
-            opacity: 0.7;
+            opacity: 0.8;
           }
         }
 
@@ -226,6 +231,7 @@ const DashboardContentWrapper = styled.div`
         &.resizable-container--resizing:hover {
           & > .dashboard-component-chart-holder:after {
             border: 1px dashed ${theme.colorPrimary};
+            border-radius: ${theme.borderRadiusLG}px;
           }
         }
       }
@@ -260,10 +266,14 @@ const DashboardContentWrapper = styled.div`
           z-index: 1;
           pointer-events: none;
           border: 1px solid transparent;
+          border-radius: ${theme.borderRadiusLG}px;
+          transition: border-color ${theme.motionDurationFast} ease,
+            box-shadow ${theme.motionDurationFast} ease;
         }
 
         &:hover:after {
           border: 1px dashed ${theme.colorPrimary};
+          box-shadow: 0 0 0 3px ${addAlpha(theme.colorPrimary, 0.08)};
           z-index: 2;
         }
       }
@@ -321,6 +331,7 @@ const StyledDashboardContent = styled.div<{
       position: relative;
       margin: ${theme.sizeUnit * 4}px;
       margin-left: ${marginLeft}px;
+      transition: margin ${theme.motionDurationMid} ease;
 
       ${editMode &&
       `
@@ -342,6 +353,18 @@ const StyledDashboardContent = styled.div<{
 
     .resizable-container {
       max-width: 100% !important;
+      transition: width ${theme.motionDurationMid} ease,
+        height ${theme.motionDurationMid} ease;
+    }
+
+    /* Smooth layout transitions for rows and columns */
+    .dragdroppable-row {
+      transition: margin ${theme.motionDurationFast} ease;
+    }
+
+    .grid-row {
+      position: relative;
+      border-radius: ${theme.borderRadiusLG}px;
     }
 
     /* ── Responsive grid ── */
@@ -353,38 +376,61 @@ const StyledDashboardContent = styled.div<{
     }
 
     @media (max-width: 767px) {
+      flex-direction: column;
+
       .grid-container {
         margin: ${theme.sizeUnit}px;
         margin-left: ${theme.sizeUnit}px;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+        ${editMode ? `max-width: 100%;` : ''}
+      }
+
+      .dashboard-builder-sidepane {
+        width: 100%;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        z-index: 100;
+        max-height: 50vh;
+        overflow-y: auto;
       }
     }
 
     .dashboard-component-chart-holder {
       width: 100%;
       height: 100%;
-      background-color: transparent;
+      background-color: ${theme.colorBgContainer};
+      border-radius: ${theme.borderRadiusLG}px;
       position: relative;
       padding: ${theme.sizeUnit * 4}px;
       overflow: clip;
+      box-shadow: 0 1px 3px 0 ${addAlpha(theme.colorBorderSecondary, 0.12)},
+        0 1px 2px -1px ${addAlpha(theme.colorBorderSecondary, 0.08)};
 
       // transitionable traits to show filter relevance
       transition:
         opacity ${theme.motionDurationMid} ease-in-out,
         border-color ${theme.motionDurationMid} ease-in-out,
-        box-shadow ${theme.motionDurationMid} ease-in-out;
+        box-shadow ${theme.motionDurationMid} ease-in-out,
+        transform ${theme.motionDurationFast} ease-out;
+
+      &:hover {
+        box-shadow: 0 4px 6px -1px ${addAlpha(theme.colorBorderSecondary, 0.15)},
+          0 2px 4px -2px ${addAlpha(theme.colorBorderSecondary, 0.1)};
+      }
 
       &.fade-in {
-        border-radius: ${theme.borderRadius}px;
+        border-radius: ${theme.borderRadiusLG}px;
         box-shadow:
           inset 0 0 0 2px ${theme.colorPrimary},
           0 0 0 3px ${addAlpha(theme.colorPrimary, 0.1)};
       }
 
       &.fade-out {
-        border-radius: ${theme.borderRadius}px;
-        box-shadow: none;
+        border-radius: ${theme.borderRadiusLG}px;
+        box-shadow: 0 1px 3px 0 ${addAlpha(theme.colorBorderSecondary, 0.12)},
+          0 1px 2px -1px ${addAlpha(theme.colorBorderSecondary, 0.08)};
       }
 
       & .missing-chart-container {
@@ -694,7 +740,7 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
             </ResizableSidebar>
           </>
         )}
-      <StyledHeader ref={headerRef} $isPublicView={isPublicView}>
+      <StyledHeader ref={headerRef} isPublicView={isPublicView}>
         {/* @ts-ignore */}
         <Droppable
           data-test="top-level-tabs"

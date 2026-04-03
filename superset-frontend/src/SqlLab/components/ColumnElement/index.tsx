@@ -27,7 +27,7 @@ const StyledTooltip = (props: any) => {
     <ClassNames>
       {({ css }) => (
         <Tooltip
-          overlayClassName={css`
+          classNames={{ root: css`
             .ant-tooltip-inner {
               max-width: ${theme.sizeUnit * 125}px;
               word-wrap: break-word;
@@ -41,7 +41,7 @@ const StyledTooltip = (props: any) => {
                 font-size: ${theme.fontSizeXS}px;
               }
             }
-          `}
+          ` }}
           {...props}
         />
       )}

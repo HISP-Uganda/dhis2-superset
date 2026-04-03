@@ -57,6 +57,9 @@ const StyledDiv = styled.div`
         display: block;
         border-color: ${theme.colorPrimary};
         background-color: ${theme.colorPrimaryBg};
+        border-radius: ${theme.borderRadiusLG}px;
+        transition: background-color ${theme.motionDurationFast} ease,
+          border-color ${theme.motionDurationFast} ease;
       }
       & .grid-row:after {
         border-style: hidden;
@@ -66,6 +69,12 @@ const StyledDiv = styled.div`
       }
       & .droptarget-edge:last-child {
         inset-block-end: 0;
+      }
+
+      /* Highlight drop targets more visibly during drag */
+      & .empty-droptarget:hover:before {
+        background-color: ${theme.colorPrimaryBgHover};
+        border-color: ${theme.colorPrimaryActive};
       }
     }
 

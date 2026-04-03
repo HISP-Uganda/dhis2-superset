@@ -18,6 +18,7 @@
  */
 
 import {
+  buildMetricMapStyleSignature,
   buildLegendEntries,
   buildOrgUnitMatchKeys,
   formatValue,
@@ -120,6 +121,38 @@ describe('DHIS2Map Utils', () => {
       );
       expect(buildOrgUnitMatchKeys('Gulu City Council')).toEqual(
         expect.arrayContaining(['gulu city council', 'gulu city', 'gulu']),
+      );
+    });
+  });
+
+  describe('metric map style signature', () => {
+    test('changes when metric values change', () => {
+      const left = new Map([
+        ['Abim District', 10],
+        ['Gulu City', 20],
+      ]);
+      const right = new Map([
+        ['Abim District', 11],
+        ['Gulu City', 20],
+      ]);
+
+      expect(buildMetricMapStyleSignature(left)).not.toBe(
+        buildMetricMapStyleSignature(right),
+      );
+    });
+
+    test('is stable regardless of insertion order', () => {
+      const left = new Map([
+        ['Abim District', 10],
+        ['Gulu City', 20],
+      ]);
+      const right = new Map([
+        ['Gulu City', 20],
+        ['Abim District', 10],
+      ]);
+
+      expect(buildMetricMapStyleSignature(left)).toBe(
+        buildMetricMapStyleSignature(right),
       );
     });
   });

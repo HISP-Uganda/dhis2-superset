@@ -337,7 +337,7 @@ const SubMenuComponent: FunctionComponent<SubMenuProps> = props => {
                     key={menu.key}
                     trigger={['click']}
                     menu={{ items: menu.items }}
-                    overlayClassName="dropdown-menu-links"
+                    classNames={{ root: "dropdown-menu-links" }}
                   >
                     <Button buttonStyle="link">
                       <span className="dropdown-trigger">

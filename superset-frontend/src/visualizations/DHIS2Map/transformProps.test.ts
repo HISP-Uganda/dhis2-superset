@@ -19,6 +19,45 @@
 import transformProps from './transformProps';
 
 describe('DHIS2Map transformProps', () => {
+  test('falls back to camelCase orgUnitColumn when dashboard hydration omits snake_case', () => {
+    const chartProps = {
+      width: 800,
+      height: 600,
+      formData: {
+        metric: 'mal_test_positivity_rate',
+        orgUnitColumn: 'district_city',
+        boundaryLevels: [3],
+        tooltipColumns: [],
+      },
+      queriesData: [
+        {
+          data: [
+            {
+              district_city: 'Abim District',
+              mal_test_positivity_rate: 14.3,
+            },
+          ],
+        },
+      ],
+      datasource: {
+        id: 19,
+        database: { id: 4 },
+        extra: JSON.stringify({
+          dhis2_staged_local: true,
+          dhis2_source_database_id: 5,
+          dhis2_source_instance_ids: [4],
+        }),
+      },
+      hooks: {},
+      filterState: {},
+    } as any;
+
+    const result = transformProps(chartProps);
+
+    expect(result.orgUnitColumn).toBe('district_city');
+    expect(result.boundaryLevels).toEqual([3]);
+  });
+
   test('uses dhis2_source_database_id for staged-local datasets', () => {
     const chartProps = {
       width: 800,

@@ -364,7 +364,7 @@ export default function DateFilterLabel(props: DateFilterControlProps) {
           ? (nodeTrigger.parentNode as HTMLElement)
           : document.body
       }
-      overlayClassName="time-range-popover"
+      classNames={{ root: "time-range-popover" }}
     >
       <Tooltip placement="top" title={tooltipTitle}>
         <DateLabel

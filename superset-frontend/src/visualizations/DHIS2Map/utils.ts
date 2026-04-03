@@ -720,6 +720,28 @@ export function buildOrgUnitMatchKeys(value: unknown): string[] {
   return Array.from(keys).filter(Boolean);
 }
 
+export function buildMetricMapStyleSignature(
+  metricMap: Map<string, number>,
+): string {
+  if (!metricMap.size) {
+    return 'empty';
+  }
+
+  const entries = Array.from(metricMap.entries()).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  let hash = 5381;
+
+  entries.forEach(([key, value]) => {
+    const token = `${key}:${Number(value).toFixed(6)}|`;
+    for (let index = 0; index < token.length; index += 1) {
+      hash = ((hash << 5) + hash + token.charCodeAt(index)) >>> 0;
+    }
+  });
+
+  return `${metricMap.size}-${hash.toString(16)}`;
+}
+
 function buildBounds(features: BoundaryFeature[]): L.LatLngBounds {
   const featureCollection = {
     type: 'FeatureCollection' as const,

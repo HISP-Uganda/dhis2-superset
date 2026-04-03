@@ -60,34 +60,29 @@ interface ToastPresenterProps {
 
 export default function Toast({ toast, onCloseToast }: ToastPresenterProps) {
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  const showTimer = useRef<ReturnType<typeof setTimeout>>();
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>();
   const [visible, setVisible] = useState(false);
-
-  const showToast = () => {
-    setVisible(true);
-  };
 
   const handleClosePress = useCallback(() => {
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
     }
-    // Wait for the transition
-    setVisible(() => {
-      setTimeout(() => {
-        onCloseToast(toast.id);
-      }, 150);
-      return false;
-    });
+    setVisible(false);
+    closeTimer.current = setTimeout(() => {
+      onCloseToast(toast.id);
+    }, 150);
   }, [onCloseToast, toast.id]);
 
   useEffect(() => {
-    setTimeout(showToast);
+    showTimer.current = setTimeout(() => setVisible(true));
     if (toast.duration > 0) {
       hideTimer.current = setTimeout(handleClosePress, toast.duration);
     }
     return () => {
-      if (hideTimer.current) {
-        clearTimeout(hideTimer.current);
-      }
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      if (showTimer.current) clearTimeout(showTimer.current);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
     };
   }, [handleClosePress, toast.duration]);
 
