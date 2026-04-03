@@ -986,26 +986,57 @@ async function exportAsPdf(
     await addChartImage(images.chartPreviewUrl, 80);
   }
 
+  /** Match a ## heading to a dashboard chart. */
+  function matchChartForSection(sectionTitle: string | undefined) {
+    if (!sectionTitle || !images?.dashboardCharts) return undefined;
+    const lower = sectionTitle.toLowerCase();
+    return images.dashboardCharts.find(c =>
+      lower.includes(c.sliceName.toLowerCase()) ||
+      c.sliceName.toLowerCase().includes(lower),
+    );
+  }
+
   // ── Messages ──
   for (const msg of messages) {
     const isUser = msg.role === 'user';
 
-    // Dashboard chart-by-chart: chart image before its question
-    if (isUser && images?.dashboardChartImages && images?.dashboardCharts) {
-      const matched = images.dashboardCharts.find(c =>
-        msg.content.includes(c.sliceName),
-      );
-      if (matched && images.dashboardChartImages[matched.chartId]) {
-        // Chart section title
-        if (y > pageHeight - 60) { pdf.addPage(); y = margin; }
+    // Skip rendering "user" prompts that are the chart-by-chart instruction
+    // (they are long auto-generated prompts, not meaningful to show in export)
+    const isAutoChartPrompt =
+      isUser && msg.content.startsWith('Analyze each chart on this dashboard');
+
+    if (isAutoChartPrompt) continue;
+
+    // For assistant messages with chart images available, split by ## sections
+    // and insert chart images before each matching section
+    const hasDashboardImages =
+      !isUser &&
+      images?.dashboardChartImages &&
+      images?.dashboardCharts &&
+      Object.keys(images.dashboardChartImages).length > 0;
+
+    if (hasDashboardImages) {
+      const sections = msg.content.split(/(?=^## )/m);
+      for (const section of sections) {
+        const headingMatch = section.match(/^## (.+)/m);
+        const matched = matchChartForSection(headingMatch?.[1]?.trim());
+
+        // Insert chart image before this section
+        if (matched && images.dashboardChartImages![matched.chartId]) {
+          if (y > pageHeight - 60) { pdf.addPage(); y = margin; }
+          await addChartImage(images.dashboardChartImages![matched.chartId], 60);
+        }
+
+        // Render the markdown section
+        y = renderMarkdownToPdf(pdf, section, y, pageWidth, margin);
         y += 4;
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(12);
-        pdf.setTextColor(25, 118, 210);
-        pdf.text(matched.sliceName, margin, y);
-        y += 6;
-        await addChartImage(images.dashboardChartImages[matched.chartId], 65);
       }
+      y += 4;
+      pdf.setDrawColor(210, 218, 228);
+      pdf.setLineWidth(0.15);
+      pdf.line(margin, y, margin + contentWidth, y);
+      y += 6;
+      continue;
     }
 
     // Ensure space for role label + a few lines
@@ -1331,26 +1362,51 @@ async function exportAsDocx(
     } catch { /* skip */ }
   }
 
+  /** Match a ## heading to a dashboard chart. */
+  function matchChartDocx(sectionTitle: string | undefined) {
+    if (!sectionTitle || !images?.dashboardCharts) return undefined;
+    const lower = sectionTitle.toLowerCase();
+    return images.dashboardCharts.find(c =>
+      lower.includes(c.sliceName.toLowerCase()) ||
+      c.sliceName.toLowerCase().includes(lower),
+    );
+  }
+
   for (const msg of messages) {
     const isUser = msg.role === 'user';
 
-    // Dashboard chart-by-chart: chart image before its question
-    if (isUser && images?.dashboardChartImages && images?.dashboardCharts) {
-      const matched = images.dashboardCharts.find(c => msg.content.includes(c.sliceName));
-      if (matched && images.dashboardChartImages[matched.chartId]) {
-        try {
-          children.push(new Paragraph({
-            children: [new TextRun({ text: matched.sliceName, bold: true, size: 26, color: '1976D2', font: HEADING_FONT })],
-            spacing: { before: SP_SECTION, after: 100 },
-          }));
-          const imgRun = await makeImageRun(images.dashboardChartImages[matched.chartId], MAX_IMG_W, 300);
-          children.push(new Paragraph({
-            children: [imgRun],
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 160 },
-          }));
-        } catch { /* skip */ }
+    // Skip auto-generated chart-by-chart prompts in export
+    if (isUser && msg.content.startsWith('Analyze each chart on this dashboard')) continue;
+
+    // For assistant messages with dashboard chart images, split by ## sections
+    const hasDashboardImages =
+      !isUser &&
+      images?.dashboardChartImages &&
+      images?.dashboardCharts &&
+      Object.keys(images.dashboardChartImages).length > 0;
+
+    if (hasDashboardImages) {
+      const sections = msg.content.split(/(?=^## )/m);
+      for (const section of sections) {
+        const headingMatch = section.match(/^## (.+)/m);
+        const matched = matchChartDocx(headingMatch?.[1]?.trim());
+
+        // Insert chart image before this section
+        if (matched && images.dashboardChartImages![matched.chartId]) {
+          try {
+            const imgRun = await makeImageRun(images.dashboardChartImages![matched.chartId], MAX_IMG_W, 280);
+            children.push(new Paragraph({
+              children: [imgRun],
+              alignment: AlignmentType.CENTER,
+              spacing: { before: SP_SECTION, after: 120 },
+            }));
+          } catch { /* skip */ }
+        }
+
+        // Render the markdown section
+        children.push(...markdownToDocx(section));
       }
+      continue;
     }
 
     // Role label
@@ -1598,124 +1654,78 @@ async function exportAsPptx(
     await addChartSlide(images.chartPreviewUrl, 'Chart Analyzed', slideCount, 0);
   }
 
-  // ── Build user→chart mapping for dashboard mode ──
-  const userChartMap = new Map<number, DashboardChartInfo>();
-  if (images?.dashboardCharts && images?.dashboardChartImages) {
-    messages.forEach((msg, idx) => {
-      if (msg.role === 'user') {
-        const matched = images.dashboardCharts!.find(c => msg.content.includes(c.sliceName));
-        if (matched && images.dashboardChartImages![matched.chartId]) {
-          userChartMap.set(idx, matched);
-        }
-      }
-    });
+  /** Match a ## heading text to a dashboard chart. */
+  function matchChartPptx(sectionTitle: string | undefined) {
+    if (!sectionTitle || !images?.dashboardCharts) return undefined;
+    const lower = sectionTitle.toLowerCase();
+    return images.dashboardCharts.find(c =>
+      lower.includes(c.sliceName.toLowerCase()) ||
+      c.sliceName.toLowerCase().includes(lower),
+    );
   }
 
-  // ── Content slides for each assistant message ──
-  const assistantMessages = messages.filter(m => m.role === 'assistant');
-
-  for (let idx = 0; idx < assistantMessages.length; idx++) {
-    const msg = assistantMessages[idx];
-    const userIdx = messages.findIndex((m, i) => m.role === 'user' && messages[i + 1] === msg);
-    const matchedChart = userIdx >= 0 ? userChartMap.get(userIdx) : undefined;
-
-    // Chart slide for this analysis
-    if (matchedChart && images?.dashboardChartImages?.[matchedChart.chartId]) {
-      slideCount += 1;
-      await addChartSlide(
-        images.dashboardChartImages[matchedChart.chartId],
-        matchedChart.sliceName,
-        slideCount,
-        0,
-      );
-    }
-
-    // Parse markdown into PPTX text segments
-    const cleanText = sanitizeNonAscii(msg.content);
-    const lines = cleanText.split('\n');
-    type TextSeg = { text: string; options?: Record<string, unknown> };
-    const allParts: TextSeg[] = [];
+  /** Parse a markdown section into PPTX text segments. */
+  type TextSeg = { text: string; options?: Record<string, unknown> };
+  function markdownToTextParts(text: string): TextSeg[] {
+    const parts: TextSeg[] = [];
+    const lines = sanitizeNonAscii(text).split('\n');
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed) {
-        allParts.push({ text: '\n', options: { fontSize: 8 } });
-        continue;
-      }
+      if (!trimmed) { parts.push({ text: '\n', options: { fontSize: 8 } }); continue; }
 
-      // Alert callouts
       const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
       if (alertMatch) {
         const [, tag, body] = alertMatch;
         const a = PPTX_ALERT[tag] || PPTX_ALERT.INFO;
-        allParts.push({ text: '\n', options: { fontSize: 4 } });
-        allParts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
-        allParts.push({ text: `  ${body}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        parts.push({ text: '\n', options: { fontSize: 4 } });
+        parts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
+        parts.push({ text: `  ${body}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
         continue;
       }
 
-      // Headers
       const h1 = trimmed.match(/^# (.+)/);
-      if (h1) {
-        allParts.push({ text: '\n', options: { fontSize: 6 } });
-        allParts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } });
-        continue;
-      }
+      if (h1) { parts.push({ text: '\n', options: { fontSize: 6 } }); parts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } }); continue; }
       const h2 = trimmed.match(/^## (.+)/);
-      if (h2) {
-        allParts.push({ text: '\n', options: { fontSize: 4 } });
-        allParts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } });
-        continue;
-      }
+      if (h2) { parts.push({ text: '\n', options: { fontSize: 4 } }); parts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } }); continue; }
       const h3 = trimmed.match(/^### (.+)/);
-      if (h3) {
-        allParts.push({ text: '\n', options: { fontSize: 3 } });
-        allParts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } });
-        continue;
-      }
+      if (h3) { parts.push({ text: '\n', options: { fontSize: 3 } }); parts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } }); continue; }
 
-      // Bullets
       const bullet = trimmed.match(/^[-*]\s+(.+)/);
       if (bullet) {
         const cleaned = bullet[1].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-        allParts.push({ text: `   \u2022  ${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        parts.push({ text: `   \u2022  ${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
         continue;
       }
 
-      // Numbered list
       const num = trimmed.match(/^(\d+)[.)]\s+(.+)/);
       if (num) {
         const cleaned = num[2].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-        allParts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
-        allParts.push({ text: `${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        parts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
+        parts.push({ text: `${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
         continue;
       }
 
-      // Horizontal rule → skip (visual separator only)
-      if (/^---+$/.test(trimmed)) {
-        allParts.push({ text: '\n', options: { fontSize: 6 } });
-        continue;
-      }
+      if (/^---+$/.test(trimmed)) { parts.push({ text: '\n', options: { fontSize: 6 } }); continue; }
 
-      // Normal paragraph — strip markdown formatting
       const plain = trimmed.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-      allParts.push({ text: `${plain}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+      parts.push({ text: `${plain}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
     }
+    return parts;
+  }
 
-    // Split into slides — estimate by counting newlines / visual lines
+  /** Render text parts across one or more slides, returning updated slideCount. */
+  function renderPartsToSlides(parts: TextSeg[], label: string) {
     const PARTS_PER_SLIDE = 22;
     const chunks: TextSeg[][] = [];
-    for (let j = 0; j < allParts.length; j += PARTS_PER_SLIDE) {
-      chunks.push(allParts.slice(j, j + PARTS_PER_SLIDE));
+    for (let j = 0; j < parts.length; j += PARTS_PER_SLIDE) {
+      chunks.push(parts.slice(j, j + PARTS_PER_SLIDE));
     }
-
-    const insightLabel = matchedChart?.sliceName || `Insight ${idx + 1}`;
     chunks.forEach((chunk, ci) => {
       slideCount += 1;
       const slide = pptx.addSlide();
-      const title = ci === 0 ? insightLabel : `${insightLabel} (cont.)`;
+      const title = ci === 0 ? label : `${label} (cont.)`;
       applyMaster(slide, title, `${slideCount}`);
-
       slide.addText(chunk as any, {
         x: 0.7, y: 1.0, w: SLIDE_W - 1.4, h: SLIDE_H - 1.8,
         fontSize: 11, color: DARK, fontFace: FONT,
@@ -1723,6 +1733,49 @@ async function exportAsPptx(
         paraSpaceAfter: 4,
       });
     });
+  }
+
+  // ── Content slides ──
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  const hasDashboardImages =
+    images?.dashboardChartImages &&
+    images?.dashboardCharts &&
+    Object.keys(images.dashboardChartImages).length > 0;
+
+  for (let idx = 0; idx < assistantMessages.length; idx++) {
+    const msg = assistantMessages[idx];
+
+    // For dashboard chart-by-chart responses, split by ## sections
+    // so each chart gets its own chart-image slide + analysis slides
+    if (hasDashboardImages) {
+      const sections = msg.content.split(/(?=^## )/m);
+      for (const section of sections) {
+        const headingMatch = section.match(/^## (.+)/m);
+        const sectionTitle = headingMatch?.[1]?.trim();
+        const matched = matchChartPptx(sectionTitle);
+
+        // Chart image slide
+        if (matched && images.dashboardChartImages![matched.chartId]) {
+          slideCount += 1;
+          await addChartSlide(
+            images.dashboardChartImages![matched.chartId],
+            matched.sliceName,
+            slideCount,
+            0,
+          );
+        }
+
+        // Analysis slides for this section
+        const parts = markdownToTextParts(section);
+        if (parts.length > 0) {
+          renderPartsToSlides(parts, sectionTitle || `Insight ${idx + 1}`);
+        }
+      }
+    } else {
+      // Non-dashboard or no chart images: render as before
+      const parts = markdownToTextParts(msg.content);
+      renderPartsToSlides(parts, `Insight ${idx + 1}`);
+    }
   }
 
   pptx.writeFile({ fileName: `ai-insights-${Date.now()}.pptx` });
@@ -2486,11 +2539,16 @@ export default function AIInsightPanel({
                         </ChartByChartCard>
                       ))}
                       <Chip
-                        onClick={() =>
-                          submit(
-                            'Analyze each chart on this dashboard individually. For each chart, describe what it shows, key values, trends, and any concerns.',
-                          )
-                        }
+                        onClick={() => {
+                          const chartNames = dashboardCharts!.map(c => c.sliceName);
+                          const prompt =
+                            'Analyze each chart on this dashboard one at a time within a single report. ' +
+                            'For EACH chart, use a level-2 markdown heading with the EXACT chart name ' +
+                            '(e.g. ## Chart Name), then give its insights, key values, trends, and any concerns. ' +
+                            'After all individual charts, add a final ## Cross-Chart Summary section. ' +
+                            `The charts are:\n${chartNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}`;
+                          submit(prompt);
+                        }}
                         css={css`
                           margin-top: 8px;
                           width: 100%;
@@ -2504,41 +2562,75 @@ export default function AIInsightPanel({
               </EmptyChat>
             )}
 
-            {/* Show chart image before first AI response in dashboard chart-by-chart mode */}
-            {messages.map((msg, msgIdx) => {
+            {messages.map((msg) => {
+              // In chart-by-chart mode, split assistant response by ## headings
+              // and insert corresponding chart images before each section
+              const isChartByChartAssistant =
+                mode === 'dashboard' &&
+                dashboardAnalysisMode === 'chart_by_chart' &&
+                msg.role === 'assistant' &&
+                dashboardCharts?.length &&
+                Object.keys(dashboardChartImages).length > 0;
+
+              if (isChartByChartAssistant) {
+                // Split the response at ## headings, keeping the heading with its section
+                const sections = msg.content.split(/(?=^## )/m);
+                return (
+                  <div key={msg.id}>
+                    {sections.map((section, si) => {
+                      const headingMatch = section.match(/^## (.+)/m);
+                      const sectionTitle = headingMatch?.[1]?.trim();
+                      // Find matching chart by name
+                      const matched = sectionTitle
+                        ? dashboardCharts?.find(c =>
+                            sectionTitle.toLowerCase().includes(c.sliceName.toLowerCase()) ||
+                            c.sliceName.toLowerCase().includes(sectionTitle.toLowerCase()),
+                          )
+                        : null;
+                      return (
+                        <div key={si}>
+                          {matched && dashboardChartImages[matched.chartId] && (
+                            <ChartByChartCard css={css`margin: 8px 0;`}>
+                              <ChartByChartHeader>{matched.sliceName}</ChartByChartHeader>
+                              <ChartByChartBody>
+                                <ChartPreviewImage
+                                  src={dashboardChartImages[matched.chartId]}
+                                  alt={matched.sliceName}
+                                  css={css`border: none; border-radius: 0; max-height: 200px;`}
+                                />
+                              </ChartByChartBody>
+                            </ChartByChartCard>
+                          )}
+                          <MessageBubble $isUser={false}>
+                            <RenderedMarkdown text={section} />
+                          </MessageBubble>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+
+              // For single-chart user messages, show chart image if matched
               const showChartImageBefore =
                 mode === 'dashboard' &&
                 dashboardAnalysisMode === 'chart_by_chart' &&
                 msg.role === 'user' &&
                 dashboardCharts?.length;
-
-              // Find which chart is being analyzed from the message content
               const matchedChart = showChartImageBefore
-                ? dashboardCharts?.find(c =>
-                    msg.content.includes(c.sliceName),
-                  )
+                ? dashboardCharts?.find(c => msg.content.includes(c.sliceName))
                 : null;
 
               return (
                 <div key={msg.id}>
                   {matchedChart && dashboardChartImages[matchedChart.chartId] && (
-                    <ChartByChartCard
-                      css={css`
-                        margin: 8px 0;
-                      `}
-                    >
-                      <ChartByChartHeader>
-                        {matchedChart.sliceName}
-                      </ChartByChartHeader>
+                    <ChartByChartCard css={css`margin: 8px 0;`}>
+                      <ChartByChartHeader>{matchedChart.sliceName}</ChartByChartHeader>
                       <ChartByChartBody>
                         <ChartPreviewImage
                           src={dashboardChartImages[matchedChart.chartId]}
                           alt={matchedChart.sliceName}
-                          css={css`
-                            border: none;
-                            border-radius: 0;
-                            max-height: 200px;
-                          `}
+                          css={css`border: none; border-radius: 0; max-height: 200px;`}
                         />
                       </ChartByChartBody>
                     </ChartByChartCard>
