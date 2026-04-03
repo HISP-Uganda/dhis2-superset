@@ -2451,13 +2451,15 @@ class PublicPageRestApi(BaseApi):
         if chart_id:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
             if chart is None:
-                raise ValidationError({"chart_id": ["Chart not found"]})
-            if require_public and not getattr(chart, "is_public", False):
-                raise ValidationError({"chart_id": ["Chart must be marked public"]})
-            if not self._chart_uses_serving_tables(chart):
-                raise ValidationError(
-                    {"chart_id": ["Chart must query from a serving-table dataset"]}
-                )
+                if require_public:
+                    raise ValidationError({"chart_id": ["Chart not found"]})
+            else:
+                if require_public and not getattr(chart, "is_public", False):
+                    raise ValidationError({"chart_id": ["Chart must be marked public"]})
+                if require_public and not self._chart_uses_serving_tables(chart):
+                    raise ValidationError(
+                        {"chart_id": ["Chart must query from a serving-table dataset"]}
+                    )
 
         dashboard_id = component_data.get("dashboard_id")
         if dashboard_id:
@@ -2467,8 +2469,9 @@ class PublicPageRestApi(BaseApi):
                 .one_or_none()
             )
             if dash is None:
-                raise ValidationError({"dashboard_id": ["Dashboard not found"]})
-            if require_public and not getattr(dash, "published", False):
+                if require_public:
+                    raise ValidationError({"dashboard_id": ["Dashboard not found"]})
+            elif require_public and not getattr(dash, "published", False):
                 raise ValidationError(
                     {"dashboard_id": ["Dashboard must be published for public use"]}
                 )
@@ -2486,13 +2489,25 @@ class PublicPageRestApi(BaseApi):
         if chart_id:
             chart = db.session.query(Slice).filter(Slice.id == chart_id).one_or_none()
             if chart is None:
-                raise ValidationError({"chart_ref": ["Chart not found"]})
-            if require_public and not getattr(chart, "is_public", False):
-                raise ValidationError({"chart_ref": ["Chart must be marked public"]})
-            if not self._chart_uses_serving_tables(chart):
-                raise ValidationError(
-                    {"chart_ref": ["Chart must query from a serving-table dataset"]}
-                )
+                # Draft saves tolerate missing charts (may have been deleted);
+                # only block publishing with a dangling reference.
+                if require_public:
+                    raise ValidationError(
+                        {"chart_ref": [f"Chart {chart_id} not found"]}
+                    )
+            else:
+                if require_public and not getattr(chart, "is_public", False):
+                    raise ValidationError(
+                        {"chart_ref": [
+                            f"Chart '{chart.slice_name}' (id={chart_id}) must be marked public"
+                        ]}
+                    )
+                if require_public and not self._chart_uses_serving_tables(chart):
+                    raise ValidationError(
+                        {"chart_ref": [
+                            f"Chart '{chart.slice_name}' (id={chart_id}) must query from a serving-table dataset"
+                        ]}
+                    )
 
         dashboard_id = self._block_dashboard_reference(settings)
         if dashboard_id:
@@ -2502,10 +2517,15 @@ class PublicPageRestApi(BaseApi):
                 .one_or_none()
             )
             if dash is None:
-                raise ValidationError({"dashboard_ref": ["Dashboard not found"]})
-            if require_public and not getattr(dash, "published", False):
+                if require_public:
+                    raise ValidationError(
+                        {"dashboard_ref": [f"Dashboard {dashboard_id} not found"]}
+                    )
+            elif require_public and not getattr(dash, "published", False):
                 raise ValidationError(
-                    {"dashboard_ref": ["Dashboard must be published for public use"]}
+                    {"dashboard_ref": [
+                        f"Dashboard '{dash.dashboard_title}' (id={dashboard_id}) must be published for public use"
+                    ]}
                 )
 
         reusable_block_id = self._block_reusable_reference(settings)
@@ -2515,10 +2535,11 @@ class PublicPageRestApi(BaseApi):
                 admin=True,
             )
             if reusable_block is None:
-                raise ValidationError(
-                    {"reusable_block_id": ["Reusable block not found"]}
-                )
-            if require_public and not self._reusable_block_is_usable(reusable_block):
+                if require_public:
+                    raise ValidationError(
+                        {"reusable_block_id": ["Reusable block not found"]}
+                    )
+            elif require_public and not self._reusable_block_is_usable(reusable_block):
                 raise ValidationError(
                     {
                         "reusable_block_id": [
@@ -2526,11 +2547,12 @@ class PublicPageRestApi(BaseApi):
                         ]
                     }
                 )
-            for referenced_block in reusable_block.get_blocks():
-                self._validate_block_references(
-                    referenced_block,
-                    require_public=require_public,
-                )
+            if reusable_block is not None:
+                for referenced_block in reusable_block.get_blocks():
+                    self._validate_block_references(
+                        referenced_block,
+                        require_public=require_public,
+                    )
 
         asset_id = self._block_asset_reference(block_type, content, settings)
         if asset_id:
@@ -2588,6 +2610,40 @@ class PublicPageRestApi(BaseApi):
             # Public dynamic pages render charts through the public embed path, so
             # referenced serving-table charts must become public at publish time.
             chart.is_public = True
+
+    def _ensure_referenced_dashboards_are_published(
+        self,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Auto-publish dashboards referenced by blocks when a page is published."""
+        if not blocks:
+            return
+        dashboard_ids: set[int] = set()
+
+        def walk(block_data: dict[str, Any]) -> None:
+            dash_id = self._block_dashboard_reference(block_data.get("settings") or {})
+            if dash_id is not None:
+                dashboard_ids.add(dash_id)
+            for child in block_data.get("children") or []:
+                walk(child)
+
+        for block in blocks:
+            walk(block)
+        if not dashboard_ids:
+            return
+        dashboards = (
+            db.session.query(Dashboard)
+            .filter(Dashboard.id.in_(dashboard_ids))
+            .all()
+        )
+        for dash in dashboards:
+            if not getattr(dash, "published", False):
+                dash.published = True
+                logger.info(
+                    "Auto-published dashboard '%s' (id=%s) for CMS page publish",
+                    dash.dashboard_title,
+                    dash.id,
+                )
 
     def _payload_requires_public_references(
         self,
@@ -3202,7 +3258,10 @@ class PublicPageRestApi(BaseApi):
             require_public=require_public_references,
         )
         page.slug = requested_slug
-        page.title = payload["title"]
+        title = payload.get("title") or ""
+        if not title.strip():
+            raise ValidationError({"title": ["Title is required"]})
+        page.title = title.strip()
         page.subtitle = payload.get("subtitle")
         page.description = payload.get("description")
         page.excerpt = payload.get("excerpt")
@@ -3248,8 +3307,8 @@ class PublicPageRestApi(BaseApi):
             page.status = "draft"
         elif page.visibility == "authenticated":
             page.status = "private" if page.is_published else "draft"
-        elif page.status == "archived":
-            page.is_published = False
+        elif page.status == "archived" and not page.is_published:
+            pass  # stay archived when not explicitly publishing
         elif page.is_published:
             if page.scheduled_publish_at and page.scheduled_publish_at > now:
                 page.status = "scheduled"
@@ -3289,6 +3348,7 @@ class PublicPageRestApi(BaseApi):
         payload_blocks = self._coerce_page_blocks_payload(payload)
         if require_public_references:
             self._ensure_referenced_charts_are_public(payload_blocks)
+            self._ensure_referenced_dashboards_are_published(payload_blocks)
         for block_data in payload_blocks:
             self._validate_block_references(
                 block_data,
@@ -4800,10 +4860,15 @@ class PublicPageRestApi(BaseApi):
             )
         except ValidationError as ex:
             db.session.rollback()
+            logger.warning(
+                "Validation error publishing CMS page %s: %s",
+                page_id,
+                ex.messages,
+            )
             return self.response_400(message=str(ex.messages))
         except Exception as ex:  # pylint: disable=broad-except
             db.session.rollback()
-            logger.exception("Error publishing CMS page")
+            logger.exception("Error publishing CMS page %s", page_id)
             return self.response_500(message=str(ex))
 
     @expose("/admin/pages/<int:page_id>/archive", methods=("POST",))

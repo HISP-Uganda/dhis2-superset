@@ -251,7 +251,7 @@ export function normalizeDraftPage(page: PortalPage): PortalPage {
   return {
     id: page.id,
     slug: page.slug?.trim() || undefined,
-    title: page.title.trim(),
+    title: (page.title || '').trim(),
     subtitle: page.subtitle?.trim() || '',
     description: page.description?.trim() || '',
     excerpt: page.excerpt?.trim() || '',
@@ -278,7 +278,7 @@ export function normalizeDraftPage(page: PortalPage): PortalPage {
     scheduled_publish_at: page.scheduled_publish_at || null,
     settings: { ...(page.settings || {}) },
     blocks: normalizeBlocks(page.blocks || []),
-    sections: page.sections.map((section, sectionIndex) => ({
+    sections: (page.sections || []).map((section, sectionIndex) => ({
       id: section.id,
       section_key: section.section_key,
       section_type: section.section_type,
@@ -289,20 +289,22 @@ export function normalizeDraftPage(page: PortalPage): PortalPage {
       display_order: sectionIndex,
       is_visible: section.is_visible,
       settings: { ...(section.settings || {}) },
-      components: section.components.map((component, componentIndex) => ({
-        id: component.id,
-        component_key: component.component_key,
-        component_type: component.component_type,
-        title: component.title?.trim() || '',
-        body: component.body ?? '',
-        chart_id: component.chart_id ?? null,
-        dashboard_id: component.dashboard_id ?? null,
-        style_bundle_id:
-          component.style_bundle_id ?? component.style_bundle?.id ?? null,
-        display_order: componentIndex,
-        is_visible: component.is_visible,
-        settings: { ...(component.settings || {}) },
-      })),
+      components: (section.components || []).map(
+        (component, componentIndex) => ({
+          id: component.id,
+          component_key: component.component_key,
+          component_type: component.component_type,
+          title: component.title?.trim() || '',
+          body: component.body ?? '',
+          chart_id: component.chart_id ?? null,
+          dashboard_id: component.dashboard_id ?? null,
+          style_bundle_id:
+            component.style_bundle_id ?? component.style_bundle?.id ?? null,
+          display_order: componentIndex,
+          is_visible: component.is_visible,
+          settings: { ...(component.settings || {}) },
+        }),
+      ),
     })),
   };
 }

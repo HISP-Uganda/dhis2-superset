@@ -16,13 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { fireEvent, render } from 'spec/helpers/testing-library';
+import { render, screen } from 'spec/helpers/testing-library';
 
 import DashboardGrid from 'src/dashboard/components/DashboardGrid';
 import newComponentFactory from 'src/dashboard/util/newComponentFactory';
 
 import { DASHBOARD_GRID_TYPE } from 'src/dashboard/util/componentTypes';
-import { GRID_COLUMN_COUNT } from 'src/dashboard/util/constants';
 
 jest.mock(
   'src/dashboard/containers/DashboardComponent',
@@ -67,42 +66,37 @@ test('should render a div with class "dashboard-grid"', () => {
   expect(container.querySelector('.dashboard-grid')).toBeInTheDocument();
 });
 
-test('should render one DashboardComponent for each gridComponent child', () => {
-  const { getAllByTestId } = setup({
+test('should render GridStackGrid with grid-stack container for non-empty grid', () => {
+  const { container } = setup({
     gridComponent: { ...props.gridComponent, children: ['a', 'b'] },
   });
-  expect(getAllByTestId('mock-dashboard-component')).toHaveLength(2);
+  expect(container.querySelector('.grid-stack')).toBeInTheDocument();
 });
 
-test('should render two empty DragDroppables in editMode to increase the drop target zone', () => {
-  const { queryAllByTestId } = setup({ editMode: false });
-  expect(queryAllByTestId('dragdroppable-object').length).toEqual(0);
-  const { getAllByTestId } = setup({ editMode: true });
-  expect(getAllByTestId('dragdroppable-object').length).toEqual(2);
-});
-
-test('should render grid column guides when resizing', () => {
-  const { container, getAllByTestId } = setup({ editMode: true });
-  expect(container.querySelector('.grid-column-guide')).not.toBeInTheDocument();
-
-  // map handleResizeStart to the onClick prop of the mock DashboardComponent
-  fireEvent.click(getAllByTestId('mock-dashboard-component')[0]);
-
-  expect(container.querySelectorAll('.grid-column-guide')).toHaveLength(
-    GRID_COLUMN_COUNT,
-  );
-});
-
-test('should call resizeComponent when a child DashboardComponent calls resizeStop', () => {
-  const resizeComponent = jest.fn();
-  const { getAllByTestId } = setup({ resizeComponent });
-  const dashboardComponent = getAllByTestId('mock-dashboard-component')[0];
-  fireEvent.blur(dashboardComponent);
-
-  expect(resizeComponent).toHaveBeenCalledTimes(1);
-  expect(resizeComponent).toHaveBeenCalledWith({
-    id: 'id',
-    width: 1,
-    height: 3,
+test('should render GridStackGrid as drop target in edit mode even when empty', () => {
+  const { container } = setup({
+    editMode: true,
+    gridComponent: { ...props.gridComponent, children: [] },
   });
+  // GridStackGrid is now rendered in edit mode even for empty dashboards
+  // so it can act as a drop target
+  expect(container.querySelector('.grid-stack')).toBeInTheDocument();
+});
+
+test('should show empty state placeholder in edit mode for empty grid', () => {
+  setup({
+    editMode: true,
+    gridComponent: { ...props.gridComponent, children: [] },
+  });
+  expect(
+    screen.getByText('Drag charts or components here'),
+  ).toBeInTheDocument();
+});
+
+test('should not render GridStackGrid in view mode for empty grid', () => {
+  const { container } = setup({
+    editMode: false,
+    gridComponent: { ...props.gridComponent, children: [] },
+  });
+  expect(container.querySelector('.grid-stack')).not.toBeInTheDocument();
 });

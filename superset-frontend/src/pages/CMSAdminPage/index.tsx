@@ -1112,11 +1112,11 @@ export default function CMSAdminPage() {
         messageApi.success(t('Page duplicated.'));
       }
     } catch (caughtError) {
-      messageApi.error(
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to duplicate page.'),
+      const msg = await resolveApiErrorMessage(
+        caughtError,
+        t('Failed to duplicate page.'),
       );
+      messageApi.error(msg);
     } finally {
       setSavingPage(false);
     }
@@ -1141,11 +1141,11 @@ export default function CMSAdminPage() {
         );
       }
     } catch (caughtError) {
-      messageApi.error(
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to update publish state.'),
+      const msg = await resolveApiErrorMessage(
+        caughtError,
+        t('Failed to update publish state.'),
       );
+      messageApi.error(msg);
     } finally {
       setSavingPage(false);
     }
@@ -1167,11 +1167,11 @@ export default function CMSAdminPage() {
         messageApi.success(t('Page archived.'));
       }
     } catch (caughtError) {
-      messageApi.error(
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to archive page.'),
+      const msg = await resolveApiErrorMessage(
+        caughtError,
+        t('Failed to archive page.'),
       );
+      messageApi.error(msg);
     } finally {
       setSavingPage(false);
     }
@@ -1193,11 +1193,11 @@ export default function CMSAdminPage() {
         messageApi.success(t('Page deleted.'));
       }
     } catch (caughtError) {
-      messageApi.error(
-        caughtError instanceof Error
-          ? caughtError.message
-          : t('Failed to delete page.'),
+      const msg = await resolveApiErrorMessage(
+        caughtError,
+        t('Failed to delete page.'),
       );
+      messageApi.error(msg);
     } finally {
       setSavingPage(false);
     }
