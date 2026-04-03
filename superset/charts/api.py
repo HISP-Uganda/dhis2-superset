@@ -1200,7 +1200,11 @@ class ChartRestApi(BaseSupersetModelRestApi):
         return self._get_dashboard_charts_internal(is_public_access=False, dashboard_id=dashboard_id)
 
     def _get_dashboard_charts_internal(self, is_public_access: bool = False, dashboard_id: int | None = None) -> Response:
-        """Internal method to get charts for a dashboard."""
+        """Internal method to get charts for a dashboard.
+
+        Returns the full chart data (form_data, slice_url, datasource, etc.)
+        needed by the frontend hydrateDashboard action.
+        """
         try:
             from superset.models.dashboard import Dashboard
 
@@ -1215,29 +1219,73 @@ class ChartRestApi(BaseSupersetModelRestApi):
                 return self.response_400(message="dashboard_id is required")
 
             # Query charts that belong to the dashboard using the many-to-many relationship
-            # This ensures we get the SAME charts as shown in the actual dashboard
             query = (
                 db.session.query(Slice)
                 .join(Slice.dashboards)
                 .filter(Dashboard.id == dashboard_id)
             )
 
-            # For public access, only return charts marked as public (hide restricted charts)
+            # For public access, verify the dashboard itself is public
+            # All charts on a public dashboard should be accessible
             if is_public_access:
-                query = query.filter(Slice.is_public == True)
+                query = query.filter(Dashboard.published == True)
 
             charts = query.all()
 
-            result = [
-                {
-                    "id": chart.id,
-                    "slice_name": chart.slice_name,
-                    "description": chart.description or "",
-                    "viz_type": chart.viz_type,
-                    "is_public": getattr(chart, "is_public", False),
-                }
-                for chart in charts
-            ]
+            result = []
+            for chart in charts:
+                try:
+                    chart_data = chart.data
+                except Exception:
+                    chart_data = {}
+                chart_data["id"] = chart.id
+                chart_data["is_public"] = getattr(chart, "is_public", False)
+
+                # Include essential datasource details so that public/anonymous
+                # dashboard views can render charts (esp. DHIS2Map) that need
+                # column metadata, database id, extra params, etc.
+                try:
+                    ds = chart.datasource
+                    if ds is not None:
+                        ds_columns = []
+                        for col in (getattr(ds, "columns", None) or []):
+                            ds_columns.append({
+                                "column_name": getattr(col, "column_name", None),
+                                "verbose_name": getattr(col, "verbose_name", None),
+                                "type": getattr(col, "type", None),
+                                "is_dttm": getattr(col, "is_dttm", False),
+                                "filterable": getattr(col, "filterable", True),
+                                "groupby": getattr(col, "groupby", True),
+                                "extra": getattr(col, "extra", None),
+                            })
+                        ds_metrics = []
+                        for m in (getattr(ds, "metrics", None) or []):
+                            ds_metrics.append({
+                                "metric_name": getattr(m, "metric_name", None),
+                                "verbose_name": getattr(m, "verbose_name", None),
+                                "expression": getattr(m, "expression", None),
+                            })
+                        ds_database = getattr(ds, "database", None)
+                        chart_data["datasource_info"] = {
+                            "id": ds.id,
+                            "type": getattr(ds, "type", "table"),
+                            "database": {
+                                "id": ds_database.id if ds_database else None,
+                                "backend": getattr(ds_database, "backend", None) if ds_database else None,
+                            } if ds_database else None,
+                            "database_id": getattr(ds, "database_id", None),
+                            "schema": getattr(ds, "schema", None),
+                            "table_name": getattr(ds, "table_name", None),
+                            "sql": getattr(ds, "sql", None),
+                            "extra": ds.extra if hasattr(ds, "extra") else None,
+                            "columns": ds_columns,
+                            "metrics": ds_metrics,
+                        }
+                except Exception:
+                    pass
+
+                result.append(chart_data)
+
             return self.response(200, result=result)
         except Exception as ex:
             logger.error(f"Error fetching charts for dashboard {dashboard_id}: {ex}")
