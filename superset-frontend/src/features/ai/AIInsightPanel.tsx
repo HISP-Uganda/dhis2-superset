@@ -625,6 +625,33 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
+/** Load a data-URL image and return its natural width × height. */
+function getImageDimensions(
+  dataUrl: string,
+): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Fit an image into a max bounding box while preserving aspect ratio.
+ * Returns the scaled { width, height } that fits inside maxW × maxH.
+ */
+function fitImage(
+  naturalW: number,
+  naturalH: number,
+  maxW: number,
+  maxH: number,
+): { width: number; height: number } {
+  if (naturalW <= 0 || naturalH <= 0) return { width: maxW, height: maxH };
+  const ratio = Math.min(maxW / naturalW, maxH / naturalH, 1);
+  return { width: naturalW * ratio, height: naturalH * ratio };
+}
+
 const ALERT_PDF_COLORS: Record<string, { bg: string; border: string; text: string; badge: string }> = {
   CRITICAL: { bg: '#FEF2F2', border: '#DC2626', text: '#991B1B', badge: '#DC2626' },
   WARNING:  { bg: '#FFFBEB', border: '#F59E0B', text: '#92400E', badge: '#F59E0B' },
@@ -635,6 +662,9 @@ const ALERT_PDF_COLORS: Record<string, { bg: string; border: string; text: strin
 /**
  * Render markdown-formatted text to the jsPDF document at the given Y position.
  * Returns the new Y position after rendering.
+ *
+ * Professional formatting: consistent paragraph spacing (before/after),
+ * readable line-height, and proper heading hierarchy.
  */
 function renderMarkdownToPdf(
   pdf: any,
@@ -645,8 +675,18 @@ function renderMarkdownToPdf(
 ): number {
   const contentWidth = pageWidth - margin * 2;
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const bottomMargin = 25;
+  const bottomMargin = 22;
   let y = startY;
+
+  // Professional spacing constants (mm)
+  const LINE_HEIGHT = 1.5; // multiplier for font size → line step
+  const PARA_SPACE_BEFORE = 3;
+  const PARA_SPACE_AFTER = 2;
+  const BODY_FONT = 10;
+  const H1_FONT = 16;
+  const H2_FONT = 13;
+  const H3_FONT = 11;
+  const CODE_FONT = 8.5;
 
   const clean = sanitizeNonAscii(text);
   const lines = clean.split('\n');
@@ -659,7 +699,7 @@ function renderMarkdownToPdf(
     }
   }
 
-  /** Render a line with inline **bold** and *italic* segments. */
+  /** Render a line with inline **bold**, *italic*, and `code` segments. */
   function renderFormattedLine(
     line: string,
     baseSize: number,
@@ -668,7 +708,6 @@ function renderMarkdownToPdf(
     indent: number = 0,
   ) {
     const maxW = contentWidth - indent;
-    // Split into segments: **bold**, *italic*, `code`, plain
     const regex = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|([^*`]+)/g;
     let m: RegExpExecArray | null;
     const segments: { text: string; bold: boolean; italic: boolean; code: boolean }[] = [];
@@ -680,26 +719,23 @@ function renderMarkdownToPdf(
     }
     if (!segments.length) segments.push({ text: line, bold: false, italic: false, code: false });
 
-    // Flatten into a single string to word-wrap, then render with formatting
     const fullText = segments.map(s => s.text).join('');
     pdf.setFont('helvetica', baseStyle);
     pdf.setFontSize(baseSize);
     const wrapped: string[] = pdf.splitTextToSize(fullText, maxW);
+    const lineStep = baseSize * LINE_HEIGHT * 0.352; // pt→mm × line-height
 
     for (const wrapLine of wrapped) {
-      ensureSpace(baseSize * 0.5 + 2);
-      // For simplicity, render each wrapped line; apply formatting per segment
+      ensureSpace(lineStep + 1);
       let xPos = margin + indent;
       let remaining = wrapLine;
       for (const seg of segments) {
         if (!remaining) break;
-        // How much of this segment fits in the remaining wrapped line
         let chunk = '';
         if (remaining.startsWith(seg.text)) {
           chunk = seg.text;
           remaining = remaining.slice(chunk.length);
         } else if (seg.text.length > 0 && remaining.includes(seg.text.substring(0, 1))) {
-          // Partial match — take what fits
           const idx = Math.min(remaining.length, seg.text.length);
           chunk = remaining.substring(0, idx);
           remaining = remaining.slice(idx);
@@ -710,7 +746,6 @@ function renderMarkdownToPdf(
         if (seg.code) {
           pdf.setFont('courier', 'normal');
           pdf.setFontSize(baseSize - 1);
-          // Light grey background for inline code
           const cw = pdf.getTextWidth(chunk);
           pdf.setFillColor(229, 231, 235);
           pdf.roundedRect(xPos - 1, y - baseSize * 0.35, cw + 2, baseSize * 0.5, 1, 1, 'F');
@@ -723,40 +758,41 @@ function renderMarkdownToPdf(
         }
         pdf.text(chunk, xPos, y);
         xPos += pdf.getTextWidth(chunk);
-        // Reset
         pdf.setFont('helvetica', baseStyle);
         pdf.setFontSize(baseSize);
         pdf.setTextColor(...color);
       }
-      y += baseSize * 0.5 + 1;
+      y += lineStep;
     }
     return y;
   }
 
   for (const rawLine of lines) {
-    const line = rawLine;
-    const trimmed = line.trim();
+    const trimmed = rawLine.trim();
 
     // Code block fences
     if (trimmed.startsWith('```')) {
+      if (!inCodeBlock) y += 2;
       inCodeBlock = !inCodeBlock;
+      if (!inCodeBlock) y += 2;
       continue;
     }
     if (inCodeBlock) {
-      ensureSpace(7);
-      pdf.setFillColor(229, 231, 235);
-      pdf.rect(margin, y - 4, contentWidth, 6, 'F');
+      const codeLineH = CODE_FONT * LINE_HEIGHT * 0.352;
+      ensureSpace(codeLineH + 2);
+      pdf.setFillColor(243, 244, 246);
+      pdf.rect(margin, y - codeLineH + 1, contentWidth, codeLineH + 1, 'F');
       pdf.setFont('courier', 'normal');
-      pdf.setFontSize(8);
+      pdf.setFontSize(CODE_FONT);
       pdf.setTextColor(30, 41, 59);
-      pdf.text(trimmed, margin + 3, y);
-      y += 6;
+      pdf.text(trimmed, margin + 4, y);
+      y += codeLineH + 0.5;
       continue;
     }
 
-    // Empty line
+    // Empty line → paragraph break
     if (!trimmed) {
-      y += 4;
+      y += PARA_SPACE_BEFORE + PARA_SPACE_AFTER;
       continue;
     }
 
@@ -767,112 +803,118 @@ function renderMarkdownToPdf(
       const colors = ALERT_PDF_COLORS[tag] || ALERT_PDF_COLORS.INFO;
       const label = ALERT_TAGS[tag]?.label || tag;
 
-      // Measure wrapped text height
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(9);
-      const fullAlertText = `${label}: ${body}`;
-      const wrappedAlert: string[] = pdf.splitTextToSize(fullAlertText, contentWidth - 20);
-      const blockHeight = wrappedAlert.length * 5.5 + 8;
+      pdf.setFontSize(BODY_FONT);
+      const wrappedAlert: string[] = pdf.splitTextToSize(body, contentWidth - 24);
+      const textH = wrappedAlert.length * (BODY_FONT * LINE_HEIGHT * 0.352);
+      const blockHeight = textH + 12;
 
-      ensureSpace(blockHeight);
+      y += PARA_SPACE_BEFORE;
+      ensureSpace(blockHeight + 2);
+
       // Background
       const [bgR, bgG, bgB] = hexToRgb(colors.bg);
       pdf.setFillColor(bgR, bgG, bgB);
       pdf.roundedRect(margin, y - 3, contentWidth, blockHeight, 2, 2, 'F');
-      // Left border
+      // Left accent border
       const [brR, brG, brB] = hexToRgb(colors.border);
       pdf.setFillColor(brR, brG, brB);
       pdf.rect(margin, y - 3, 2.5, blockHeight, 'F');
       // Badge
-      const badgeW = pdf.getTextWidth(label.toUpperCase()) + 6;
-      pdf.setFillColor(brR, brG, brB);
-      pdf.roundedRect(margin + 6, y - 1, badgeW, 5, 1, 1, 'F');
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(7);
+      const badgeW = pdf.getTextWidth(label.toUpperCase()) + 8;
+      pdf.setFillColor(brR, brG, brB);
+      pdf.roundedRect(margin + 7, y - 0.5, badgeW, 5, 1, 1, 'F');
       pdf.setTextColor(255, 255, 255);
-      pdf.text(label.toUpperCase(), margin + 9, y + 2.5);
+      pdf.text(label.toUpperCase(), margin + 11, y + 2.8);
       // Body text
       const [txR, txG, txB] = hexToRgb(colors.text);
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(9);
+      pdf.setFontSize(BODY_FONT);
       pdf.setTextColor(txR, txG, txB);
-      let alertY = y + 7;
+      let alertY = y + 8;
+      const alertLineH = BODY_FONT * LINE_HEIGHT * 0.352;
       for (const wl of wrappedAlert) {
-        pdf.text(wl, margin + 8, alertY);
-        alertY += 5.5;
+        pdf.text(wl, margin + 10, alertY);
+        alertY += alertLineH;
       }
-      y += blockHeight + 4;
+      y += blockHeight + PARA_SPACE_AFTER + 2;
       continue;
     }
 
     // Headers
     const h1 = trimmed.match(/^# (.+)/);
     if (h1) {
-      ensureSpace(12);
-      y += 4;
-      renderFormattedLine(h1[1], 16, 'bold', [25, 118, 210]);
+      y += 6;
+      ensureSpace(14);
+      renderFormattedLine(h1[1], H1_FONT, 'bold', [25, 118, 210]);
       // Underline
-      pdf.setDrawColor(229, 234, 240);
+      pdf.setDrawColor(200, 212, 228);
       pdf.setLineWidth(0.5);
-      pdf.line(margin, y, margin + contentWidth, y);
-      y += 4;
+      pdf.line(margin, y + 1, margin + contentWidth, y + 1);
+      y += 5;
       continue;
     }
     const h2 = trimmed.match(/^## (.+)/);
     if (h2) {
-      ensureSpace(10);
+      y += 5;
+      ensureSpace(12);
+      renderFormattedLine(h2[1], H2_FONT, 'bold', [25, 118, 210]);
       y += 3;
-      renderFormattedLine(h2[1], 13, 'bold', [25, 118, 210]);
-      y += 2;
       continue;
     }
     const h3 = trimmed.match(/^### (.+)/);
     if (h3) {
-      ensureSpace(8);
+      y += 4;
+      ensureSpace(10);
+      renderFormattedLine(h3[1], H3_FONT, 'bold', [55, 65, 81]);
       y += 2;
-      renderFormattedLine(h3[1], 11, 'bold', [55, 65, 81]);
-      y += 1;
       continue;
     }
 
     // Bullet list
     const bulletMatch = trimmed.match(/^[-*]\s+(.+)/);
     if (bulletMatch) {
-      ensureSpace(6);
-      pdf.setFontSize(9);
+      ensureSpace(7);
+      pdf.setFontSize(BODY_FONT);
       pdf.setTextColor(55, 65, 81);
-      pdf.text('\u2022', margin + 4, y);
-      renderFormattedLine(bulletMatch[1], 9, 'normal', [55, 65, 81], 10);
+      pdf.text('\u2022', margin + 5, y);
+      renderFormattedLine(bulletMatch[1], BODY_FONT, 'normal', [55, 65, 81], 12);
+      y += 1;
       continue;
     }
 
     // Numbered list
     const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)/);
     if (numMatch) {
-      ensureSpace(6);
+      ensureSpace(7);
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9);
+      pdf.setFontSize(BODY_FONT);
       pdf.setTextColor(55, 65, 81);
       pdf.text(`${numMatch[1]}.`, margin + 4, y);
       pdf.setFont('helvetica', 'normal');
-      renderFormattedLine(numMatch[2], 9, 'normal', [55, 65, 81], 12);
+      renderFormattedLine(numMatch[2], BODY_FONT, 'normal', [55, 65, 81], 14);
+      y += 1;
       continue;
     }
 
     // Horizontal rule
     if (/^---+$/.test(trimmed)) {
+      y += 3;
       ensureSpace(6);
-      pdf.setDrawColor(229, 234, 240);
+      pdf.setDrawColor(200, 212, 228);
       pdf.setLineWidth(0.3);
       pdf.line(margin, y, margin + contentWidth, y);
-      y += 5;
+      y += 4;
       continue;
     }
 
     // Normal paragraph
-    ensureSpace(6);
-    renderFormattedLine(trimmed, 9, 'normal', [31, 41, 55]);
-    y += 1;
+    y += PARA_SPACE_BEFORE;
+    ensureSpace(7);
+    renderFormattedLine(trimmed, BODY_FONT, 'normal', [31, 41, 55]);
+    y += PARA_SPACE_AFTER;
   }
 
   return y;
@@ -884,261 +926,356 @@ type ExportImages = {
   dashboardCharts?: DashboardChartInfo[];
 };
 
-function exportAsPdf(
+async function exportAsPdf(
   messages: ChatMessage[],
   images?: ExportImages,
 ) {
-  // Dynamic import to avoid bundling jspdf when not needed
-  import('jspdf').then(({ jsPDF }) => {
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 15;
-    const contentWidth = pageWidth - margin * 2;
-    let y = margin;
+  const { jsPDF } = await import('jspdf');
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth(); // 210
+  const pageHeight = pdf.internal.pageSize.getHeight(); // 297
+  const margin = 20;
+  const contentWidth = pageWidth - margin * 2; // 170
+  let y = margin;
 
-    // ── Title ──
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(22);
-    pdf.setTextColor(25, 118, 210);
-    pdf.text('AI Insights Report', margin, y + 8);
-    y += 14;
+  // ── Cover / Title area ──
+  // Top accent line
+  pdf.setFillColor(25, 118, 210);
+  pdf.rect(0, 0, pageWidth, 3, 'F');
 
-    // Subtitle line
-    pdf.setDrawColor(25, 118, 210);
-    pdf.setLineWidth(0.8);
-    pdf.line(margin, y, margin + contentWidth, y);
-    y += 6;
+  y = 28;
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(24);
+  pdf.setTextColor(25, 118, 210);
+  pdf.text('AI Insights Report', margin, y);
+  y += 10;
 
-    // Date
-    pdf.setFont('helvetica', 'italic');
-    pdf.setFontSize(9);
-    pdf.setTextColor(156, 163, 175);
-    pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+  // Accent rule
+  pdf.setDrawColor(25, 118, 210);
+  pdf.setLineWidth(0.6);
+  pdf.line(margin, y, margin + 50, y);
+  y += 7;
+
+  // Date & meta
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(9);
+  pdf.setTextColor(130, 140, 155);
+  pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+  y += 4;
+  pdf.text('Superset AI Insights', margin, y);
+  y += 10;
+
+  /** Add a chart image to PDF preserving aspect ratio, centered. */
+  async function addChartImage(dataUrl: string, maxH: number) {
+    try {
+      const dim = await getImageDimensions(dataUrl);
+      const fit = fitImage(dim.width, dim.height, contentWidth, maxH);
+      const xOffset = margin + (contentWidth - fit.width) / 2;
+      if (y + fit.height + 6 > pageHeight - 25) { pdf.addPage(); y = margin; }
+      // Light border around chart
+      pdf.setDrawColor(210, 218, 228);
+      pdf.setLineWidth(0.3);
+      pdf.roundedRect(xOffset - 1, y - 1, fit.width + 2, fit.height + 2, 1, 1, 'S');
+      pdf.addImage(dataUrl, 'PNG', xOffset, y, fit.width, fit.height);
+      y += fit.height + 8;
+    } catch { /* skip */ }
+  }
+
+  // ── Chart preview image (single chart mode) ──
+  if (images?.chartPreviewUrl) {
+    await addChartImage(images.chartPreviewUrl, 80);
+  }
+
+  // ── Messages ──
+  for (const msg of messages) {
+    const isUser = msg.role === 'user';
+
+    // Dashboard chart-by-chart: chart image before its question
+    if (isUser && images?.dashboardChartImages && images?.dashboardCharts) {
+      const matched = images.dashboardCharts.find(c =>
+        msg.content.includes(c.sliceName),
+      );
+      if (matched && images.dashboardChartImages[matched.chartId]) {
+        // Chart section title
+        if (y > pageHeight - 60) { pdf.addPage(); y = margin; }
+        y += 4;
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(12);
+        pdf.setTextColor(25, 118, 210);
+        pdf.text(matched.sliceName, margin, y);
+        y += 6;
+        await addChartImage(images.dashboardChartImages[matched.chartId], 65);
+      }
+    }
+
+    // Ensure space for role label + a few lines
+    if (y > pageHeight - 40) {
+      pdf.addPage();
+      y = margin;
+    }
+
+    // Role label badge
+    if (isUser) {
+      pdf.setFillColor(25, 118, 210);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      const labelW = pdf.getTextWidth('You') + 8;
+      pdf.roundedRect(margin, y - 3.5, labelW, 5.5, 1.5, 1.5, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('You', margin + 4, y + 0.3);
+    } else {
+      pdf.setFillColor(55, 65, 81);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      const labelW = pdf.getTextWidth('AI Assistant') + 8;
+      pdf.roundedRect(margin, y - 3.5, labelW, 5.5, 1.5, 1.5, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('AI Assistant', margin + 4, y + 0.3);
+    }
+    y += 7;
+
+    if (isUser) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(10);
+      pdf.setTextColor(31, 41, 55);
+      const wrapped: string[] = pdf.splitTextToSize(
+        sanitizeNonAscii(msg.content),
+        contentWidth,
+      );
+      for (const line of wrapped) {
+        if (y > pageHeight - 22) { pdf.addPage(); y = margin; }
+        pdf.text(line, margin, y);
+        y += 5;
+      }
+    } else {
+      y = renderMarkdownToPdf(pdf, msg.content, y, pageWidth, margin);
+    }
+
     y += 8;
 
-    // ── Chart preview image (single chart mode) ──
-    if (images?.chartPreviewUrl) {
-      try {
-        const imgH = 60;
-        if (y + imgH > pageHeight - 30) { pdf.addPage(); y = margin; }
-        pdf.addImage(images.chartPreviewUrl, 'PNG', margin, y, contentWidth, imgH);
-        y += imgH + 6;
-      } catch { /* skip if image fails */ }
+    // Separator
+    pdf.setDrawColor(210, 218, 228);
+    pdf.setLineWidth(0.15);
+    pdf.line(margin, y, margin + contentWidth, y);
+    y += 6;
+  }
+
+  // ── Headers & footers on every page ──
+  const pageCount = pdf.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    pdf.setPage(i);
+
+    // Top accent bar (already on page 1, add to rest)
+    if (i > 1) {
+      pdf.setFillColor(25, 118, 210);
+      pdf.rect(0, 0, pageWidth, 1.5, 'F');
     }
 
-    // ── Messages ──
-    for (const msg of messages) {
-      const isUser = msg.role === 'user';
+    // Footer
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7);
+    pdf.setTextColor(156, 163, 175);
+    const footerY = pageHeight - 8;
+    // Footer rule
+    pdf.setDrawColor(210, 218, 228);
+    pdf.setLineWidth(0.15);
+    pdf.line(margin, footerY - 3, pageWidth - margin, footerY - 3);
+    pdf.text('Superset AI Insights', margin, footerY);
+    pdf.text(
+      `Page ${i} of ${pageCount}`,
+      pageWidth - margin - pdf.getTextWidth(`Page ${i} of ${pageCount}`),
+      footerY,
+    );
+  }
 
-      // In dashboard chart-by-chart mode, show chart image before user question
-      if (isUser && images?.dashboardChartImages && images?.dashboardCharts) {
-        const matched = images.dashboardCharts.find(c =>
-          msg.content.includes(c.sliceName),
-        );
-        if (matched && images.dashboardChartImages[matched.chartId]) {
-          try {
-            const imgH = 45;
-            if (y + imgH + 15 > pageHeight - 30) { pdf.addPage(); y = margin; }
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(11);
-            pdf.setTextColor(31, 41, 55);
-            pdf.text(matched.sliceName, margin, y);
-            y += 5;
-            pdf.addImage(
-              images.dashboardChartImages[matched.chartId],
-              'PNG', margin, y, contentWidth, imgH,
-            );
-            y += imgH + 4;
-          } catch { /* skip */ }
-        }
-      }
-
-      // Check space for role label + at least a few lines
-      if (y > pageHeight - 40) {
-        pdf.addPage();
-        y = margin;
-      }
-
-      // Role label
-      if (isUser) {
-        pdf.setFillColor(25, 118, 210);
-        const labelW = pdf.getTextWidth('  You  ') + 4;
-        pdf.roundedRect(margin, y - 3.5, labelW, 6, 1.5, 1.5, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(255, 255, 255);
-        pdf.text('You', margin + 3, y + 0.5);
-      } else {
-        pdf.setFillColor(55, 65, 81);
-        const labelW = pdf.getTextWidth('  AI Assistant  ') + 4;
-        pdf.roundedRect(margin, y - 3.5, labelW, 6, 1.5, 1.5, 'F');
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(9);
-        pdf.setTextColor(255, 255, 255);
-        pdf.text('AI Assistant', margin + 3, y + 0.5);
-      }
-      y += 7;
-
-      if (isUser) {
-        // User message — plain text
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(10);
-        pdf.setTextColor(31, 41, 55);
-        const wrapped: string[] = pdf.splitTextToSize(
-          sanitizeNonAscii(msg.content),
-          contentWidth,
-        );
-        for (const line of wrapped) {
-          if (y > pageHeight - 20) {
-            pdf.addPage();
-            y = margin;
-          }
-          pdf.text(line, margin, y);
-          y += 5;
-        }
-      } else {
-        // Assistant message — full markdown rendering
-        y = renderMarkdownToPdf(pdf, msg.content, y, pageWidth, margin);
-      }
-
-      y += 6;
-
-      // Separator between messages
-      pdf.setDrawColor(229, 234, 240);
-      pdf.setLineWidth(0.2);
-      pdf.line(margin, y, margin + contentWidth, y);
-      y += 5;
-    }
-
-    // ── Footer on last page ──
-    const pageCount = pdf.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-      pdf.setPage(i);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(7);
-      pdf.setTextColor(156, 163, 175);
-      const footerY = pageHeight - 8;
-      pdf.text('Superset AI Insights', margin, footerY);
-      pdf.text(`Page ${i} of ${pageCount}`, pageWidth - margin - 20, footerY);
-    }
-
-    pdf.save(`ai-insights-${Date.now()}.pdf`);
-  });
+  pdf.save(`ai-insights-${Date.now()}.pdf`);
 }
 
 /**
- * Export conversation as a .docx file.
- * Uses dynamic import() so the `docx` package (which depends on node:fs)
- * is NOT bundled into the main webpack chunk.
+ * Export conversation as a professionally formatted .docx file.
+ * Uses dynamic import() so the `docx` package is not bundled into main chunk.
+ *
+ * Professional formatting: 1-inch margins, Calibri body / Calibri Light headings,
+ * 11pt body text, proper heading hierarchy with colour, paragraph spacing matching
+ * the on-screen AI Insight panel, and aspect-ratio-preserving chart images.
  */
 async function exportAsDocx(
   messages: ChatMessage[],
   images?: ExportImages,
 ) {
   const [
-    { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ShadingType, ImageRun },
+    { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ShadingType, ImageRun, TabStopType, TabStopPosition, Header: DocxHeader, Footer: DocxFooter, PageNumber },
     { saveAs },
   ] = await Promise.all([import('docx'), import('file-saver')]);
 
+  // Typography constants (half-points: 22 = 11pt)
+  const BODY_SIZE = 22;      // 11pt
+  const BODY_FONT = 'Calibri';
+  const HEADING_FONT = 'Calibri Light';
+  const CODE_FONT = 'Consolas';
+  const CODE_SIZE = 20;      // 10pt
+  const LABEL_SIZE = 20;     // 10pt
+
+  // Spacing (twips: 20 twips = 1pt, 240 twips = 12pt)
+  const SP_PARA_BEFORE = 80;   // 4pt
+  const SP_PARA_AFTER = 80;    // 4pt
+  const SP_H1_BEFORE = 320;    // 16pt
+  const SP_H1_AFTER = 160;     // 8pt
+  const SP_H2_BEFORE = 260;    // 13pt
+  const SP_H2_AFTER = 120;     // 6pt
+  const SP_H3_BEFORE = 200;    // 10pt
+  const SP_H3_AFTER = 80;      // 4pt
+  const SP_LIST_BEFORE = 40;   // 2pt
+  const SP_LIST_AFTER = 40;    // 2pt
+  const SP_SECTION = 300;      // 15pt — between message blocks
+
+  // Usable image width (A4 at 1" margins → ~6.27" ≈ 451pt, in EMU/pixel terms ~595px)
+  const MAX_IMG_W = 580;
+  const MAX_IMG_H = 360;
+
   /** Parse inline **bold**, *italic*, `code` into TextRun objects. */
-  function parseInlineFormatting(text: string) {
+  function parseInline(text: string, baseSz = BODY_SIZE) {
     const runs: InstanceType<typeof TextRun>[] = [];
     const regex = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|([^*`]+)/g;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text)) !== null) {
       if (match[1]) {
-        runs.push(new TextRun({ text: match[1], bold: true, size: 22 }));
+        runs.push(new TextRun({ text: match[1], bold: true, size: baseSz, font: BODY_FONT }));
       } else if (match[2]) {
-        runs.push(new TextRun({ text: match[2], italics: true, size: 22 }));
+        runs.push(new TextRun({ text: match[2], italics: true, size: baseSz, font: BODY_FONT }));
       } else if (match[3]) {
-        runs.push(
-          new TextRun({
-            text: match[3],
-            font: 'Courier New',
-            size: 20,
-            shading: { type: ShadingType.SOLID, color: 'E5E7EB' },
-          }),
-        );
+        runs.push(new TextRun({
+          text: match[3], font: CODE_FONT, size: CODE_SIZE,
+          shading: { type: ShadingType.SOLID, color: 'F3F4F6' },
+        }));
       } else if (match[4]) {
-        runs.push(new TextRun({ text: match[4], size: 22 }));
+        runs.push(new TextRun({ text: match[4], size: baseSz, font: BODY_FONT }));
       }
     }
-    return runs.length ? runs : [new TextRun({ text, size: 22 })];
+    return runs.length ? runs : [new TextRun({ text, size: baseSz, font: BODY_FONT })];
   }
 
-  /** Parse markdown text into docx Paragraph objects. */
-  function markdownToDocxParagraphs(text: string) {
+  /** Convert markdown text to docx Paragraph objects with professional spacing. */
+  function markdownToDocx(text: string) {
     const paragraphs: InstanceType<typeof Paragraph>[] = [];
     const lines = sanitizeNonAscii(text).split('\n');
     let inCodeBlock = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.trim().startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
       if (inCodeBlock) {
         paragraphs.push(new Paragraph({
-          children: [new TextRun({ text: line, font: 'Courier New', size: 20, color: '1E293B' })],
-          shading: { type: ShadingType.SOLID, color: 'E5E7EB' },
-          spacing: { before: 40, after: 40 },
-        }));
-        continue;
-      }
-      if (!line.trim()) { paragraphs.push(new Paragraph({ children: [] })); continue; }
-
-      const alertMatch = line.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
-      if (alertMatch) {
-        const [, tag, body] = alertMatch;
-        const colors: Record<string, { bg: string; text: string }> = {
-          CRITICAL: { bg: 'FEF2F2', text: 'DC2626' },
-          WARNING: { bg: 'FFFBEB', text: 'B45309' },
-          GOOD: { bg: 'F0FDF4', text: '16A34A' },
-          INFO: { bg: 'EFF6FF', text: '3B82F6' },
-        };
-        const c = colors[tag] || colors.INFO;
-        paragraphs.push(new Paragraph({
-          children: [
-            new TextRun({ text: `[${tag}] `, bold: true, color: c.text, size: 22 }),
-            ...parseInlineFormatting(body),
-          ],
-          shading: { type: ShadingType.SOLID, color: c.bg },
-          spacing: { before: 120, after: 120 },
-          border: { left: { style: BorderStyle.SINGLE, size: 12, color: c.text } },
+          children: [new TextRun({ text: line, font: CODE_FONT, size: CODE_SIZE, color: '1E293B' })],
+          shading: { type: ShadingType.SOLID, color: 'F3F4F6' },
+          spacing: { before: 20, after: 20, line: 276 },
           indent: { left: 200 },
         }));
         continue;
       }
+      if (!trimmed) {
+        paragraphs.push(new Paragraph({ spacing: { before: SP_PARA_BEFORE, after: SP_PARA_AFTER } }));
+        continue;
+      }
 
-      const h1Match = line.match(/^# (.+)/);
-      if (h1Match) { paragraphs.push(new Paragraph({ children: parseInlineFormatting(h1Match[1]), heading: HeadingLevel.HEADING_1, spacing: { before: 240, after: 120 } })); continue; }
-      const h2Match = line.match(/^## (.+)/);
-      if (h2Match) { paragraphs.push(new Paragraph({ children: parseInlineFormatting(h2Match[1]), heading: HeadingLevel.HEADING_2, spacing: { before: 200, after: 100 } })); continue; }
-      const h3Match = line.match(/^### (.+)/);
-      if (h3Match) { paragraphs.push(new Paragraph({ children: parseInlineFormatting(h3Match[1]), heading: HeadingLevel.HEADING_3, spacing: { before: 160, after: 80 } })); continue; }
-
-      const bulletMatch = line.match(/^[\s]*[-*]\s+(.+)/);
-      if (bulletMatch) { paragraphs.push(new Paragraph({ children: parseInlineFormatting(bulletMatch[1]), bullet: { level: 0 }, spacing: { before: 40, after: 40 } })); continue; }
-
-      const numMatch = line.match(/^[\s]*(\d+)[.)]\s+(.+)/);
-      if (numMatch) {
+      // Alert callouts
+      const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
+      if (alertMatch) {
+        const [, tag, body] = alertMatch;
+        const colors: Record<string, { bg: string; border: string; text: string }> = {
+          CRITICAL: { bg: 'FEF2F2', border: 'DC2626', text: '991B1B' },
+          WARNING:  { bg: 'FFFBEB', border: 'F59E0B', text: '92400E' },
+          GOOD:     { bg: 'F0FDF4', border: '16A34A', text: '166534' },
+          INFO:     { bg: 'EFF6FF', border: '3B82F6', text: '1E40AF' },
+        };
+        const c = colors[tag] || colors.INFO;
         paragraphs.push(new Paragraph({
-          children: [new TextRun({ text: `${numMatch[1]}. `, bold: true }), ...parseInlineFormatting(numMatch[2])],
-          spacing: { before: 40, after: 40 }, indent: { left: 360 },
+          children: [
+            new TextRun({ text: `${ALERT_TAGS[tag]?.label || tag}  `, bold: true, color: c.border, size: BODY_SIZE, font: BODY_FONT }),
+            ...parseInline(body),
+          ],
+          shading: { type: ShadingType.SOLID, color: c.bg },
+          spacing: { before: 160, after: 160, line: 300 },
+          border: { left: { style: BorderStyle.SINGLE, size: 18, color: c.border, space: 8 } },
+          indent: { left: 240 },
         }));
         continue;
       }
 
-      if (/^---+$/.test(line.trim())) {
-        paragraphs.push(new Paragraph({ children: [], border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: 'E5EAF0' } }, spacing: { before: 120, after: 120 } }));
+      // Headings
+      const h1 = trimmed.match(/^# (.+)/);
+      if (h1) {
+        paragraphs.push(new Paragraph({
+          children: [new TextRun({ text: h1[1], bold: true, size: 32, color: '1976D2', font: HEADING_FONT })],
+          heading: HeadingLevel.HEADING_1,
+          spacing: { before: SP_H1_BEFORE, after: SP_H1_AFTER, line: 276 },
+          border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'C8D4E4', space: 4 } },
+        }));
+        continue;
+      }
+      const h2 = trimmed.match(/^## (.+)/);
+      if (h2) {
+        paragraphs.push(new Paragraph({
+          children: [new TextRun({ text: h2[1], bold: true, size: 26, color: '1976D2', font: HEADING_FONT })],
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: SP_H2_BEFORE, after: SP_H2_AFTER, line: 276 },
+        }));
+        continue;
+      }
+      const h3 = trimmed.match(/^### (.+)/);
+      if (h3) {
+        paragraphs.push(new Paragraph({
+          children: [new TextRun({ text: h3[1], bold: true, size: 24, color: '374151', font: HEADING_FONT })],
+          heading: HeadingLevel.HEADING_3,
+          spacing: { before: SP_H3_BEFORE, after: SP_H3_AFTER, line: 276 },
+        }));
         continue;
       }
 
-      paragraphs.push(new Paragraph({ children: parseInlineFormatting(line), spacing: { before: 60, after: 60 } }));
+      // Bullet list
+      const bullet = trimmed.match(/^[\s]*[-*]\s+(.+)/);
+      if (bullet) {
+        paragraphs.push(new Paragraph({
+          children: parseInline(bullet[1]),
+          bullet: { level: 0 },
+          spacing: { before: SP_LIST_BEFORE, after: SP_LIST_AFTER, line: 276 },
+        }));
+        continue;
+      }
+
+      // Numbered list
+      const num = trimmed.match(/^[\s]*(\d+)[.)]\s+(.+)/);
+      if (num) {
+        paragraphs.push(new Paragraph({
+          children: [
+            new TextRun({ text: `${num[1]}. `, bold: true, size: BODY_SIZE, font: BODY_FONT }),
+            ...parseInline(num[2]),
+          ],
+          spacing: { before: SP_LIST_BEFORE, after: SP_LIST_AFTER, line: 276 },
+          indent: { left: 360 },
+        }));
+        continue;
+      }
+
+      // Horizontal rule
+      if (/^---+$/.test(trimmed)) {
+        paragraphs.push(new Paragraph({
+          border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'D0D8E4' } },
+          spacing: { before: 160, after: 160 },
+        }));
+        continue;
+      }
+
+      // Normal paragraph
+      paragraphs.push(new Paragraph({
+        children: parseInline(trimmed),
+        spacing: { before: SP_PARA_BEFORE, after: SP_PARA_AFTER, line: 300 },
+      }));
     }
     return paragraphs;
   }
 
-  /** Convert a data URL to Uint8Array for docx ImageRun. */
+  /** Data-URL → Uint8Array for ImageRun. */
   function dataUrlToUint8Array(dataUrl: string): Uint8Array {
     const base64 = dataUrl.split(',')[1];
     const binary = atob(base64);
@@ -1147,32 +1284,49 @@ async function exportAsDocx(
     return bytes;
   }
 
-  const sections: InstanceType<typeof Paragraph>[] = [];
-  sections.push(
-    new Paragraph({
-      children: [new TextRun({ text: 'AI Insights Report', bold: true, size: 36, color: '1976D2' })],
-      heading: HeadingLevel.TITLE,
-      alignment: AlignmentType.LEFT,
-      spacing: { after: 100 },
-    }),
-  );
-  sections.push(
-    new Paragraph({
-      children: [new TextRun({ text: `Generated: ${new Date().toLocaleString()}`, size: 18, color: '9CA3AF', italics: true })],
-      spacing: { after: 300 },
-    }),
-  );
+  /** Create an ImageRun preserving aspect ratio within max bounds. */
+  async function makeImageRun(dataUrl: string, maxW = MAX_IMG_W, maxH = MAX_IMG_H) {
+    const dim = await getImageDimensions(dataUrl);
+    const fit = fitImage(dim.width, dim.height, maxW, maxH);
+    return new ImageRun({
+      data: dataUrlToUint8Array(dataUrl),
+      transformation: { width: Math.round(fit.width), height: Math.round(fit.height) },
+      type: 'png',
+    });
+  }
 
-  // ── Chart preview image (single chart mode) ──
+  // ── Build document content ──
+  const children: InstanceType<typeof Paragraph>[] = [];
+
+  // Title
+  children.push(new Paragraph({
+    children: [new TextRun({ text: 'AI Insights Report', bold: true, size: 44, color: '1976D2', font: HEADING_FONT })],
+    heading: HeadingLevel.TITLE,
+    alignment: AlignmentType.LEFT,
+    spacing: { after: 60 },
+  }));
+  // Accent rule via bottom border
+  children.push(new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: '1976D2', space: 2 } },
+    spacing: { after: 120 },
+  }));
+  // Meta line
+  children.push(new Paragraph({
+    children: [
+      new TextRun({ text: `Generated: ${new Date().toLocaleString()}`, size: 18, color: '9CA3AF', italics: true, font: BODY_FONT }),
+      new TextRun({ text: '     |     Superset AI Insights', size: 18, color: '9CA3AF', italics: true, font: BODY_FONT }),
+    ],
+    spacing: { after: SP_SECTION },
+  }));
+
+  // Chart preview (single chart mode)
   if (images?.chartPreviewUrl) {
     try {
-      sections.push(new Paragraph({
-        children: [new ImageRun({
-          data: dataUrlToUint8Array(images.chartPreviewUrl),
-          transformation: { width: 580, height: 300 },
-          type: 'png',
-        })],
-        spacing: { after: 200 },
+      const imgRun = await makeImageRun(images.chartPreviewUrl);
+      children.push(new Paragraph({
+        children: [imgRun],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 240 },
       }));
     } catch { /* skip */ }
   }
@@ -1180,47 +1334,88 @@ async function exportAsDocx(
   for (const msg of messages) {
     const isUser = msg.role === 'user';
 
-    // Dashboard chart-by-chart: show chart image before user question
+    // Dashboard chart-by-chart: chart image before its question
     if (isUser && images?.dashboardChartImages && images?.dashboardCharts) {
-      const matched = images.dashboardCharts.find(c =>
-        msg.content.includes(c.sliceName),
-      );
+      const matched = images.dashboardCharts.find(c => msg.content.includes(c.sliceName));
       if (matched && images.dashboardChartImages[matched.chartId]) {
         try {
-          sections.push(new Paragraph({
-            children: [new TextRun({ text: matched.sliceName, bold: true, size: 24, color: '1976D2' })],
-            spacing: { before: 240, after: 80 },
+          children.push(new Paragraph({
+            children: [new TextRun({ text: matched.sliceName, bold: true, size: 26, color: '1976D2', font: HEADING_FONT })],
+            spacing: { before: SP_SECTION, after: 100 },
           }));
-          sections.push(new Paragraph({
-            children: [new ImageRun({
-              data: dataUrlToUint8Array(images.dashboardChartImages[matched.chartId]),
-              transformation: { width: 560, height: 250 },
-              type: 'png',
-            })],
-            spacing: { after: 120 },
+          const imgRun = await makeImageRun(images.dashboardChartImages[matched.chartId], MAX_IMG_W, 300);
+          children.push(new Paragraph({
+            children: [imgRun],
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 160 },
           }));
         } catch { /* skip */ }
       }
     }
 
-    sections.push(
-      new Paragraph({
-        children: [new TextRun({ text: isUser ? 'You' : 'AI Assistant', bold: true, size: 22, color: isUser ? '1976D2' : '374151' })],
-        spacing: { before: 240, after: 80 },
-        border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: 'E5EAF0' } },
-      }),
-    );
+    // Role label
+    children.push(new Paragraph({
+      children: [new TextRun({
+        text: isUser ? 'You' : 'AI Assistant',
+        bold: true, size: LABEL_SIZE, color: isUser ? '1976D2' : '374151', font: BODY_FONT,
+      })],
+      spacing: { before: SP_SECTION, after: 60 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: 'E5EAF0', space: 3 } },
+    }));
+
     if (isUser) {
-      sections.push(new Paragraph({ children: [new TextRun({ text: msg.content, size: 22 })], spacing: { before: 60, after: 120 } }));
+      children.push(new Paragraph({
+        children: [new TextRun({ text: sanitizeNonAscii(msg.content), size: BODY_SIZE, font: BODY_FONT })],
+        spacing: { before: 60, after: 120, line: 300 },
+      }));
     } else {
-      sections.push(...markdownToDocxParagraphs(msg.content));
+      children.push(...markdownToDocx(msg.content));
     }
   }
 
   const doc = new Document({
+    styles: {
+      default: {
+        document: {
+          run: { font: BODY_FONT, size: BODY_SIZE },
+          paragraph: { spacing: { line: 276 } },
+        },
+      },
+    },
     sections: [{
-      properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } } },
-      children: sections,
+      properties: {
+        page: {
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+        },
+      },
+      headers: {
+        default: new DocxHeader({
+          children: [new Paragraph({
+            children: [new TextRun({ text: 'AI Insights Report', size: 16, color: 'B0B8C8', italics: true, font: BODY_FONT })],
+            alignment: AlignmentType.RIGHT,
+          })],
+        }),
+      },
+      footers: {
+        default: new DocxFooter({
+          children: [new Paragraph({
+            children: [
+              new TextRun({ text: 'Superset AI Insights', size: 16, color: '9CA3AF', font: BODY_FONT }),
+              new TextRun({ text: '\t', size: 16 }),
+              new TextRun({ text: '\t', size: 16 }),
+              new TextRun({ children: [PageNumber.CURRENT], size: 16, color: '9CA3AF', font: BODY_FONT }),
+              new TextRun({ text: ' / ', size: 16, color: '9CA3AF', font: BODY_FONT }),
+              new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 16, color: '9CA3AF', font: BODY_FONT }),
+            ],
+            tabStops: [
+              { type: TabStopType.CENTER, position: TabStopPosition.MAX / 2 },
+              { type: TabStopType.RIGHT, position: TabStopPosition.MAX },
+            ],
+            border: { top: { style: BorderStyle.SINGLE, size: 2, color: 'D0D8E4', space: 4 } },
+          })],
+        }),
+      },
+      children,
     }],
   });
 
@@ -1229,8 +1424,12 @@ async function exportAsDocx(
 }
 
 /**
- * Export conversation as a .pptx file.
+ * Export conversation as a professionally designed .pptx file.
  * Uses dynamic import() to avoid bundling pptxgenjs into the main chunk.
+ *
+ * Professional design: branded title slide with accent bar, consistent
+ * slide master (header strip + footer), proper typography hierarchy,
+ * aspect-ratio-preserving chart images, and readable content layout.
  */
 async function exportAsPptx(
   messages: ChatMessage[],
@@ -1239,39 +1438,172 @@ async function exportAsPptx(
   const PptxGenJS = (await import('pptxgenjs')).default;
 
   const pptx = new PptxGenJS();
-  pptx.layout = 'LAYOUT_WIDE';
+  pptx.layout = 'LAYOUT_WIDE'; // 13.33" × 7.5"
   pptx.author = 'Superset AI';
   pptx.title = 'AI Insights Report';
+  pptx.subject = 'Generated by Superset AI Insights';
 
-  const titleSlide = pptx.addSlide();
-  titleSlide.addText('AI Insights Report', {
-    x: 0.5, y: 1.5, w: '90%', fontSize: 36, bold: true, color: '1976D2', fontFace: 'Arial',
-  });
-  titleSlide.addText(`Generated: ${new Date().toLocaleString()}`, {
-    x: 0.5, y: 2.5, w: '90%', fontSize: 14, color: '9CA3AF', fontFace: 'Arial',
-  });
+  // ── Design constants ──
+  const BRAND = '1976D2';
+  const BRAND_DARK = '0D47A1';
+  const DARK = '1F2937';
+  const GRAY = '6B7280';
+  const LIGHT_BG = 'F8FAFC';
+  const FONT = 'Calibri';
+  const SLIDE_W = 13.33;
+  const SLIDE_H = 7.5;
 
-  // Chart preview slide (single chart mode)
-  if (images?.chartPreviewUrl) {
+  // Alert colours for PPTX
+  const PPTX_ALERT: Record<string, { label: string; color: string; bg: string }> = {
+    CRITICAL: { label: 'Critical', color: 'DC2626', bg: 'FEF2F2' },
+    WARNING:  { label: 'Warning',  color: 'D97706', bg: 'FFFBEB' },
+    GOOD:     { label: 'Good',     color: '16A34A', bg: 'F0FDF4' },
+    INFO:     { label: 'Info',     color: '3B82F6', bg: 'EFF6FF' },
+  };
+
+  /** Apply the professional master layout to a content slide. */
+  function applyMaster(slide: any, title: string, slideNum?: string) {
+    // Top accent bar
+    slide.addShape('rect', {
+      x: 0, y: 0, w: SLIDE_W, h: 0.08,
+      fill: { color: BRAND },
+    });
+    // Header background
+    slide.addShape('rect', {
+      x: 0, y: 0.08, w: SLIDE_W, h: 0.72,
+      fill: { color: LIGHT_BG },
+    });
+    // Header divider line
+    slide.addShape('line', {
+      x: 0, y: 0.8, w: SLIDE_W, h: 0,
+      line: { color: 'D0D8E4', width: 0.5 },
+    });
+    // Slide title in header
+    slide.addText(title, {
+      x: 0.6, y: 0.15, w: 10, h: 0.5,
+      fontSize: 18, bold: true, color: BRAND, fontFace: FONT,
+    });
+    // Footer separator
+    slide.addShape('line', {
+      x: 0.5, y: SLIDE_H - 0.5, w: SLIDE_W - 1, h: 0,
+      line: { color: 'D0D8E4', width: 0.5 },
+    });
+    // Footer text
+    slide.addText('Superset AI Insights', {
+      x: 0.6, y: SLIDE_H - 0.45, w: 4, h: 0.3,
+      fontSize: 8, color: GRAY, fontFace: FONT,
+    });
+    if (slideNum) {
+      slide.addText(slideNum, {
+        x: SLIDE_W - 1.5, y: SLIDE_H - 0.45, w: 1, h: 0.3,
+        fontSize: 8, color: GRAY, fontFace: FONT, align: 'right',
+      });
+    }
+  }
+
+  /** Fit chart image into a pptx slide preserving aspect ratio, centered. */
+  async function addChartSlide(
+    dataUrl: string,
+    title: string,
+    slideIdx: number,
+    totalSlides: number,
+  ) {
     try {
-      const chartSlide = pptx.addSlide();
-      chartSlide.addText('Chart Analyzed', {
-        x: 0.5, y: 0.2, w: '90%', fontSize: 18, bold: true, color: '1976D2', fontFace: 'Arial',
+      const slide = pptx.addSlide();
+      applyMaster(slide, title, `${slideIdx}`);
+      const dim = await getImageDimensions(dataUrl);
+      const maxW = SLIDE_W - 1.4; // margins
+      const maxH = SLIDE_H - 2.0; // header + footer
+      const fit = fitImage(dim.width, dim.height, maxW * 96, maxH * 96); // px→in
+      const wIn = fit.width / 96;
+      const hIn = fit.height / 96;
+      const xOff = (SLIDE_W - wIn) / 2;
+      const yOff = 1.0 + (maxH - hIn) / 2;
+      // Subtle shadow border
+      slide.addShape('rect', {
+        x: xOff - 0.05, y: yOff - 0.05, w: wIn + 0.1, h: hIn + 0.1,
+        fill: { color: 'FFFFFF' },
+        shadow: { type: 'outer', blur: 4, offset: 2, color: '00000020' },
+        line: { color: 'E0E4EB', width: 0.5 },
+        rectRadius: 0.05,
       });
-      chartSlide.addImage({
-        data: images.chartPreviewUrl, x: 0.5, y: 0.8, w: 9.0, h: 4.5,
-      });
+      slide.addImage({ data: dataUrl, x: xOff, y: yOff, w: wIn, h: hIn });
     } catch { /* skip */ }
   }
 
-  // Build a map of user messages to matched charts for dashboard mode
+  // ── Slide counter ──
+  let slideCount = 0;
+
+  // ── TITLE SLIDE ──
+  const titleSlide = pptx.addSlide();
+  slideCount += 1;
+
+  // Full-bleed gradient-style background (solid brand colour + white overlay)
+  titleSlide.addShape('rect', {
+    x: 0, y: 0, w: SLIDE_W, h: SLIDE_H,
+    fill: { color: 'FFFFFF' },
+  });
+  // Left accent column
+  titleSlide.addShape('rect', {
+    x: 0, y: 0, w: 0.5, h: SLIDE_H,
+    fill: { color: BRAND },
+  });
+  // Top accent bar
+  titleSlide.addShape('rect', {
+    x: 0, y: 0, w: SLIDE_W, h: 0.12,
+    fill: { color: BRAND },
+  });
+  // Bottom accent bar
+  titleSlide.addShape('rect', {
+    x: 0, y: SLIDE_H - 0.12, w: SLIDE_W, h: 0.12,
+    fill: { color: BRAND_DARK },
+  });
+  // Decorative box (subtle background shape)
+  titleSlide.addShape('rect', {
+    x: 0.5, y: 1.8, w: 8, h: 3.5,
+    fill: { color: LIGHT_BG },
+    rectRadius: 0.1,
+  });
+
+  // Title text
+  titleSlide.addText('AI Insights Report', {
+    x: 1.2, y: 2.2, w: 7, h: 1.2,
+    fontSize: 40, bold: true, color: BRAND_DARK, fontFace: FONT,
+    lineSpacingMultiple: 1.1,
+  });
+  // Subtitle
+  titleSlide.addText('Data-Driven Analysis & Recommendations', {
+    x: 1.2, y: 3.3, w: 7, h: 0.5,
+    fontSize: 16, color: GRAY, fontFace: FONT,
+  });
+  // Divider line
+  titleSlide.addShape('line', {
+    x: 1.2, y: 4.0, w: 3, h: 0,
+    line: { color: BRAND, width: 2 },
+  });
+  // Date
+  titleSlide.addText(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), {
+    x: 1.2, y: 4.3, w: 5, h: 0.4,
+    fontSize: 13, color: GRAY, fontFace: FONT,
+  });
+  // Branding
+  titleSlide.addText('Superset AI Insights', {
+    x: 1.2, y: 4.7, w: 5, h: 0.35,
+    fontSize: 11, color: BRAND, fontFace: FONT, italic: true,
+  });
+
+  // ── Chart preview slide (single chart mode) ──
+  if (images?.chartPreviewUrl) {
+    slideCount += 1;
+    await addChartSlide(images.chartPreviewUrl, 'Chart Analyzed', slideCount, 0);
+  }
+
+  // ── Build user→chart mapping for dashboard mode ──
   const userChartMap = new Map<number, DashboardChartInfo>();
   if (images?.dashboardCharts && images?.dashboardChartImages) {
     messages.forEach((msg, idx) => {
       if (msg.role === 'user') {
-        const matched = images.dashboardCharts!.find(c =>
-          msg.content.includes(c.sliceName),
-        );
+        const matched = images.dashboardCharts!.find(c => msg.content.includes(c.sliceName));
         if (matched && images.dashboardChartImages![matched.chartId]) {
           userChartMap.set(idx, matched);
         }
@@ -1279,72 +1611,119 @@ async function exportAsPptx(
     });
   }
 
+  // ── Content slides for each assistant message ──
   const assistantMessages = messages.filter(m => m.role === 'assistant');
-  assistantMessages.forEach((msg, idx) => {
-    // Find the user message that preceded this assistant message
-    const userIdx = messages.findIndex(
-      (m, i) => m.role === 'user' && messages[i + 1] === msg,
-    );
+
+  for (let idx = 0; idx < assistantMessages.length; idx++) {
+    const msg = assistantMessages[idx];
+    const userIdx = messages.findIndex((m, i) => m.role === 'user' && messages[i + 1] === msg);
     const matchedChart = userIdx >= 0 ? userChartMap.get(userIdx) : undefined;
 
-    // If there's a chart image for this analysis, add it first
+    // Chart slide for this analysis
     if (matchedChart && images?.dashboardChartImages?.[matchedChart.chartId]) {
-      try {
-        const chartSlide = pptx.addSlide();
-        chartSlide.addText(matchedChart.sliceName, {
-          x: 0.5, y: 0.2, w: '90%', fontSize: 18, bold: true, color: '1976D2', fontFace: 'Arial',
-        });
-        chartSlide.addImage({
-          data: images.dashboardChartImages[matchedChart.chartId],
-          x: 0.5, y: 0.8, w: 9.0, h: 4.5,
-        });
-      } catch { /* skip */ }
+      slideCount += 1;
+      await addChartSlide(
+        images.dashboardChartImages[matchedChart.chartId],
+        matchedChart.sliceName,
+        slideCount,
+        0,
+      );
     }
+
+    // Parse markdown into PPTX text segments
     const cleanText = sanitizeNonAscii(msg.content);
     const lines = cleanText.split('\n');
-    type TextProps = { text: string; options?: Record<string, unknown> };
-    const textParts: TextProps[] = [];
+    type TextSeg = { text: string; options?: Record<string, unknown> };
+    const allParts: TextSeg[] = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed) { textParts.push({ text: '\n', options: { fontSize: 6 } }); continue; }
-
-      const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
-      if (alertMatch) {
-        const [, tag, body] = alertMatch;
-        const colors: Record<string, string> = { CRITICAL: 'DC2626', WARNING: 'B45309', GOOD: '16A34A', INFO: '3B82F6' };
-        textParts.push({ text: `[${tag}] `, options: { fontSize: 11, bold: true, color: colors[tag] || '3B82F6', fontFace: 'Arial' } });
-        textParts.push({ text: `${body}\n`, options: { fontSize: 11, color: '374151', fontFace: 'Arial' } });
+      if (!trimmed) {
+        allParts.push({ text: '\n', options: { fontSize: 8 } });
         continue;
       }
 
+      // Alert callouts
+      const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
+      if (alertMatch) {
+        const [, tag, body] = alertMatch;
+        const a = PPTX_ALERT[tag] || PPTX_ALERT.INFO;
+        allParts.push({ text: '\n', options: { fontSize: 4 } });
+        allParts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
+        allParts.push({ text: `  ${body}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        continue;
+      }
+
+      // Headers
       const h1 = trimmed.match(/^# (.+)/);
-      if (h1) { textParts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: '1976D2', fontFace: 'Arial' } }); continue; }
+      if (h1) {
+        allParts.push({ text: '\n', options: { fontSize: 6 } });
+        allParts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } });
+        continue;
+      }
       const h2 = trimmed.match(/^## (.+)/);
-      if (h2) { textParts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: '1976D2', fontFace: 'Arial' } }); continue; }
+      if (h2) {
+        allParts.push({ text: '\n', options: { fontSize: 4 } });
+        allParts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } });
+        continue;
+      }
       const h3 = trimmed.match(/^### (.+)/);
-      if (h3) { textParts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: '374151', fontFace: 'Arial' } }); continue; }
+      if (h3) {
+        allParts.push({ text: '\n', options: { fontSize: 3 } });
+        allParts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } });
+        continue;
+      }
 
+      // Bullets
       const bullet = trimmed.match(/^[-*]\s+(.+)/);
-      if (bullet) { textParts.push({ text: `  \u2022 ${bullet[1]}\n`, options: { fontSize: 11, color: '374151', fontFace: 'Arial' } }); continue; }
+      if (bullet) {
+        const cleaned = bullet[1].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
+        allParts.push({ text: `   \u2022  ${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        continue;
+      }
 
+      // Numbered list
+      const num = trimmed.match(/^(\d+)[.)]\s+(.+)/);
+      if (num) {
+        const cleaned = num[2].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
+        allParts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
+        allParts.push({ text: `${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        continue;
+      }
+
+      // Horizontal rule → skip (visual separator only)
+      if (/^---+$/.test(trimmed)) {
+        allParts.push({ text: '\n', options: { fontSize: 6 } });
+        continue;
+      }
+
+      // Normal paragraph — strip markdown formatting
       const plain = trimmed.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-      textParts.push({ text: `${plain}\n`, options: { fontSize: 11, color: '374151', fontFace: 'Arial' } });
+      allParts.push({ text: `${plain}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
     }
 
-    const PARTS_PER_SLIDE = 25;
-    const chunks: TextProps[][] = [];
-    for (let j = 0; j < textParts.length; j += PARTS_PER_SLIDE) {
-      chunks.push(textParts.slice(j, j + PARTS_PER_SLIDE));
+    // Split into slides — estimate by counting newlines / visual lines
+    const PARTS_PER_SLIDE = 22;
+    const chunks: TextSeg[][] = [];
+    for (let j = 0; j < allParts.length; j += PARTS_PER_SLIDE) {
+      chunks.push(allParts.slice(j, j + PARTS_PER_SLIDE));
     }
 
+    const insightLabel = matchedChart?.sliceName || `Insight ${idx + 1}`;
     chunks.forEach((chunk, ci) => {
+      slideCount += 1;
       const slide = pptx.addSlide();
-      const title = ci === 0 ? `Insight ${idx + 1}` : `Insight ${idx + 1} (continued)`;
-      slide.addText(title, { x: 0.5, y: 0.2, w: '90%', fontSize: 18, bold: true, color: '1976D2', fontFace: 'Arial' });
-      slide.addText(chunk as any, { x: 0.5, y: 0.8, w: '90%', h: 4.5, fontSize: 11, color: '374151', fontFace: 'Arial', valign: 'top', lineSpacingMultiple: 1.3 });
+      const title = ci === 0 ? insightLabel : `${insightLabel} (cont.)`;
+      applyMaster(slide, title, `${slideCount}`);
+
+      slide.addText(chunk as any, {
+        x: 0.7, y: 1.0, w: SLIDE_W - 1.4, h: SLIDE_H - 1.8,
+        fontSize: 11, color: DARK, fontFace: FONT,
+        valign: 'top', lineSpacingMultiple: 1.4,
+        paraSpaceAfter: 4,
+      });
     });
-  });
+  }
 
   pptx.writeFile({ fileName: `ai-insights-${Date.now()}.pptx` });
 }
@@ -2261,7 +2640,7 @@ export default function AIInsightPanel({
           {messages.filter(m => m.role === 'assistant').length > 0 && (
             <ExportBar>
               <span>{t('Export')}:</span>
-              <ExportButton onClick={() => exportAsPdf(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
+              <ExportButton onClick={() => void exportAsPdf(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
                 PDF
               </ExportButton>
               <ExportButton onClick={() => void exportAsDocx(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
