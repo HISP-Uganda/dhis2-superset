@@ -442,6 +442,20 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     enable_drill,
     tooltip_columns,
   } = formData as QueryFormData;
+  const selectedOrgUnitColumn =
+    formDataAny?.orgUnitColumn || formDataAny?.org_unit_column || org_unit_column;
+  const selectedAggregationMethod =
+    formDataAny?.aggregationMethod ||
+    formDataAny?.aggregation_method ||
+    aggregation_method;
+  const selectedBoundaryLevels =
+    formDataAny?.boundaryLevels || formDataAny?.boundary_levels || boundary_levels;
+  const selectedBoundaryLevel =
+    formDataAny?.boundaryLevel || formDataAny?.boundary_level || boundary_level;
+  const drillEnabled =
+    formDataAny?.enableDrill ?? formDataAny?.enable_drill ?? enable_drill;
+  const selectedTooltipColumns =
+    formDataAny?.tooltipColumns || formDataAny?.tooltip_columns || tooltip_columns;
 
   // Extract style props with camelCase fallback (formData is camelCase, controls are snake_case)
   const color_scheme = formDataAny?.colorScheme || formDataAny?.color_scheme;
@@ -651,19 +665,19 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       ? undefined
       : resolveDHIS2MetricLabel(metric as any)) || metricString;
   // Sanitize org_unit_column for matching
-  const sanitizedOrgUnitColumn = org_unit_column
-    ? sanitizeDHIS2ColumnName(org_unit_column)
+  const sanitizedOrgUnitColumn = selectedOrgUnitColumn
+    ? sanitizeDHIS2ColumnName(selectedOrgUnitColumn)
     : undefined;
 
-  const sanitizedTooltipColumns = (tooltip_columns || []).map((col: any) => {
+  const sanitizedTooltipColumns = (selectedTooltipColumns || []).map((col: any) => {
     const colString =
       typeof col === 'string' ? col : col?.label || col?.name || String(col);
     return sanitizeDHIS2ColumnName(colString);
   });
 
   // Convert boundary_levels to array, supporting backward compatibility with boundary_level.
-  const rawBoundaryLevels = boundary_levels ?? (formData as any)?.boundaryLevels;
-  const rawBoundaryLevel = boundary_level ?? (formData as any)?.boundaryLevel;
+  const rawBoundaryLevels = selectedBoundaryLevels;
+  const rawBoundaryLevel = selectedBoundaryLevel;
   const normalizeLevels = (
     levels: number | string | (number | string)[] | undefined,
   ): number[] => {
@@ -687,8 +701,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   // Look for hierarchy level columns
   // Priority 1: Use org_unit_column if explicitly set (try both original and sanitized)
-  if (org_unit_column && allColumns.includes(org_unit_column)) {
-    hierarchyLevelColumn = org_unit_column;
+  if (selectedOrgUnitColumn && allColumns.includes(selectedOrgUnitColumn)) {
+    hierarchyLevelColumn = selectedOrgUnitColumn;
   } else if (
     sanitizedOrgUnitColumn &&
     allColumns.includes(sanitizedOrgUnitColumn)
@@ -931,8 +945,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     coercePositiveInteger(formDataAny?.dashboardId);
 
   const effectiveAggregationMethod = (() => {
-    if (aggregation_method) {
-      return aggregation_method;
+    if (selectedAggregationMethod) {
+      return selectedAggregationMethod;
     }
     const metricCol = datasourceColumns.find(
       c =>
@@ -965,7 +979,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     boundaryLevelLabels,
     boundaryLevelColumns,
     levelBorderColors,
-    enableDrill: enable_drill !== false,
+    enableDrill: drillEnabled !== false,
     colorScheme: color_scheme || 'supersetColors',
     linearColorScheme: linear_color_scheme || 'superset_seq_1',
     useLinearColorScheme: effectiveUseLinearColorScheme,

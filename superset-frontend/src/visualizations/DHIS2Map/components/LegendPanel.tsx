@@ -210,10 +210,10 @@ function LegendPanel({
   // Container styles — uses Pro theme CSS vars with fallbacks
   const containerStyle: React.CSSProperties = {
     ...getPositionStyle(position),
-    background: 'var(--pro-legend-bg, rgba(255,255,255,0.92))',
+    background: 'var(--pro-legend-bg)',
     backdropFilter: 'blur(8px)',
     WebkitBackdropFilter: 'blur(8px)',
-    border: '1px solid var(--pro-border, rgba(148,163,184,0.25))',
+    border: '1px solid var(--pro-border)',
     borderRadius: 'var(--pro-radius-sm, 8px)' as any,
     boxShadow: 'var(--pro-shadow-md, 0 2px 12px rgba(0,0,0,0.1))',
     padding: isCompact ? '4px 7px' : '8px 12px',
@@ -225,7 +225,7 @@ function LegendPanel({
   const titleStyle: React.CSSProperties = {
     fontSize: isCompact ? 9 : 10,
     fontWeight: 600,
-    color: 'var(--pro-text-primary, #1A1F2C)',
+    color: 'var(--pro-text-primary)',
     marginBottom: isCompact ? 2 : 5,
     letterSpacing: '0.04em',
     textTransform: 'uppercase' as const,
@@ -256,9 +256,9 @@ function LegendPanel({
         alignItems: 'center',
         gap: 4,
         fontSize: 10,
-        color: 'var(--pro-text-secondary, #334155)',
-        background: 'var(--pro-bg-canvas, rgba(241,245,249,0.7))',
-        border: '1px solid var(--pro-border, rgba(148,163,184,0.15))',
+        color: 'var(--pro-text-secondary)',
+        background: 'var(--pro-bg-canvas)',
+        border: '1px solid var(--pro-border)',
         borderRadius: 999,
         padding: '1px 6px',
         whiteSpace: 'nowrap' as const,
@@ -268,7 +268,7 @@ function LegendPanel({
         alignItems: 'center',
         gap: 6,
         fontSize: isCompact ? 9 : 10,
-        color: 'var(--pro-text-secondary, #334155)',
+        color: 'var(--pro-text-secondary)',
         lineHeight: isCompact ? '1.2' : '1.3',
       };
 
@@ -301,7 +301,7 @@ function LegendPanel({
         {/* No data */}
         <div style={itemStyle}>
           <div style={swatchStyle(noDataColorStr)} />
-          <span style={{ color: 'var(--pro-text-muted, #64748b)' }}>{t('No data')}</span>
+          <span style={{ color: 'var(--pro-text-muted)' }}>{t('No data')}</span>
         </div>
       </div>
 
@@ -319,7 +319,7 @@ function LegendPanel({
             style={{
               fontSize: 9,
               fontWeight: 600,
-              color: 'var(--pro-text-secondary, #475569)',
+              color: 'var(--pro-text-secondary)',
               textTransform: 'uppercase' as const,
               letterSpacing: '0.04em',
               marginBottom: 3,

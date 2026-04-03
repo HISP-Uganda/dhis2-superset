@@ -46,8 +46,8 @@ const Header = styled.div`
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--pro-border, #E5EAF0);
-  background: var(--pro-bg-card, #FAFBFC);
+  border-bottom: 1px solid var(--pro-\1);
+  background: var(--pro-\1);
 `;
 
 const ProviderControls = styled.div`
@@ -57,7 +57,7 @@ const ProviderControls = styled.div`
 
   select {
     min-height: 32px;
-    border: 1px solid var(--pro-border, #E5EAF0);
+    border: 1px solid var(--pro-\1);
     border-radius: 6px;
     padding: 0 8px;
     background: #fff;
@@ -92,10 +92,10 @@ const MessageBubble = styled.div<{ $isUser: boolean }>`
   word-break: break-word;
   align-self: ${({ $isUser }) => ($isUser ? 'flex-end' : 'flex-start')};
   background: ${({ $isUser }) =>
-    $isUser ? 'var(--pro-blue, #1976D2)' : 'var(--pro-bg-card, #F3F4F6)'};
+    $isUser ? 'var(--pro-\1)' : 'var(--pro-\1)'};
   color: ${({ $isUser }) => ($isUser ? '#fff' : '#1F2937')};
   border: ${({ $isUser }) =>
-    $isUser ? 'none' : '1px solid var(--pro-border, #E5EAF0)'};
+    $isUser ? 'none' : '1px solid var(--pro-\1)'};
   white-space: ${({ $isUser }) => ($isUser ? 'pre-wrap' : 'normal')};
 
   /* ── Markdown prose styling for assistant messages ── */
@@ -285,11 +285,11 @@ const TypingIndicator = styled.div`
 `;
 
 const InputArea = styled.div`
-  border-top: 1px solid var(--pro-border, #E5EAF0);
+  border-top: 1px solid var(--pro-\1);
   padding: 12px 16px;
   display: flex;
   gap: 8px;
-  background: var(--pro-bg-card, #FAFBFC);
+  background: var(--pro-\1);
 `;
 
 const SqlBlock = styled.div`
@@ -313,10 +313,10 @@ const ActionRow = styled.div`
 
 const HistorySidebar = styled.div`
   width: 200px;
-  border-right: 1px solid var(--pro-border, #E5EAF0);
+  border-right: 1px solid var(--pro-\1);
   overflow-y: auto;
   padding: 8px;
-  background: var(--pro-bg-card, #FAFBFC);
+  background: var(--pro-\1);
 `;
 
 const HistoryItem = styled.div<{ $active: boolean }>`
@@ -358,7 +358,7 @@ const SuggestionChips = styled.div`
 
 const Chip = styled.button`
   padding: 4px 10px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   border-radius: 16px;
   background: #fff;
   font-size: 11px;
@@ -383,8 +383,8 @@ const ExportBar = styled.div`
   align-items: center;
   gap: 6px;
   padding: 6px 16px;
-  border-top: 1px solid var(--pro-border, #E5EAF0);
-  background: var(--pro-bg-card, #FAFBFC);
+  border-top: 1px solid var(--pro-\1);
+  background: var(--pro-\1);
   font-size: 11px;
   color: #6B7280;
 `;
@@ -394,7 +394,7 @@ const ExportButton = styled.button`
   align-items: center;
   gap: 4px;
   padding: 3px 10px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   border-radius: 6px;
   background: #fff;
   font-size: 11px;

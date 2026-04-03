@@ -64,8 +64,8 @@ interface PanelCardProps {
 }
 
 const PanelCard = styled.div<PanelCardProps>`
-  background: var(--pro-bg-card, #FFFFFF);
-  border: 1px solid var(--pro-border, #E5EAF0);
+  background: var(--pro-bg-card);
+  border: 1px solid var(--pro-border);
   border-radius: ${({ $borderRadius }) => $borderRadius}px;
   padding: ${({ $padding }) => $padding}px;
   overflow: hidden;
@@ -77,7 +77,7 @@ const PanelCard = styled.div<PanelCardProps>`
 const PanelTitle = styled.div`
   font-size: 11px;
   font-weight: 600;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -87,7 +87,7 @@ const PanelTitle = styled.div`
 const PanelSubtitle = styled.div`
   font-size: 10px;
   font-weight: 500;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -99,7 +99,7 @@ const EmptyState = styled.div`
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 14px;
 `;
 
@@ -117,14 +117,14 @@ const BigNumberPanel = styled.div`
 const BigNumberValue = styled.div`
   font-size: 28px;
   font-weight: 700;
-  color: var(--pro-navy, #0D3B66);
+  color: var(--pro-navy);
   line-height: 1.1;
 `;
 
 const BigNumberLabel = styled.div`
   font-size: 10px;
   font-weight: 500;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 `;

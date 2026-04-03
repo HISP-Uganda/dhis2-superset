@@ -174,7 +174,7 @@ const headerContainerStyle = theme => css`
 `;
 
 const publicHeaderStyle = theme => css`
-  border-bottom: 2px solid var(--pro-accent, #1976D2);
+  border-bottom: 2px solid var(--pro-\1);
   background: ${theme.colorBgBase};
   width: 100%;
 
@@ -211,7 +211,7 @@ const publicHeaderStyle = theme => css`
     font-size: 18px !important;
     font-weight: 700 !important;
     letter-spacing: -0.025em;
-    color: var(--pro-navy, #0D3B66) !important;
+    color: var(--pro-\1) !important;
     background-color: transparent !important;
     font-family: var(--pro-font-family, ${theme.fontFamily});
     line-height: 1.3;
@@ -285,13 +285,13 @@ const filterDrawerBtnStyle = theme => css`
   font-size: 13px;
   border-radius: 4px;
   border: 1px solid var(--pro-border, ${theme.colorBorder});
-  background: var(--pro-surface, #fff);
-  color: var(--pro-navy, #0D3B66);
+  background: var(--pro-\1);
+  color: var(--pro-\1);
 
   &:hover, &:focus {
-    background: var(--pro-sub-surface, #F8FAFC);
-    border-color: var(--pro-accent, #1976D2);
-    color: var(--pro-accent, #1976D2);
+    background: var(--pro-\1);
+    border-color: var(--pro-\1);
+    color: var(--pro-\1);
   }
 
   @media (max-width: 767px) {
@@ -531,7 +531,7 @@ const proPublicPageStyles = theme => css`
   }
 
   .dashboard-component-chart-holder:hover {
-    border-color: var(--pro-accent, #1976D2) !important;
+    border-color: var(--pro-\1) !important;
     box-shadow: none !important;
   }
 
@@ -543,8 +543,8 @@ const proPublicPageStyles = theme => css`
     margin-bottom: 0 !important;
     border-bottom: 1px solid var(--pro-border, ${theme.colorBorderSecondary}) !important;
     border-top: none !important;
-    border-left: 3px solid var(--pro-accent, #1976D2) !important;
-    background: var(--pro-sub-surface, #F8FAFC) !important;
+    border-left: 3px solid var(--pro-\1) !important;
+    background: var(--pro-\1) !important;
     min-height: 0 !important;
   }
 
@@ -558,7 +558,7 @@ const proPublicPageStyles = theme => css`
     font-family: var(--pro-font-family, ${theme.fontFamily}) !important;
     font-size: var(--pro-density-chart-title, 14px) !important;
     font-weight: 700 !important;
-    color: var(--pro-navy, #0D3B66) !important;
+    color: var(--pro-\1) !important;
     letter-spacing: -0.01em;
     white-space: normal !important;
     overflow: visible !important;
@@ -583,7 +583,7 @@ const proPublicPageStyles = theme => css`
     font-family: var(--pro-font-family, ${theme.fontFamily});
     font-size: 12px;
     font-weight: 500;
-    color: var(--pro-text-secondary, #6B7280);
+    color: var(--pro-\1);
     letter-spacing: 0;
     margin-top: 2px;
     display: flex;
@@ -591,14 +591,14 @@ const proPublicPageStyles = theme => css`
     gap: 6px;
 
     .context-separator {
-      color: var(--pro-border-strong, #CBD5E1);
+      color: var(--pro-\1);
     }
   }
 
   /* ── Dashboard section headers (row headers) ──────────────────────── */
   .dashboard-component-header [class*="HeaderStyles"] {
     font-family: var(--pro-font-family, ${theme.fontFamily}) !important;
-    color: var(--pro-navy, #0D3B66) !important;
+    color: var(--pro-\1) !important;
     font-weight: 700 !important;
     font-size: 18px !important;
   }
@@ -618,11 +618,11 @@ const proPublicPageStyles = theme => css`
   }
 
   .dashboard-component-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
-    color: var(--pro-accent, #1976D2) !important;
+    color: var(--pro-\1) !important;
   }
 
   .dashboard-component-tabs .ant-tabs-ink-bar {
-    background: var(--pro-accent, #1976D2) !important;
+    background: var(--pro-\1) !important;
   }
 
   /* ── Markdown / text components ───────────────────────────────────── */
@@ -655,7 +655,7 @@ const proPublicPageStyles = theme => css`
   .big-number-vis .header-line {
     font-size: var(--pro-density-kpi-value, 32px) !important;
     font-weight: 700 !important;
-    color: var(--pro-navy, #0D3B66) !important;
+    color: var(--pro-\1) !important;
   }
 
   [class*="BigNumber"] [class*="kpi-label"],
@@ -1310,7 +1310,7 @@ const Header = ({ isPublicView, onBack, backLabel, badge, subtitle }) => {
                 margin-left: 12px;
                 font-size: 12px;
                 font-weight: 500;
-                color: var(--pro-text-secondary, #6B7280);
+                color: var(--pro-\1);
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;

@@ -21,10 +21,10 @@ import { getMetricLabel, getNumberFormatter } from '@superset-ui/core';
 import { StockStatusFormData, StockStatusChartProps, CommodityRow, StockBand } from './types';
 
 const BAND_CONFIG: Record<StockBand, { color: string; label: string }> = {
-  stockout: { color: '#B71C1C', label: 'Stockout' },
-  understock: { color: '#D32F2F', label: 'Understock' },
-  optimal: { color: '#2E7D32', label: 'Optimal' },
-  overstock: { color: '#F9A825', label: 'Overstock' },
+  stockout: { color: 'var(--pro-danger)', label: 'Stockout' },
+  understock: { color: 'var(--pro-danger)', label: 'Understock' },
+  optimal: { color: 'var(--pro-success)', label: 'Optimal' },
+  overstock: { color: 'var(--pro-warning)', label: 'Overstock' },
 };
 
 export default function transformProps(chartProps: any): StockStatusChartProps {

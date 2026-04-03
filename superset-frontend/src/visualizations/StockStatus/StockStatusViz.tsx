@@ -37,7 +37,7 @@ const Thead = styled.thead`
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--pro-bg-canvas, #F5F7FA);
+  background: var(--pro-bg-canvas);
 `;
 
 const Th = styled.th`
@@ -46,9 +46,9 @@ const Th = styled.th`
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   text-align: left;
-  border-bottom: 1px solid var(--pro-border, #E5EAF0);
+  border-bottom: 1px solid var(--pro-border);
   white-space: nowrap;
 
   &:last-child {
@@ -62,10 +62,10 @@ interface TrProps {
 
 const Tr = styled.tr<TrProps>`
   height: ${({ $height }) => $height}px;
-  border-bottom: 1px solid var(--pro-border, #E5EAF0);
+  border-bottom: 1px solid var(--pro-border);
 
   &:hover {
-    background: var(--pro-bg-canvas, #F5F7FA);
+    background: var(--pro-bg-canvas);
   }
 
   &:last-child {
@@ -76,7 +76,7 @@ const Tr = styled.tr<TrProps>`
 const Td = styled.td`
   padding: 4px 12px;
   font-size: 12px;
-  color: var(--pro-text-primary, #1A1F2C);
+  color: var(--pro-text-primary);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 `;
@@ -107,7 +107,7 @@ const MosBarTrack = styled.div`
   width: 100%;
   max-width: 200px;
   height: 10px;
-  background: var(--pro-border, #E5EAF0);
+  background: var(--pro-border);
   border-radius: 5px;
   overflow: hidden;
   position: relative;
@@ -144,7 +144,7 @@ const EmptyState = styled.div`
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 14px;
   padding: 40px;
 `;
@@ -161,7 +161,7 @@ const ThresholdMarker = styled.div<ThresholdMarkerProps>`
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--pro-text-muted, #9CA3AF);
+  background: var(--pro-text-muted);
   opacity: 0.4;
 `;
 

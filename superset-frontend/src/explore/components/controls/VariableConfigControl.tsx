@@ -76,10 +76,10 @@ const Container = styled.div`
 `;
 
 const VariableRow = styled.div`
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   border-radius: 8px;
   overflow: hidden;
-  background: var(--pro-surface, #FFFFFF);
+  background: var(--pro-\1);
 `;
 
 const VariableHeader = styled.div<{ $expanded: boolean }>`
@@ -89,18 +89,18 @@ const VariableHeader = styled.div<{ $expanded: boolean }>`
   padding: 8px 12px;
   cursor: pointer;
   background: ${({ $expanded }) =>
-    $expanded ? 'var(--pro-sub-surface, #F8FAFC)' : 'transparent'};
+    $expanded ? 'var(--pro-\1)' : 'transparent'};
   transition: background 0.15s ease;
 
   &:hover {
-    background: var(--pro-sub-surface, #F8FAFC);
+    background: var(--pro-\1);
   }
 `;
 
 const VariableName = styled.span`
   font-size: 13px;
   font-weight: 600;
-  color: var(--pro-text, #1A1F2C);
+  color: var(--pro-\1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -108,14 +108,14 @@ const VariableName = styled.span`
 
 const ExpandIcon = styled.span<{ $expanded: boolean }>`
   font-size: 10px;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-\1);
   transform: ${({ $expanded }) => ($expanded ? 'rotate(90deg)' : 'none')};
   transition: transform 0.15s ease;
 `;
 
 const ConfigPanel = styled.div`
   padding: 8px 12px 12px;
-  border-top: 1px solid var(--pro-border, #E5EAF0);
+  border-top: 1px solid var(--pro-\1);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -130,7 +130,7 @@ const FieldRow = styled.div`
 const FieldLabel = styled.label`
   font-size: 11px;
   font-weight: 600;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-\1);
   text-transform: uppercase;
   letter-spacing: 0.3px;
   min-width: 70px;
@@ -141,20 +141,20 @@ const FieldInput = styled.input`
   flex: 1;
   padding: 4px 8px;
   font-size: 13px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   border-radius: 6px;
-  background: var(--pro-surface, #FFFFFF);
-  color: var(--pro-text, #1A1F2C);
+  background: var(--pro-\1);
+  color: var(--pro-\1);
   outline: none;
   min-width: 0;
 
   &:focus {
-    border-color: var(--pro-blue, #1976D2);
+    border-color: var(--pro-\1);
     box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.12);
   }
 
   &::placeholder {
-    color: var(--pro-text-muted, #9CA3AF);
+    color: var(--pro-\1);
   }
 `;
 
@@ -162,15 +162,15 @@ const FieldSelect = styled.select`
   flex: 1;
   padding: 4px 8px;
   font-size: 13px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   border-radius: 6px;
-  background: var(--pro-surface, #FFFFFF);
-  color: var(--pro-text, #1A1F2C);
+  background: var(--pro-\1);
+  color: var(--pro-\1);
   outline: none;
   min-width: 0;
 
   &:focus {
-    border-color: var(--pro-blue, #1976D2);
+    border-color: var(--pro-\1);
   }
 `;
 
@@ -184,7 +184,7 @@ const ColorSwatch = styled.div<{ $color?: string }>`
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-\1);
   background: ${({ $color }) => $color || 'transparent'};
   cursor: pointer;
   flex-shrink: 0;
@@ -198,7 +198,7 @@ const ColorSwatch = styled.div<{ $color?: string }>`
       position: absolute;
       top: 50%; left: 50%;
       width: 1px; height: 16px;
-      background: var(--pro-text-muted, #9CA3AF);
+      background: var(--pro-\1);
       transform: translate(-50%, -50%) rotate(45deg);
     }
   `
@@ -210,33 +210,33 @@ const ClearButton = styled.button`
   padding: 2px 6px;
   border: none;
   background: transparent;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-\1);
   cursor: pointer;
   border-radius: 4px;
 
   &:hover {
-    color: var(--pro-danger, #D32F2F);
-    background: var(--pro-danger-bg, rgba(211, 47, 47, 0.08));
+    color: var(--pro-\1);
+    background: var(--pro-danger-bg);
   }
 `;
 
 const SectionLabel = styled.div`
   font-size: 10px;
   font-weight: 700;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-\1);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-top: 4px;
   padding-bottom: 2px;
-  border-bottom: 1px solid var(--pro-border, #E5EAF0);
+  border-bottom: 1px solid var(--pro-\1);
 `;
 
 const EmptyMessage = styled.div`
   font-size: 13px;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-\1);
   padding: 16px;
   text-align: center;
-  border: 1px dashed var(--pro-border, #E5EAF0);
+  border: 1px dashed var(--pro-\1);
   border-radius: 8px;
 `;
 

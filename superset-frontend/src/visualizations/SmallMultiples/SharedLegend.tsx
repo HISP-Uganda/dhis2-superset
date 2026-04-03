@@ -28,9 +28,9 @@ const LegendWrapper = styled.div<{ $position: 'top' | 'bottom' }>`
   align-items: center;
   font-family: var(--pro-font-family, Inter, 'Segoe UI', Roboto, sans-serif);
   font-size: 11px;
-  color: var(--pro-text-secondary, #6B7280);
-  border-${({ $position }) => ($position === 'top' ? 'bottom' : 'top')}: 1px solid var(--pro-border, #E5EAF0);
-  background: var(--pro-sub-surface, #F8FAFC);
+  color: var(--pro-text-secondary);
+  border-${({ $position }) => ($position === 'top' ? 'bottom' : 'top')}: 1px solid var(--pro-border);
+  background: var(--pro-sub-surface);
   flex-shrink: 0;
 `;
 

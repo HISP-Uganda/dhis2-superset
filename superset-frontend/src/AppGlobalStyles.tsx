@@ -39,30 +39,31 @@
  */
 
 import { Global, css } from '@emotion/react';
-import { useTheme } from '@superset-ui/core';
+import { useTheme, isThemeDark } from '@superset-ui/core';
 import { PRO_PALETTE, PRO_SHADOWS, PRO_RADII } from './theme/proTheme';
 import { densityCssVars, DEFAULT_DENSITY } from './theme/density';
 
 export function AppGlobalStyles() {
   const theme = useTheme();
+  const isDark = isThemeDark(theme);
   return (
     <Global
       styles={css`
         /* ============================================================
            PRO THEME DESIGN TOKENS — CSS custom properties
-           Brand colors are fixed; surface/text/border tokens auto-adapt
-           when the user switches dark/light mode via Ant Design theme.
+           Brand colors auto-adapt for dark/light mode visibility.
+           Surface/text/border tokens adapt via Ant Design theme.
            ============================================================ */
         :root {
-          /* ── Brand colors — fixed regardless of mode ────────────── */
-          --pro-navy: ${PRO_PALETTE.primaryNavy};
-          --pro-navy-light: ${PRO_PALETTE.navyLight};
-          --pro-blue: ${PRO_PALETTE.primaryBlue};
-          --pro-blue-hover: ${PRO_PALETTE.blueHover};
-          --pro-accent: ${PRO_PALETTE.accentBlue};
-          --pro-success: ${PRO_PALETTE.success};
-          --pro-warning: ${PRO_PALETTE.warning};
-          --pro-danger: ${PRO_PALETTE.danger};
+          /* ── Brand colors — auto-adjust for dark mode visibility ── */
+          --pro-navy: ${isDark ? '#90CAF9' : PRO_PALETTE.primaryNavy};
+          --pro-navy-light: ${isDark ? '#BBDEFB' : PRO_PALETTE.navyLight};
+          --pro-blue: ${isDark ? '#64B5F6' : PRO_PALETTE.primaryBlue};
+          --pro-blue-hover: ${isDark ? '#90CAF9' : PRO_PALETTE.blueHover};
+          --pro-accent: ${isDark ? '#82B1FF' : PRO_PALETTE.accentBlue};
+          --pro-success: ${isDark ? '#81C784' : PRO_PALETTE.success};
+          --pro-warning: ${isDark ? '#FFD54F' : PRO_PALETTE.warning};
+          --pro-danger: ${isDark ? '#EF5350' : PRO_PALETTE.danger};
 
           /* ── Surface tokens — auto-adapt to active theme ────────── */
           --pro-canvas: ${theme.colorBgLayout};
@@ -85,18 +86,24 @@ export function AppGlobalStyles() {
           --pro-warning-bg: ${theme.colorWarningBg};
           --pro-info-bg: ${theme.colorInfoBg};
 
-          /* ── Shadows ────────────────────────────────────────────── */
-          --pro-shadow-card: ${PRO_SHADOWS.card};
-          --pro-shadow-card-hover: ${PRO_SHADOWS.cardHover};
-          --pro-shadow-dropdown: ${PRO_SHADOWS.dropdown};
-          --pro-shadow-modal: ${PRO_SHADOWS.modal};
+          /* ── Shadows — darker glow in dark mode for visibility ── */
+          --pro-shadow-card: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : PRO_SHADOWS.card};
+          --pro-shadow-card-hover: ${isDark ? '0 4px 16px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.2)' : PRO_SHADOWS.cardHover};
+          --pro-shadow-dropdown: ${isDark ? '0 4px 20px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3)' : PRO_SHADOWS.dropdown};
+          --pro-shadow-modal: ${isDark ? '0 8px 40px rgba(0,0,0,0.6), 0 4px 8px rgba(0,0,0,0.3)' : PRO_SHADOWS.modal};
 
           /* ── Chart-level aliases — referenced by viz Wrappers ──── */
           --pro-bg-card: ${theme.colorBgContainer};
           --pro-bg-canvas: ${theme.colorBgLayout};
-          --pro-shadow-sm: ${PRO_SHADOWS.card};
+          --pro-bg-hover: ${isDark ? 'rgba(255,255,255,0.08)' : '#F3F4F6'};
+          --pro-border-hover: ${isDark ? 'rgba(255,255,255,0.2)' : '#D1D5DB'};
+          --pro-shadow-sm: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : PRO_SHADOWS.card};
+          --pro-shadow-md: ${isDark ? '0 4px 16px rgba(0,0,0,0.4)' : '0 4px 12px rgba(13,59,102,0.08)'};
           --pro-font-family: Inter, 'Segoe UI', Roboto, sans-serif;
           --pro-text-primary: ${theme.colorText};
+          --pro-success-text: ${isDark ? '#81C784' : '#2E7D32'};
+          --pro-danger-text: ${isDark ? '#EF5350' : '#D32F2F'};
+          --pro-warning-text: ${isDark ? '#FFD54F' : '#F9A825'};
 
           /* ── Shape ──────────────────────────────────────────────── */
           --pro-radius-input: ${PRO_RADII.input}px;

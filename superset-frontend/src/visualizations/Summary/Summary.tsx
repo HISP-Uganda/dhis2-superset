@@ -79,7 +79,11 @@ const Grid = styled.div<GridProps>`
   height: 100%;
   width: 100%;
   align-content: start;
-  align-items: ${({ $alignment }) => {
+  align-items: ${({ $layout, $alignment }) => {
+    /* Grid: always stretch cards to equal height; Card uses justify-content
+       to vertically center its own content. Flex: respect alignment. */
+    if ($layout === 'grid' || $layout === 'micro-card' || $layout === 'compact-kpi')
+      return 'stretch';
     if ($alignment === 'center') return 'center';
     if ($alignment === 'end') return 'flex-end';
     if ($alignment === 'stretch') return 'stretch';
@@ -88,8 +92,7 @@ const Grid = styled.div<GridProps>`
   justify-items: ${({ $alignment }) => {
     if ($alignment === 'center') return 'center';
     if ($alignment === 'end') return 'end';
-    if ($alignment === 'stretch') return 'stretch';
-    return 'start';
+    return 'stretch';
   }};
 `;
 
@@ -110,23 +113,29 @@ const Card = styled.div<CardProps>`
   position: relative;
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  align-items: ${({ $alignment }) => {
+    if ($alignment === 'center') return 'center';
+    if ($alignment === 'end') return 'flex-end';
+    return 'flex-start';
+  }};
   padding: ${({ $padding }) => $padding}px;
   border-radius: ${({ $cardStyle, $borderRadius }) =>
     $cardStyle !== 'transparent' ? `${$borderRadius}px` : '0'};
   background: ${({ $cardStyle, $cardBgColor }) => {
     if ($cardBgColor) return $cardBgColor;
     if ($cardStyle === 'elevated' || $cardStyle === 'flat')
-      return 'var(--pro-bg-card, #FFFFFF)';
+      return 'var(--pro-bg-card)';
     return 'transparent';
   }};
   box-shadow: ${({ $cardStyle }) =>
     $cardStyle === 'elevated'
-      ? 'var(--pro-shadow-sm, 0 1px 3px rgba(13,59,102,0.06))'
+      ? 'var(--pro-shadow-sm)'
       : 'none'};
   border: ${({ $cardStyle, $borderWidth, $borderColor, $borderStyle }) => {
     if ($borderStyle === 'none' || $borderWidth === 0) return 'none';
     if ($cardStyle === 'transparent') return 'none';
-    const color = $borderColor || 'var(--pro-border, #E5EAF0)';
+    const color = $borderColor || 'var(--pro-border)';
     return `${$borderWidth}px ${$borderStyle} ${color}`;
   }};
   border-bottom: ${({
@@ -136,7 +145,7 @@ const Card = styled.div<CardProps>`
     $borderStyle,
   }) =>
     $cardStyle === 'transparent' && $showDivider
-      ? `1px ${$borderStyle || 'solid'} ${$borderColor || 'var(--pro-border, #E5EAF0)'}`
+      ? `1px ${$borderStyle || 'solid'} ${$borderColor || 'var(--pro-border)'}`
       : undefined};
   overflow: hidden;
   transition: box-shadow 0.15s ease;
@@ -165,7 +174,7 @@ const Card = styled.div<CardProps>`
   &:hover {
     box-shadow: ${({ $cardStyle }) =>
       $cardStyle === 'elevated'
-        ? 'var(--pro-shadow-md, 0 4px 12px rgba(13,59,102,0.08))'
+        ? 'var(--pro-shadow-md)'
         : 'none'};
   }
 `;
@@ -174,20 +183,25 @@ const Card = styled.div<CardProps>`
 const ContentColumn = styled.div`
   display: flex;
   flex-direction: column;
+  align-items: inherit;
+  width: 100%;
 `;
 
 const ContentRow = styled.div<{ $reverse?: boolean }>`
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: inherit;
   gap: 12px;
+  width: 100%;
   flex-direction: ${({ $reverse }) => ($reverse ? 'row-reverse' : 'row')};
 `;
 
 const ContentInline = styled.div`
   display: flex;
   align-items: baseline;
+  justify-content: inherit;
   gap: 8px;
+  width: 100%;
 `;
 
 interface LabelProps {
@@ -201,7 +215,7 @@ const LabelText = styled.div<LabelProps>`
   font-size: ${({ $size }) => $size};
   font-weight: ${({ $weight }) => $weight};
   color: ${({ $color }) =>
-    $color || 'var(--pro-text-secondary, #6B7280)'};
+    $color || 'var(--pro-text-secondary)'};
   text-transform: ${({ $transform }) => $transform};
   letter-spacing: 0.04em;
   line-height: 1.3;
@@ -213,9 +227,9 @@ const LabelText = styled.div<LabelProps>`
 const SubtitleText = styled.div`
   font-size: 11px;
   font-weight: 400;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   line-height: 1.3;
-  margin-top: 1px;
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -262,7 +276,7 @@ interface ValueProps {
 const ValueText = styled.div<ValueProps>`
   font-size: ${({ $size }) => $size};
   font-weight: ${({ $weight }) => $weight};
-  color: ${({ $color }) => $color || 'var(--pro-text-primary, #1A1F2C)'};
+  color: ${({ $color }) => $color || 'var(--pro-text-primary)'};
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
   white-space: nowrap;
@@ -271,6 +285,7 @@ const ValueText = styled.div<ValueProps>`
 const TrendRow = styled.div`
   display: flex;
   align-items: center;
+  justify-content: inherit;
   gap: 4px;
   margin-top: 4px;
 `;
@@ -290,29 +305,30 @@ const TrendBadge = styled.span<TrendBadgeProps>`
   border-radius: var(--pro-radius-chip, 999px);
   background: ${({ $positive }) =>
     $positive
-      ? 'var(--pro-success-bg, rgba(46,125,50,0.08))'
-      : 'var(--pro-danger-bg, rgba(211,47,47,0.08))'};
+      ? 'var(--pro-success-bg)'
+      : 'var(--pro-danger-bg)'};
   color: ${({ $positive }) =>
     $positive
-      ? 'var(--pro-success, #2E7D32)'
-      : 'var(--pro-danger, #D32F2F)'};
+      ? 'var(--pro-success)'
+      : 'var(--pro-danger)'};
 `;
 
 const FlatTrend = styled.span`
   font-size: 12px;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
 `;
 
 /* ── Micro Visualization components ──────────────── */
 
 const MicroVizContainer = styled.div`
   margin-top: 8px;
+  width: 100%;
 `;
 
 const ProgressTrack = styled.div`
   width: 100%;
   height: 6px;
-  background: var(--pro-border, #E5EAF0);
+  background: var(--pro-border);
   border-radius: 3px;
   overflow: hidden;
 `;
@@ -335,7 +351,7 @@ const EmptyState = styled.div`
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 14px;
 `;
 
@@ -354,10 +370,10 @@ const GroupHeader = styled.div`
   padding: 6px 8px 4px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid var(--pro-border, #E5EAF0);
+  border-bottom: 1px solid var(--pro-border);
   margin-bottom: 4px;
 `;
 
@@ -379,14 +395,14 @@ const PageButton = styled.button<{ $disabled?: boolean }>`
   min-width: 28px;
   height: 28px;
   padding: 0 8px;
-  border: 1px solid var(--pro-border, #E5EAF0);
+  border: 1px solid var(--pro-border);
   border-radius: 6px;
   background: ${({ $disabled }) =>
-    $disabled ? 'var(--pro-bg-card, #F9FAFB)' : 'var(--pro-bg-card, #FFFFFF)'};
+    $disabled ? 'var(--pro-bg-card)' : 'var(--pro-bg-card)'};
   color: ${({ $disabled }) =>
     $disabled
-      ? 'var(--pro-text-muted, #9CA3AF)'
-      : 'var(--pro-text-primary, #1A1F2C)'};
+      ? 'var(--pro-text-muted)'
+      : 'var(--pro-text-primary)'};
   font-size: 12px;
   font-weight: 600;
   cursor: ${({ $disabled }) => ($disabled ? 'default' : 'pointer')};
@@ -394,15 +410,15 @@ const PageButton = styled.button<{ $disabled?: boolean }>`
   transition: background 0.15s ease, border-color 0.15s ease;
 
   &:hover {
-    background: var(--pro-bg-hover, #F3F4F6);
-    border-color: var(--pro-border-hover, #D1D5DB);
+    background: var(--pro-bg-hover);
+    border-color: var(--pro-border-hover);
   }
 `;
 
 const PageInfo = styled.span`
   font-size: 12px;
   font-weight: 500;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   white-space: nowrap;
 `;
 
@@ -509,14 +525,14 @@ function BulletIndicator({
   const markerX = (pct / 100) * width;
 
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ color: 'var(--pro-border)' }}>
       <rect
         x={0}
         y={(height - barH) / 2}
         width={width}
         height={barH}
         rx={barH / 2}
-        fill="#E5EAF0"
+        fill="currentColor"
       />
       <rect
         x={0}

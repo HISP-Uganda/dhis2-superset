@@ -34,7 +34,7 @@ const EmptyState = styled.div`
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 14px;
 `;
 
@@ -223,7 +223,7 @@ export default function ViolinDistributionViz(
                 x2={width - margin.right}
                 y1={y}
                 y2={y}
-                stroke="#E5EAF0"
+                stroke="var(--pro-border)"
                 strokeDasharray="3,3"
                 strokeWidth={0.5}
               />
@@ -233,7 +233,7 @@ export default function ViolinDistributionViz(
                 textAnchor="end"
                 dominantBaseline="central"
                 fontSize={10}
-                fill="#9CA3AF"
+                fill="var(--pro-text-muted)"
               >
                 {yFmt(v)}
               </text>
@@ -268,7 +268,7 @@ export default function ViolinDistributionViz(
                 textAnchor="middle"
                 fontSize={11}
                 fontWeight={600}
-                fill="#6B7280"
+                fill="var(--pro-text-secondary)"
               >
                 {group.name}
               </text>

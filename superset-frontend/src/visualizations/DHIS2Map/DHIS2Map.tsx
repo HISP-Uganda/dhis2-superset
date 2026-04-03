@@ -71,6 +71,7 @@ import {
 } from './components/BaseMaps';
 import {
   buildLegendEntries,
+  buildMetricMapStyleSignature,
   getColorScale,
   formatValue,
   calculateBounds,
@@ -188,7 +189,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     position: absolute;
     top: 8px;
     right: 8px;
-    background: var(--pro-error, #D32F2F);
+    background: var(--pro-error);
     color: #ffffff;
     padding: 8px 16px;
     border-radius: var(--pro-radius-sm, 6px);
@@ -203,8 +204,8 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     bottom: 80px;
     right: 8px;
     z-index: 4;
-    background: var(--pro-bg-card, #ffffff);
-    border: 1px solid var(--pro-border, rgba(0, 0, 0, 0.12));
+    background: var(--pro-bg-card);
+    border: 1px solid var(--pro-border);
     border-radius: var(--pro-radius-sm, 6px);
     padding: 4px 8px;
     cursor: pointer;
@@ -213,7 +214,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     transition: background 0.15s ease, box-shadow 0.15s ease;
 
     &:hover {
-      background: var(--pro-bg-canvas, #F5F7FA);
+      background: var(--pro-bg-canvas);
       box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.1));
     }
   }
@@ -229,7 +230,7 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     pointer-events: auto;
     font-size: 12px;
     font-weight: 500;
-    color: var(--pro-text-primary, #1A1F2C);
+    color: var(--pro-text-primary);
     font-family: var(--pro-font-family, 'Inter', sans-serif);
   }
 `;
@@ -243,8 +244,8 @@ const MapFooterBar = styled.div`
   gap: 12px;
   padding: 6px 12px;
   min-height: 0;
-  background: var(--pro-bg-canvas, rgba(248, 250, 252, 0.92));
-  border-top: 1px solid var(--pro-border, rgba(148, 163, 184, 0.15));
+  background: var(--pro-bg-canvas);
+  border-top: 1px solid var(--pro-border);
   font-family: var(--pro-font-family, 'Inter', sans-serif);
 `;
 
@@ -264,11 +265,11 @@ const FooterActionButton = styled.button<{ $active?: boolean }>`
   padding: 6px 10px;
   border-radius: 6px;
   border: 1px solid ${({ $active }) =>
-    $active ? 'var(--pro-accent, #1976D2)' : 'var(--pro-border, rgba(148, 163, 184, 0.35))'};
+    $active ? 'var(--pro-accent)' : 'var(--pro-border)'};
   background: ${({ $active }) =>
-    $active ? 'var(--pro-accent, #1976D2)' : 'var(--pro-bg-card, rgba(255, 255, 255, 0.96))'};
+    $active ? 'var(--pro-accent)' : 'var(--pro-bg-card)'};
   color: ${({ $active }) =>
-    $active ? '#ffffff' : 'var(--pro-text-secondary, #334155)'};
+    $active ? '#ffffff' : 'var(--pro-text-secondary)'};
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -277,7 +278,7 @@ const FooterActionButton = styled.button<{ $active?: boolean }>`
 
   &:hover {
     background: ${({ $active }) =>
-      $active ? 'var(--pro-accent-hover, #1565C0)' : 'var(--pro-bg-canvas, #F5F7FA)'};
+      $active ? 'var(--pro-accent-hover)' : 'var(--pro-bg-canvas)'};
     box-shadow: var(--pro-shadow-md, 0 4px 12px rgba(0,0,0,0.08));
   }
 `;
@@ -292,7 +293,7 @@ const FooterStatusPill = styled.div<{ $cacheHit?: boolean }>`
   background: ${({ $cacheHit }) =>
     $cacheHit ? 'rgba(46, 125, 50, 0.1)' : 'rgba(25, 118, 210, 0.1)'};
   color: ${({ $cacheHit }) =>
-    $cacheHit ? 'var(--pro-success, #2E7D32)' : 'var(--pro-accent, #1976D2)'};
+    $cacheHit ? 'var(--pro-success)' : 'var(--pro-accent)'};
 `;
 /* eslint-enable theme-colors/no-literal-colors */
 
@@ -1205,17 +1206,19 @@ function DHIS2Map({
   const effectiveOrgUnitColumn = useMemo(
     () =>
       boundaryLevelColumns?.[effectiveDataBoundaryLevel] ||
+      orgUnitColumn ||
       (Number.isFinite(effectiveDataBoundaryLevel)
         ? `ou_level_${effectiveDataBoundaryLevel}`
-        : orgUnitColumn),
+        : undefined),
     [boundaryLevelColumns, effectiveDataBoundaryLevel, orgUnitColumn],
   );
   const prefetchFocusedOrgUnitColumn = useMemo(
     () =>
       boundaryLevelColumns?.[prefetchFocusedChildLevel || 0] ||
+      effectiveOrgUnitColumn ||
       (Number.isFinite(prefetchFocusedChildLevel)
         ? `ou_level_${prefetchFocusedChildLevel}`
-        : effectiveOrgUnitColumn),
+        : undefined),
     [
       boundaryLevelColumns,
       effectiveOrgUnitColumn,
@@ -2235,6 +2238,11 @@ function DHIS2Map({
     [dataMap],
   );
 
+  const dataStyleSignature = useMemo(
+    () => buildMetricMapStyleSignature(dataMap),
+    [dataMap],
+  );
+
 
   // Determine which color scheme to use based on useLinearColorScheme setting
   const activeColorScheme = useMemo(() => {
@@ -3021,7 +3029,7 @@ function DHIS2Map({
             }
             style={getFeatureStyle as any}
             onEachFeature={onEachFeature as any}
-            styleKey={`levels-${boundaryLevelsKey}-drill-${drillState.currentLevel}-${drillState.parentId}-hover-${hoveredFeature ?? 'none'}-selected-${selectedFeatureId ?? 'none'}-colors-${JSON.stringify(levelBorderColors?.map(lc => lc.color))}-boundaries-${displayBoundaries.map(b => b.id).sort().join(',')}`}
+            styleKey={`levels-${boundaryLevelsKey}-drill-${drillState.currentLevel}-${drillState.parentId}-hover-${hoveredFeature ?? 'none'}-selected-${selectedFeatureId ?? 'none'}-colors-${JSON.stringify(levelBorderColors?.map(lc => lc.color))}-data-${dataStyleSignature}-boundaries-${displayBoundaries.map(b => b.id).sort().join(',')}`}
           />
         )}
       </MapContainer>

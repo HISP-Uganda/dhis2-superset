@@ -86,7 +86,7 @@ const Bar = styled.div<BarProps>`
 const StageLabel = styled.div<{ $size: number }>`
   font-size: ${({ $size }) => $size}px;
   font-weight: 600;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   text-align: center;
   margin-bottom: 4px;
   white-space: nowrap;
@@ -98,7 +98,7 @@ const StageLabel = styled.div<{ $size: number }>`
 const StageValue = styled.div<{ $size: number }>`
   font-size: ${({ $size }) => $size}px;
   font-weight: 700;
-  color: var(--pro-text-primary, #1A1F2C);
+  color: var(--pro-text-primary);
   text-align: center;
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
@@ -112,12 +112,12 @@ const PercentBadge = styled.div<{ $type: 'retained' | 'lost' }>`
   margin-top: 4px;
   background: ${({ $type }) =>
     $type === 'retained'
-      ? 'var(--pro-success-bg, rgba(46,125,50,0.08))'
-      : 'var(--pro-danger-bg, rgba(211,47,47,0.08))'};
+      ? 'var(--pro-success-bg)'
+      : 'var(--pro-danger-bg)'};
   color: ${({ $type }) =>
     $type === 'retained'
-      ? 'var(--pro-success, #2E7D32)'
-      : 'var(--pro-danger, #D32F2F)'};
+      ? 'var(--pro-success)'
+      : 'var(--pro-danger)'};
 `;
 
 interface ConnectorProps {
@@ -128,7 +128,7 @@ const Connector = styled.div<ConnectorProps>`
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 16px;
   flex-shrink: 0;
   ${({ $orientation }) =>
@@ -142,7 +142,7 @@ const EmptyState = styled.div`
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   font-size: 14px;
 `;
 

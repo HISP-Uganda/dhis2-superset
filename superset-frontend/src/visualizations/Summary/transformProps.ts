@@ -93,9 +93,14 @@ function resolveStatusColor(
   if (value === null) return null;
   if (thresholdUpper === null && thresholdLower === null) return null;
 
-  const goodColor = invertSemanticColors ? '#D32F2F' : '#2E7D32';
-  const badColor = invertSemanticColors ? '#2E7D32' : '#D32F2F';
-  const warnColor = '#F9A825';
+  // Use CSS variables so colors auto-adapt for dark/light mode
+  const goodColor = invertSemanticColors
+    ? 'var(--pro-danger, #D32F2F)'
+    : 'var(--pro-success, #2E7D32)';
+  const badColor = invertSemanticColors
+    ? 'var(--pro-success, #2E7D32)'
+    : 'var(--pro-danger, #D32F2F)';
+  const warnColor = 'var(--pro-warning, #F9A825)';
 
   if (thresholdUpper !== null && value >= thresholdUpper) return goodColor;
   if (thresholdLower !== null && value <= thresholdLower) return badColor;

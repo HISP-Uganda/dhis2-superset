@@ -43,7 +43,7 @@ const CardWrapper = styled.div<CardWrapperProps>`
 const Title = styled.div<{ $size: number }>`
   font-size: ${({ $size }) => $size}px;
   font-weight: 600;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 4px;
@@ -51,14 +51,14 @@ const Title = styled.div<{ $size: number }>`
 
 const Subtitle = styled.div`
   font-size: 11px;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
   margin-bottom: 12px;
 `;
 
 const ValueText = styled.div<{ $size: number }>`
   font-size: ${({ $size }) => $size}px;
   font-weight: 700;
-  color: var(--pro-text-primary, #1A1F2C);
+  color: var(--pro-text-primary);
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
 `;
@@ -85,16 +85,16 @@ const DeltaBadge = styled.span<DeltaBadgeProps>`
   border-radius: var(--pro-radius-chip, 999px);
   background: ${({ $state }) =>
     $state === 'positive'
-      ? 'var(--pro-success-bg, rgba(46,125,50,0.08))'
+      ? 'var(--pro-success-bg)'
       : $state === 'negative'
-        ? 'var(--pro-danger-bg, rgba(211,47,47,0.08))'
-        : 'var(--pro-info-bg, rgba(25,118,210,0.06))'};
+        ? 'var(--pro-danger-bg)'
+        : 'var(--pro-info-bg)'};
   color: ${({ $state }) =>
     $state === 'positive'
-      ? 'var(--pro-success, #2E7D32)'
+      ? 'var(--pro-success)'
       : $state === 'negative'
-        ? 'var(--pro-danger, #D32F2F)'
-        : 'var(--pro-text-muted, #9CA3AF)'};
+        ? 'var(--pro-danger)'
+        : 'var(--pro-text-muted)'};
 `;
 
 const ComparisonRow = styled.div`
@@ -103,7 +103,7 @@ const ComparisonRow = styled.div`
   gap: 6px;
   margin-top: 8px;
   font-size: 12px;
-  color: var(--pro-text-muted, #9CA3AF);
+  color: var(--pro-text-muted);
 `;
 
 const ComparisonLabel = styled.span`
@@ -112,7 +112,7 @@ const ComparisonLabel = styled.span`
 
 const ComparisonVal = styled.span`
   font-weight: 600;
-  color: var(--pro-text-secondary, #6B7280);
+  color: var(--pro-text-secondary);
 `;
 
 /* ── Gauge SVG ─────────────────────────────────────── */
@@ -130,9 +130,9 @@ function GaugeRing({ percent, state, size = 80 }: GaugeProps) {
   const offset = circumference - (percent / 100) * circumference;
 
   const colorMap = {
-    positive: 'var(--pro-success, #2E7D32)',
-    negative: 'var(--pro-danger, #D32F2F)',
-    neutral: 'var(--pro-accent, #4DA3FF)',
+    positive: 'var(--pro-success)',
+    negative: 'var(--pro-danger)',
+    neutral: 'var(--pro-accent)',
   };
 
   return (
@@ -147,7 +147,7 @@ function GaugeRing({ percent, state, size = 80 }: GaugeProps) {
         cy={size / 2}
         r={radius}
         fill="none"
-        stroke="var(--pro-border, #E5EAF0)"
+        stroke="var(--pro-border)"
         strokeWidth={strokeWidth}
       />
       <circle
@@ -170,7 +170,7 @@ function GaugeRing({ percent, state, size = 80 }: GaugeProps) {
         dominantBaseline="central"
         fontSize="14"
         fontWeight="700"
-        fill="var(--pro-text-primary, #1A1F2C)"
+        fill="var(--pro-text-primary)"
       >
         {Math.round(percent)}%
       </text>

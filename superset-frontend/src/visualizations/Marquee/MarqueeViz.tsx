@@ -45,10 +45,10 @@ const Wrapper = styled.div<WrapperProps>`
     $containerBackground !== 'transparent'
       ? $containerBackground
       : $variant === 'dark'
-        ? 'var(--pro-navy, #0D3B66)'
+        ? 'var(--pro-navy)'
         : $variant === 'glass'
           ? 'linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(245,247,250,0.92) 100%)'
-          : 'var(--pro-bg-canvas, #F5F7FA)'};
+          : 'var(--pro-bg-canvas)'};
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -69,7 +69,7 @@ const Wrapper = styled.div<WrapperProps>`
     box-shadow: 0 4px 24px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05);
   `
         : `
-    border: 1px solid var(--pro-border, #E5EAF0);
+    border: 1px solid var(--pro-border);
     box-shadow: var(--pro-shadow-sm, 0 1px 3px rgba(0,0,0,0.06));
   `}
 `;
@@ -145,7 +145,7 @@ const Item = styled.div<ItemProps>`
         ? 'rgba(255,255,255,0.06)'
         : $variant === 'glass'
           ? 'rgba(255,255,255,0.55)'
-          : 'var(--pro-bg-card, #ffffff)'};
+          : 'var(--pro-bg-card)'};
   border: ${({ $borderWidth, $borderColor, $variant }) =>
     $borderWidth > 0
       ? `${$borderWidth}px solid ${
@@ -331,7 +331,7 @@ const EmptyState = styled.div`
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--pro-text-muted, #9ca3af);
+  color: var(--pro-text-muted);
   font-size: 13px;
   font-family: var(--pro-font-family, 'Inter', 'Segoe UI', Roboto, sans-serif);
 `;

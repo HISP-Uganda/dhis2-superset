@@ -50,7 +50,7 @@ const Wrapper = styled.div<{
   position: relative;
   width: 100%;
   height: ${({ $height }) => $height}px;
-  background: ${({ $bgColor }) => $bgColor ?? 'var(--pro-bg-card, #ffffff)'};
+  background: ${({ $bgColor }) => $bgColor ?? 'var(--pro-bg-card)'};
   border-radius: ${({ $borderRadius }) => $borderRadius}px;
   border: ${({ $showBorder, $borderColor }) =>
     $showBorder ? `1px solid ${$borderColor}` : 'none'};
@@ -165,7 +165,7 @@ const MetricSlide = styled.div<{
   .slide-label {
     font-size: 12px;
     font-weight: 600;
-    color: ${({ $labelColor }) => $labelColor ?? 'var(--pro-text-muted, #64748B)'};
+    color: ${({ $labelColor }) => $labelColor ?? 'var(--pro-text-muted)'};
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -175,7 +175,7 @@ const MetricSlide = styled.div<{
     font-weight: 700;
     line-height: 1;
     color: ${({ $statusColor, $valueColor }) =>
-      $statusColor ?? $valueColor ?? 'var(--pro-text-primary, #1A1F2C)'};
+      $statusColor ?? $valueColor ?? 'var(--pro-text-primary)'};
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
   }
@@ -186,18 +186,18 @@ const MetricSlide = styled.div<{
     padding: 3px 10px;
     border-radius: 6px;
     &.positive {
-      color: var(--pro-success, #2E7D32);
+      color: var(--pro-success);
       background: rgba(46, 125, 50, 0.08);
     }
     &.negative {
-      color: var(--pro-error, #D32F2F);
+      color: var(--pro-error);
       background: rgba(211, 47, 47, 0.08);
     }
   }
 
   .slide-subtitle {
     font-size: 13px;
-    color: var(--pro-text-muted, #94A3B8);
+    color: var(--pro-text-muted);
   }
 `;
 
@@ -235,7 +235,7 @@ const ControlsBar = styled.div`
   padding: 8px 16px;
   flex-shrink: 0;
   min-height: 40px;
-  border-top: 1px solid var(--pro-border, rgba(0,0,0,0.06));
+  border-top: 1px solid var(--pro-border);
 `;
 
 const DotsContainer = styled.div`
@@ -259,9 +259,9 @@ const Dot = styled.button<{
   padding: 0;
   transition: width 0.3s ease, background 0.3s ease;
   background: ${({ $active, $dotColor, $activeDotColor }) =>
-    $active ? ($dotColor ?? $activeDotColor) : 'var(--pro-border, rgba(0,0,0,0.15))'};
+    $active ? ($dotColor ?? $activeDotColor) : 'var(--pro-border)'};
   &:focus-visible {
-    outline: 2px solid var(--pro-accent, #1976D2);
+    outline: 2px solid var(--pro-accent);
     outline-offset: 2px;
   }
 `;
@@ -270,10 +270,10 @@ const ArrowButton = styled.button<{ $arrowColor: string | null }>`
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  border: 1px solid var(--pro-border, rgba(0,0,0,0.08));
+  border: 1px solid var(--pro-border);
   cursor: pointer;
-  background: var(--pro-bg-card, rgba(255,255,255,0.8));
-  color: ${({ $arrowColor }) => $arrowColor ?? 'var(--pro-text-primary, #1A1F2C)'};
+  background: var(--pro-bg-card);
+  color: ${({ $arrowColor }) => $arrowColor ?? 'var(--pro-text-primary)'};
   display: flex;
   align-items: center;
   justify-content: center;
@@ -282,11 +282,11 @@ const ArrowButton = styled.button<{ $arrowColor: string | null }>`
   transition: background 0.15s ease, box-shadow 0.15s ease;
   flex-shrink: 0;
   &:hover {
-    background: var(--pro-bg-canvas, #F5F7FA);
+    background: var(--pro-bg-canvas);
     box-shadow: var(--pro-shadow-sm, 0 1px 3px rgba(0,0,0,0.06));
   }
   &:focus-visible {
-    outline: 2px solid var(--pro-accent, #1976D2);
+    outline: 2px solid var(--pro-accent);
     outline-offset: 2px;
   }
   &:disabled {
@@ -298,7 +298,7 @@ const ArrowButton = styled.button<{ $arrowColor: string | null }>`
 const Counter = styled.span`
   font-size: 11px;
   font-weight: 500;
-  color: var(--pro-text-muted, #94A3B8);
+  color: var(--pro-text-muted);
   min-width: 48px;
   text-align: right;
   flex-shrink: 0;
@@ -322,7 +322,7 @@ const ProgressBarFill = styled.div<{
   $active: boolean;
 }>`
   height: 100%;
-  background: ${({ $color }) => $color ?? 'var(--pro-accent, #1976D2)'};
+  background: ${({ $color }) => $color ?? 'var(--pro-accent)'};
   width: ${({ $active }) => ($active ? '100%' : '0%')};
   transition: ${({ $active, $duration }) =>
     $active ? `width ${$duration}ms linear` : 'none'};
