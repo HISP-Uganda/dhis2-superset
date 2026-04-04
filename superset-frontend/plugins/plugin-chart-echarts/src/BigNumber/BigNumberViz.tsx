@@ -465,8 +465,8 @@ function BigNumberVis({
 
   const alignStyle: React.CSSProperties =
     textAlign === 'left'
-      ? {}
-      : { alignItems: textAlign === 'center' ? 'center' : 'flex-end' };
+      ? { alignItems: 'flex-start' }
+      : { alignItems: textAlign === 'right' ? 'flex-end' : 'center' };
 
   if (showTrendLine) {
     const chartHeight = Math.floor(PROPORTION.TRENDLINE * height);
@@ -553,7 +553,9 @@ const StyledBigNumberVis = styled(BigNumberVis)`
     display: flex;
     flex-direction: column;
     justify-content: center;
-    align-items: flex-start;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
 
     &.no-trendline .subheader-line {
       padding-bottom: 0.3em;
@@ -563,7 +565,8 @@ const StyledBigNumberVis = styled(BigNumberVis)`
       display: flex;
       flex-direction: column;
       justify-content: center;
-      align-items: flex-start;
+      align-items: center;
+      width: 100%;
       .alert {
         font-size: ${theme.fontSizeSM};
         margin: -0.5em 0 0.4em;
@@ -576,32 +579,41 @@ const StyledBigNumberVis = styled(BigNumberVis)`
     .kicker {
       line-height: 1em;
       margin-bottom: ${theme.sizeUnit * 2}px;
+      width: 100%;
+      text-align: center;
     }
 
     .metric-name {
       line-height: 1em;
       margin-bottom: ${theme.sizeUnit * 2}px;
+      width: 100%;
+      text-align: center;
     }
 
     .header-line {
       position: relative;
       line-height: 1em;
       white-space: nowrap;
-      margin-bottom:${theme.sizeUnit * 2}px;
+      margin-bottom: ${theme.sizeUnit * 2}px;
+      width: 100%;
+      text-align: center;
       span {
-        position: absolute;
-        bottom: 0;
+        position: relative;
       }
     }
 
     .subheader-line {
       line-height: 1em;
       margin-bottom: ${theme.sizeUnit * 2}px;
+      width: 100%;
+      text-align: center;
     }
 
     .subtitle-line {
       line-height: 1em;
       margin-bottom: ${theme.sizeUnit * 2}px;
+      width: 100%;
+      text-align: center;
     }
 
     &.is-fallback-value {

@@ -466,7 +466,8 @@ export function getLegendProps(
       ? 'horizontal'
       : 'vertical',
     show,
-    type,
+    // Always use scroll type so legends can collapse when there are many items
+    type: type || 'scroll',
     selected: legendState,
     selector: ['all', 'inverse'],
     selectorLabel: {
@@ -474,7 +475,29 @@ export function getLegendProps(
       fontSize: theme.fontSizeSM,
       color: theme.colorText,
       borderColor: theme.colorBorder,
+      borderRadius: 3,
+      padding: [2, 6],
     },
+    // Compact legend items
+    itemGap: 10,
+    itemWidth: 14,
+    itemHeight: 10,
+    textStyle: {
+      fontFamily: theme.fontFamily,
+      fontSize: theme.fontSizeSM,
+      color: theme.colorText,
+    },
+    // Scroll page buttons for when legend overflows
+    pageButtonItemGap: 5,
+    pageIconColor: theme.colorPrimary,
+    pageIconInactiveColor: theme.colorBorder,
+    pageIconSize: 12,
+    pageTextStyle: {
+      fontFamily: theme.fontFamily,
+      fontSize: theme.fontSizeSM,
+      color: theme.colorText,
+    },
+    animationDurationUpdate: 200,
   };
   const MIN_LEGEND_WIDTH = 0;
   const MARGIN_GUTTER = 45;

@@ -25,7 +25,7 @@ import {
   formatSelectOptions,
   sharedControls,
 } from '@superset-ui/chart-controls';
-import { showValueControl } from '../controls';
+import { showValueControl, labelPositionControl } from '../controls';
 
 const config: ControlPanelConfig = {
   controlPanelSections: [
@@ -46,6 +46,7 @@ const config: ControlPanelConfig = {
       expanded: true,
       controlSetRows: [
         [showValueControl],
+        [labelPositionControl],
         [
           {
             name: 'show_legend',

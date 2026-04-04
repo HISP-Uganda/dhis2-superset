@@ -89,13 +89,13 @@ const GridStackContainer = styled.div<{ $editMode: boolean }>`
       overflow: hidden !important;
       border-radius: ${theme.borderRadiusLG}px;
       background: ${theme.colorBgContainer};
-      box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08),
-        0 1px 2px -1px rgba(0, 0, 0, 0.06);
-      transition: box-shadow 0.2s ease;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      box-shadow: none;
+      transition: border-color 0.2s ease;
 
       &:hover {
-        box-shadow: 0 4px 8px -2px rgba(0, 0, 0, 0.12),
-          0 2px 4px -2px rgba(0, 0, 0, 0.08);
+        border-color: rgba(148, 163, 184, 0.4);
+        box-shadow: none;
       }
     }
 
@@ -249,19 +249,15 @@ const GridStackContainer = styled.div<{ $editMode: boolean }>`
       width: 100%;
       height: 100%;
     }
-    /* Chart header — distinctive Pro Theme styling */
+    /* Chart header — flat design aligned with Page Studio */
     .gs-widget-inner .slice-header,
     .gs-widget-inner .chart-header,
     .gs-widget-inner [data-test="slice-header"] {
       min-height: 32px;
       flex-shrink: 0;
       padding: 6px 10px !important;
-      border-bottom: 2px solid var(--pro-blue, ${theme.colorPrimary}) !important;
-      background: linear-gradient(
-        180deg,
-        ${theme.colorBgContainer} 0%,
-        ${theme.colorFillAlter || theme.colorBgLayout} 100%
-      );
+      border-bottom: 1px solid rgba(148, 163, 184, 0.22) !important;
+      background: ${theme.colorBgContainer};
       margin: 0 !important;
     }
     .gs-widget-inner [data-test="slice-header"] .header-title {

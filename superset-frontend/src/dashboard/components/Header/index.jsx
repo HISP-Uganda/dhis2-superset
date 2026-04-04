@@ -174,16 +174,21 @@ const headerContainerStyle = theme => css`
 `;
 
 const publicHeaderStyle = theme => css`
-  border-bottom: 2px solid var(--pro-\1);
+  border-bottom: 2px solid var(--pro-blue, ${theme.colorPrimary});
   background: ${theme.colorBgBase};
   width: 100%;
+  /* Eliminate all gaps — sit flush against the portal header / topbar */
+  margin: 0;
+  padding: 0;
 
   .header-with-actions {
     height: 48px;
     padding: 0 24px;
     background: ${theme.colorBgBase};
     max-width: 100%;
-    margin-left: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
   }
 
   .title-panel {
@@ -193,6 +198,8 @@ const publicHeaderStyle = theme => css`
     min-width: 0;
     max-width: 85%;
     overflow: hidden;
+    display: flex;
+    align-items: center;
   }
 
   /* Force the editable-title wrapper to fill its parent */
@@ -211,7 +218,7 @@ const publicHeaderStyle = theme => css`
     font-size: 18px !important;
     font-weight: 700 !important;
     letter-spacing: -0.025em;
-    color: var(--pro-\1) !important;
+    color: var(--pro-navy, ${theme.colorText}) !important;
     background-color: transparent !important;
     font-family: var(--pro-font-family, ${theme.fontFamily});
     line-height: 1.3;
@@ -232,6 +239,8 @@ const publicHeaderStyle = theme => css`
   .right-button-panel {
     gap: 8px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
   }
 
   /* ── Tablet ──────────────────────────────────────────────────────── */

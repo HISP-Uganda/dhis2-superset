@@ -134,6 +134,10 @@ const Styles = styled.div<{
 }>`
   min-height: ${p => p.height}px;
   position: relative;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+  flex: 1 1 0;
   background-color: ${({ $backgroundColor }) => $backgroundColor || 'transparent'};
 
   .chart-tooltip {
@@ -147,6 +151,9 @@ const Styles = styled.div<{
     justify-content: center;
 
     height: ${p => p.height}px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
 
     .pivot_table tbody tr {
       font-feature-settings: 'tnum' 1;

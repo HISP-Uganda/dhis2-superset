@@ -164,6 +164,7 @@
     "geostyler-wfs-parser": "^2.0.3",
     "global-box": "^1.0.3",
     "googleapis": "^154.1.0",
+    "gridstack": "^12.4.2",
     "immer": "^10.1.1",
     "interweave": "^13.1.1",
     "jquery": "^3.7.1",

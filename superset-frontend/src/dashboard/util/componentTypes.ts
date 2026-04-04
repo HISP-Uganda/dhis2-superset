@@ -30,6 +30,8 @@ export const TABS_TYPE = 'TABS';
 export const TAB_TYPE = 'TAB';
 // Dynamic type proposes lazy loading of custom dashboard components that can be added in separate repository
 export const DYNAMIC_TYPE = 'DYNAMIC';
+// Block type for portal content blocks (rich text, images, callouts, stats, etc.)
+export const BLOCK_TYPE = 'BLOCK';
 
 export default {
   CHART_TYPE,
@@ -45,4 +47,5 @@ export default {
   TABS_TYPE,
   TAB_TYPE,
   DYNAMIC_TYPE,
+  BLOCK_TYPE,
 };

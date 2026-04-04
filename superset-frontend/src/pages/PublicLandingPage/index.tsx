@@ -262,15 +262,15 @@ const HeaderRight = styled.div`
   flex-shrink: 0;
 `;
 
-const PageContentShell = styled.div`
+const PageContentShell = styled.div<{ $dashboardMode?: boolean }>`
   width: 100%;
-  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
   overflow-x: clip;
   position: relative;
   z-index: 1;
   padding-top: var(--portal-header-height, 0px);
+  flex: 1 0 auto;
 `;
 
 const Main = styled.main<{ $maxWidth: string }>`

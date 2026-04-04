@@ -58,6 +58,7 @@ export default function transformProps(
     normalize,
     showLegend,
     showValue,
+    labelPosition: histLabelPosition,
     sliceId,
     xAxisFormat,
     xAxisTitle,
@@ -103,7 +104,7 @@ export default function transformProps(
       },
       label: {
         show: showValue,
-        position: 'top',
+        position: (histLabelPosition as any) || 'top',
         formatter: params => {
           const { value } = params;
           return yAxisFormatter.format(value as number);

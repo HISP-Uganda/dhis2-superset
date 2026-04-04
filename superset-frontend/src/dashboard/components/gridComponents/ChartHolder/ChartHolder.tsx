@@ -39,7 +39,9 @@ import {
   GRID_MIN_ROW_UNITS,
 } from 'src/dashboard/util/constants';
 
-export const CHART_MARGIN = 16;
+// Must match the total horizontal padding of .dashboard-component-chart-holder
+// (padding: theme.sizeUnit * 4 = 32px on each side = 64px total)
+export const CHART_MARGIN = 64;
 
 interface ChartHolderProps {
   id: string;

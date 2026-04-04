@@ -147,17 +147,18 @@ const ColorSchemeControl = ({
   isLinear,
   ...rest
 }: ColorSchemeControlProps) => {
-  const countSharedLabelsColor = sharedLabelsColors.length;
   const colorMapInstance = getLabelsColorMap();
-  const chartLabels = chartId
-    ? colorMapInstance.chartsLabelsMap.get(chartId)?.labels || []
-    : [];
-  const hasSharedLabelsColor = !!(
-    dashboardId &&
-    countSharedLabelsColor > 0 &&
-    chartLabels.some(label => sharedLabelsColors.includes(label))
+  const hasSharedLabelsColor = useMemo(() => {
+    if (!dashboardId || sharedLabelsColors.length === 0) return false;
+    const chartLabels = chartId
+      ? colorMapInstance.chartsLabelsMap.get(chartId)?.labels || []
+      : [];
+    return chartLabels.some(l => sharedLabelsColors.includes(l));
+  }, [dashboardId, sharedLabelsColors, chartId, colorMapInstance]);
+  const hasDashboardScheme = useMemo(
+    () => Boolean(dashboardId && hasDashboardColorScheme),
+    [dashboardId, hasDashboardColorScheme],
   );
-  const hasDashboardScheme = Boolean(dashboardId && hasDashboardColorScheme);
   const showDashboardLockedOption = hasDashboardScheme;
   const theme = useTheme();
   const currentScheme = useMemo(() => {

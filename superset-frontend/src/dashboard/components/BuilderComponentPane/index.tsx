@@ -29,12 +29,14 @@ import NewRow from '../gridComponents/new/NewRow';
 import NewTabs from '../gridComponents/new/NewTabs';
 import NewMarkdown from '../gridComponents/new/NewMarkdown';
 import NewDynamicComponent from '../gridComponents/new/NewDynamicComponent';
+import NewBlocks from '../gridComponents/new/NewBlock';
 
 const BUILDER_PANE_WIDTH = 374;
 
 const TABS_KEYS = {
   CHARTS: 'CHARTS',
   LAYOUT_ELEMENTS: 'LAYOUT_ELEMENTS',
+  CONTENT_BLOCKS: 'CONTENT_BLOCKS',
 };
 
 const BuilderComponentPane = ({ topOffset = 0 }) => (
@@ -107,6 +109,15 @@ const BuilderComponentPane = ({ topOffset = 0 }) => (
                       componentKey={componentKey}
                     />
                   ))}
+              </>
+            ),
+          },
+          {
+            key: TABS_KEYS.CONTENT_BLOCKS,
+            label: t('Content blocks'),
+            children: (
+              <>
+                <NewBlocks />
               </>
             ),
           },

@@ -31,7 +31,7 @@ import {
   EchartsFunnelLabelTypeType,
   PercentCalcType,
 } from './types';
-import { legendSection } from '../controls';
+import { legendSection, labelPositionControl } from '../controls';
 
 const { labelType, numberFormat, showLabels, defaultTooltipLabel } =
   DEFAULT_FORM_DATA;
@@ -178,6 +178,17 @@ const config: ControlPanelConfig = {
               renderTrigger: true,
               default: showLabels,
               description: t('Whether to display the labels.'),
+            },
+          },
+        ],
+        [
+          {
+            ...labelPositionControl,
+            name: 'label_position',
+            config: {
+              ...labelPositionControl.config,
+              visibility: ({ controls }: any) =>
+                Boolean(controls?.show_labels?.value),
             },
           },
         ],

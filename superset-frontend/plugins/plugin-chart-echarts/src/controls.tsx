@@ -27,7 +27,11 @@ import {
   SORT_SERIES_CHOICES,
   sharedControls,
 } from '@superset-ui/chart-controls';
-import { DEFAULT_LEGEND_FORM_DATA, StackControlOptions } from './constants';
+import {
+  DEFAULT_LEGEND_FORM_DATA,
+  LABEL_POSITION,
+  StackControlOptions,
+} from './constants';
 import { DEFAULT_FORM_DATA } from './Timeseries/constants';
 import { defaultXAxis } from './defaults';
 
@@ -180,8 +184,24 @@ export const percentageThresholdControl: ControlSetItem = {
   },
 };
 
+export const labelPositionControl: ControlSetItem = {
+  name: 'label_position',
+  config: {
+    type: 'SelectControl',
+    freeForm: false,
+    label: t('Label position'),
+    renderTrigger: true,
+    choices: LABEL_POSITION,
+    default: 'top',
+    description: t('Where to display the labels on the chart'),
+    visibility: ({ controls }: ControlPanelsContainerProps) =>
+      Boolean(controls?.show_value?.value),
+  },
+};
+
 export const showValueSection: ControlSetRow[] = [
   [showValueControl],
+  [labelPositionControl],
   [stackControl],
   [onlyTotalControl],
   [percentageThresholdControl],
@@ -189,6 +209,7 @@ export const showValueSection: ControlSetRow[] = [
 
 export const showValueSectionWithoutStack: ControlSetRow[] = [
   [showValueControl],
+  [labelPositionControl],
   [onlyTotalControl],
 ];
 

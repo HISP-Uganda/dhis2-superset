@@ -55,7 +55,7 @@ function getPositionStyle(position: MapCornerPosition): React.CSSProperties {
     maxHeight: '70%',
     overflowY: 'auto',
     overflowX: 'hidden',
-    pointerEvents: 'none',
+    pointerEvents: 'auto',
     // Scrollbar styling falls back gracefully
   };
 
@@ -150,8 +150,12 @@ function LegendPanel({
   const getLevelName = (level: number): string =>
     levelLabels[level] || `Level ${level}`;
 
-  // Build the list of items to render
+  // Build the list of items to render.
+  // PRIORITY: legendEntries (pre-computed from staged) > stagedLegendDefinition
+  // items (direct DHIS2 legend set) > auto-computed breaks (fallback only).
+  // When a staged legend set exists, ONLY its items show — no auto-computed.
   const items = useMemo(() => {
+    // 1. Pre-computed entries from buildLegendEntries (uses staged if available)
     if (legendEntries.length) {
       return legendEntries.map(entry => ({
         key: entry.key,
@@ -159,6 +163,7 @@ function LegendPanel({
         label: entry.label,
       }));
     }
+    // 2. Direct staged legend definition items (DHIS2 legend sets)
     if (stagedLegendDefinition?.items?.length) {
       return stagedLegendDefinition.items.map((item, index) => {
         const startValue = item.startValue;
@@ -178,6 +183,7 @@ function LegendPanel({
         };
       });
     }
+    // 3. Fallback: auto-computed breaks (only when no staged legend exists)
     return breaks.slice(0, -1).map((breakValue, index) => {
       const endValue = breaks[index + 1];
       const midValue =

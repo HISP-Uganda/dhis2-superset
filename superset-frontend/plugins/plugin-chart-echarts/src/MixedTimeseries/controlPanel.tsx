@@ -43,6 +43,7 @@ import {
   xAxisLabelRotation,
   xAxisLabelInterval,
   forceMaxInterval,
+  labelPositionControl,
 } from '../controls';
 
 const {
@@ -197,6 +198,17 @@ function createCustomizeSection(
           description: t(
             'Whether to display the numerical values within the cells',
           ),
+        },
+      },
+    ],
+    [
+      {
+        ...labelPositionControl,
+        name: `label_position${controlSuffix}`,
+        config: {
+          ...labelPositionControl.config,
+          visibility: ({ controls }: ControlPanelsContainerProps) =>
+            Boolean(controls?.[`show_value${controlSuffix}`]?.value),
         },
       },
     ],

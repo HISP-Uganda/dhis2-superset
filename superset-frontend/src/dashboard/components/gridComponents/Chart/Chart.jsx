@@ -79,7 +79,7 @@ const RESIZE_TIMEOUT = 500;
 const DEFAULT_HEADER_HEIGHT = 22;
 
 const ChartWrapper = styled.div`
-  overflow: clip;
+  overflow: hidden;
   position: relative;
   isolation: isolate;
   z-index: 0;
@@ -95,7 +95,7 @@ const ChartOverlay = styled.div`
 const SliceContainer = styled.div`
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  height: 100%;
 `;
 
 const EMPTY_OBJECT = {};
@@ -388,7 +388,23 @@ const Chart = props => {
     boundActionCreators.logEvent,
   ]);
 
-  if (chart === EMPTY_OBJECT || slice === EMPTY_OBJECT) {
+  // If chart/slice data isn't in Redux yet, try refreshing before showing error.
+  // This handles cases where layout references a chart that hasn't loaded yet.
+  const chartMissing = chart === EMPTY_OBJECT;
+  const sliceMissing = slice === EMPTY_OBJECT;
+
+  useEffect(() => {
+    if ((chartMissing || sliceMissing) && props.id) {
+      // Trigger a refresh to load the chart data
+      try {
+        boundActionCreators.refreshChart(props.id, false, props.dashboardId);
+      } catch {
+        // ignore — chart may truly be deleted
+      }
+    }
+  }, [chartMissing, sliceMissing, props.id, props.dashboardId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (chartMissing || sliceMissing) {
     return <MissingChart height={getChartHeight()} />;
   }
 

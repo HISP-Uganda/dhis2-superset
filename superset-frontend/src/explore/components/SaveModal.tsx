@@ -88,6 +88,8 @@ export const StyledModal = styled(Modal)`
 `;
 
 class SaveModal extends Component<SaveModalProps, SaveModalState> {
+  private _isMounted = false;
+
   constructor(props: SaveModalProps) {
     super(props);
     this.state = {
@@ -118,6 +120,7 @@ class SaveModal extends Component<SaveModalProps, SaveModalState> {
   }
 
   async componentDidMount() {
+    this._isMounted = true;
     let { dashboardId } = this.props;
     if (!dashboardId) {
       let lastDashboard = null;
@@ -131,18 +134,24 @@ class SaveModal extends Component<SaveModalProps, SaveModalState> {
     if (dashboardId) {
       try {
         const result = (await this.loadDashboard(dashboardId)) as Dashboard;
-        if (canUserEditDashboard(result, this.props.user)) {
+        if (this._isMounted && canUserEditDashboard(result, this.props.user)) {
           this.setState({
             dashboard: { label: result.dashboard_title, value: result.id },
           });
         }
       } catch (error) {
         logging.warn(error);
-        this.props.addDangerToast(
-          t('An error occurred while loading dashboard information.'),
-        );
+        if (this._isMounted) {
+          this.props.addDangerToast(
+            t('An error occurred while loading dashboard information.'),
+          );
+        }
       }
     }
+  }
+
+  componentWillUnmount() {
+    this._isMounted = false;
   }
 
   handleDatasetNameChange = (e: FormEvent<HTMLInputElement>) => {
@@ -286,10 +295,14 @@ class SaveModal extends Component<SaveModalProps, SaveModalState> {
       const searchParams = this.handleRedirect(window.location.search, value);
       this.props.history.replace(`/explore/?${searchParams.toString()}`);
 
-      this.setState({ isLoading: false });
-      this.onHide();
+      if (this._isMounted) {
+        this.setState({ isLoading: false });
+        this.onHide();
+      }
     } finally {
-      this.setState({ isLoading: false });
+      if (this._isMounted) {
+        this.setState({ isLoading: false });
+      }
     }
   }
 

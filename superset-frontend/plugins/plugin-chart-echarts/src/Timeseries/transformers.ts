@@ -182,6 +182,7 @@ export function transformSeries(
     stackIdSuffix?: string;
     yAxisIndex?: number;
     showValue?: boolean;
+    labelPosition?: string;
     onlyTotal?: boolean;
     legendState?: LegendState;
     formatter?: ValueFormatter;
@@ -213,6 +214,7 @@ export function transformSeries(
     stackIdSuffix,
     yAxisIndex = 0,
     showValue,
+    labelPosition,
     onlyTotal,
     formatter,
     legendState,
@@ -362,7 +364,7 @@ export function transformSeries(
     symbolSize: markerSize,
     label: {
       show: !!showValue,
-      position: isHorizontal ? 'right' : 'top',
+      position: labelPosition || (isHorizontal ? 'right' : 'top'),
       color: theme?.colorText,
       textBorderWidth: 0,
       formatter: (params: any) => {

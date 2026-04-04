@@ -327,6 +327,16 @@ class SliceAdder extends Component<SliceAdderProps, SliceAdderState> {
             datasourceName={cellData.datasource_name}
             thumbnailUrl={cellData.thumbnail_url}
             isSelected={isSelected}
+            onAdd={
+              !isSelected
+                ? () => {
+                    const addChart = (window as any).__gridstack_addChart;
+                    if (addChart) {
+                      addChart(cellData.slice_id, cellData.slice_name);
+                    }
+                  }
+                : undefined
+            }
           />
         )}
       </DragDroppable>

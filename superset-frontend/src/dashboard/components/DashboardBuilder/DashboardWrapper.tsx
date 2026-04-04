@@ -26,8 +26,8 @@ import { useDragDropManager } from 'react-dnd';
 import classNames from 'classnames';
 import { debounce } from 'lodash';
 
-const StyledDiv = styled.div`
-  ${({ theme }) => css`
+const StyledDiv = styled.div<{ $isPublicView?: boolean }>`
+  ${({ theme, $isPublicView }) => css`
     background-color: ${theme.colorBgLayout};
     position: relative;
     display: grid;
@@ -36,7 +36,10 @@ const StyledDiv = styled.div`
     flex: 1;
     gap: 0;
     max-width: 100vw;
-    overflow-x: clip;
+    overflow-x: hidden;
+    /* In public view, let the page body scroll so footer flows naturally below content.
+       In normal view, this wrapper is the scroll container for sticky to work. */
+    overflow-y: ${$isPublicView ? 'visible' : 'auto'};
     isolation: isolate;
 
     @media (max-width: 767px) {
@@ -133,7 +136,10 @@ const StyledDiv = styled.div`
   `}
 `;
 
-const DashboardWrapper: FC<PropsWithChildren<{}>> = ({ children }) => {
+const DashboardWrapper: FC<PropsWithChildren<{ isPublicView?: boolean }>> = ({
+  children,
+  isPublicView,
+}) => {
   const editMode = useSelector<RootState, boolean>(
     state => state.dashboardState.editMode,
   );
@@ -168,6 +174,7 @@ const DashboardWrapper: FC<PropsWithChildren<{}>> = ({ children }) => {
 
   return (
     <StyledDiv
+      $isPublicView={isPublicView}
       className={classNames({
         'dragdroppable--dragging': editMode && isDragged,
       })}

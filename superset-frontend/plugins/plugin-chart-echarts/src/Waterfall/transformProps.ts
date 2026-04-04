@@ -183,6 +183,7 @@ export default function transformProps(
     xAxisLabel,
     yAxisFormat,
     showValue,
+    labelPosition: waterfallLabelPosition,
     totalLabel,
     increaseLabel,
     decreaseLabel,
@@ -372,6 +373,7 @@ export default function transformProps(
   };
   const labelProps = {
     show: showValue,
+    position: waterfallLabelPosition || 'top',
     formatter: seriesformatter,
     color: theme.colorText,
     borderColor: theme.colorBgBase,

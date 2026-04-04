@@ -121,6 +121,7 @@ export default function transformProps(
     numberFormat,
     currencyFormat,
     showLabels,
+    labelPosition: funnelLabelPosition,
     inContextMenu,
     showTooltipLabels,
     showLegend,
@@ -258,7 +259,7 @@ export default function transformProps(
       labelLine: { show: !!labelLine },
       label: {
         ...defaultLabel,
-        position: labelLine ? 'outer' : 'inner',
+        position: funnelLabelPosition || (labelLine ? 'outer' : 'inner'),
       },
       emphasis: {
         label: {

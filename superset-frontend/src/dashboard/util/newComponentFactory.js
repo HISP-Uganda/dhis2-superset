@@ -29,6 +29,7 @@ import {
   TABS_TYPE,
   TAB_TYPE,
   DYNAMIC_TYPE,
+  BLOCK_TYPE,
 } from './componentTypes';
 
 import {
@@ -60,6 +61,12 @@ const typeToDefaultMetaData = {
   },
   [DYNAMIC_TYPE]: {
     width: GRID_COLUMN_COUNT,
+    background: BACKGROUND_TRANSPARENT,
+  },
+  [BLOCK_TYPE]: {
+    width: GRID_DEFAULT_CHART_WIDTH,
+    height: 50,
+    blockType: 'rich_text',
     background: BACKGROUND_TRANSPARENT,
   },
 };

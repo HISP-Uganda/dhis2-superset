@@ -140,11 +140,14 @@ const MapWrapper = styled.div`
 
 const MapCanvas = styled.div<{ $backgroundColor?: string }>`
   position: relative;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
+  overflow: hidden;
   background: ${({ $backgroundColor }) => $backgroundColor || '#ffffff'};
 
   .leaflet-container {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     background: ${({ $backgroundColor }) => $backgroundColor || '#ffffff'};
@@ -175,7 +178,6 @@ const MapCanvas = styled.div<{ $backgroundColor?: string }>`
     left: 0;
     right: 0;
     bottom: 0;
-    min-height: 50vh;
     background: rgba(255, 255, 255, 0.85);
     display: flex;
     align-items: center;
@@ -312,9 +314,11 @@ function fitMapToBoundaries(
 
   const applyFit = (shouldAnimate: boolean) => {
     const size = map.getSize();
+    // Use actual map canvas dimensions. Fall back to viewport props only
+    // when the map container has no size yet (e.g. first render before layout).
     const fitConfig = getMapFitViewportConfig(
-      Math.max(size.x, viewportWidth),
-      Math.max(size.y, viewportHeight),
+      size.x > 0 ? size.x : viewportWidth,
+      size.y > 0 ? size.y : viewportHeight,
       {},
     );
 
@@ -1023,6 +1027,11 @@ function DHIS2Map({
     };
   }, [databaseId, metric, datasourceColumns, chartId, dashboardId]);
 
+  // Stabilize the staged legend — once resolved, keep it locked so the
+  // legend doesn't flash between auto-computed and staged colors while
+  // data loads or filters change.
+  const stableStagedRef = useRef<DHIS2LegendDefinition | undefined>(undefined);
+
   const effectiveStagedLegendDefinition = useMemo(() => {
     // Use staged DHIS2 legend ranges by default, but leave explicit manual
     // algorithm choice in control of the chart author.
@@ -1030,11 +1039,19 @@ function DHIS2Map({
     // views where the control-panel never pre-populates localStorage.
     const resolved = stagedLegendDefinition ?? liveLegendDefinition;
     if (!resolved?.items?.length) {
+      // If we previously had a stable staged legend, keep using it
+      // so the legend doesn't flash to auto-computed during re-renders
+      if (stableStagedRef.current?.items?.length && legendType !== 'manual') {
+        return stableStagedRef.current;
+      }
       return undefined;
     }
     if (legendType === 'manual') {
+      stableStagedRef.current = undefined;
       return undefined;
     }
+    // Lock in the resolved legend
+    stableStagedRef.current = resolved as DHIS2LegendDefinition;
     return resolved as DHIS2LegendDefinition;
   }, [legendType, stagedLegendDefinition, liveLegendDefinition]);
 
@@ -1107,6 +1124,12 @@ function DHIS2Map({
     null,
   );
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
+  // Unique key to prevent "Map container is being reused" when React
+  // portals (e.g. gridstack) remount us with the same DOM node.
+  const mapContainerKeyRef = useRef(0);
+  const [mapContainerKey, setMapContainerKey] = useState(
+    () => `dhis2map-${chartId}-${mapContainerKeyRef.current}`,
+  );
   const [baseMapType, setBaseMapType] = useState<BaseMapType>('none');
   const [loadTime, setLoadTime] = useState<number | null>(null);
   const [cacheHit, setCacheHit] = useState(false);
@@ -1267,6 +1290,20 @@ function DHIS2Map({
   const handleMapInstanceReady = useCallback((map: L.Map) => {
     setMapInstance(currentMap => (currentMap === map ? currentMap : map));
   }, []);
+
+  // If the old map instance was destroyed by container reuse, recover
+  // by bumping the key to force a fresh MapContainer.
+  useEffect(() => {
+    if (!mapInstance) return undefined;
+    const container = mapInstance.getContainer?.();
+    if (container && (container as any)._leaflet_id === undefined) {
+      // Container was orphaned — force remount
+      mapContainerKeyRef.current += 1;
+      setMapContainerKey(`dhis2map-${chartId}-${mapContainerKeyRef.current}`);
+      setMapInstance(null);
+    }
+    return undefined;
+  }, [mapInstance, chartId]);
 
   useEffect(() => {
     setDrillState(previousState => {
@@ -2958,6 +2995,7 @@ function DHIS2Map({
       >
       {/* @ts-ignore - React 19 compatibility */}
       <MapContainer
+        key={mapContainerKey}
         center={[1.3733, 32.2903]}
         zoom={7}
         zoomSnap={0.25}

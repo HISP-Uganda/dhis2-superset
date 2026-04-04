@@ -106,9 +106,10 @@ const FiltersPanel = styled.div<{ width: number; hidden: boolean }>`
 
 const StickyPanel = styled.div<{ width: number }>`
   position: sticky;
-  top: -1px;
+  top: 0;
   width: ${({ width }) => width}px;
   flex: 0 0 ${({ width }) => width}px;
+  z-index: 10;
 `;
 
 // @z-index-above-dashboard-popovers (99) + 1 = 100
@@ -118,11 +119,35 @@ const StyledHeader = styled('div', {
   ${({ theme, isPublicView }) => css`
     grid-column: 2;
     grid-row: 1;
-    position: sticky;
-    top: ${isPublicView ? 'var(--portal-header-height, 0px)' : '0'};
     z-index: 99;
     max-width: 100vw;
     background: ${theme.colorBgBase};
+    margin-top: 0;
+    padding: 0;
+
+    ${isPublicView
+      ? css`
+          /* Public view: no sticky — page body scrolls and the portal nav is
+             already position: fixed.  Using sticky here with
+             top: var(--portal-header-height) causes a visual offset equal to
+             the portal header height because the DashboardWrapper's
+             overflow-y: visible means there is no scroll container for the
+             sticky algorithm, so the browser falls back to relative
+             positioning and pushes the header down by the top value. */
+          position: static;
+          & > .dashboard-header-container {
+            margin: 0;
+            padding: 0;
+          }
+          & .dragdroppable {
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+        `
+      : css`
+          position: sticky;
+          top: 0;
+        `}
 
     @media (max-width: 767px) {
       grid-column: 1;
@@ -166,10 +191,10 @@ const DashboardContentWrapper = styled.div`
       flex-direction: column;
       height: 100%;
 
-      /* drop shadow for top-level tabs only */
+      /* flat border for top-level tabs */
       & .dashboard-component-tabs {
-        box-shadow: 0 ${theme.sizeUnit}px ${theme.sizeUnit}px 0
-          ${addAlpha(theme.colorBorderSecondary, 0.1)};
+        box-shadow: none;
+        border-bottom: 1px solid ${addAlpha(theme.colorBorderSecondary, 0.22)};
         padding-left: ${theme.sizeUnit *
         2}px; /* note this is added to tab-level padding, to match header */
       }
@@ -411,11 +436,11 @@ const StyledDashboardContent = styled.div<{
       height: 100%;
       background-color: ${theme.colorBgContainer};
       border-radius: ${theme.borderRadiusLG}px;
+      border: 1px solid ${addAlpha(theme.colorBorderSecondary, 0.22)};
       position: relative;
       padding: ${theme.sizeUnit * 4}px;
-      overflow: clip;
-      box-shadow: 0 1px 3px 0 ${addAlpha(theme.colorBorderSecondary, 0.12)},
-        0 1px 2px -1px ${addAlpha(theme.colorBorderSecondary, 0.08)};
+      overflow: hidden;
+      box-shadow: none;
 
       // transitionable traits to show filter relevance
       transition:
@@ -425,21 +450,20 @@ const StyledDashboardContent = styled.div<{
         transform ${theme.motionDurationFast} ease-out;
 
       &:hover {
-        box-shadow: 0 4px 6px -1px ${addAlpha(theme.colorBorderSecondary, 0.15)},
-          0 2px 4px -2px ${addAlpha(theme.colorBorderSecondary, 0.1)};
+        border-color: ${addAlpha(theme.colorBorderSecondary, 0.4)};
+        box-shadow: none;
       }
 
       &.fade-in {
         border-radius: ${theme.borderRadiusLG}px;
-        box-shadow:
-          inset 0 0 0 2px ${theme.colorPrimary},
-          0 0 0 3px ${addAlpha(theme.colorPrimary, 0.1)};
+        border-color: ${theme.colorPrimary};
+        box-shadow: 0 0 0 2px ${addAlpha(theme.colorPrimary, 0.1)};
       }
 
       &.fade-out {
         border-radius: ${theme.borderRadiusLG}px;
-        box-shadow: 0 1px 3px 0 ${addAlpha(theme.colorBorderSecondary, 0.12)},
-          0 1px 2px -1px ${addAlpha(theme.colorBorderSecondary, 0.08)};
+        border-color: ${addAlpha(theme.colorBorderSecondary, 0.22)};
+        box-shadow: none;
       }
 
       & .missing-chart-container {
@@ -734,7 +758,7 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
   );
 
   return (
-    <DashboardWrapper>
+    <DashboardWrapper isPublicView={isPublicView}>
       {showFilterBar &&
         filterBarOrientation === FilterBarOrientation.Vertical && (
           <>
@@ -750,23 +774,51 @@ const DashboardBuilder: React.FC<DashboardBuilderProps> = ({
           </>
         )}
       <StyledHeader ref={headerRef} isPublicView={isPublicView}>
-        {/* @ts-ignore */}
-        <Droppable
-          data-test="top-level-tabs"
-          className={cx(!topLevelTabs && editMode && 'empty-droptarget')}
-          component={dashboardRoot}
-          parentComponent={null}
-          depth={DASHBOARD_ROOT_DEPTH}
-          index={0}
-          orientation="column"
-          onDrop={handleDrop}
-          editMode={editMode}
-          // you cannot drop on/displace tabs if they already exist
-          disableDragDrop={!!topLevelTabs}
-          style={draggableStyle}
-        >
-          {renderDraggableContent}
-        </Droppable>
+        {isPublicView ? (
+          /* Public view: render header directly without drag/drop wrappers
+             to eliminate unnecessary nesting (Droppable > dragdroppable divs) */
+          <>
+            {!hideDashboardHeader && (
+              <DashboardHeader
+                isPublicView={isPublicView}
+                onBack={onBack}
+                backLabel={backLabel}
+                badge={badge}
+                subtitle={subtitle}
+              />
+            )}
+            {!isReport && topLevelTabs && !uiConfig.hideNav && (
+              <DashboardComponent
+                id={topLevelTabs?.id}
+                parentId={DASHBOARD_ROOT_ID}
+                depth={DASHBOARD_ROOT_DEPTH + 1}
+                index={0}
+                renderTabContent={false}
+                renderHoverMenu={false}
+                onChangeTab={handleChangeTab}
+              />
+            )}
+          </>
+        ) : (
+          /* Edit / authenticated view: keep full drag/drop support */
+          /* @ts-ignore */
+          <Droppable
+            data-test="top-level-tabs"
+            className={cx(!topLevelTabs && editMode && 'empty-droptarget')}
+            component={dashboardRoot}
+            parentComponent={null}
+            depth={DASHBOARD_ROOT_DEPTH}
+            index={0}
+            orientation="column"
+            onDrop={handleDrop}
+            editMode={editMode}
+            // you cannot drop on/displace tabs if they already exist
+            disableDragDrop={!!topLevelTabs}
+            style={draggableStyle}
+          >
+            {renderDraggableContent}
+          </Droppable>
+        )}
       </StyledHeader>
       <StyledContent fullSizeChartId={fullSizeChartId}>
         {!editMode &&

@@ -75,14 +75,20 @@ const CrossFilterIcon = styled(Icons.ApartmentOutlined)`
 
 const ChartHeaderStyles = styled.div`
   ${({ theme }) => css`
-    font-size: var(--pro-density-chart-title, ${theme.fontSizeBase}px);
-    font-weight: ${theme.fontWeightStrong};
+    font-size: var(--pro-density-chart-title, ${(theme as any).fontSizeBase || theme.fontSize}px);
+    font-weight: 600;
     margin-bottom: 0;
     display: flex;
     max-width: 100%;
-    align-items: flex-start;
-    min-height: 0;
-    padding: 4px var(--pro-density-header-h, 12px);
+    align-items: center;
+    min-height: 32px;
+    padding: 6px var(--pro-density-header-h, 10px);
+    border-bottom: 2px solid var(--pro-blue, ${theme.colorPrimary});
+    background: linear-gradient(
+      180deg,
+      ${theme.colorBgContainer} 0%,
+      ${theme.colorFillAlter || theme.colorBgLayout} 100%
+    );
 
     & > .header-title {
       overflow: visible;
@@ -92,6 +98,8 @@ const ChartHeaderStyles = styled.div`
       flex: 1 1 0%;
       display: flex;
       flex-direction: column;
+      color: var(--pro-navy, ${theme.colorText});
+      letter-spacing: -0.01em;
 
       & > span.ant-tooltip-open {
         display: inline;
@@ -103,6 +111,16 @@ const ChartHeaderStyles = styled.div`
       align-items: center;
       height: 24px;
       flex-shrink: 0;
+      gap: 2px;
+    }
+
+    .chart-filter-context {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--pro-text-secondary, ${theme.colorTextDescription});
+      margin-top: 1px;
+      line-height: 1.3;
+      opacity: 0.85;
     }
 
     @media (max-width: 767px) {

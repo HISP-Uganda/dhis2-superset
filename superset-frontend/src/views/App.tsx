@@ -61,6 +61,9 @@ const isPublicPortalPath = (pathname: string) =>
     prefix => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 
+const isDashboardPath = (pathname: string) =>
+  pathname.startsWith('/superset/dashboard/');
+
 const LocationPathnameLogger = () => {
   const location = useLocation();
   useEffect(() => {
@@ -81,6 +84,7 @@ const LocationPathnameLogger = () => {
 const AppShell = () => {
   const location = useLocation();
   const isPublicPortalRoute = isPublicPortalPath(location.pathname);
+  const isDashboardRoute = isDashboardPath(location.pathname);
 
   return (
     <>
@@ -110,7 +114,8 @@ const AppShell = () => {
                   >
                     <ErrorBoundary
                       css={css`
-                        margin: ${isPublicPortalRoute ? 0 : 16}px;
+                        margin: ${isPublicPortalRoute || isDashboardRoute ? 0 : 16}px;
+                        ${isDashboardRoute ? 'display: flex; flex-direction: column; flex: 1;' : ''}
                       `}
                     >
                       <Component user={bootstrapData.user} {...props} />

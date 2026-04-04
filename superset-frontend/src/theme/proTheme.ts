@@ -39,9 +39,10 @@ export const PRO_PALETTE = {
   warning: '#F9A825',
   danger: '#D32F2F',
 
-  // Surfaces
-  canvas: '#F5F7FA',
+  // Surfaces — soft white, aligned with Page Studio (#f0f2f5)
+  canvas: '#F0F2F5',
   card: '#FFFFFF',
+  subSurfaceAlt: '#F8FAFC',
   border: '#E5EAF0',
   borderStrong: '#CBD5E1',
 
@@ -102,9 +103,9 @@ export const PRO_RADII = {
    Shadows
    ────────────────────────────────────────────────────────────────────── */
 export const PRO_SHADOWS = {
-  card: '0 1px 3px rgba(13,59,102,0.06), 0 1px 2px rgba(13,59,102,0.04)',
-  cardHover:
-    '0 4px 12px rgba(13,59,102,0.08), 0 2px 4px rgba(13,59,102,0.04)',
+  /** Flat design — no card shadows; depth via subtle borders */
+  card: 'none',
+  cardHover: 'none',
   dropdown: '0 4px 16px rgba(13,59,102,0.10), 0 2px 4px rgba(13,59,102,0.06)',
   modal: '0 8px 32px rgba(13,59,102,0.12), 0 4px 8px rgba(13,59,102,0.06)',
 } as const;

@@ -86,9 +86,9 @@ export function AppGlobalStyles() {
           --pro-warning-bg: ${theme.colorWarningBg};
           --pro-info-bg: ${theme.colorInfoBg};
 
-          /* ── Shadows — darker glow in dark mode for visibility ── */
-          --pro-shadow-card: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : PRO_SHADOWS.card};
-          --pro-shadow-card-hover: ${isDark ? '0 4px 16px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.2)' : PRO_SHADOWS.cardHover};
+          /* ── Shadows — flat design; dark mode gets subtle lift ─── */
+          --pro-shadow-card: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : 'none'};
+          --pro-shadow-card-hover: ${isDark ? '0 4px 16px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.2)' : 'none'};
           --pro-shadow-dropdown: ${isDark ? '0 4px 20px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3)' : PRO_SHADOWS.dropdown};
           --pro-shadow-modal: ${isDark ? '0 8px 40px rgba(0,0,0,0.6), 0 4px 8px rgba(0,0,0,0.3)' : PRO_SHADOWS.modal};
 
@@ -97,8 +97,8 @@ export function AppGlobalStyles() {
           --pro-bg-canvas: ${theme.colorBgLayout};
           --pro-bg-hover: ${isDark ? 'rgba(255,255,255,0.08)' : '#F3F4F6'};
           --pro-border-hover: ${isDark ? 'rgba(255,255,255,0.2)' : '#D1D5DB'};
-          --pro-shadow-sm: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : PRO_SHADOWS.card};
-          --pro-shadow-md: ${isDark ? '0 4px 16px rgba(0,0,0,0.4)' : '0 4px 12px rgba(13,59,102,0.08)'};
+          --pro-shadow-sm: ${isDark ? '0 1px 4px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2)' : 'none'};
+          --pro-shadow-md: ${isDark ? '0 4px 16px rgba(0,0,0,0.4)' : 'none'};
           --pro-font-family: Inter, 'Segoe UI', Roboto, sans-serif;
           --pro-text-primary: ${theme.colorText};
           --pro-success-text: ${isDark ? '#81C784' : '#2E7D32'};
@@ -270,11 +270,31 @@ export function AppGlobalStyles() {
           border-radius: 0 !important;
         }
 
-        /* Chart header / title area */
+        /* Chart header / title area — Pro Theme distinctive styling */
         .chart-header,
-        .slice-header {
-          padding: var(--pro-density-header-v) var(--pro-density-header-h) !important;
-          border-bottom: 1px solid ${theme.colorBorderSecondary};
+        .slice-header,
+        [data-test="slice-header"] {
+          padding: var(--pro-density-header-v, 6px) var(--pro-density-header-h, 10px) !important;
+          border-bottom: 2px solid var(--pro-blue, ${theme.colorPrimary}) !important;
+          background: linear-gradient(
+            180deg,
+            ${theme.colorBgContainer} 0%,
+            ${theme.colorFillAlter || theme.colorBgLayout} 100%
+          ) !important;
+          min-height: 32px;
+        }
+
+        [data-test="slice-header"] .header-title {
+          font-size: var(--pro-density-chart-title, 13px) !important;
+          font-weight: 600 !important;
+          color: var(--pro-navy, ${theme.colorText}) !important;
+          letter-spacing: -0.01em;
+        }
+
+        [data-test="slice-header"] .editable-title input,
+        [data-test="slice-header"] .editable-title span {
+          font-weight: 600 !important;
+          color: var(--pro-navy, ${theme.colorText}) !important;
         }
 
         .chart-label,

@@ -179,6 +179,7 @@ const AddSliceCard: FC<{
   style?: CSSProperties;
   thumbnailUrl?: string | null;
   visType: string;
+  onAdd?: () => void;
 }> = ({
   datasourceUrl,
   datasourceName = '-',
@@ -189,6 +190,7 @@ const AddSliceCard: FC<{
   style = {},
   thumbnailUrl,
   visType,
+  onAdd,
 }) => {
   const showThumbnails = isFeatureEnabled(FeatureFlag.Thumbnails);
   const [sliceAddedBadge, setSliceAddedBadge] = useState<HTMLDivElement>();
@@ -295,6 +297,45 @@ const AddSliceCard: FC<{
               />
               <MetadataItem label={t('Modified')} value={lastModified} />
             </div>
+            {onAdd && !isSelected && (
+              <div
+                css={(theme: Theme) => css`
+                  margin-top: ${theme.sizeUnit * 2}px;
+                `}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onAdd();
+                  }}
+                  css={(theme: Theme) => css`
+                    width: 100%;
+                    padding: ${theme.sizeUnit}px ${theme.sizeUnit * 2}px;
+                    border: 1px solid ${theme.colorPrimary};
+                    border-radius: ${theme.borderRadius}px;
+                    background: transparent;
+                    color: ${theme.colorPrimary};
+                    font-size: ${theme.fontSizeSM}px;
+                    font-weight: ${theme.fontWeightStrong};
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: ${theme.sizeUnit}px;
+
+                    &:hover {
+                      background: ${theme.colorPrimary};
+                      color: #fff;
+                    }
+                  `}
+                >
+                  + {t('Add to Dashboard')}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
