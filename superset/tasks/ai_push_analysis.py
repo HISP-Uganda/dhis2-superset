@@ -105,6 +105,9 @@ def _generate_pdf_report(
     # ── Content Pages ──
     pdf.add_page()
 
+    # Apply word spacing fix before rendering
+    insight_text = _fix_word_spacing(insight_text)
+
     # Severity badge colors
     severity_colors = {
         "CRITICAL": (220, 38, 38),
@@ -198,9 +201,10 @@ def _generate_pdf_report(
             if all(set(c) <= {"-", ":"} for c in cells if c):
                 return  # skip separator rows
             col_width = (190 - 20) / max(len(cells), 1)
-            if not _table_header_done:
+            is_header = not _table_header_done
+            if is_header:
                 pdf.set_font("Helvetica", "B", 9)
-                pdf.set_fill_color(240, 240, 245)
+                pdf.set_fill_color(230, 234, 240)
                 _table_header_done = True
             else:
                 pdf.set_font("Helvetica", "", 9)
@@ -208,8 +212,8 @@ def _generate_pdf_report(
             pdf.set_text_color(31, 41, 55)
             for cell in cells:
                 pdf.cell(
-                    col_width, 6, cell[:40], border=1,
-                    fill=not _table_header_done,
+                    col_width, 6, cell[:50], border=1,
+                    fill=is_header,
                 )
             pdf.ln()
             return
@@ -339,17 +343,101 @@ def _send_report_email(
     return notified
 
 
+def _fix_word_spacing(text: str) -> str:
+    """Fix common word-spacing issues in AI-generated text.
+
+    AI models sometimes concatenate words or omit spaces after punctuation.
+    This Python equivalent of the frontend fixWordSpacing function repairs
+    those issues while preserving markdown syntax and URLs.
+    """
+    lines = text.split("\n")
+    fixed_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip code blocks, table rows, URLs
+        if (
+            stripped.startswith("```")
+            or stripped.startswith("|")
+            or stripped.startswith("![")
+            or re.match(r"^https?://", stripped)
+        ):
+            fixed_lines.append(line)
+            continue
+
+        fixed = line
+        # Punctuation spacing: "value,but" → "value, but"
+        fixed = re.sub(r"([a-zA-Z])([,;])([a-zA-Z])", r"\1\2 \3", fixed)
+        # Period + uppercase = sentence boundary: "system.The" → "system. The"
+        fixed = re.sub(r"([a-z])\.([A-Z])", r"\1. \2", fixed)
+        # Colon + letter (not time): "key:value" → "key: value"
+        fixed = re.sub(r"([a-zA-Z]):([a-zA-Z])", r"\1: \2", fixed)
+        # Space before paren: "rate(95%)" → "rate (95%)"
+        fixed = re.sub(r"([a-zA-Z])\((?!\))", r"\1 (", fixed)
+        # camelCase mid-sentence: "highlightsA" → "highlights A"
+        fixed = re.sub(r"(?<!`)([a-z]{2,})([A-Z][a-z])(?!`)", r"\1 \2", fixed)
+        # Collapse double-spaces
+        fixed = re.sub(r" {2,}", " ", fixed)
+
+        fixed_lines.append(fixed)
+    return "\n".join(fixed_lines)
+
+
 def _build_email_html(schedule_name: str, insight_text: str) -> str:
     """Build a professional HTML email body from the insight text."""
     now = datetime.utcnow().strftime("%B %d, %Y at %H:%M UTC")
 
-    lines = insight_text.split("\n")
+    # Apply word spacing fix before rendering
+    text = _fix_word_spacing(insight_text)
+
+    lines = text.split("\n")
     body_html = ""
+    in_table = False
     for line in lines:
         line = line.rstrip()
         if not line:
+            if in_table:
+                body_html += "</table>"
+                in_table = False
             body_html += "<br/>"
             continue
+
+        # Table rows
+        if line.strip().startswith("|") and "|" in line[1:]:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            # Skip separator rows
+            if all(set(c) <= {"-", ":"} for c in cells if c):
+                continue
+            if not in_table:
+                in_table = True
+                body_html += (
+                    '<table style="border-collapse:collapse;width:100%;'
+                    'margin:8px 0;font-size:13px;">'
+                )
+                # First row is header
+                body_html += "<tr>"
+                for cell in cells:
+                    body_html += (
+                        f'<th style="border:1px solid #D1D5DB;padding:6px 10px;'
+                        f'background:#E6EAF0;font-weight:600;color:#1F2937;'
+                        f'text-align:left;">{cell}</th>'
+                    )
+                body_html += "</tr>"
+            else:
+                body_html += "<tr>"
+                for cell in cells:
+                    formatted_cell = re.sub(
+                        r"\*\*(.+?)\*\*", r"<strong>\1</strong>", cell,
+                    )
+                    body_html += (
+                        f'<td style="border:1px solid #D1D5DB;padding:5px 10px;'
+                        f'color:#1F2937;">{formatted_cell}</td>'
+                    )
+                body_html += "</tr>"
+            continue
+
+        if in_table:
+            body_html += "</table>"
+            in_table = False
 
         # Severity badges
         sev_match = re.match(r"\[([A-Z]+)\]\s*(.*)", line)
@@ -406,6 +494,9 @@ def _build_email_html(schedule_name: str, insight_text: str) -> str:
             f'<p style="margin:4px 0;color:#1F2937;line-height:1.6;">'
             f'{formatted}</p>'
         )
+
+    if in_table:
+        body_html += "</table>"
 
     return f"""<!DOCTYPE html>
 <html>

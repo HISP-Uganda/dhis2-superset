@@ -622,19 +622,44 @@ function fixWordSpacing(text: string): string {
   // Only words 3+ chars to avoid false positives with short fragments.
   // Sorted longest-first so "through" matches before "the".
   const BOUNDARY_WORDS = [
-    'between', 'through', 'without', 'against', 'because', 'however',
+    // 8+ letter words — longest first to match greedily
+    'throughout', 'presenting', 'associated', 'considered', 'represents',
+    'concerning', 'continuing', 'indicating', 'suggesting', 'addressing',
+    'experience', 'particular', 'management', 'proportion', 'generation',
+    'population', 'department', 'percentage', 'comparison',
     'significant', 'important', 'concerning', 'including', 'according',
-    'quality', 'surveillance', 'adherence', 'preventive', 'treatment',
-    'clinical', 'national', 'diagnostic', 'supply', 'system',
-    'before', 'during', 'within', 'around', 'across',
+    'therefore', 'meanwhile', 'currently', 'following', 'affecting',
+    'requiring', 'improving', 'declining', 'remaining', 'resulting',
+    'achieving', 'providing', 'reporting', 'receiving', 'revealing',
+    'primarily', 'typically', 'generally', 'estimated', 'available',
+    // 7 letter words
+    'between', 'through', 'without', 'against', 'because', 'however',
+    'quality', 'several', 'overall', 'another', 'whether', 'notably',
+    'already', 'remains', 'appears', 'reveals', 'implies', 'suggest',
+    'warrant', 'signals', 'require', 'present', 'despite',
+    // Domain-specific (health, analytics)
+    'surveillance', 'adherence', 'preventive', 'treatment', 'clinical',
+    'national', 'diagnostic', 'supply', 'system', 'district', 'facility',
+    'coverage', 'baseline', 'outbreak', 'incidence', 'mortality',
+    'morbidity', 'indicator', 'threshold', 'quarterly', 'monthly',
+    'annually', 'regional', 'performance', 'programme', 'program',
+    // 6 letter words
+    'before', 'during', 'within', 'around', 'across', 'toward',
+    'likely', 'rather', 'simply', 'nearly', 'showed', 'showed',
+    'higher', 'lowest', 'showed', 'steady', 'growth',
+    // 5 letter words
     'about', 'after', 'which', 'where', 'while', 'their', 'there',
     'these', 'those', 'would', 'could', 'should', 'other',
-    'being', 'still', 'under', 'until', 'since',
+    'being', 'still', 'under', 'until', 'since', 'shows',
+    'needs', 'below', 'above', 'level',
+    // 4 letter words
     'from', 'with', 'into', 'upon', 'over', 'than', 'then',
     'when', 'what', 'this', 'that', 'have', 'been', 'were',
     'more', 'some', 'will', 'only', 'just', 'each', 'both',
     'also', 'very', 'much', 'such', 'most', 'must',
     'like', 'even', 'well', 'many', 'high', 'poor',
+    'data', 'rate', 'year',
+    // 3 letter words
     'for', 'but', 'and', 'the', 'not', 'are', 'was', 'has',
     'had', 'can', 'may', 'all', 'its', 'per', 'yet', 'nor',
   ];
@@ -694,9 +719,10 @@ function fixWordSpacing(text: string): string {
         if (word.length < 3) return match;
         // Common false positives to skip
         const falsePositives = [
-          'therefore', 'perform', 'performed', 'performer', 'before',
-          'inform', 'informed', 'information', 'informal', 'transform',
-          'platform', 'reform', 'uniform', 'comfortable', 'furthermore',
+          'therefore', 'perform', 'performed', 'performer', 'performing', 'before',
+          'inform', 'informed', 'information', 'informal', 'informing', 'transform',
+          'transformed', 'transforming', 'transformation',
+          'platform', 'reform', 'reformed', 'uniform', 'comfortable', 'furthermore',
           'moreover', 'otherwise', 'somewhere', 'everywhere', 'nowhere',
           'anywhere', 'whoever', 'whatever', 'however', 'whenever',
           'wherever', 'whether', 'together', 'altogether', 'another',
@@ -711,6 +737,35 @@ function fixWordSpacing(text: string): string {
           'permission', 'personal', 'personnel', 'perspective',
           'format', 'formula', 'formal', 'formation', 'formerly',
           'thermal', 'normal', 'abnormal',
+          // Additional false positives for expanded word list
+          'thereafter', 'beforehand', 'underlying', 'understand', 'understood',
+          'undertake', 'underway', 'undergo', 'underline', 'undercover',
+          'afterward', 'afterwards', 'afterward', 'toward', 'towards',
+          'upward', 'downward', 'inward', 'outward', 'forward',
+          'generate', 'generated', 'generating', 'generation',
+          'erate', 'eration', 'moderate', 'accelerate', 'tolerate',
+          'elaborate', 'integrate', 'integrated', 'demonstrate',
+          'separate', 'separated', 'operate', 'operated', 'cooperate',
+          'indicator', 'predicate', 'dedicate', 'dedicated',
+          'investigate', 'investigate', 'syndicate',
+          'coverage', 'leverage', 'average', 'beverage',
+          'baseline', 'guideline', 'timeline', 'headline', 'deadline', 'outline',
+          'decline', 'declined', 'incline',
+          'populate', 'populated', 'population',
+          'simulate', 'stimulate', 'accumulate', 'calculate',
+          'regulate', 'regulated', 'speculate',
+          'absolute', 'resolute', 'dissolve',
+          'represent', 'represents', 'representing', 'represented',
+          'present', 'presented', 'presenting', 'presentation',
+          'programme', 'programmed', 'programmatic',
+          'threshold', 'watershed',
+          'district', 'restrict', 'restricted',
+          'facility', 'ability', 'stability', 'capability',
+          'monthly', 'quarterly', 'annually', 'currently',
+          'recently', 'frequently', 'subsequently', 'consequently',
+          'apparently', 'evidently', 'sufficiently', 'consistently',
+          'persistently', 'predominantly', 'significantly',
+          'unfortunately', 'approximately', 'particularly',
         ];
         if (falsePositives.includes(combined)) return match;
         return `${prefix} ${word}`;
@@ -1059,6 +1114,47 @@ function renderMarkdownToPdf(
       continue;
     }
 
+    // Table rows (pipe-delimited markdown tables)
+    if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+      const cells = trimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      // Skip separator rows (e.g., |---|---|)
+      if (cells.every(c => /^[-:]+$/.test(c))) continue;
+      const colCount = Math.max(cells.length, 1);
+      const colW = contentWidth / colCount;
+      const rowH = 6;
+      ensureSpace(rowH + 2);
+
+      // Detect header row: first table row before any separator has been seen
+      // We track this with a local flag on the pdf object
+      const isHeader = !(pdf as any).__tableStarted;
+      if (isHeader) {
+        (pdf as any).__tableStarted = true;
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(8.5);
+        pdf.setFillColor(230, 234, 240);
+      } else {
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8.5);
+        pdf.setFillColor(255, 255, 255);
+      }
+      pdf.setTextColor(31, 41, 55);
+      pdf.setDrawColor(200, 210, 220);
+      pdf.setLineWidth(0.2);
+      for (let ci = 0; ci < colCount; ci++) {
+        const cx = margin + ci * colW;
+        pdf.rect(cx, y - rowH * 0.7, colW, rowH, 'FD');
+        const cellText = (cells[ci] || '').substring(0, 50);
+        pdf.text(cellText, cx + 2, y - 0.5);
+      }
+      y += rowH * 0.5;
+      continue;
+    }
+    // Reset table tracking when we leave a table block
+    if ((pdf as any).__tableStarted) {
+      (pdf as any).__tableStarted = false;
+      y += 2;
+    }
+
     // Normal paragraph
     y += PARA_SPACE_BEFORE;
     ensureSpace(7);
@@ -1284,7 +1380,7 @@ async function exportAsDocx(
   images?: ExportImages,
 ) {
   const [
-    { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ShadingType, ImageRun, TabStopType, TabStopPosition, Header: DocxHeader, Footer: DocxFooter, PageNumber },
+    { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ShadingType, ImageRun, TabStopType, TabStopPosition, Header: DocxHeader, Footer: DocxFooter, PageNumber, Table, TableRow, TableCell, WidthType },
     { saveAs },
   ] = await Promise.all([import('docx'), import('file-saver')]);
 
@@ -1337,14 +1433,50 @@ async function exportAsDocx(
 
   /** Convert markdown text to docx Paragraph objects with professional spacing. */
   function markdownToDocx(text: string) {
-    const paragraphs: InstanceType<typeof Paragraph>[] = [];
+    const paragraphs: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
     const lines = sanitizeNonAscii(text).split('\n');
     let inCodeBlock = false;
+
+    // Collect table rows to flush as a single Table object
+    let tableRows: string[][] = [];
+    function flushTable() {
+      if (tableRows.length === 0) return;
+      const colCount = Math.max(...tableRows.map(r => r.length));
+      const colWidthPct = Math.floor(100 / Math.max(colCount, 1));
+      const rows = tableRows.map((cells, ri) =>
+        new TableRow({
+          children: Array.from({ length: colCount }, (_, ci) =>
+            new TableCell({
+              children: [new Paragraph({
+                children: ri === 0
+                  ? [new TextRun({ text: cells[ci] || '', bold: true, size: BODY_SIZE - 2, font: BODY_FONT, color: '1F2937' })]
+                  : parseInline(cells[ci] || '', BODY_SIZE - 2),
+                spacing: { before: 20, after: 20 },
+              })],
+              width: { size: colWidthPct, type: WidthType.PERCENTAGE },
+              shading: ri === 0
+                ? { type: ShadingType.SOLID, color: 'E6EAF0' }
+                : ri % 2 === 0
+                  ? { type: ShadingType.SOLID, color: 'F8FAFC' }
+                  : undefined,
+            }),
+          ),
+        }),
+      );
+      paragraphs.push(new Table({
+        rows,
+        width: { size: 100, type: WidthType.PERCENTAGE },
+      }));
+      // Space after table
+      paragraphs.push(new Paragraph({ spacing: { before: 80, after: 80 } }));
+      tableRows = [];
+    }
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed.startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
       if (inCodeBlock) {
+        flushTable();
         paragraphs.push(new Paragraph({
           children: [new TextRun({ text: line, font: CODE_FONT, size: CODE_SIZE, color: '1E293B' })],
           shading: { type: ShadingType.SOLID, color: 'F3F4F6' },
@@ -1353,6 +1485,18 @@ async function exportAsDocx(
         }));
         continue;
       }
+
+      // Table rows (pipe-delimited)
+      if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+        const cells = trimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        // Skip separator rows
+        if (cells.every(c => /^[-:]+$/.test(c))) continue;
+        tableRows.push(cells);
+        continue;
+      }
+      // Flush accumulated table rows when we leave a table block
+      flushTable();
+
       if (!trimmed) {
         paragraphs.push(new Paragraph({ spacing: { before: SP_PARA_BEFORE, after: SP_PARA_AFTER } }));
         continue;
@@ -1452,6 +1596,7 @@ async function exportAsDocx(
         spacing: { before: SP_PARA_BEFORE, after: SP_PARA_AFTER, line: 300 },
       }));
     }
+    flushTable(); // flush any trailing table
     return paragraphs;
   }
 
@@ -1476,7 +1621,7 @@ async function exportAsDocx(
   }
 
   // ── Build document content ──
-  const children: InstanceType<typeof Paragraph>[] = [];
+  const children: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
 
   // Title
   children.push(new Paragraph({
@@ -1645,7 +1790,7 @@ async function exportAsPptx(
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE'; // 13.33" × 7.5"
   pptx.author = 'Superset AI';
-  pptx.title = 'AI Insights Report';
+  pptx.title = 'Executive Insights Presentation';
   pptx.subject = 'Generated by Superset AI Insights';
 
   // ── Design constants ──
@@ -1657,6 +1802,10 @@ async function exportAsPptx(
   const FONT = 'Calibri';
   const SLIDE_W = 13.33;
   const SLIDE_H = 7.5;
+  const CONTENT_X = 0.7;
+  const CONTENT_Y = 1.05;
+  const CONTENT_W = SLIDE_W - 1.4;
+  const CONTENT_H = SLIDE_H - 1.85;
 
   // Alert colours for PPTX
   const PPTX_ALERT: Record<string, { label: string; color: string; bg: string }> = {
@@ -1683,9 +1832,9 @@ async function exportAsPptx(
       x: 0, y: 0.8, w: SLIDE_W, h: 0,
       line: { color: 'D0D8E4', width: 0.5 },
     });
-    // Slide title in header
+    // Slide title in header — insight-led titles
     slide.addText(title, {
-      x: 0.6, y: 0.15, w: 10, h: 0.5,
+      x: 0.6, y: 0.15, w: 11.5, h: 0.5,
       fontSize: 18, bold: true, color: BRAND, fontFace: FONT,
     });
     // Footer separator
@@ -1711,20 +1860,18 @@ async function exportAsPptx(
     dataUrl: string,
     title: string,
     slideIdx: number,
-    totalSlides: number,
   ) {
     try {
       const slide = pptx.addSlide();
       applyMaster(slide, title, `${slideIdx}`);
       const dim = await getImageDimensions(dataUrl);
-      const maxW = SLIDE_W - 1.4; // margins
-      const maxH = SLIDE_H - 2.0; // header + footer
-      const fit = fitImage(dim.width, dim.height, maxW * 96, maxH * 96); // px→in
+      const maxW = SLIDE_W - 1.4;
+      const maxH = SLIDE_H - 2.0;
+      const fit = fitImage(dim.width, dim.height, maxW * 96, maxH * 96);
       const wIn = fit.width / 96;
       const hIn = fit.height / 96;
       const xOff = (SLIDE_W - wIn) / 2;
       const yOff = 1.0 + (maxH - hIn) / 2;
-      // Subtle shadow border
       slide.addShape('rect', {
         x: xOff - 0.05, y: yOff - 0.05, w: wIn + 0.1, h: hIn + 0.1,
         fill: { color: 'FFFFFF' },
@@ -1736,6 +1883,208 @@ async function exportAsPptx(
     } catch { /* skip */ }
   }
 
+  /** Parse inline markdown **bold**, *italic*, `code` into pptxgenjs text objects. */
+  function parseInlinePptx(
+    text: string,
+    baseFontSize: number,
+    baseColor: string,
+  ): Array<{ text: string; options: Record<string, unknown> }> {
+    const segments: Array<{ text: string; options: Record<string, unknown> }> = [];
+    const regex = /\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|([^*`]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+      if (m[1]) {
+        segments.push({ text: m[1], options: { fontSize: baseFontSize, bold: true, italic: true, color: baseColor, fontFace: FONT } });
+      } else if (m[2]) {
+        segments.push({ text: m[2], options: { fontSize: baseFontSize, bold: true, color: baseColor, fontFace: FONT } });
+      } else if (m[3]) {
+        segments.push({ text: m[3], options: { fontSize: baseFontSize, italic: true, color: baseColor, fontFace: FONT } });
+      } else if (m[4]) {
+        segments.push({ text: m[4], options: { fontSize: baseFontSize - 1, color: '374151', fontFace: 'Consolas' } });
+      } else if (m[5]) {
+        segments.push({ text: m[5], options: { fontSize: baseFontSize, color: baseColor, fontFace: FONT } });
+      }
+    }
+    if (!segments.length) segments.push({ text, options: { fontSize: baseFontSize, color: baseColor, fontFace: FONT } });
+    return segments;
+  }
+
+  /** Parse markdown into structured slide content blocks. */
+  type SlideBlock =
+    | { type: 'text'; parts: Array<{ text: string; options: Record<string, unknown> }> }
+    | { type: 'table'; rows: string[][] };
+
+  function markdownToSlideBlocks(text: string): SlideBlock[] {
+    const blocks: SlideBlock[] = [];
+    const lines = sanitizeNonAscii(text).split('\n');
+    let currentParts: Array<{ text: string; options: Record<string, unknown> }> = [];
+    let tableRows: string[][] = [];
+    let inCodeBlock = false;
+
+    function flushParts() {
+      if (currentParts.length) {
+        blocks.push({ type: 'text', parts: [...currentParts] });
+        currentParts = [];
+      }
+    }
+    function flushTable() {
+      if (tableRows.length) {
+        blocks.push({ type: 'table', rows: [...tableRows] });
+        tableRows = [];
+      }
+    }
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Code blocks — render as monospace text
+      if (trimmed.startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
+      if (inCodeBlock) {
+        currentParts.push({ text: `${trimmed}\n`, options: { fontSize: 9, color: '374151', fontFace: 'Consolas' } });
+        continue;
+      }
+
+      // Table rows
+      if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+        const cells = trimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        if (cells.every(c => /^[-:]+$/.test(c))) continue;
+        flushParts();
+        tableRows.push(cells);
+        continue;
+      }
+      if (tableRows.length) { flushTable(); }
+
+      if (!trimmed) {
+        currentParts.push({ text: '\n', options: { fontSize: 6 } });
+        continue;
+      }
+
+      // Alert callouts
+      const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
+      if (alertMatch) {
+        const [, tag, body] = alertMatch;
+        const a = PPTX_ALERT[tag] || PPTX_ALERT.INFO;
+        currentParts.push({ text: '\n', options: { fontSize: 3 } });
+        currentParts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(`  ${body}\n`, 11, DARK));
+        continue;
+      }
+
+      // Headings
+      const h1 = trimmed.match(/^# (.+)/);
+      if (h1) {
+        currentParts.push({ text: '\n', options: { fontSize: 5 } });
+        currentParts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } });
+        continue;
+      }
+      const h2 = trimmed.match(/^## (.+)/);
+      if (h2) {
+        currentParts.push({ text: '\n', options: { fontSize: 4 } });
+        currentParts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } });
+        continue;
+      }
+      const h3 = trimmed.match(/^### (.+)/);
+      if (h3) {
+        currentParts.push({ text: '\n', options: { fontSize: 3 } });
+        currentParts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } });
+        continue;
+      }
+
+      // Bullet list — preserve bold/italic
+      const bullet = trimmed.match(/^[-*]\s+(.+)/);
+      if (bullet) {
+        currentParts.push({ text: '   \u2022  ', options: { fontSize: 11, color: DARK, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(bullet[1], 11, DARK));
+        currentParts.push({ text: '\n', options: { fontSize: 11 } });
+        continue;
+      }
+
+      // Numbered list
+      const num = trimmed.match(/^(\d+)[.)]\s+(.+)/);
+      if (num) {
+        currentParts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(num[2], 11, DARK));
+        currentParts.push({ text: '\n', options: { fontSize: 11 } });
+        continue;
+      }
+
+      // Horizontal rule
+      if (/^---+$/.test(trimmed)) {
+        currentParts.push({ text: '\n', options: { fontSize: 5 } });
+        continue;
+      }
+
+      // Normal paragraph — preserve bold/italic
+      currentParts.push(...parseInlinePptx(trimmed, 11, DARK));
+      currentParts.push({ text: '\n', options: { fontSize: 11 } });
+    }
+    flushParts();
+    flushTable();
+    return blocks;
+  }
+
+  /** Render slide blocks onto slides, creating new slides as needed.
+   *  Tables get their own slide. Text blocks are chunked to fit. */
+  function renderBlocksToSlides(blocks: SlideBlock[], label: string) {
+    const TEXT_PARTS_PER_SLIDE = 22;
+
+    for (const block of blocks) {
+      if (block.type === 'table') {
+        // Render table on its own slide
+        slideCount += 1;
+        const slide = pptx.addSlide();
+        applyMaster(slide, label, `${slideCount}`);
+        const colCount = Math.max(...block.rows.map(r => r.length));
+        const colW = CONTENT_W / Math.max(colCount, 1);
+        const tblRows = block.rows.map((cells, ri) =>
+          Array.from({ length: colCount }, (_, ci) => ({
+            text: cells[ci] || '',
+            options: {
+              fontSize: ri === 0 ? 10 : 9.5,
+              bold: ri === 0,
+              color: DARK,
+              fontFace: FONT,
+              fill: ri === 0 ? { color: 'E6EAF0' } : ri % 2 === 0 ? { color: 'F8FAFC' } : undefined,
+              border: [
+                { type: 'solid' as const, pt: 0.5, color: 'D0D8E4' },
+                { type: 'solid' as const, pt: 0.5, color: 'D0D8E4' },
+                { type: 'solid' as const, pt: 0.5, color: 'D0D8E4' },
+                { type: 'solid' as const, pt: 0.5, color: 'D0D8E4' },
+              ],
+              valign: 'middle' as const,
+              margin: [3, 6, 3, 6],
+            },
+          })),
+        );
+        slide.addTable(tblRows, {
+          x: CONTENT_X,
+          y: CONTENT_Y,
+          w: CONTENT_W,
+          colW: Array(colCount).fill(colW),
+          rowH: 0.35,
+          autoPage: false,
+        });
+        continue;
+      }
+
+      // Text blocks — chunk into slides
+      const parts = block.parts;
+      for (let j = 0; j < parts.length; j += TEXT_PARTS_PER_SLIDE) {
+        const chunk = parts.slice(j, j + TEXT_PARTS_PER_SLIDE);
+        slideCount += 1;
+        const slide = pptx.addSlide();
+        const title = j === 0 ? label : `${label} (cont.)`;
+        applyMaster(slide, title, `${slideCount}`);
+        slide.addText(chunk as any, {
+          x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
+          fontSize: 11, color: DARK, fontFace: FONT,
+          valign: 'top', lineSpacingMultiple: 1.35,
+          paraSpaceAfter: 4,
+        });
+      }
+    }
+  }
+
   // ── Slide counter ──
   let slideCount = 0;
 
@@ -1743,7 +2092,7 @@ async function exportAsPptx(
   const titleSlide = pptx.addSlide();
   slideCount += 1;
 
-  // Full-bleed gradient-style background (solid brand colour + white overlay)
+  // Full-bleed background
   titleSlide.addShape('rect', {
     x: 0, y: 0, w: SLIDE_W, h: SLIDE_H,
     fill: { color: 'FFFFFF' },
@@ -1763,35 +2112,36 @@ async function exportAsPptx(
     x: 0, y: SLIDE_H - 0.12, w: SLIDE_W, h: 0.12,
     fill: { color: BRAND_DARK },
   });
-  // Decorative box (subtle background shape)
+  // Decorative background box
   titleSlide.addShape('rect', {
     x: 0.5, y: 1.8, w: 8, h: 3.5,
     fill: { color: LIGHT_BG },
     rectRadius: 0.1,
   });
 
-  // Title text
-  titleSlide.addText('AI Insights Report', {
-    x: 1.2, y: 2.2, w: 7, h: 1.2,
-    fontSize: 40, bold: true, color: BRAND_DARK, fontFace: FONT,
+  // Extract first H1 from content as presentation title, fallback to default
+  const allAssistant = messages.filter(m => m.role === 'assistant');
+  const firstContent = allAssistant[0]?.content || '';
+  const titleMatch = firstContent.match(/^# (.+)/m);
+  const presentationTitle = titleMatch?.[1]?.trim() || 'Executive Insights Report';
+
+  titleSlide.addText(presentationTitle, {
+    x: 1.2, y: 2.2, w: 8, h: 1.2,
+    fontSize: 36, bold: true, color: BRAND_DARK, fontFace: FONT,
     lineSpacingMultiple: 1.1,
   });
-  // Subtitle
   titleSlide.addText('Data-Driven Analysis & Recommendations', {
     x: 1.2, y: 3.3, w: 7, h: 0.5,
     fontSize: 16, color: GRAY, fontFace: FONT,
   });
-  // Divider line
   titleSlide.addShape('line', {
     x: 1.2, y: 4.0, w: 3, h: 0,
     line: { color: BRAND, width: 2 },
   });
-  // Date
   titleSlide.addText(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), {
     x: 1.2, y: 4.3, w: 5, h: 0.4,
     fontSize: 13, color: GRAY, fontFace: FONT,
   });
-  // Branding
   titleSlide.addText('Superset AI Insights', {
     x: 1.2, y: 4.7, w: 5, h: 0.35,
     fontSize: 11, color: BRAND, fontFace: FONT, italic: true,
@@ -1800,7 +2150,7 @@ async function exportAsPptx(
   // ── Chart preview slide (single chart mode) ──
   if (images?.chartPreviewUrl) {
     slideCount += 1;
-    await addChartSlide(images.chartPreviewUrl, 'Chart Analyzed', slideCount, 0);
+    await addChartSlide(images.chartPreviewUrl, 'Chart Analyzed', slideCount);
   }
 
   /** Match a ## heading text to a dashboard chart. */
@@ -1813,117 +2163,44 @@ async function exportAsPptx(
     );
   }
 
-  /** Parse a markdown section into PPTX text segments. */
-  type TextSeg = { text: string; options?: Record<string, unknown> };
-  function markdownToTextParts(text: string): TextSeg[] {
-    const parts: TextSeg[] = [];
-    const lines = sanitizeNonAscii(text).split('\n');
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) { parts.push({ text: '\n', options: { fontSize: 8 } }); continue; }
-
-      const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
-      if (alertMatch) {
-        const [, tag, body] = alertMatch;
-        const a = PPTX_ALERT[tag] || PPTX_ALERT.INFO;
-        parts.push({ text: '\n', options: { fontSize: 4 } });
-        parts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
-        parts.push({ text: `  ${body}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
-        continue;
-      }
-
-      const h1 = trimmed.match(/^# (.+)/);
-      if (h1) { parts.push({ text: '\n', options: { fontSize: 6 } }); parts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } }); continue; }
-      const h2 = trimmed.match(/^## (.+)/);
-      if (h2) { parts.push({ text: '\n', options: { fontSize: 4 } }); parts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } }); continue; }
-      const h3 = trimmed.match(/^### (.+)/);
-      if (h3) { parts.push({ text: '\n', options: { fontSize: 3 } }); parts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } }); continue; }
-
-      const bullet = trimmed.match(/^[-*]\s+(.+)/);
-      if (bullet) {
-        const cleaned = bullet[1].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-        parts.push({ text: `   \u2022  ${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
-        continue;
-      }
-
-      const num = trimmed.match(/^(\d+)[.)]\s+(.+)/);
-      if (num) {
-        const cleaned = num[2].replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-        parts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
-        parts.push({ text: `${cleaned}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
-        continue;
-      }
-
-      if (/^---+$/.test(trimmed)) { parts.push({ text: '\n', options: { fontSize: 6 } }); continue; }
-
-      const plain = trimmed.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/`([^`]+)`/g, '$1');
-      parts.push({ text: `${plain}\n`, options: { fontSize: 11, color: DARK, fontFace: FONT } });
-    }
-    return parts;
-  }
-
-  /** Render text parts across one or more slides, returning updated slideCount. */
-  function renderPartsToSlides(parts: TextSeg[], label: string) {
-    const PARTS_PER_SLIDE = 22;
-    const chunks: TextSeg[][] = [];
-    for (let j = 0; j < parts.length; j += PARTS_PER_SLIDE) {
-      chunks.push(parts.slice(j, j + PARTS_PER_SLIDE));
-    }
-    chunks.forEach((chunk, ci) => {
-      slideCount += 1;
-      const slide = pptx.addSlide();
-      const title = ci === 0 ? label : `${label} (cont.)`;
-      applyMaster(slide, title, `${slideCount}`);
-      slide.addText(chunk as any, {
-        x: 0.7, y: 1.0, w: SLIDE_W - 1.4, h: SLIDE_H - 1.8,
-        fontSize: 11, color: DARK, fontFace: FONT,
-        valign: 'top', lineSpacingMultiple: 1.4,
-        paraSpaceAfter: 4,
-      });
-    });
-  }
-
-  // ── Content slides ──
-  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  // ── Content slides — one key message per section ──
   const hasDashboardImages =
     images?.dashboardChartImages &&
     images?.dashboardCharts &&
     Object.keys(images.dashboardChartImages).length > 0;
 
-  for (let idx = 0; idx < assistantMessages.length; idx++) {
-    const msg = assistantMessages[idx];
+  for (let idx = 0; idx < allAssistant.length; idx++) {
+    const msg = allAssistant[idx];
 
-    // For dashboard chart-by-chart responses, split by ## sections
-    // so each chart gets its own chart-image slide + analysis slides
-    if (hasDashboardImages) {
-      const sections = msg.content.split(/(?=^## )/m);
-      for (const section of sections) {
-        const headingMatch = section.match(/^## (.+)/m);
-        const sectionTitle = headingMatch?.[1]?.trim();
+    // Split by ## sections — each becomes its own slide group
+    // This ensures one key message per slide (executive presentation rule)
+    const sections = msg.content.split(/(?=^## )/m);
+
+    for (const section of sections) {
+      const headingMatch = section.match(/^## (.+)/m);
+      const sectionTitle = headingMatch?.[1]?.trim();
+
+      // Dashboard mode: insert chart image slide before matching section
+      if (hasDashboardImages && sectionTitle) {
         const matched = matchChartPptx(sectionTitle);
-
-        // Chart image slide
         if (matched && images.dashboardChartImages![matched.chartId]) {
           slideCount += 1;
           await addChartSlide(
             images.dashboardChartImages![matched.chartId],
             matched.sliceName,
             slideCount,
-            0,
           );
         }
-
-        // Analysis slides for this section
-        const parts = markdownToTextParts(section);
-        if (parts.length > 0) {
-          renderPartsToSlides(parts, sectionTitle || `Insight ${idx + 1}`);
-        }
       }
-    } else {
-      // Non-dashboard or no chart images: render as before
-      const parts = markdownToTextParts(msg.content);
-      renderPartsToSlides(parts, `Insight ${idx + 1}`);
+
+      // Convert section markdown to structured blocks (text + tables)
+      const blocks = markdownToSlideBlocks(section);
+      if (blocks.length > 0) {
+        renderBlocksToSlides(
+          blocks,
+          sectionTitle || `Insight ${idx + 1}`,
+        );
+      }
     }
   }
 
