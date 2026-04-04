@@ -16,49 +16,206 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DTTM_ALIAS,
   BinaryQueryObjectFilterClause,
   AxisType,
+  CategoricalColorNamespace,
   getTimeFormatter,
   getColumnLabel,
+  getMetricLabel,
   getNumberFormatter,
+  getValueFormatter,
   LegendState,
   ensureIsArray,
+  tooltipHtml,
 } from '@superset-ui/core';
 import type { ViewRootGroup } from 'echarts/types/src/util/types';
 import type GlobalModel from 'echarts/types/src/model/Global';
 import type ComponentModel from 'echarts/types/src/model/Component';
 import { EchartsHandler, EventHandlers } from '../types';
 import Echart from '../components/Echart';
-import { TimeseriesChartTransformedProps } from './types';
+import OuDrillWrapper from '../components/OuDrillWrapper';
+import { TimeseriesChartTransformedProps, EchartsTimeseriesSeriesType } from './types';
 import { formatSeriesName } from '../utils/series';
 import { ExtraControls } from '../components/ExtraControls';
 
 const TIMER_DURATION = 300;
 
-export default function EchartsTimeseries({
+export default function EchartsTimeseries(
+  props: TimeseriesChartTransformedProps,
+) {
+  const { drillMeta } = props;
+  const isBarType =
+    props.formData.seriesType === EchartsTimeseriesSeriesType.Bar;
+  const hasDrill = isBarType && drillMeta?.canDrill === true;
+
+  if (hasDrill && drillMeta) {
+    return (
+      <OuDrillWrapper
+        drillMeta={drillMeta}
+        formData={props.formData}
+        groupby={props.groupby}
+        labelMap={props.labelMap}
+        width={props.width}
+        height={props.height}
+      >
+        {({
+          width: innerWidth,
+          height: innerHeight,
+          drillData,
+          drillGroupby,
+          onDrillClick,
+          isDrilled,
+        }) =>
+          isDrilled && drillData?.length ? (
+            <DrillBarChart
+              drillData={drillData}
+              formData={props.formData}
+              width={innerWidth}
+              height={innerHeight}
+              refs={props.refs}
+              onDrillClick={onDrillClick}
+            />
+          ) : (
+            <EchartsTimeseriesInner
+              {...props}
+              width={innerWidth}
+              height={innerHeight}
+              overrideDrillClick={onDrillClick}
+            />
+          )
+        }
+      </OuDrillWrapper>
+    );
+  }
+
+  return <EchartsTimeseriesInner {...props} />;
+}
+
+/** Simple bar chart rendered from drill data */
+function DrillBarChart({
+  drillData,
   formData,
-  height,
   width,
-  echartOptions,
-  groupby,
-  labelMap,
-  selectedValues,
-  setDataMask,
-  setControlValue,
-  legendData = [],
-  onContextMenu,
-  onLegendStateChanged,
-  onFocusedSeries,
-  xValueFormatter,
-  xAxis,
+  height,
   refs,
-  emitCrossFilters,
-  coltypeMapping,
-  onLegendScroll,
-}: TimeseriesChartTransformedProps) {
+  onDrillClick,
+}: {
+  drillData: Array<{ name: string; value: number }>;
+  formData: any;
+  width: number;
+  height: number;
+  refs: any;
+  onDrillClick?: (name: string) => void;
+}) {
+  const colorFn = CategoricalColorNamespace.getScale(
+    formData.colorScheme as string,
+  );
+  const metric = formData.metric || formData.metrics?.[0];
+  const metricLabel = getMetricLabel(metric);
+  const numberFormatter = getValueFormatter(
+    metric,
+    {},
+    {},
+    formData.yAxisFormat || formData.numberFormat,
+    formData.currencyFormat,
+  );
+
+  const echartOptions = useMemo(() => {
+    const names = drillData.map(d => d.name);
+    const values = drillData.map(d => ({
+      value: d.value,
+      itemStyle: { color: colorFn(d.name, formData.sliceId) },
+    }));
+
+    return {
+      tooltip: {
+        trigger: 'axis' as const,
+        formatter: (params: any) => {
+          const p = Array.isArray(params) ? params[0] : params;
+          return tooltipHtml(
+            [[metricLabel, numberFormatter(p.value as number)]],
+            p.name,
+          );
+        },
+      },
+      xAxis: {
+        type: 'category' as const,
+        data: names,
+        axisLabel: { rotate: 45, interval: 0 },
+      },
+      yAxis: {
+        type: 'value' as const,
+        axisLabel: { formatter: (v: number) => numberFormatter(v) },
+      },
+      series: [
+        {
+          type: 'bar' as const,
+          data: values,
+          label: {
+            show: formData.showValue,
+            position: 'top' as const,
+            formatter: (p: any) => numberFormatter(p.value as number),
+          },
+        },
+      ],
+      grid: { left: 80, right: 20, top: 20, bottom: 80 },
+    };
+  }, [drillData, colorFn, metricLabel, numberFormatter, formData]);
+
+  const eventHandlers: EventHandlers = useMemo(
+    () => ({
+      click: (params: { name: string }) => {
+        if (onDrillClick && params.name) {
+          onDrillClick(params.name);
+        }
+      },
+    }),
+    [onDrillClick],
+  );
+
+  return (
+    <Echart
+      refs={refs}
+      height={height}
+      width={width}
+      echartOptions={echartOptions}
+      eventHandlers={eventHandlers}
+      selectedValues={{}}
+      vizType={formData.vizType}
+    />
+  );
+}
+
+function EchartsTimeseriesInner({
+  overrideDrillClick,
+  ...restProps
+}: TimeseriesChartTransformedProps & {
+  overrideDrillClick?: (name: string) => void;
+}) {
+  const {
+    formData,
+    height,
+    width,
+    echartOptions,
+    groupby,
+    labelMap,
+    selectedValues,
+    setDataMask,
+    setControlValue,
+    legendData = [],
+    onContextMenu,
+    onLegendStateChanged,
+    onFocusedSeries,
+    xValueFormatter,
+    xAxis,
+    refs,
+    emitCrossFilters,
+    coltypeMapping,
+    onLegendScroll,
+  } = restProps;
   const { stack } = formData;
   const echartRef = useRef<EchartsHandler | null>(null);
   // eslint-disable-next-line no-param-reassign
@@ -151,6 +308,11 @@ export default function EchartsTimeseries({
       // Ensure that double-click events do not trigger single click event. So we put it in the timer.
       clickTimer.current = setTimeout(() => {
         const { seriesName: name } = props;
+        // If drill-down override is active, drill instead of cross-filter
+        if (overrideDrillClick && name) {
+          overrideDrillClick(name);
+          return;
+        }
         handleChange(name);
       }, TIMER_DURATION);
     },

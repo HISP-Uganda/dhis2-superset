@@ -43,6 +43,11 @@ import {
 } from './types';
 import { DEFAULT_LEGEND_FORM_DATA, OpacityEnum } from '../constants';
 import {
+  discoverOuLevels,
+  findOuGroupbyColumn,
+  getChildLevel,
+} from '../utils/ouDrillDown';
+import {
   extractGroupbyLabel,
   getChartPadding,
   getColtypesMapping,
@@ -466,6 +471,21 @@ export default function transformProps(
     series,
   };
 
+  // ── OU drill-down metadata ──
+  const ouLevels = discoverOuLevels(datasource?.columns as any[]);
+  const currentOuLevel = findOuGroupbyColumn(groupby, ouLevels);
+  const childOuLevel = currentOuLevel
+    ? getChildLevel(currentOuLevel.level, ouLevels)
+    : undefined;
+
+  const drillMeta = {
+    ouLevels,
+    currentOuLevel,
+    childOuLevel,
+    canDrill: !!childOuLevel,
+    originalOuColumn: currentOuLevel?.columnName,
+  };
+
   return {
     formData,
     width,
@@ -479,5 +499,6 @@ export default function transformProps(
     refs,
     emitCrossFilters,
     coltypeMapping,
+    drillMeta,
   };
 }

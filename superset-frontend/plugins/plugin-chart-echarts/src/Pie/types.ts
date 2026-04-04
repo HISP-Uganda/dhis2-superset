@@ -27,6 +27,7 @@ import {
   LegendType,
 } from '../types';
 import { DEFAULT_LEGEND_FORM_DATA } from '../constants';
+import type { OuDrillMeta } from '../utils/ouDrillDown';
 
 export type EchartsPieFormData = QueryFormData &
   LegendFormData & {
@@ -89,7 +90,9 @@ export const DEFAULT_FORM_DATA: EchartsPieFormData = {
 export type PieChartTransformedProps =
   BaseTransformedProps<EchartsPieFormData> &
     ContextMenuTransformedProps &
-    CrossFilterTransformedProps;
+    CrossFilterTransformedProps & {
+      drillMeta?: OuDrillMeta;
+    };
 
 export interface PieChartDataItem {
   name: string;

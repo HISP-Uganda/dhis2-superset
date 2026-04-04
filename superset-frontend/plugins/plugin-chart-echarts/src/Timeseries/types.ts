@@ -35,6 +35,7 @@ import {
   StackType,
   TitleFormData,
 } from '../types';
+import type { OuDrillMeta } from '../utils/ouDrillDown';
 
 export enum OrientationType {
   Vertical = 'vertical',
@@ -117,4 +118,5 @@ export type TimeseriesChartTransformedProps =
         type: AxisType;
       };
       onFocusedSeries: (series: string | null) => void;
+      drillMeta?: OuDrillMeta;
     };
