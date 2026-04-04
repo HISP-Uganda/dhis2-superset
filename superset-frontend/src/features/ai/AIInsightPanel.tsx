@@ -11,6 +11,7 @@ import {
   t,
 } from '@superset-ui/core';
 import { Alert, Button, Input, Loading } from '@superset-ui/core/components';
+import getBootstrapData from 'src/utils/getBootstrapData';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import {
   fetchAICapabilities,
@@ -805,6 +806,20 @@ function RenderedMarkdown({ text }: { text: string }) {
 
 /* ── Export helpers ───────────────────────────────────── */
 
+/** Read Superset brand info from bootstrap data for export documents. */
+function getBrandInfo(): { name: string; text: string } {
+  try {
+    const bootstrap = getBootstrapData();
+    const brand = (bootstrap?.common as any)?.menu_data?.brand;
+    return {
+      name: brand?.alt || brand?.tooltip || 'Superset',
+      text: brand?.text || '',
+    };
+  } catch {
+    return { name: 'Superset', text: '' };
+  }
+}
+
 /** Hex color string "#RRGGBB" → [r, g, b] tuple for jsPDF. */
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace('#', '');
@@ -1182,9 +1197,10 @@ async function exportAsPdf(
   const margin = 20;
   const contentWidth = pageWidth - margin * 2; // 170
   let y = margin;
+  const brand = getBrandInfo();
+  const brandTitle = brand.text || brand.name;
 
   // ── Cover / Title area ──
-  // Top accent line
   pdf.setFillColor(25, 118, 210);
   pdf.rect(0, 0, pageWidth, 3, 'F');
 
@@ -1192,7 +1208,7 @@ async function exportAsPdf(
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(24);
   pdf.setTextColor(25, 118, 210);
-  pdf.text('AI Insights Report', margin, y);
+  pdf.text(brandTitle, margin, y);
   y += 10;
 
   // Accent rule
@@ -1201,13 +1217,11 @@ async function exportAsPdf(
   pdf.line(margin, y, margin + 50, y);
   y += 7;
 
-  // Date & meta
+  // Date
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(9);
   pdf.setTextColor(130, 140, 155);
   pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
-  y += 4;
-  pdf.text('Superset AI Insights', margin, y);
   y += 10;
 
   /** Add a chart image to PDF preserving aspect ratio, centered. */
@@ -1217,7 +1231,6 @@ async function exportAsPdf(
       const fit = fitImage(dim.width, dim.height, contentWidth, maxH);
       const xOffset = margin + (contentWidth - fit.width) / 2;
       if (y + fit.height + 6 > pageHeight - 25) { pdf.addPage(); y = margin; }
-      // Light border around chart
       pdf.setDrawColor(210, 218, 228);
       pdf.setLineWidth(0.3);
       pdf.roundedRect(xOffset - 1, y - 1, fit.width + 2, fit.height + 2, 1, 1, 'S');
@@ -1241,98 +1254,30 @@ async function exportAsPdf(
     );
   }
 
-  // ── Messages ──
-  for (const msg of messages) {
-    const isUser = msg.role === 'user';
+  // ── Render only assistant content — no user messages or role labels ──
+  const assistantMsgs = messages.filter(m => m.role === 'assistant');
+  const hasDashboardImages =
+    images?.dashboardChartImages &&
+    images?.dashboardCharts &&
+    Object.keys(images.dashboardChartImages || {}).length > 0;
 
-    // Skip rendering "user" prompts that are the chart-by-chart instruction
-    // (they are long auto-generated prompts, not meaningful to show in export)
-    const isAutoChartPrompt =
-      isUser && msg.content.startsWith('Analyze each chart on this dashboard');
-
-    if (isAutoChartPrompt) continue;
-
-    // For assistant messages with chart images available, split by ## sections
-    // and insert chart images before each matching section
-    const hasDashboardImages =
-      !isUser &&
-      images?.dashboardChartImages &&
-      images?.dashboardCharts &&
-      Object.keys(images.dashboardChartImages).length > 0;
-
+  for (const msg of assistantMsgs) {
     if (hasDashboardImages) {
       const sections = msg.content.split(/(?=^## )/m);
       for (const section of sections) {
         const headingMatch = section.match(/^## (.+)/m);
         const matched = matchChartForSection(headingMatch?.[1]?.trim());
-
-        // Insert chart image before this section
         if (matched && images.dashboardChartImages![matched.chartId]) {
           if (y > pageHeight - 60) { pdf.addPage(); y = margin; }
           await addChartImage(images.dashboardChartImages![matched.chartId], 60);
         }
-
-        // Render the markdown section
         y = renderMarkdownToPdf(pdf, section, y, pageWidth, margin);
         y += 4;
       }
-      y += 4;
-      pdf.setDrawColor(210, 218, 228);
-      pdf.setLineWidth(0.15);
-      pdf.line(margin, y, margin + contentWidth, y);
-      y += 6;
-      continue;
-    }
-
-    // Ensure space for role label + a few lines
-    if (y > pageHeight - 40) {
-      pdf.addPage();
-      y = margin;
-    }
-
-    // Role label badge
-    if (isUser) {
-      pdf.setFillColor(25, 118, 210);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(8);
-      const labelW = pdf.getTextWidth('You') + 8;
-      pdf.roundedRect(margin, y - 3.5, labelW, 5.5, 1.5, 1.5, 'F');
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('You', margin + 4, y + 0.3);
     } else {
-      pdf.setFillColor(55, 65, 81);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(8);
-      const labelW = pdf.getTextWidth('AI Assistant') + 8;
-      pdf.roundedRect(margin, y - 3.5, labelW, 5.5, 1.5, 1.5, 'F');
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('AI Assistant', margin + 4, y + 0.3);
-    }
-    y += 7;
-
-    if (isUser) {
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      pdf.setTextColor(31, 41, 55);
-      const wrapped: string[] = pdf.splitTextToSize(
-        sanitizeNonAscii(msg.content),
-        contentWidth,
-      );
-      for (const line of wrapped) {
-        if (y > pageHeight - 22) { pdf.addPage(); y = margin; }
-        pdf.text(line, margin, y);
-        y += 5;
-      }
-    } else {
+      if (y > pageHeight - 40) { pdf.addPage(); y = margin; }
       y = renderMarkdownToPdf(pdf, msg.content, y, pageWidth, margin);
     }
-
-    y += 8;
-
-    // Separator
-    pdf.setDrawColor(210, 218, 228);
-    pdf.setLineWidth(0.15);
-    pdf.line(margin, y, margin + contentWidth, y);
     y += 6;
   }
 
@@ -1341,10 +1286,17 @@ async function exportAsPdf(
   for (let i = 1; i <= pageCount; i++) {
     pdf.setPage(i);
 
-    // Top accent bar (already on page 1, add to rest)
     if (i > 1) {
       pdf.setFillColor(25, 118, 210);
       pdf.rect(0, 0, pageWidth, 1.5, 'F');
+    }
+
+    // Header: brand name (page 2+)
+    if (i > 1) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7);
+      pdf.setTextColor(156, 163, 175);
+      pdf.text(brandTitle, margin, 8);
     }
 
     // Footer
@@ -1352,11 +1304,10 @@ async function exportAsPdf(
     pdf.setFontSize(7);
     pdf.setTextColor(156, 163, 175);
     const footerY = pageHeight - 8;
-    // Footer rule
     pdf.setDrawColor(210, 218, 228);
     pdf.setLineWidth(0.15);
     pdf.line(margin, footerY - 3, pageWidth - margin, footerY - 3);
-    pdf.text('Superset AI Insights', margin, footerY);
+    pdf.text('AI Insights', margin, footerY);
     pdf.text(
       `Page ${i} of ${pageCount}`,
       pageWidth - margin - pdf.getTextWidth(`Page ${i} of ${pageCount}`),
@@ -1621,25 +1572,24 @@ async function exportAsDocx(
   }
 
   // ── Build document content ──
+  const brand = getBrandInfo();
+  const brandTitle = brand.text || brand.name;
   const children: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
 
-  // Title
+  // Title — use Superset brand, not "AI Insights"
   children.push(new Paragraph({
-    children: [new TextRun({ text: 'AI Insights Report', bold: true, size: 44, color: '1976D2', font: HEADING_FONT })],
+    children: [new TextRun({ text: brandTitle, bold: true, size: 44, color: '1976D2', font: HEADING_FONT })],
     heading: HeadingLevel.TITLE,
     alignment: AlignmentType.LEFT,
     spacing: { after: 60 },
   }));
-  // Accent rule via bottom border
   children.push(new Paragraph({
     border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: '1976D2', space: 2 } },
     spacing: { after: 120 },
   }));
-  // Meta line
   children.push(new Paragraph({
     children: [
       new TextRun({ text: `Generated: ${new Date().toLocaleString()}`, size: 18, color: '9CA3AF', italics: true, font: BODY_FONT }),
-      new TextRun({ text: '     |     Superset AI Insights', size: 18, color: '9CA3AF', italics: true, font: BODY_FONT }),
     ],
     spacing: { after: SP_SECTION },
   }));
@@ -1666,26 +1616,19 @@ async function exportAsDocx(
     );
   }
 
-  for (const msg of messages) {
-    const isUser = msg.role === 'user';
+  // ── Render only assistant content — no user messages or role labels ──
+  const assistantMsgs = messages.filter(m => m.role === 'assistant');
+  const hasDashboardImages =
+    images?.dashboardChartImages &&
+    images?.dashboardCharts &&
+    Object.keys(images.dashboardChartImages || {}).length > 0;
 
-    // Skip auto-generated chart-by-chart prompts in export
-    if (isUser && msg.content.startsWith('Analyze each chart on this dashboard')) continue;
-
-    // For assistant messages with dashboard chart images, split by ## sections
-    const hasDashboardImages =
-      !isUser &&
-      images?.dashboardChartImages &&
-      images?.dashboardCharts &&
-      Object.keys(images.dashboardChartImages).length > 0;
-
+  for (const msg of assistantMsgs) {
     if (hasDashboardImages) {
       const sections = msg.content.split(/(?=^## )/m);
       for (const section of sections) {
         const headingMatch = section.match(/^## (.+)/m);
         const matched = matchChartDocx(headingMatch?.[1]?.trim());
-
-        // Insert chart image before this section
         if (matched && images.dashboardChartImages![matched.chartId]) {
           try {
             const imgRun = await makeImageRun(images.dashboardChartImages![matched.chartId], MAX_IMG_W, 280);
@@ -1696,28 +1639,8 @@ async function exportAsDocx(
             }));
           } catch { /* skip */ }
         }
-
-        // Render the markdown section
         children.push(...markdownToDocx(section));
       }
-      continue;
-    }
-
-    // Role label
-    children.push(new Paragraph({
-      children: [new TextRun({
-        text: isUser ? 'You' : 'AI Assistant',
-        bold: true, size: LABEL_SIZE, color: isUser ? '1976D2' : '374151', font: BODY_FONT,
-      })],
-      spacing: { before: SP_SECTION, after: 60 },
-      border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: 'E5EAF0', space: 3 } },
-    }));
-
-    if (isUser) {
-      children.push(new Paragraph({
-        children: [new TextRun({ text: sanitizeNonAscii(msg.content), size: BODY_SIZE, font: BODY_FONT })],
-        spacing: { before: 60, after: 120, line: 300 },
-      }));
     } else {
       children.push(...markdownToDocx(msg.content));
     }
@@ -1741,7 +1664,7 @@ async function exportAsDocx(
       headers: {
         default: new DocxHeader({
           children: [new Paragraph({
-            children: [new TextRun({ text: 'AI Insights Report', size: 16, color: 'B0B8C8', italics: true, font: BODY_FONT })],
+            children: [new TextRun({ text: brandTitle, size: 16, color: 'B0B8C8', italics: true, font: BODY_FONT })],
             alignment: AlignmentType.RIGHT,
           })],
         }),
@@ -1750,7 +1673,7 @@ async function exportAsDocx(
         default: new DocxFooter({
           children: [new Paragraph({
             children: [
-              new TextRun({ text: 'Superset AI Insights', size: 16, color: '9CA3AF', font: BODY_FONT }),
+              new TextRun({ text: 'AI Insights', size: 16, color: '9CA3AF', font: BODY_FONT }),
               new TextRun({ text: '\t', size: 16 }),
               new TextRun({ text: '\t', size: 16 }),
               new TextRun({ children: [PageNumber.CURRENT], size: 16, color: '9CA3AF', font: BODY_FONT }),
@@ -1789,11 +1712,14 @@ async function exportAsPptx(
 
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE'; // 13.33" × 7.5"
-  pptx.author = 'Superset AI';
-  pptx.title = 'Executive Insights Presentation';
-  pptx.subject = 'Generated by Superset AI Insights';
+  const pptxBrand = getBrandInfo();
+  pptx.author = pptxBrand.text || pptxBrand.name;
+  pptx.title = pptxBrand.text || pptxBrand.name;
+  pptx.subject = 'Executive Insights Presentation';
 
   // ── Design constants ──
+  const brandInfo = getBrandInfo();
+  const brandTitle = brandInfo.text || brandInfo.name;
   const BRAND = '1976D2';
   const BRAND_DARK = '0D47A1';
   const DARK = '1F2937';
@@ -1843,7 +1769,7 @@ async function exportAsPptx(
       line: { color: 'D0D8E4', width: 0.5 },
     });
     // Footer text
-    slide.addText('Superset AI Insights', {
+    slide.addText('AI Insights', {
       x: 0.6, y: SLIDE_H - 0.45, w: 4, h: 0.3,
       fontSize: 8, color: GRAY, fontFace: FONT,
     });
@@ -2119,18 +2045,18 @@ async function exportAsPptx(
     rectRadius: 0.1,
   });
 
-  // Extract first H1 from content as presentation title, fallback to default
+  // Brand title on title slide; extract first H1 as subtitle
   const allAssistant = messages.filter(m => m.role === 'assistant');
   const firstContent = allAssistant[0]?.content || '';
   const titleMatch = firstContent.match(/^# (.+)/m);
-  const presentationTitle = titleMatch?.[1]?.trim() || 'Executive Insights Report';
+  const subtitle = titleMatch?.[1]?.trim() || 'Data-Driven Analysis & Recommendations';
 
-  titleSlide.addText(presentationTitle, {
+  titleSlide.addText(brandTitle, {
     x: 1.2, y: 2.2, w: 8, h: 1.2,
     fontSize: 36, bold: true, color: BRAND_DARK, fontFace: FONT,
     lineSpacingMultiple: 1.1,
   });
-  titleSlide.addText('Data-Driven Analysis & Recommendations', {
+  titleSlide.addText(subtitle, {
     x: 1.2, y: 3.3, w: 7, h: 0.5,
     fontSize: 16, color: GRAY, fontFace: FONT,
   });
@@ -2141,10 +2067,6 @@ async function exportAsPptx(
   titleSlide.addText(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), {
     x: 1.2, y: 4.3, w: 5, h: 0.4,
     fontSize: 13, color: GRAY, fontFace: FONT,
-  });
-  titleSlide.addText('Superset AI Insights', {
-    x: 1.2, y: 4.7, w: 5, h: 0.35,
-    fontSize: 11, color: BRAND, fontFace: FONT, italic: true,
   });
 
   // ── Chart preview slide (single chart mode) ──

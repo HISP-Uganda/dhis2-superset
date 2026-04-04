@@ -498,21 +498,28 @@ def _build_email_html(schedule_name: str, insight_text: str) -> str:
     if in_table:
         body_html += "</table>"
 
+    # Read app name from config for branding
+    try:
+        from flask import current_app as _app
+        app_name = _app.config.get("APP_NAME", "Superset")
+    except RuntimeError:
+        app_name = "Superset"
+
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"/></head>
 <body style="margin:0;padding:0;background:#F3F4F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
 <div style="max-width:680px;margin:0 auto;background:#fff;">
   <div style="background:linear-gradient(135deg,#1E4078,#2563EB);padding:32px 24px;text-align:center;">
-    <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">AI Push Analysis Report</h1>
-    <p style="color:#BFDBFE;margin:8px 0 0;font-size:13px;">{schedule_name} &mdash; {now}</p>
+    <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">{schedule_name}</h1>
+    <p style="color:#BFDBFE;margin:8px 0 0;font-size:13px;">{app_name} &mdash; {now}</p>
   </div>
   <div style="padding:24px;font-size:14px;line-height:1.6;">
     {body_html}
   </div>
   <div style="background:#F9FAFB;padding:16px 24px;text-align:center;border-top:1px solid #E5E7EB;">
     <p style="color:#9CA3AF;font-size:11px;margin:0;">
-      This report was generated automatically by Superset AI Push Analysis.
+      AI Insights
     </p>
   </div>
 </div>
