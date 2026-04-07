@@ -1187,6 +1187,21 @@ class ProviderRegistry:
             raise AIProviderError(f"AI provider {selected_provider_id} is unavailable")
         return provider
 
+    def _lookup_provider(self, provider_id: str | None) -> BaseProvider | None:
+        """Look up a provider by ID without checking availability.
+
+        Returns the provider instance even if its health-check fails, so
+        callers can read metadata like ``is_local`` and ``provider_type``
+        without risking a timeout or exception from the availability check.
+        """
+        pid = provider_id or self._default_provider
+        if not pid:
+            # Fall back to the first registered provider (any state)
+            for provider in self._providers.values():
+                return provider
+            return None
+        return self._providers.get(pid)
+
     def _resolve_timeout(self, provider: BaseProvider) -> int:
         timeout = self._timeout
         if provider.provider_type == "localai":

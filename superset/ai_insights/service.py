@@ -6070,13 +6070,9 @@ class AIInsightService:
 
         question = str(payload.get("question") or "Summarize this chart")
         provider_id = payload.get("provider_id")
-        try:
-            resolved_provider = self.registry._resolve_provider(provider_id)
-            _is_local = resolved_provider.is_local
-            _provider_type = resolved_provider.provider_type
-        except Exception:
-            _is_local = False
-            _provider_type = None
+        _looked_up = self.registry._lookup_provider(provider_id)
+        _is_local = _looked_up.is_local if _looked_up else False
+        _provider_type = _looked_up.provider_type if _looked_up else None
         started_at = perf_counter()
         messages = _build_text_messages(
             mode=AI_MODE_CHART,
@@ -6146,13 +6142,9 @@ class AIInsightService:
 
         question = str(payload.get("question") or "Summarize this dashboard")
         provider_id = payload.get("provider_id")
-        try:
-            resolved_provider = self.registry._resolve_provider(provider_id)
-            _is_local = resolved_provider.is_local
-            _provider_type = resolved_provider.provider_type
-        except Exception:
-            _is_local = False
-            _provider_type = None
+        _looked_up = self.registry._lookup_provider(provider_id)
+        _is_local = _looked_up.is_local if _looked_up else False
+        _provider_type = _looked_up.provider_type if _looked_up else None
         started_at_dash = perf_counter()
         messages = _build_text_messages(
             mode=AI_MODE_DASHBOARD,
@@ -6330,18 +6322,13 @@ class AIInsightService:
         provider_id = payload.get("provider_id")
         model = payload.get("model")
 
-        # Resolve provider/model names for auditing before streaming starts
-        try:
-            resolved = self.registry._resolve_provider(provider_id)
-            audit_provider = resolved.provider_id
-            audit_model = model or self.registry._default_model or resolved.default_model or "unknown"
-            _is_local = resolved.is_local
-            _provider_type = resolved.provider_type
-        except Exception:
-            audit_provider = provider_id or "unknown"
-            audit_model = model or "unknown"
-            _is_local = False
-            _provider_type = None
+        # Resolve provider metadata without health-check so is_local is
+        # always accurate — prevents fallback to model calls that time out.
+        _looked_up = self.registry._lookup_provider(provider_id)
+        audit_provider = _looked_up.provider_id if _looked_up else (provider_id or "unknown")
+        audit_model = model or self.registry._default_model or (_looked_up.default_model if _looked_up else None) or "unknown"
+        _is_local = _looked_up.is_local if _looked_up else False
+        _provider_type = _looked_up.provider_type if _looked_up else None
 
         started_at = perf_counter()
         accumulated_text = ""
@@ -6447,18 +6434,13 @@ class AIInsightService:
         provider_id = payload.get("provider_id")
         model = payload.get("model")
 
-        # Resolve provider/model names for auditing before streaming starts
-        try:
-            resolved = self.registry._resolve_provider(provider_id)
-            audit_provider = resolved.provider_id
-            audit_model = model or self.registry._default_model or resolved.default_model or "unknown"
-            _is_local = resolved.is_local
-            _provider_type = resolved.provider_type
-        except Exception:
-            audit_provider = provider_id or "unknown"
-            audit_model = model or "unknown"
-            _is_local = False
-            _provider_type = None
+        # Resolve provider metadata without health-check so is_local is
+        # always accurate — prevents fallback to model calls that time out.
+        _looked_up = self.registry._lookup_provider(provider_id)
+        audit_provider = _looked_up.provider_id if _looked_up else (provider_id or "unknown")
+        audit_model = model or self.registry._default_model or (_looked_up.default_model if _looked_up else None) or "unknown"
+        _is_local = _looked_up.is_local if _looked_up else False
+        _provider_type = _looked_up.provider_type if _looked_up else None
 
         started_at = perf_counter()
         accumulated_text = ""
@@ -6618,11 +6600,8 @@ class AIInsightService:
         # Local models cannot reliably produce valid JSON chart configs.
         # Generate chart proposals in Python using the dataset schema.
         provider_id_gen = payload.get("provider_id")
-        try:
-            resolved_gen = self.registry._resolve_provider(provider_id_gen)
-            _is_local_gen = resolved_gen.is_local
-        except Exception:
-            _is_local_gen = False
+        _looked_up_gen = self.registry._lookup_provider(provider_id_gen)
+        _is_local_gen = _looked_up_gen.is_local if _looked_up_gen else False
 
         if _is_local_gen:
             charts = _build_chart_configs_python(
