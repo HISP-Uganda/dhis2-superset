@@ -1,8 +1,12 @@
 <!-- This file was generated automatically.
      Do not edit it: it is likely to be discarded and generated again before it's read next time.
      Files used to generate this file:
-       config.xml      -->
+       /Users/stephocay/projects/hispuganda/ss_latest/superset/.clickhouse/preprocessed_configs/config.xml      -->
 
+<!-- This file was generated automatically.
+     Do not edit it: it is likely to be discarded and generated again before it's read next time.
+     Files used to generate this file:
+       config.xml      -->
 <!-- Config that is used when server is run without config file. -->
 <clickhouse>
     <logger>

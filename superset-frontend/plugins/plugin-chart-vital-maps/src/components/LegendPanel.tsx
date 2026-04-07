@@ -5,6 +5,8 @@ interface Props {
   legend: LegendModel | null;
   position: LegendPosition;
   visible: boolean;
+  hiddenItems?: Set<number>;
+  onToggleItem?: (index: number) => void;
 }
 
 const POSITION_STYLE: Record<LegendPosition, React.CSSProperties> = {
@@ -14,7 +16,7 @@ const POSITION_STYLE: Record<LegendPosition, React.CSSProperties> = {
   'bottom-right': { bottom: 30, right: 10 },
 };
 
-const LegendPanel: React.FC<Props> = ({ legend, position, visible }) => {
+const LegendPanel: React.FC<Props> = ({ legend, position, visible, hiddenItems, onToggleItem }) => {
   if (!visible || !legend || legend.items.length === 0) return null;
 
   return (
@@ -31,7 +33,7 @@ const LegendPanel: React.FC<Props> = ({ legend, position, visible }) => {
         zIndex: 10,
         fontSize: 12,
         fontFamily: 'system-ui, sans-serif',
-        pointerEvents: 'none',
+        pointerEvents: onToggleItem ? 'auto' : 'none',
       }}
     >
       {legend.title && (
@@ -39,23 +41,43 @@ const LegendPanel: React.FC<Props> = ({ legend, position, visible }) => {
           {legend.title}
         </div>
       )}
-      {legend.items.map((item, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
-          <span
+      {legend.items.map((item, i) => {
+        const isHidden = hiddenItems?.has(i) ?? false;
+        return (
+          <div
+            key={i}
+            onClick={onToggleItem ? () => onToggleItem(i) : undefined}
             style={{
-              display: 'inline-block',
-              width: 16,
-              height: 14,
-              borderRadius: legend.type === 'categorical' ? '50%' : 3,
-              background: item.color,
-              marginRight: 8,
-              flexShrink: 0,
-              border: item.isNoData ? '1px solid #ccc' : 'none',
+              display: 'flex',
+              alignItems: 'center',
+              marginBottom: 4,
+              cursor: onToggleItem ? 'pointer' : 'default',
+              opacity: isHidden ? 0.35 : 1,
+              transition: 'opacity 0.15s ease',
             }}
-          />
-          <span style={{ color: item.isNoData ? '#999' : '#222', lineHeight: 1.3 }}>{item.label}</span>
-        </div>
-      ))}
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                width: 16,
+                height: 14,
+                borderRadius: legend.type === 'categorical' ? '50%' : 3,
+                background: isHidden ? '#ddd' : item.color,
+                marginRight: 8,
+                flexShrink: 0,
+                border: item.isNoData ? '1px solid #ccc' : 'none',
+              }}
+            />
+            <span style={{
+              color: item.isNoData ? '#999' : '#222',
+              lineHeight: 1.3,
+              textDecoration: isHidden ? 'line-through' : 'none',
+            }}>
+              {item.label}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 };

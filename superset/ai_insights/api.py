@@ -63,6 +63,7 @@ class AIRequestSchema(Schema):
         load_default=list,
     )
     context = fields.Dict(load_default=dict)
+    conversation_id = fields.Integer(load_default=None, allow_none=True)
     current_sql = fields.String(load_default=None, allow_none=True)
     schema = fields.String(load_default=None, allow_none=True)
     database_id = fields.Integer(load_default=None, allow_none=True)

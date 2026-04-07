@@ -18,7 +18,8 @@
  */
 import {
   getMetricLabel,
-  CategoricalColorNamespace,
+  getCategoricalSchemeRegistry,
+  getSequentialSchemeRegistry,
 } from '@superset-ui/core';
 import {
   SmallMultiplesFormData,
@@ -28,11 +29,28 @@ import {
   ReferenceLineMode,
 } from './types';
 import { resolvePresetColumn } from './dhis2Presets';
+import { formatDhis2Period } from './periodUtils';
 
 const DEFAULT_COLORS = [
   '#1976D2', '#E53935', '#43A047', '#FB8C00', '#8E24AA',
   '#00ACC1', '#D81B60', '#3949AB', '#00897B', '#F4511E',
 ];
+
+function resolveDatabaseId(datasource: any, formData: any): number | undefined {
+  const dsAny = datasource || {};
+  const extra = dsAny.extra ? (typeof dsAny.extra === 'string' ? JSON.parse(dsAny.extra) : dsAny.extra) : {};
+  return (
+    extra.dhis2_source_database_id ||
+    extra.dhis2SourceDatabaseId ||
+    extra.source_database_id ||
+    dsAny.database?.id ||
+    dsAny.database_id ||
+    formData?.dhis2SourceDatabaseId ||
+    formData?.dhis2_source_database_id ||
+    formData?.database_id ||
+    undefined
+  );
+}
 
 export default function transformProps(chartProps: any): SmallMultiplesChartProps {
   const { width, height, formData, queriesData, datasource } = chartProps;
@@ -44,8 +62,9 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
   const dsColumns = datasource?.columns || [];
   let groupCol: string;
 
-  const presetCol = resolvePresetColumn(
-    fd.dhis2_split_preset,
+  // Hidden control _resolved_split_col → camelCase resolvedSplitCol
+  const presetCol = fd.resolvedSplitCol || resolvePresetColumn(
+    fd.dhis2SplitPreset,
     dsColumns,
     dataColumns,
   );
@@ -55,7 +74,22 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
     groupCol = Array.isArray(fd.groupby) ? fd.groupby[0] : fd.groupby;
   }
 
-  const xCol = Array.isArray(fd.x_axis) ? fd.x_axis[0] : fd.x_axis;
+  const isMiniMap = (fd.miniChartType || 'line') === 'mini_map';
+  let xCol = Array.isArray(fd.xAxis) ? fd.xAxis[0] : fd.xAxis;
+
+  // For mini_map: boundary_level value is "level:columnName" (e.g. "3:district_city").
+  // camelCase conversion: boundary_level → boundaryLevel
+  // Extract the column name and use it as xCol (replaces manual x_axis).
+  if (isMiniMap) {
+    const blValue = String(fd.boundaryLevel || '');
+    const colonIdx = blValue.indexOf(':');
+    if (colonIdx >= 0) {
+      const ouCol = blValue.slice(colonIdx + 1);
+      if (ouCol && dataColumns.includes(ouCol)) {
+        xCol = ouCol;
+      }
+    }
+  }
 
   // Resolve metric labels
   const rawMetrics = Array.isArray(fd.metrics) ? fd.metrics : [fd.metrics];
@@ -63,22 +97,64 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
     .filter(Boolean)
     .map((m: any) => getMetricLabel(m));
 
-  // Resolve colors from scheme or defaults
-  const colorScheme = fd.color_scheme || 'supersetColors';
+  // ── Unified color scheme resolution ──
+  // Single merged color_scheme control lists both categorical and sequential schemes.
+  // Try categorical registry first, then sequential. The resolved palette is used
+  // for ALL chart types automatically.
+  const schemeKey = fd.colorScheme || 'supersetColors';
+
+  let schemeColors: string[] = DEFAULT_COLORS;
+  let linearColors: string[] = [];
   let metricColors: string[];
+  let resolved = false;
+
+  // Try categorical registry first
   try {
-    const ns = CategoricalColorNamespace.getScale(colorScheme);
-    metricColors = metricLabels.map((label: string) => ns(label));
-  } catch {
-    metricColors = metricLabels.map(
-      (_: string, i: number) => DEFAULT_COLORS[i % DEFAULT_COLORS.length],
-    );
+    const catRegistry = getCategoricalSchemeRegistry();
+    const catScheme = catRegistry.get(schemeKey);
+    if (catScheme && catScheme.colors.length > 0) {
+      schemeColors = catScheme.colors;
+      // Derive a linear gradient from categorical colors for heatmap/map
+      linearColors = schemeColors.slice(0, Math.min(9, schemeColors.length));
+      resolved = true;
+    }
+  } catch { /* try sequential */ }
+
+  // Try sequential registry if not found in categorical
+  if (!resolved) {
+    try {
+      const seqRegistry = getSequentialSchemeRegistry();
+      const seqScheme = seqRegistry.get(schemeKey);
+      if (seqScheme) {
+        linearColors = seqScheme.getColors(9);
+        // For series/pie/donut, sample distinct colors from the gradient
+        schemeColors = seqScheme.getColors(
+          Math.max(metricLabels.length, 8),
+        );
+        resolved = true;
+      }
+    } catch { /* use defaults */ }
   }
+
+  // Fallback linear gradient if still empty
+  if (linearColors.length === 0) {
+    linearColors = schemeColors.length >= 3
+      ? schemeColors.slice(0, Math.min(9, schemeColors.length))
+      : ['#eff3ff', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
+         '#2171b5', '#08519c', '#08306b', '#041733'];
+  }
+
+  metricColors = metricLabels.map(
+    (_: string, i: number) => schemeColors[i % schemeColors.length],
+  );
 
   // Group data by split dimension → panels
   const groups = new Map<
     string,
-    { xValues: string[]; seriesMap: Map<string, number[]> }
+    {
+      xValues: string[];
+      seriesMap: Map<string, number[]>;
+    }
   >();
 
   for (const row of data) {
@@ -106,10 +182,10 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
   let globalYMin = Infinity;
   let globalYMax = -Infinity;
 
-  const refMode = (fd.reference_line_mode || 'none') as ReferenceLineMode;
+  const refMode = (fd.referenceLineMode || 'none') as ReferenceLineMode;
   const globalRefVal =
-    fd.reference_value !== '' && fd.reference_value != null
-      ? Number(fd.reference_value)
+    fd.referenceValue !== '' && fd.referenceValue != null
+      ? Number(fd.referenceValue)
       : null;
 
   for (const [title, group] of groups) {
@@ -151,9 +227,11 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
           : null;
     }
 
+    // mini_map GeoJSON is built client-side from DHIS2 boundaries (in SmallMultiplesViz)
     panels.push({
-      title,
-      xValues: group.xValues,
+      title: formatDhis2Period(title),
+      xValues: group.xValues.map(formatDhis2Period),
+      rawXValues: group.xValues,
       yValues: series[0]?.values || [],
       series,
       latestValues,
@@ -165,7 +243,7 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
   if (!Number.isFinite(globalYMax)) globalYMax = 100;
 
   // Sort panels
-  const sortPanels = (fd.sort_panels || 'alphabetical') as string;
+  const sortPanels = (fd.sortPanels || 'alphabetical') as string;
   if (sortPanels === 'alphabetical') {
     panels.sort((a, b) => a.title.localeCompare(b.title));
   } else if (sortPanels === 'latest-value') {
@@ -185,7 +263,7 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
   }
 
   // Top N filtering
-  const topN = fd.top_n ?? 0;
+  const topN = fd.topN ?? 0;
   if (topN > 0) {
     panels = panels.slice(0, topN);
   }
@@ -194,33 +272,39 @@ export default function transformProps(chartProps: any): SmallMultiplesChartProp
     width,
     height,
     panels,
-    columns: fd.grid_columns ?? 4,
-    miniChartType: fd.mini_chart_type || 'line',
-    syncYAxis: fd.sync_y_axis ?? true,
-    showPanelTitle: fd.show_panel_title ?? true,
-    showXAxis: fd.show_x_axis ?? false,
-    showYAxis: fd.show_y_axis ?? false,
-    panelPadding: fd.panel_padding ?? 8,
-    lineWidth: fd.line_width ?? 1.5,
+    columns: fd.gridColumns ?? 4,
+    miniChartType: fd.miniChartType || 'line',
+    syncYAxis: fd.syncYAxis ?? true,
+    showPanelTitle: fd.showPanelTitle ?? true,
+    showXAxis: fd.showXAxis ?? false,
+    showYAxis: fd.showYAxis ?? false,
+    panelPadding: fd.panelPadding ?? 8,
+    lineWidth: fd.lineWidth ?? 1.5,
     globalYMin,
     globalYMax,
-    yAxisFormat: fd.y_axis_format || 'SMART_NUMBER',
+    yAxisFormat: fd.yAxisFormat || 'SMART_NUMBER',
     sortPanels,
     topN,
     showReferenceLine: refMode !== 'none',
     referenceValue: globalRefVal,
     referenceLineMode: refMode,
-    referenceColor: fd.reference_color || '#E53935',
-    showPanelSubtitle: fd.show_panel_subtitle ?? false,
-    densityTier: (fd.density_tier || 'compact') as string,
-    panelBorderRadius: fd.panel_border_radius ?? 8,
-    nullValueText: fd.null_value_text || '–',
-    showLegend: fd.show_legend ?? metricLabels.length > 1,
-    legendPosition: fd.legend_position || 'top',
-    syncTooltips: fd.sync_tooltips ?? true,
-    responsiveColumns: fd.responsive_columns ?? true,
-    minPanelWidth: fd.min_panel_width ?? 180,
+    referenceColor: fd.referenceColor || '#E53935',
+    showPanelSubtitle: fd.showPanelSubtitle ?? false,
+    densityTier: (fd.densityTier || 'compact') as string,
+    panelBorderRadius: fd.panelBorderRadius ?? 8,
+    nullValueText: fd.nullValueText || '–',
+    showLegend: fd.showLegend ?? metricLabels.length > 1,
+    legendPosition: fd.legendPosition || 'top',
+    syncTooltips: fd.syncTooltips ?? true,
+    responsiveColumns: fd.responsiveColumns ?? true,
+    minPanelWidth: fd.minPanelWidth ?? 180,
+    fixedPanelHeight: fd.panelHeight ?? 0,
     metricLabels,
     metricColors,
+    schemeColors,
+    linearColors,
+    databaseId: resolveDatabaseId(datasource, formData),
+    boundaryLevel: fd.boundaryLevel || undefined,
+    chartId: fd.sliceId ? Number(fd.sliceId) : undefined,
   };
 }

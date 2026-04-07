@@ -1,0 +1,11 @@
+ATTACH TABLE _ UUID 'fa25cf53-d8fc-4aa1-aaeb-986e4e50cc5d'
+(
+    `region` String,
+    `period` String,
+    `c_105_ep01a_suspected_malaria_fever` Nullable(Float64),
+    `c_105_ep01c_malaria_confirmed_b_s_rdt` Nullable(Float64),
+    `c_108_ep01a1_malaria_total_cases` Nullable(Float64)
+)
+ENGINE = MergeTree
+ORDER BY (region, period)
+SETTINGS index_granularity = 8192

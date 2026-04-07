@@ -30,6 +30,10 @@ export interface MiniPanelConfig {
   yFormatter: (v: number) => string;
   referenceValue: number | null;
   referenceColor: string;
+  /** Categorical scheme colors for pie/donut that need a full palette */
+  schemeColors?: string[];
+  /** Sequential/linear scheme colors for heatmap */
+  linearColors?: string[];
 }
 
 function buildMarkLine(
@@ -97,13 +101,15 @@ export function buildLineBarAreaOption(
     referenceColor,
   );
 
+  const fewPoints = panel.xValues.length <= 2;
   const series = panel.series.map((s: PanelSeries, idx: number) => {
     const base: any = {
       data: s.values,
       smooth: chartType === 'line' || chartType === 'area',
       lineStyle: { width: lineWidth, color: s.color },
       itemStyle: { color: s.color },
-      symbol: 'none',
+      symbol: fewPoints ? 'circle' : 'none',
+      symbolSize: fewPoints ? 6 : 0,
       name: s.metricLabel,
     };
 
@@ -159,7 +165,16 @@ export function buildPieOption(
   const radius =
     config.chartType === 'donut' ? ['35%', '65%'] : ['0%', '65%'];
 
+  // Apply scheme colors to pie slices
+  const colors = config.schemeColors;
+  if (colors && colors.length > 0) {
+    data.forEach((d, i) => {
+      (d as any).itemStyle = { color: colors[i % colors.length] };
+    });
+  }
+
   return {
+    color: colors,
     tooltip: {
       trigger: 'item',
       textStyle: { fontSize: 10 },
@@ -288,7 +303,9 @@ export function buildHeatmapOption(
       bottom: 0,
       show: false,
       inRange: {
-        color: ['#E3F2FD', '#1976D2', '#0D3B66'],
+        color: config.linearColors && config.linearColors.length >= 3
+          ? config.linearColors
+          : ['#E3F2FD', '#64B5F6', '#1976D2', '#0D3B66'],
       },
     },
     series: [

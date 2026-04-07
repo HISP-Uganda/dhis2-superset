@@ -16,13 +16,22 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { t } from '@superset-ui/core';
+import {
+  t,
+  getCategoricalSchemeRegistry,
+  getSequentialSchemeRegistry,
+  SequentialScheme,
+} from '@superset-ui/core';
 import {
   ControlPanelConfig,
   D3_FORMAT_OPTIONS,
   sharedControls,
 } from '@superset-ui/chart-controls';
-import { detectAvailablePresets } from './dhis2Presets';
+import { detectAvailablePresets, resolvePresetColumn } from './dhis2Presets';
+import { getDatasourceBoundaryLevels } from '../DHIS2Map/boundaryLevels';
+
+const categoricalSchemeRegistry = getCategoricalSchemeRegistry();
+const sequentialSchemeRegistry = getSequentialSchemeRegistry();
 
 const config: ControlPanelConfig = {
   controlPanelSections: [
@@ -35,10 +44,10 @@ const config: ControlPanelConfig = {
             name: 'dhis2_split_preset',
             config: {
               type: 'SelectControl',
-              label: t('Compare By (DHIS2)'),
+              label: t('Split Dimension'),
               description: t(
-                'Auto-detected comparison dimensions from the DHIS2 dataset. ' +
-                  'Select one to split data into panels by OU level or period. ' +
+                'Column that creates panels. Each unique value becomes one panel. ' +
+                  'DHIS2 presets auto-detect OU levels and period columns. ' +
                   'Choose "Custom Column" to pick any column manually.',
               ),
               default: 'custom',
@@ -60,13 +69,29 @@ const config: ControlPanelConfig = {
         ],
         [
           {
+            name: '_resolved_split_col',
+            config: {
+              type: 'HiddenControl',
+              hidden: true,
+              mapStateToProps: (state: any) => {
+                const preset = state.controls?.dhis2_split_preset?.value;
+                const dsColumns = state.datasource?.columns || [];
+                const dataColumns = dsColumns.map((c: any) => String(c.column_name || ''));
+                const resolved = resolvePresetColumn(preset, dsColumns, dataColumns);
+                return { value: resolved || null };
+              },
+            },
+          },
+        ],
+        [
+          {
             name: 'groupby',
             config: {
               ...sharedControls.groupby,
-              label: t('Split Dimension'),
+              label: t('Custom Split Column'),
               description: t(
-                'Column to split data into panels (e.g. District). ' +
-                  'Ignored when a DHIS2 preset is selected above.',
+                'Column to split data into panels (e.g. District or Period). ' +
+                  'Only used when "Custom Column" is selected above.',
               ),
               multi: false,
               visibility: ({ controls }: any) =>
@@ -80,8 +105,11 @@ const config: ControlPanelConfig = {
             name: 'x_axis',
             config: {
               ...sharedControls.groupby,
-              label: t('X-Axis (Time / Category)'),
-              description: t('Column for the X-axis within each panel'),
+              label: t('X-Axis / Category'),
+              description: t(
+                'Column for the X-axis within each panel (e.g. Period for charts, ' +
+                  'Region name for maps).',
+              ),
               multi: false,
             },
           },
@@ -99,6 +127,48 @@ const config: ControlPanelConfig = {
             },
           },
         ],
+        [
+          {
+            name: 'boundary_level',
+            config: {
+              type: 'SelectControl',
+              label: t('DHIS2 Boundary Level'),
+              description: t(
+                'Organization unit level for the map. Loads boundaries and ' +
+                  'disaggregates data by the matching OU column.',
+              ),
+              default: '2:region',
+              choices: [
+                ['2:region', t('Level 2 (Region)')],
+              ],
+              mapStateToProps: (state: any) => {
+                const dsColumns = state.datasource?.columns || [];
+                const levels = getDatasourceBoundaryLevels(dsColumns);
+                if (levels.length > 0) {
+                  return {
+                    choices: levels.map(l => [
+                      `${l.level}:${l.columnName || ''}`,
+                      `Level ${l.level} (${l.label})`,
+                    ]),
+                  };
+                }
+                return {
+                  choices: [
+                    ['1:national', t('Level 1 (National)')],
+                    ['2:region', t('Level 2 (Region)')],
+                    ['3:district_city', t('Level 3 (District)')],
+                    ['4:dlg_municipality_city_council', t('Level 4 (County)')],
+                    ['5:sub_county_town_council_division', t('Level 5 (Sub-county)')],
+                    ['6:health_facility', t('Level 6 (Facility)')],
+                  ],
+                };
+              },
+              renderTrigger: false,
+              visibility: ({ controls }: any) =>
+                controls?.mini_chart_type?.value === 'mini_map',
+            },
+          },
+        ],
         ['adhoc_filters'],
         ['row_limit'],
       ],
@@ -113,14 +183,14 @@ const config: ControlPanelConfig = {
             name: 'grid_columns',
             config: {
               type: 'SliderControl',
-              label: t('Max Grid Columns'),
+              label: t('Grid Columns'),
               description: t(
-                'Maximum columns in the grid. When responsive mode is on, ' +
+                'Number of columns in the grid. When responsive mode is on, ' +
                   'columns auto-reduce on smaller widths.',
               ),
               default: 4,
               min: 1,
-              max: 8,
+              max: 12,
               step: 1,
               renderTrigger: true,
             },
@@ -129,11 +199,28 @@ const config: ControlPanelConfig = {
             name: 'panel_padding',
             config: {
               type: 'SliderControl',
-              label: t('Panel Padding'),
+              label: t('Panel Gap'),
               default: 8,
               min: 0,
               max: 24,
               step: 2,
+              renderTrigger: true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'panel_height',
+            config: {
+              type: 'SliderControl',
+              label: t('Panel Height (px)'),
+              description: t(
+                'Fixed height for each panel chart area. Set to 0 for auto-sizing.',
+              ),
+              default: 0,
+              min: 0,
+              max: 800,
+              step: 10,
               renderTrigger: true,
             },
           },
@@ -193,27 +280,9 @@ const config: ControlPanelConfig = {
                 ['heatmap', t('Heatmap (needs 2+ metrics)')],
                 ['big_number', t('Big Number / KPI')],
                 ['gauge', t('Gauge')],
+                ['mini_map', t('Map (Choropleth)')],
               ],
               renderTrigger: true,
-            },
-          },
-          {
-            name: 'color_scheme',
-            config: {
-              type: 'ColorSchemeControl',
-              label: t('Color Scheme'),
-              default: 'supersetColors',
-              renderTrigger: true,
-              schemes: () => {
-                try {
-                  // eslint-disable-next-line global-require
-                  const { getCategoricalSchemeRegistry } = require('@superset-ui/core');
-                  return getCategoricalSchemeRegistry().getMap();
-                } catch {
-                  return {};
-                }
-              },
-              isLinear: false,
             },
           },
         ],
@@ -242,10 +311,51 @@ const config: ControlPanelConfig = {
               ),
               default: true,
               renderTrigger: true,
-              visibility: ({ controls }: any) =>
-                ['line', 'bar', 'area', 'scatter', 'gauge'].includes(
-                  controls?.mini_chart_type?.value,
-                ),
+              visibility: ({ controls }: any) => {
+                const ct = controls?.mini_chart_type?.value;
+                return ['line', 'bar', 'area', 'scatter', 'gauge'].includes(ct);
+              },
+            },
+          },
+        ],
+      ],
+    },
+    {
+      label: t('Color Schemes'),
+      tabOverride: 'customize',
+      expanded: true,
+      controlSetRows: [
+        [
+          {
+            name: 'color_scheme',
+            config: {
+              type: 'ColorSchemeControl',
+              label: t('Color Scheme'),
+              description: t(
+                'Categorical and sequential palettes merged. ' +
+                  'Selecting any scheme auto-applies to all chart types.',
+              ),
+              default: categoricalSchemeRegistry.getDefaultKey(),
+              renderTrigger: true,
+              choices: () => {
+                const cat: [string, string][] = categoricalSchemeRegistry
+                  .keys()
+                  .map(key => [key, key]);
+                const seq: [string, string][] = (
+                  sequentialSchemeRegistry.values() as SequentialScheme[]
+                ).map(s => [s.id, s.label || s.id]);
+                return [...cat, ...seq];
+              },
+              schemes: () => {
+                const merged: Record<string, any> = {};
+                categoricalSchemeRegistry.keys().forEach(key => {
+                  merged[key] = categoricalSchemeRegistry.get(key);
+                });
+                (sequentialSchemeRegistry.values() as SequentialScheme[]).forEach(s => {
+                  merged[s.id] = s;
+                });
+                return merged;
+              },
             },
           },
         ],
@@ -279,27 +389,10 @@ const config: ControlPanelConfig = {
               type: 'CheckboxControl',
               label: t('Show Shared Legend'),
               description: t(
-                'Show a shared legend above or below the grid when using multiple metrics.',
+                'Show a shared legend below the grid (once) for all panels.',
               ),
               default: true,
               renderTrigger: true,
-            },
-          },
-        ],
-        [
-          {
-            name: 'legend_position',
-            config: {
-              type: 'SelectControl',
-              label: t('Legend Position'),
-              default: 'top',
-              choices: [
-                ['top', t('Top')],
-                ['bottom', t('Bottom')],
-              ],
-              renderTrigger: true,
-              visibility: ({ controls }: any) =>
-                Boolean(controls?.show_legend?.value),
             },
           },
         ],
@@ -431,7 +524,7 @@ const config: ControlPanelConfig = {
               default: false,
               renderTrigger: true,
               visibility: ({ controls }: any) =>
-                !['pie', 'donut', 'big_number', 'gauge'].includes(
+                !['pie', 'donut', 'big_number', 'gauge', 'mini_map'].includes(
                   controls?.mini_chart_type?.value,
                 ),
             },
@@ -444,7 +537,7 @@ const config: ControlPanelConfig = {
               default: false,
               renderTrigger: true,
               visibility: ({ controls }: any) =>
-                !['pie', 'donut', 'big_number', 'gauge'].includes(
+                !['pie', 'donut', 'big_number', 'gauge', 'mini_map'].includes(
                   controls?.mini_chart_type?.value,
                 ),
             },

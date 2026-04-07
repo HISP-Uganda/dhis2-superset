@@ -130,6 +130,7 @@ const config: ControlPanelConfig = {
                 ['horizontal', t('Horizontal Row')],
                 ['vertical', t('Vertical List')],
                 ['split', t('Split (Label ← → Value)')],
+                ['summary-row', t('Summary Row (Label Left · Value Right)')],
                 ['micro-card', t('Micro Cards')],
                 ['compact-kpi', t('Compact KPI Matrix')],
               ],

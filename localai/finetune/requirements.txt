@@ -1,0 +1,27 @@
+# LoRA/QLoRA fine-tuning pipeline for superset-ai-insights-model
+# Install: pip install -r localai/finetune/requirements.txt
+
+# Core training
+torch>=2.1.0
+transformers>=4.40.0
+peft>=0.10.0
+trl>=0.8.0
+bitsandbytes>=0.43.0
+accelerate>=0.28.0
+datasets>=2.18.0
+
+# GGUF conversion & quantization
+llama-cpp-python>=0.2.60
+
+# Evaluation
+rouge-score>=0.1.2
+nltk>=3.8
+scikit-learn>=1.4.0
+
+# Data preparation
+jsonlines>=4.0.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0
+huggingface-hub>=0.22.0

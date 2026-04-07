@@ -22,11 +22,11 @@ DEFAULT_AI_INSIGHTS_CONFIG: dict[str, Any] = {
     "max_dashboard_charts": 12,
     "max_follow_up_messages": 6,
     "max_generated_sql_rows": 200,
-    "request_timeout_seconds": 30,
-    "max_tokens": 1200,
+    "request_timeout_seconds": 300,
+    "max_tokens": 16384,
     "temperature": 0.1,
-    "default_provider": None,
-    "default_model": None,
+    "default_provider": "localai",
+    "default_model": "ai-insights-model-26.04",
     "allowed_roles": [],
     "allow_public_dashboard_ai": False,
     "public_ai_max_tokens": 600,
@@ -37,7 +37,18 @@ DEFAULT_AI_INSIGHTS_CONFIG: dict[str, Any] = {
         AI_MODE_SQL: [],
         AI_MODE_PUBLIC_DASHBOARD: [],
     },
-    "providers": {},
+    "providers": {
+        "localai": {
+            "enabled": True,
+            "type": "localai",
+            "label": "LocalAI",
+            "base_url": "http://127.0.0.1:39671",
+            "api_key_env": "LOCALAI_API_KEY",
+            "models": ["ai-insights-model-26.04"],
+            "default_model": "ai-insights-model-26.04",
+            "is_local": True,
+        },
+    },
 }
 
 
@@ -69,8 +80,12 @@ def get_ai_insights_config() -> dict[str, Any]:
     # Ensure every provider config has models populated from model catalogs
     # so that the capabilities API always returns a usable model list.
     try:
-        from superset.ai_insights.settings import _ensure_provider_defaults
+        from superset.ai_insights.settings import (
+            _ensure_provider_defaults,
+            apply_localai_recommended_defaults,
+        )
 
+        merged = apply_localai_recommended_defaults(merged)
         providers = merged.get("providers") or {}
         for pid, pcfg in list(providers.items()):
             if isinstance(pcfg, dict):

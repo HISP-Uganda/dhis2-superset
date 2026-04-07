@@ -1,7 +1,7 @@
 import type { TooltipPayload } from '../plugin/types';
 
 export function formatMetricValue(value: unknown): string {
-  if (value === null || value === undefined) return '—';
+  if (value === null || value === undefined) return '\u2014';
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return String(value);
     if (Math.abs(value) >= 1_000_000) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
@@ -19,10 +19,11 @@ export function buildTooltipPayload(
     categoryCol?: string;
     extraCols?: string[];
     metricLabel?: string;
+    featureColor?: string;
   },
 ): TooltipPayload {
   if (!properties) return {};
-  const { metricCol, labelCol, categoryCol, extraCols = [], metricLabel } = opts;
+  const { metricCol, labelCol, categoryCol, extraCols = [], metricLabel, featureColor } = opts;
 
   const payload: TooltipPayload = {};
   if (labelCol && properties[labelCol] !== undefined) {
@@ -34,6 +35,17 @@ export function buildTooltipPayload(
   }
   if (categoryCol && properties[categoryCol] !== undefined) {
     payload.category = String(properties[categoryCol]);
+  }
+
+  // Enhanced tooltip fields
+  if (featureColor) {
+    payload.color = featureColor;
+  }
+  if (properties.__vm_pct !== undefined) {
+    payload.percentage = String(properties.__vm_pct);
+  }
+  if (properties.__vm_rank !== undefined) {
+    payload.rank = String(properties.__vm_rank);
   }
 
   if (extraCols.length > 0) {

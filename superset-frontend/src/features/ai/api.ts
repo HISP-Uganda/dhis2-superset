@@ -55,6 +55,7 @@ export async function requestAIInsight(input: {
   question: string;
   context: Record<string, unknown>;
   conversation: AIConversationMessage[];
+  conversationId?: number | null;
   currentSql?: string;
   databaseId?: number;
   schema?: string | null;
@@ -68,6 +69,7 @@ export async function requestAIInsight(input: {
       question: input.question,
       context: input.context,
       conversation: input.conversation,
+      conversation_id: input.conversationId ?? null,
       current_sql: input.currentSql || null,
       database_id: input.databaseId ?? null,
       schema: input.schema ?? null,
@@ -89,6 +91,7 @@ export async function requestAIInsightStream(input: {
   question: string;
   context: Record<string, unknown>;
   conversation: AIConversationMessage[];
+  conversationId?: number | null;
   onChunk: (text: string) => void;
   onDone: (fullText: string) => void;
   onError: (error: string) => void;
@@ -128,6 +131,7 @@ export async function requestAIInsightStream(input: {
       question: input.question,
       context: input.context,
       conversation: input.conversation,
+      conversation_id: input.conversationId ?? null,
     }),
   });
 
@@ -146,6 +150,16 @@ export async function requestAIInsightStream(input: {
   const decoder = new TextDecoder();
   let fullText = '';
   let buffer = '';
+  let lastEmitAt = 0;
+
+  const emitChunk = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastEmitAt < 80) {
+      return;
+    }
+    lastEmitAt = now;
+    input.onChunk(fullText);
+  };
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -166,9 +180,10 @@ export async function requestAIInsightStream(input: {
         }
         if (data.text) {
           fullText += data.text;
-          input.onChunk(fullText);
+          emitChunk();
         }
         if (data.done) {
+          emitChunk(true);
           input.onDone(fullText);
           return;
         }
@@ -177,6 +192,7 @@ export async function requestAIInsightStream(input: {
       }
     }
   }
+  emitChunk(true);
   input.onDone(fullText);
 }
 

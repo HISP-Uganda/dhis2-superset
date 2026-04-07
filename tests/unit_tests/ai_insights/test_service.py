@@ -5,7 +5,19 @@ from types import SimpleNamespace
 import pytest
 from flask import g
 
-from superset.ai_insights.service import AIInsightError, AIInsightService
+from superset.ai_insights.service import (
+    AIInsightError,
+    AIInsightService,
+    _build_localai_evidence_digest,
+    _build_text_messages,
+    _context_to_plain_text,
+    _detect_insight_mode,
+    _extract_user_focus,
+    _proofread_generated_insight,
+    _looks_placeholder_output,
+    _strip_prompt_leakage,
+    _looks_repetitive_model_output,
+)
 from tests.conftest import with_config
 
 
@@ -98,6 +110,180 @@ def test_generate_chart_insight_rejects_non_mart_datasource(
 
     with pytest.raises(AIInsightError, match="MART-backed chart datasource"):
         AIInsightService().generate_chart_insight(12, {"question": "Summarize this chart"})
+
+
+def test_build_text_messages_uses_dynamic_prompt_for_localai_chart() -> None:
+    messages = _build_text_messages(
+        mode="chart",
+        question="Summarize this chart",
+        context_payload={
+            "chart": {"name": "Admissions Vs Death", "viz_type": "bar"},
+            "query_result": {
+                "columns": ["region", "admissions", "deaths"],
+                "row_count": 3,
+                "sample_rows": [
+                    {"region": "North", "admissions": 120, "deaths": 12},
+                    {"region": "East", "admissions": 90, "deaths": 7},
+                    {"region": "West", "admissions": 70, "deaths": 4},
+                ],
+            },
+        },
+        conversation=[],
+        is_local_provider=True,
+        provider_type="localai",
+    )
+
+    assert messages[0]["role"] == "system"
+    assert messages[-1]["role"] == "user"
+    assert "__direct_report__" not in [message["role"] for message in messages]
+    assert "EVIDENCE SUMMARY:" in messages[-1]["content"]
+    assert "Admissions Vs Death" in messages[-1]["content"]
+
+
+def test_repetitive_model_output_detector_flags_pipe_delimited_slug_spam() -> None:
+    text = (
+        "admissionsvsdeathsovertime|Admissions Vs Death|Admissions vs Deaths by Region|"
+        "admissionsvsdeathsovertime|admissionsvsdeathsovertime|admissionsvsdeathsovertime|"
+        "admissionsvsdeathsovertime|admissionsvsdeathsovertime"
+    )
+
+    assert _looks_repetitive_model_output(text) is True
+
+
+def test_detect_insight_mode_supports_requested_aliases() -> None:
+    assert _detect_insight_mode("Quarter over quarter changes") == "period_comparison"
+    assert _detect_insight_mode("Cross chart analysis") == "cross_chart"
+    assert _detect_insight_mode("Metrics to watch") == "metrics_attention"
+    assert _detect_insight_mode("Deep dive") == "deep_dive"
+
+
+def test_extract_user_focus_preserves_dynamic_user_input() -> None:
+    mode = _detect_insight_mode(
+        "Key takeaways focusing on deaths by region for the latest quarter"
+    )
+    focus = _extract_user_focus(
+        "Key takeaways focusing on deaths by region for the latest quarter",
+        mode,
+    )
+
+    assert mode == "key_takeaways"
+    assert "deaths by region" in focus.lower()
+    assert "latest quarter" in focus.lower()
+
+
+def test_strip_prompt_leakage_removes_truncation_marker_lines() -> None:
+    cleaned = _strip_prompt_leakage(
+        "... and 7 more rows\n\n## Key Takeaways\n\n- Signal"
+    )
+
+    assert "... and 7 more rows" not in cleaned
+    assert "## Key Takeaways" in cleaned
+
+
+def test_placeholder_output_detector_flags_stub_scaffolding() -> None:
+    assert _looks_placeholder_output("[STUB\nWrite a 70-120 word paragraph]") is True
+
+
+def test_placeholder_output_detector_flags_raw_context_echo() -> None:
+    text = (
+        "Chart 9: Map 03\n"
+        "Type: chart\n"
+        "Columns: region, population\n"
+        "Total rows: 1\n"
+        "Sample data (1 rows):\n"
+        "Row 1: region=Unknown, population=1"
+    )
+
+    assert _looks_placeholder_output(text) is True
+
+
+def test_placeholder_output_detector_flags_collapsed_context_echo_block() -> None:
+    text = (
+        "Chart9:Malaria Summary KPIs Type: chart Columns: region, Total Cases, Total Tests "
+        "Totalrows:15 Pre-computedanalytics: Metric'Total Cases':min=27,711,max=404,630 "
+        "Highest: South Buganda (404,630) Lowest: Karamoja (134,969) "
+        "Sample data (3 rows): Row1:region=Acholi, Total Cases=239,913"
+    )
+
+    assert _looks_placeholder_output(text) is True
+
+
+def test_context_to_plain_text_skips_sparse_unknown_single_chart_data() -> None:
+    text = _context_to_plain_text(
+        {
+            "chart": {"name": "Map 03", "viz_type": "unknown"},
+            "query_result": {
+                "columns": ["region", "population", "population under5"],
+                "row_count": 1,
+                "sample_rows": [
+                    {"region": "Unknown", "population": 1, "population under5": 0}
+                ],
+            },
+        }
+    )
+
+    assert "Data notice:" in text
+    assert "Sample data" not in text
+    assert "Pre-computed analytics:" not in text
+
+
+def test_build_localai_evidence_digest_avoids_raw_sample_row_scaffolding() -> None:
+    digest = _build_localai_evidence_digest(
+        {
+            "dashboard": {"name": "Malaria Summary"},
+            "charts": [
+                {
+                    "chart": {"name": "Cases, Tests, and Positivity by Region"},
+                    "query_result": {
+                        "columns": ["region", "Total Cases", "Total Tests"],
+                        "row_count": 3,
+                        "sample_rows": [
+                            {"region": "Acholi", "Total Cases": 239913, "Total Tests": 198814},
+                            {"region": "Ankole", "Total Cases": 304699, "Total Tests": 234000},
+                            {"region": "Bugisu", "Total Cases": 203798, "Total Tests": 165000},
+                        ],
+                    },
+                }
+            ],
+        },
+        "dashboard",
+    )
+
+    assert "Cross-chart evidence:" in digest
+    assert "Rows analysed: 3" in digest
+    assert "Metric '" not in digest
+    assert "Sample data" not in digest
+    assert "Row 1:" not in digest
+
+
+def test_proofread_generated_insight_fixes_joined_words_and_bad_bullets() -> None:
+    cleaned = _proofread_generated_insight(
+        "Executive Summary:\nMalariacasesandpositivityratesfell.\n¢Leadershipwatchouts:Testingratesstable."
+    )
+
+    assert "Malaria cases" in cleaned or "malaria cases" in cleaned.lower()
+    assert "positivity rates" in cleaned.lower()
+    assert "- Leadership watchouts: Testing rates stable." in cleaned
+
+
+def test_proofread_generated_insight_splits_long_joined_sequences() -> None:
+    cleaned = _proofread_generated_insight(
+        "positivityrateshaveallfallensignificantly year-over-yeardeclinesinmalariacases"
+    )
+
+    assert "positivity rates have all fallen significantly" in cleaned.lower()
+    assert "year-over-year declines in malaria cases" in cleaned.lower()
+
+
+def test_proofread_generated_insight_removes_raw_context_scaffolding() -> None:
+    cleaned = _proofread_generated_insight(
+        "Chart 9: Map 03\nColumns: region, population\nRow 1: region=Unknown, population=1\n\nExecutive Summary:\nCoverage is too sparse for reliable analysis."
+    )
+
+    assert "Chart 9:" not in cleaned
+    assert "Columns:" not in cleaned
+    assert "Row 1:" not in cleaned
+    assert "Executive Summary:" in cleaned
 
 
 @with_config({"AI_INSIGHTS_CONFIG": make_ai_config(allow_sql_execution=True)})

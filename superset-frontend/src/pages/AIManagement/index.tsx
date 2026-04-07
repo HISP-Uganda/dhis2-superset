@@ -23,6 +23,7 @@ import { Typography } from '@superset-ui/core/components/Typography';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import { resetAIEnabledCache } from 'src/features/ai/useAIEnabled';
+import LocalAIModelHub from './LocalAIModelHub';
 import PushAnalysisTab from './PushAnalysisTab';
 import UsageAnalyticsTab from './UsageAnalyticsTab';
 
@@ -1225,6 +1226,16 @@ export default function AIManagement() {
               </Space>
             ),
             children: <UsageAnalyticsTab />,
+          },
+          {
+            key: 'model-hub',
+            label: (
+              <Space>
+                <Icons.DownloadOutlined />
+                {t('LocalAI Model Hub')}
+              </Space>
+            ),
+            children: <LocalAIModelHub />,
           },
         ]}
       />

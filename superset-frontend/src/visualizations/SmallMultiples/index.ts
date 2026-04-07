@@ -17,6 +17,7 @@
  * under the License.
  */
 import { Behavior, t, ChartMetadata, ChartPlugin } from '@superset-ui/core';
+import buildQuery from './buildQuery';
 import transformProps from './transformProps';
 import controlPanel from './controlPanel';
 import thumbnail from './images/thumbnailUrl';
@@ -24,12 +25,13 @@ import thumbnail from './images/thumbnailUrl';
 export default class SmallMultiplesChartPlugin extends ChartPlugin {
   constructor() {
     super({
+      buildQuery,
       metadata: new ChartMetadata({
         name: t('Small Multiples (Trellis)'),
         description: t(
           'Compare trends across many categories with a grid of synchronized ' +
             'mini-charts. Supports line, bar, area, pie, donut, scatter, ' +
-            'heatmap, Big Number (KPI), and gauge chart types. ' +
+            'heatmap, Big Number (KPI), gauge, and choropleth map chart types. ' +
             'DHIS2-aware: auto-detects OU hierarchy levels and period columns ' +
             'for one-click "Compare by Region/District/Period" splitting. ' +
             'Multi-metric support with shared legend and synchronized tooltips.',
@@ -43,6 +45,7 @@ export default class SmallMultiplesChartPlugin extends ChartPlugin {
           t('DHIS2'),
           t('KPI'),
           t('Gauge'),
+          t('Map'),
         ],
         behaviors: [Behavior.InteractiveChart],
       }),

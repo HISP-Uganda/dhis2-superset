@@ -162,12 +162,33 @@ module.exports = newManifest => {
     onProxyRes(proxyResponse, request, response) {
       try {
         copyHeaders(proxyResponse, response);
+        const contentType = (
+          proxyResponse.headers['content-type'] || ''
+        ).toLowerCase();
+
         if (isHTML(response)) {
           processHTML(proxyResponse, response);
+        } else if (contentType.includes('text/event-stream')) {
+          // SSE: flush headers immediately and stream each chunk without buffering
+          response.flushHeaders();
+          proxyResponse.on('data', chunk => {
+            response.write(chunk);
+            // Force flush to push SSE events to the client immediately
+            if (typeof response.flush === 'function') {
+              response.flush();
+            }
+          });
+          proxyResponse.on('end', () => {
+            response.end();
+          });
+          proxyResponse.on('error', err => {
+            console.error('SSE proxy error:', err.message);
+            response.end();
+          });
         } else {
           proxyResponse.pipe(response);
+          response.flushHeaders();
         }
-        response.flushHeaders();
       } catch (e) {
         response.setHeader('content-type', 'text/plain');
         response.write(`Error requesting ${request.path} from proxy:\n\n`);

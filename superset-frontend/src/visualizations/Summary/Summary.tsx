@@ -71,7 +71,9 @@ const Grid = styled.div<GridProps>`
     return 'none';
   }};
   flex-direction: ${({ $layout }) =>
-    $layout === 'vertical' || $layout === 'split' ? 'column' : 'row'};
+    $layout === 'vertical' || $layout === 'split' || $layout === 'summary-row'
+      ? 'column'
+      : 'row'};
   flex-wrap: ${({ $layout }) =>
     $layout === 'horizontal' ? 'wrap' : 'nowrap'};
   gap: ${({ $gap }) => $gap}px;
@@ -81,9 +83,11 @@ const Grid = styled.div<GridProps>`
   align-content: start;
   align-items: ${({ $layout, $alignment }) => {
     /* Grid: always stretch cards to equal height; Card uses justify-content
-       to vertically center its own content. Flex: respect alignment. */
+       to vertically center its own content. Flex: respect alignment.
+       summary-row: always stretch to full width. */
     if ($layout === 'grid' || $layout === 'micro-card' || $layout === 'compact-kpi')
       return 'stretch';
+    if ($layout === 'summary-row') return 'stretch';
     if ($alignment === 'center') return 'center';
     if ($alignment === 'end') return 'flex-end';
     if ($alignment === 'stretch') return 'stretch';
@@ -115,9 +119,10 @@ const Card = styled.div<CardProps>`
   flex-direction: column;
   justify-content: center;
   align-items: ${({ $alignment }) => {
+    if ($alignment === 'stretch') return 'stretch';
     if ($alignment === 'center') return 'center';
     if ($alignment === 'end') return 'flex-end';
-    return 'flex-start';
+    return 'stretch';
   }};
   padding: ${({ $padding }) => $padding}px;
   border-radius: ${({ $cardStyle, $borderRadius }) =>
@@ -201,6 +206,15 @@ const ContentInline = styled.div`
   align-items: baseline;
   justify-content: inherit;
   gap: 8px;
+  width: 100%;
+`;
+
+/** Summary-row layout: label left, value pushed to far right */
+const ContentSummaryRow = styled.div`
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
   width: 100%;
 `;
 
@@ -684,6 +698,16 @@ export default function Summary(props: SummaryTransformedProps) {
         {item.subtitle && <SubtitleText>{item.subtitle}</SubtitleText>}
       </>
     ) : null;
+
+    /* summary-row always renders label left, value far right */
+    if (layoutMode === 'summary-row') {
+      return (
+        <ContentSummaryRow>
+          <div>{labelEl}</div>
+          {valueEl}
+        </ContentSummaryRow>
+      );
+    }
 
     let inner;
     switch (valuePosition) {

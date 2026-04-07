@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Vital Maps — High-visibility thematic and geographic analysis maps for public-health spatial reporting",
   "keywords": ["superset", "map", "maplibre", "geo", "choropleth", "health"],
+  "scripts": {},
   "license": "Apache-2.0",
   "sideEffects": false,
   "main": "lib/index.js",

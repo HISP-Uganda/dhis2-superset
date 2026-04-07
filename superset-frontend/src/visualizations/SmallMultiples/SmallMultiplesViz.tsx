@@ -27,6 +27,8 @@ import {
 } from './types';
 import { buildOption, MiniPanelConfig } from './chartOptions';
 import SharedLegend from './SharedLegend';
+import MiniMapPanel from './MiniMapPanel';
+import useDHIS2Boundaries, { buildBoundaryLookup } from './useDHIS2Boundaries';
 
 /* ── Styled components ────────────────────────────────── */
 
@@ -144,28 +146,47 @@ function MiniPanel({
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
+  const prevChartTypeRef = useRef<MiniChartType | null>(null);
 
+  // Effect 1: create instance on mount, dispose on unmount only
   useEffect(() => {
-    if (!chartRef.current) return undefined;
+    return () => {
+      instanceRef.current?.dispose();
+      instanceRef.current = null;
+    };
+  }, []);
+
+  // Effect 2: update chart options whenever data or config changes
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    // When the chart type changes (e.g. line → pie), ECharts cannot always
+    // reconfigure the same instance cleanly — dispose and recreate.
+    if (
+      instanceRef.current &&
+      prevChartTypeRef.current !== null &&
+      prevChartTypeRef.current !== config.chartType
+    ) {
+      instanceRef.current.dispose();
+      instanceRef.current = null;
+    }
+    prevChartTypeRef.current = config.chartType;
 
     if (!instanceRef.current) {
       instanceRef.current = echarts.init(chartRef.current);
-      // Connect for tooltip sync
       if (groupId) {
         echarts.connect(groupId);
       }
     }
 
     const option = buildOption(panel, config);
-    instanceRef.current.setOption(option, true);
-
-    return () => {
-      instanceRef.current?.dispose();
-      instanceRef.current = null;
-    };
+    instanceRef.current.setOption(option, {
+      notMerge: true,
+      replaceMerge: ['series', 'xAxis', 'yAxis', 'visualMap'],
+    });
   }, [panel, config, groupId]);
 
-  // Resize when dimensions change
+  // Effect 3: resize when dimensions change
   useEffect(() => {
     instanceRef.current?.resize();
   }, [chartHeight]);
@@ -255,12 +276,87 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
     minPanelWidth,
     metricLabels,
     metricColors,
+    databaseId,
+    boundaryLevel,
+    chartId,
+    fixedPanelHeight,
+    schemeColors,
+    linearColors,
   } = props;
 
   const yFormatter = useMemo(
     () => getNumberFormatter(yAxisFormat),
     [yAxisFormat],
   );
+
+  // mini_map always loads DHIS2 boundaries
+  const useDHIS2 = miniChartType === 'mini_map' && !!databaseId;
+  // boundaryLevel is now "level:columnName" (e.g. "3:district_city") — extract numeric level
+  const blStr = String(boundaryLevel || '');
+  const blColonIdx = blStr.indexOf(':');
+  const effectiveBoundaryLevel = blColonIdx >= 0
+    ? Number(blStr.slice(0, blColonIdx)) || 2
+    : Number(boundaryLevel) || 2;
+  const {
+    features: dhis2Features,
+    loading: boundaryLoading,
+    error: boundaryError,
+  } = useDHIS2Boundaries(
+    useDHIS2 ? databaseId : undefined,
+    useDHIS2 ? effectiveBoundaryLevel : undefined,
+    chartId,
+  );
+
+  // Build a name-lookup from DHIS2 boundary features
+  const boundaryLookup = useMemo(
+    () => (dhis2Features.length > 0 ? buildBoundaryLookup(dhis2Features) : null),
+    [dhis2Features],
+  );
+
+  // For mini_map: each panel shows ALL boundaries as a full choropleth map.
+  // The split dimension creates panels (e.g. by period). Within each panel,
+  // xValues are OU names that match boundary names, and series values are the
+  // metric values per OU for that split value.
+  const enrichedPanels = useMemo(() => {
+    if (!boundaryLookup || miniChartType !== 'mini_map') return panels;
+
+    return panels.map(panel => {
+      // Build lookup: lowercase OU name → metric value for this panel
+      // Use rawXValues (unformatted) for OU name matching against boundaries
+      const rawX = panel.rawXValues || panel.xValues;
+      const ouValueMap = new Map<string, number>();
+      for (let i = 0; i < rawX.length; i++) {
+        const ouName = rawX[i].toLowerCase().trim();
+        const val = panel.series[0]?.values[i] ?? 0;
+        ouValueMap.set(ouName, val);
+      }
+
+      // Build GeoJSON with ALL boundaries, colored by this panel's data
+      const features: GeoJSON.Feature[] = [];
+      for (const [nameKey, feature] of boundaryLookup) {
+        const boundaryName = feature.properties?.name || nameKey;
+        const val = ouValueMap.get(nameKey) ?? null;
+        if (feature.geometry) {
+          features.push({
+            type: 'Feature' as const,
+            geometry: feature.geometry as GeoJSON.Geometry,
+            properties: {
+              label: boundaryName,
+              value: val ?? 0,
+              hasData: val !== null,
+            },
+          });
+        }
+      }
+
+      const geojson: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features,
+      };
+
+      return { ...panel, geojson };
+    });
+  }, [panels, boundaryLookup, miniChartType]);
 
   // Stable group ID for tooltip sync
   const groupIdRef = useRef(
@@ -292,6 +388,8 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
       yFormatter,
       referenceValue: showReferenceLine ? referenceValue : null,
       referenceColor,
+      schemeColors: schemeColors || [],
+      linearColors: linearColors || [],
     }),
     [
       miniChartType,
@@ -306,20 +404,25 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
       showReferenceLine,
       referenceValue,
       referenceColor,
+      schemeColors,
+      linearColors,
     ],
   );
 
-  // Calculate panel height
+  // Calculate panel chart height
   const legendHeight = showLegend && metricLabels.length > 1 ? 32 : 0;
   const availableHeight = height - legendHeight;
   const rows = Math.ceil(panels.length / effectiveColumns);
-  const panelHeight = Math.max(
+  const autoPanelHeight = Math.max(
     60,
     (availableHeight - panelPadding * (rows + 1)) / rows -
       (showPanelTitle ? 18 : 0) -
       (showPanelSubtitle ? 14 : 0) -
       panelPadding * 2,
   );
+  const panelHeight = fixedPanelHeight && fixedPanelHeight > 0
+    ? fixedPanelHeight
+    : autoPanelHeight;
 
   // Build subtitle text
   const getSubtitle = useCallback(
@@ -353,15 +456,67 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
   }
 
   const isBigNumber = miniChartType === 'big_number';
+  const isMiniMap = miniChartType === 'mini_map';
+  const activePanels = isMiniMap ? enrichedPanels : panels;
+
+  const renderPanelContent = (panel: PanelData) => {
+    if (isBigNumber) {
+      return (
+        <BigNumberMiniPanel
+          panel={panel}
+          formatter={yFormatter}
+          nullText={nullValueText}
+          chartHeight={panelHeight}
+        />
+      );
+    }
+    if (isMiniMap) {
+      if (!databaseId) {
+        return (
+          <EmptyState style={{ height: panelHeight, fontSize: 11 }}>
+            No DHIS2 source database found
+          </EmptyState>
+        );
+      }
+      if (boundaryLoading) {
+        return (
+          <EmptyState style={{ height: panelHeight, fontSize: 11 }}>
+            Loading boundaries…
+          </EmptyState>
+        );
+      }
+      if (boundaryError && !panel.geojson?.features?.length) {
+        return (
+          <EmptyState style={{ height: panelHeight, fontSize: 11 }}>
+            {boundaryError}
+          </EmptyState>
+        );
+      }
+      return (
+        <MiniMapPanel
+          panel={panel}
+          chartHeight={panelHeight}
+          linearColors={linearColors}
+          formatter={yFormatter}
+          nullText={nullValueText}
+        />
+      );
+    }
+    return (
+      <MiniPanel
+        panel={panel}
+        config={panelConfig}
+        chartHeight={panelHeight}
+        groupId={groupId}
+      />
+    );
+  };
 
   return (
     <Wrapper style={{ width, height }}>
-      {showLegend && legendPosition === 'top' && (
-        <SharedLegend items={legendItems} position="top" />
-      )}
       <ScrollArea>
         <GridContainer $columns={effectiveColumns} $gap={panelPadding}>
-          {panels.map(panel => (
+          {activePanels.map(panel => (
             <PanelCard
               key={panel.title}
               $padding={panelPadding}
@@ -371,26 +526,12 @@ export default function SmallMultiplesViz(props: SmallMultiplesChartProps) {
               {showPanelSubtitle && (
                 <PanelSubtitle>{getSubtitle(panel)}</PanelSubtitle>
               )}
-              {isBigNumber ? (
-                <BigNumberMiniPanel
-                  panel={panel}
-                  formatter={yFormatter}
-                  nullText={nullValueText}
-                  chartHeight={panelHeight}
-                />
-              ) : (
-                <MiniPanel
-                  panel={panel}
-                  config={panelConfig}
-                  chartHeight={panelHeight}
-                  groupId={groupId}
-                />
-              )}
+              {renderPanelContent(panel)}
             </PanelCard>
           ))}
         </GridContainer>
       </ScrollArea>
-      {showLegend && legendPosition === 'bottom' && (
+      {showLegend && (
         <SharedLegend items={legendItems} position="bottom" />
       )}
     </Wrapper>

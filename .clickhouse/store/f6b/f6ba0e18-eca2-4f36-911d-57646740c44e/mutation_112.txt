@@ -1,3 +1,0 @@
-format version: 1
-create time: 2026-03-31 08:00:56
-commands: (DELETE WHERE (source_instance_id = _CAST(6, \'Int32\')) AND (concat(dx_uid, char(0), pe, char(0), ou) IN (\'CecywZWejT3\\0202602\\0ctfiYW0ePJ8\', \'CecywZWejT3\\0202602\\0d9iMR1MpuIO\', \'CecywZWejT3\\0202602\\0daJPPxtIrQn\', \'CecywZWejT3\\0202602\\0duGLGssecoD\', \'CecywZWejT3\\0202602\\0dCvUVvKnhMe\', \'CecywZWejT3\\0202602\\0ctMepV9p92I\', \'CecywZWejT3\\0202602\\0cWIiusmHULW\', \'hnwWyM4gDSg\\0202602\\0cM2BKSrj9F9\', \'CecywZWejT3\\0202602\\0cJ7omISg7gG\', \'CecywZWejT3\\0202602\\0e0RGds86ow6\', \'CecywZWejT3\\0202602\\0cgqkFdShPzg\', \'hnwWyM4gDSg\\0202602\\0daJPPxtIrQn\', \'CecywZWejT3\\0202602\\0cM2BKSrj9F9\', \'CecywZWejT3\\0202602\\0dGheVylzol6\', \'CecywZWejT3\\0202602\\0dQggcljEImF\')))

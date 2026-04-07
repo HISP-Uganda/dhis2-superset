@@ -16,8 +16,7 @@ const TooltipCard: React.FC<Props> = ({ payload, x, y, pinned, containerWidth, c
   const hasContent = payload.title || payload.metricLabel || payload.category || (payload.fields && payload.fields.length > 0);
   if (!hasContent) return null;
 
-  // Keep card within container bounds
-  const CARD_W = 200;
+  const CARD_W = 220;
   const CARD_H = 120;
   const left = Math.min(x + 12, containerWidth - CARD_W - 10);
   const top = y > containerHeight / 2 ? Math.max(y - CARD_H - 12, 10) : y + 12;
@@ -74,6 +73,30 @@ const TooltipCard: React.FC<Props> = ({ payload, x, y, pinned, containerWidth, c
           <span style={{ fontWeight: 600, color: '#1a1a2e' }}>{payload.metricValue}</span>
         </div>
       )}
+      {/* Color bar with percentage */}
+      {payload.color && payload.percentage && (
+        <div style={{ marginBottom: 4 }}>
+          <div style={{
+            height: 6,
+            borderRadius: 3,
+            background: '#eee',
+            overflow: 'hidden',
+            marginBottom: 2,
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${Math.min(parseFloat(payload.percentage) || 0, 100)}%`,
+              background: payload.color,
+              borderRadius: 3,
+              transition: 'width 0.2s ease',
+            }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#888' }}>
+            <span>{payload.percentage} of total</span>
+            {payload.rank && <span>Rank: {payload.rank}</span>}
+          </div>
+        </div>
+      )}
       {payload.category && (
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
           <span style={{ color: '#666' }}>Category</span>
@@ -83,7 +106,7 @@ const TooltipCard: React.FC<Props> = ({ payload, x, y, pinned, containerWidth, c
       {payload.fields?.map((f, i) => (
         <div key={i} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
           <span style={{ color: '#888', marginRight: 8 }}>{f.label}</span>
-          <span style={{ color: '#444', textAlign: 'right' }}>{String(f.value ?? '—')}</span>
+          <span style={{ color: '#444', textAlign: 'right' }}>{String(f.value ?? '\u2014')}</span>
         </div>
       ))}
     </div>

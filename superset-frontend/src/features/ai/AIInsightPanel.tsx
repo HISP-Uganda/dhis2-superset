@@ -112,10 +112,10 @@ const MessageBubble = styled.div<{ $isUser: boolean }>`
     h2 { font-size: 16px; }
     h3 { font-size: 14px; }
     h4, h5, h6 { font-size: 13px; }
-    h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+    h1:first-of-type, h2:first-of-type, h3:first-of-type { margin-top: 0; }
 
     p { margin: 6px 0; }
-    p:first-child { margin-top: 0; }
+    p:first-of-type { margin-top: 0; }
     p:last-child { margin-bottom: 0; }
 
     strong { font-weight: 700; color: #111827; }
@@ -162,18 +162,33 @@ const MessageBubble = styled.div<{ $isUser: boolean }>`
 
     table {
       border-collapse: collapse;
-      margin: 8px 0;
+      margin: 10px 0;
       font-size: 12px;
       width: 100%;
+      table-layout: fixed;
+      border: 1px solid #CBD5E1;
+      border-radius: 6px;
+      overflow: hidden;
     }
     th, td {
       border: 1px solid #D1D5DB;
-      padding: 4px 8px;
+      padding: 6px 10px;
       text-align: left;
+      line-height: 1.4;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     th {
-      background: #E5E7EB;
-      font-weight: 600;
+      background: #E2E8F0;
+      font-weight: 700;
+      color: #1E293B;
+      white-space: normal;
+    }
+    tr:nth-of-type(even) td {
+      background: #F8FAFC;
+    }
+    tr:hover td {
+      background: #EFF6FF;
     }
 
     hr {
@@ -446,10 +461,9 @@ const ChartPreview = styled.div`
 
 const ChartPreviewImage = styled.img`
   width: 100%;
-  max-height: 280px;
+  max-height: 360px;
   object-fit: contain;
-  border-radius: 6px;
-  border: 1px solid #E5E7EB;
+  border-radius: 4px;
   background: #fff;
 `;
 
@@ -518,14 +532,161 @@ async function captureElementAsImage(
   selector: string,
 ): Promise<string | null> {
   try {
-    const el = document.querySelector(selector);
-    if (!el) return null;
+    const container = document.querySelector(selector);
+    if (!container) return null;
+    // Drill into the actual chart visualization element, skipping
+    // headers, context menus, data-tables pane, and other chrome.
+    // Priority order: SuperChart wrapper → ECharts canvas → SVG → fallback to container.
+    const vizEl =
+      container.querySelector('.superset-chart, .chart-slice') ||
+      container.querySelector('[data-test="chart-container"]') ||
+      container.querySelector('.slice_container') ||
+      container.querySelector('.panel-body') ||
+      container;
+    const el = vizEl as HTMLElement;
+
+    // Temporarily expand all scroll containers so the full chart is visible.
+    // Walk up from the viz element and remove overflow/height constraints,
+    // then restore them after capture.
+    const saved: { el: HTMLElement; overflow: string; maxHeight: string; height: string }[] = [];
+    let walk: HTMLElement | null = el;
+    while (walk && walk !== document.body) {
+      const cs = window.getComputedStyle(walk);
+      if (
+        cs.overflow !== 'visible' ||
+        cs.overflowY !== 'visible' ||
+        cs.overflowX !== 'visible'
+      ) {
+        saved.push({
+          el: walk,
+          overflow: walk.style.overflow,
+          maxHeight: walk.style.maxHeight,
+          height: walk.style.height,
+        });
+        walk.style.overflow = 'visible';
+        walk.style.maxHeight = 'none';
+        // Only clear explicit height if the element is actually clipping content
+        if (walk.scrollHeight > walk.clientHeight + 2) {
+          walk.style.height = 'auto';
+        }
+      }
+      walk = walk.parentElement;
+    }
+
+    // Also expand the target element itself
+    const origElOverflow = el.style.overflow;
+    const origElMaxH = el.style.maxHeight;
+    const origElH = el.style.height;
+    el.style.overflow = 'visible';
+    el.style.maxHeight = 'none';
+    if (el.scrollHeight > el.clientHeight + 2) {
+      el.style.height = 'auto';
+    }
+
+    // Force ECharts instances to resize to their container's new dimensions
+    const echartsDivs = el.querySelectorAll('[_echarts_instance_]');
+    const echartsInstances: any[] = [];
+    if ((window as any).echarts) {
+      echartsDivs.forEach(div => {
+        const inst = (window as any).echarts.getInstanceByDom(div);
+        if (inst) {
+          echartsInstances.push(inst);
+          inst.resize();
+        }
+      });
+    }
+
+    // Brief delay for reflow
+    await new Promise(r => setTimeout(r, 100));
+
+    // Remove borders, shadows, and padding from chart containers for clean capture
+    const borderOverrides: { el: HTMLElement; border: string; shadow: string; padding: string; borderRadius: string }[] = [];
+    let borderWalk: HTMLElement | null = el;
+    while (borderWalk && borderWalk !== document.body) {
+      const cs = window.getComputedStyle(borderWalk);
+      if (cs.border !== 'none' || cs.boxShadow !== 'none' || cs.borderRadius !== '0px') {
+        borderOverrides.push({
+          el: borderWalk,
+          border: borderWalk.style.border,
+          shadow: borderWalk.style.boxShadow,
+          padding: borderWalk.style.padding,
+          borderRadius: borderWalk.style.borderRadius,
+        });
+        borderWalk.style.border = 'none';
+        borderWalk.style.boxShadow = 'none';
+        borderWalk.style.borderRadius = '0';
+      }
+      borderWalk = borderWalk.parentElement;
+    }
+
     const domToImage = (await import('dom-to-image-more')).default;
     const dataUrl = await domToImage.toPng(el, {
       bgcolor: '#ffffff',
       quality: 0.92,
       cacheBust: true,
+      // Use the actual scroll dimensions so nothing is cut off
+      width: el.scrollWidth || el.offsetWidth,
+      height: el.scrollHeight || el.offsetHeight,
+      style: {
+        overflow: 'visible',
+      },
+      filter: (node: Node) => {
+        if (node instanceof HTMLElement) {
+          const cl = node.classList;
+          const dt = node.getAttribute('data-test') || '';
+          // Exclude headers, footers, toolbars, context menus, and chrome
+          if (
+            cl.contains('ant-dropdown') ||
+            cl.contains('ant-tooltip') ||
+            cl.contains('ant-popover') ||
+            cl.contains('chart-header') ||
+            cl.contains('slice-header') ||
+            cl.contains('header-title') ||
+            cl.contains('header-controls') ||
+            cl.contains('chart-controls') ||
+            cl.contains('filter-bar') ||
+            cl.contains('query-and-save-btns') ||
+            cl.contains('data-tab') ||
+            cl.contains('force-query') ||
+            cl.contains('nonce-viewer') ||
+            dt === 'slice-header' ||
+            dt === 'chart-controls' ||
+            dt === 'query-and-save' ||
+            // Exclude footer elements
+            node.tagName === 'FOOTER' ||
+            // MapLibre attribution / zoom controls
+            cl.contains('maplibregl-ctrl-bottom-left') ||
+            cl.contains('maplibregl-ctrl-bottom-right') ||
+            cl.contains('mapboxgl-ctrl-bottom-left') ||
+            cl.contains('mapboxgl-ctrl-bottom-right')
+          ) {
+            return false;
+          }
+        }
+        return true;
+      },
     });
+
+    // Restore border overrides
+    for (const o of borderOverrides) {
+      o.el.style.border = o.border;
+      o.el.style.boxShadow = o.shadow;
+      o.el.style.padding = o.padding;
+      o.el.style.borderRadius = o.borderRadius;
+    }
+
+    // Restore all modified elements
+    el.style.overflow = origElOverflow;
+    el.style.maxHeight = origElMaxH;
+    el.style.height = origElH;
+    for (const s of saved) {
+      s.el.style.overflow = s.overflow;
+      s.el.style.maxHeight = s.maxHeight;
+      s.el.style.height = s.height;
+    }
+    // Resize ECharts back to original dimensions
+    echartsInstances.forEach(inst => inst.resize());
+
     return dataUrl;
   } catch {
     return null;
@@ -537,15 +698,47 @@ async function captureElementAsImage(
 const SUGGESTIONS: Record<AIInsightMode, string[]> = {
   chart: [
     'Summary',
-    'What trends do you see?',
-    'Are there any outliers?',
-    'Compare the highest and lowest values',
+    'Key trends',
+    'Outlier analysis',
+    'Top and bottom performers',
+    'Period-over-period comparison',
+    'Regional breakdown',
+    'Performance against targets',
+    'Risk assessment',
+    'Root cause analysis',
+    'Distribution analysis',
+    'Year-on-year growth',
+    'Seasonal patterns',
+    'Anomaly detection',
+    'Data quality check',
+    'Ranking analysis',
+    'Rate of change',
+    'Forecast implications',
+    'Critical thresholds',
+    'Executive brief',
+    'Actionable recommendations',
   ],
   dashboard: [
     'Summary',
-    'What are the key takeaways?',
-    'Which metrics need attention?',
-    'Are there any concerning trends?',
+    'Key takeaways',
+    'Metrics needing attention',
+    'Concerning trends',
+    'Cross-chart patterns',
+    'Performance overview',
+    'Risk and issue analysis',
+    'Regional comparison',
+    'Period-over-period trends',
+    'Top performers and laggards',
+    'Target achievement status',
+    'Leading vs lagging indicators',
+    'Data gaps and quality',
+    'Correlation analysis',
+    'Executive presentation brief',
+    'Strategic recommendations',
+    'Critical alerts',
+    'Improvement opportunities',
+    'Quarter-over-quarter changes',
+    'Comprehensive deep dive',
   ],
   sql: [
     'Show the latest data from all MART tables',
@@ -554,6 +747,10 @@ const SUGGESTIONS: Record<AIInsightMode, string[]> = {
     'Find top 10 indicators by total value',
     'Generate a trend analysis query',
     'Show completeness rates by org unit',
+    'Compare current vs previous period',
+    'Find missing or null values',
+    'Monthly aggregation by region',
+    'Pivot data by indicator and period',
   ],
 };
 
@@ -562,6 +759,11 @@ const SUGGESTIONS: Record<AIInsightMode, string[]> = {
 const MARKDOWN_OPTIONS: Record<string, any> = {
   forceBlock: true,
   forceWrapper: true,
+  overrides: {
+    // Allow alert callout divs and badges to pass through as raw HTML
+    div: { component: 'div' },
+    span: { component: 'span' },
+  },
 };
 
 const ALERT_TAGS: Record<string, { css: string; label: string }> = {
@@ -573,23 +775,54 @@ const ALERT_TAGS: Record<string, { css: string; label: string }> = {
 
 /**
  * Convert `[CRITICAL] ...text...` blocks into HTML callout divs that
- * markdown-to-jsx will pass through.  Works for both block-level tags
- * (tag on its own line followed by content) and inline tags (tag at
- * the start of a paragraph / bullet).
+ * markdown-to-jsx will pass through.  Works for:
+ *   - Block-level tags: `[CRITICAL]` on its own line followed by content
+ *   - Inline tags at line start: `[CRITICAL] Some text here`
+ *   - Tags inside bullets: `- [CRITICAL] Some text here`
+ *   - Bare tag words: `Critical` / `Warning` / `Good` / `Info` on own line
  */
 function preprocessAlertTags(text: string): string {
-  // Match: optional leading whitespace, [TAG], then the rest of the
-  // "paragraph" — which may span multiple lines until the next blank
-  // line, next tag, or end of string.
-  return text.replace(
+  const inlineMarkdownToHtml = (value: string) =>
+    value
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  // Step 0: Normalize bare tag words on their own line (Gemini often writes
+  // "Critical" instead of "[CRITICAL]"). Only match when the word is the
+  // entire line content (with optional whitespace).
+  let processed = text.replace(
+    /^[ \t]*(Critical|Warning|Good|Info)[ \t]*$/gim,
+    (_match, tag: string) => `[${tag.toUpperCase()}]`,
+  );
+
+  // Step 1: Convert bullet-inline tags (- [TAG] text) to block-level format
+  processed = processed.replace(
+    /^([ \t]*[-*][ \t]+)\[(CRITICAL|WARNING|GOOD|INFO)\][ \t]*(.*)/gm,
+    (_match, _prefix: string, tag: string, rest: string) =>
+      `[${tag}] ${rest.trim()}`,
+  );
+
+  // Step 2: Match block-level tags — optional leading whitespace, [TAG],
+  // then content until next blank line, next tag, or end of string.
+  // Output as single-line HTML so markdown-to-jsx treats it as one block
+  // (multi-line <div> with \n\n inside causes the parser to split it).
+  processed = processed.replace(
     /^[ \t]*\[(CRITICAL|WARNING|GOOD|INFO)\][ \t]*\n?([\s\S]*?)(?=\n[ \t]*\[(?:CRITICAL|WARNING|GOOD|INFO)\]|\n{2,}|$)/gm,
     (_match, tag: string, body: string) => {
       const info = ALERT_TAGS[tag];
       if (!info) return _match;
       const trimmed = body.trim();
-      return `<div class="alert-callout alert-${info.css}"><span class="alert-badge">${info.label}</span>\n\n${trimmed}\n\n</div>\n`;
+      // Convert internal newlines to <br/> so the entire callout stays
+      // within one HTML block — prevents markdown-to-jsx from splitting
+      // and leaking </div> tags into rendered output.
+      const singleLine = inlineMarkdownToHtml(trimmed).replace(/\n/g, '<br/>');
+      return `\n<div class="alert-callout alert-${info.css}"><span class="alert-badge">${info.label}</span> ${singleLine}</div>\n`;
     },
   );
+
+  return processed;
 }
 
 /**
@@ -598,16 +831,84 @@ function preprocessAlertTags(text: string): string {
  * punctuation/whitespace so that standard English text is untouched.
  */
 function sanitizeNonAscii(text: string): string {
-  // Remove emoji and miscellaneous symbols (U+2600..U+FFFF surrogate pairs, etc.)
-  const cleaned = text
+  // Step 1: Convert common Unicode symbols to plain English words
+  // so they render correctly in PDF (helvetica doesn't support Unicode arrows)
+  const symbolsToText = text
+    .replace(/\u2191|\u25B2|\u25B3|\u2197/g, 'Rising')   // ↑ ▲ △ ↗
+    .replace(/\u2193|\u25BC|\u25BD|\u2198/g, 'Falling')   // ↓ ▼ ▽ ↘
+    .replace(/\u2192|\u2794|\u279C|\u27A1/g, 'Stable')    // → ➔ ➜ ➡
+    .replace(/\u2190/g, 'Declining')                        // ←
+    .replace(/\u2194/g, 'Fluctuating')                      // ↔
+    .replace(/\u2714|\u2705|\u2611/g, 'Yes')               // ✔ ✅ ☑
+    .replace(/\u2716|\u274C|\u2717/g, 'No')                // ✖ ❌ ✗
+    .replace(/\u26A0/g, '[WARNING]')                        // ⚠
+    .replace(/\u2022/g, '-')                                // •
+    .replace(/\u2013/g, '-')                                // –
+    .replace(/\u2014/g, ' - ')                              // —
+    .replace(/\u2018|\u2019/g, "'")                         // ' '
+    .replace(/\u201C|\u201D/g, '"')                         // " "
+    .replace(/\u2026/g, '...')                              // …
+    .replace(/\u00B7/g, '-')                                // ·
+    .replace(/\u25CF|\u25CB/g, '-');                        // ● ○
+
+  // Step 2: Remove emoji and miscellaneous symbols
+  const cleaned = symbolsToText
     .replace(
       /[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]|[\u{20E3}]|[\u{E0020}-\u{E007F}]/gu,
       '',
     )
+    // Remove any remaining non-printable or unsupported characters (keep basic Latin + extended Latin)
+    .replace(/[^\x20-\x7E\xA0-\xFF\n\r\t|#*_\-`>]/g, '')
     // Collapse any resulting double-spaces
     .replace(/ {2,}/g, ' ');
   // Fix concatenated words and missing punctuation spacing
   return fixWordSpacing(cleaned);
+}
+
+/**
+ * Fix markdown structural issues where headers, sub-headers, numbered lists,
+ * and bullet points get merged onto the same line.
+ *
+ * Examples:
+ *   "Action Recommendations1. Deploy" → "Action Recommendations\n1. Deploy"
+ *   "Chart by Chart### Malaria" → "Chart by Chart\n### Malaria"
+ *   "some text- bullet" → "some text\n- bullet"
+ */
+function fixMarkdownStructure(text: string): string {
+  let fixed = text;
+
+  // 1. Missing newline before ## or ### headers embedded mid-line
+  //    "...text## Header" or "...text### SubHeader"
+  fixed = fixed.replace(/([^\n#])(#{2,3}\s)/g, '$1\n$2');
+
+  // 2. Missing newline after ## header that runs into content
+  //    "## Header\nContent" is fine, but "## HeaderContent" needs split
+  //    Match: ## followed by text, then a digit+period (numbered list start)
+  fixed = fixed.replace(
+    /^(#{2,3}\s+[^\n]+?)(\d+\.\s)/gm,
+    '$1\n$2',
+  );
+
+  // 3. Numbered list item starting mid-line after non-list text
+  //    "some sentence1. First item" → "some sentence\n1. First item"
+  //    Guard: don't split within table cells (|) or after decimal points
+  fixed = fixed.replace(
+    /([a-zA-Z.,:;!?])(\d+\.\s+[A-Z])/g,
+    '$1\n$2',
+  );
+
+  // 4. Bullet point merged onto end of previous text
+  //    "some text- bullet" → "some text\n- bullet"
+  //    "text.- Bullet" → "text.\n- Bullet"
+  fixed = fixed.replace(/([a-zA-Z.,:;!?])\s?([-*]\s*[A-Z])/g, '$1\n$2');
+
+  // 5. Ensure blank line before ## headings (markdown requires it for proper parsing)
+  fixed = fixed.replace(/([^\n])\n(#{2,3}\s)/g, '$1\n\n$2');
+
+  // 6. Fix "â" (mojibake for em-dash "—") in headings
+  fixed = fixed.replace(/â/g, '\u2014');
+
+  return fixed;
 }
 
 /**
@@ -638,12 +939,23 @@ function fixWordSpacing(text: string): string {
     'quality', 'several', 'overall', 'another', 'whether', 'notably',
     'already', 'remains', 'appears', 'reveals', 'implies', 'suggest',
     'warrant', 'signals', 'require', 'present', 'despite',
-    // Domain-specific (health, analytics)
+    // Domain-specific (health, analytics, geography)
+    // NOTE: avoid short suffixes that appear inside common words:
+    //   - "rates" breaks "demonstrates", "illustrates", "generates"
+    //   - "health" breaks "stealth", "wealth", "commonwealth"
+    //   - "cases" breaks "showcases", "staircases"
+    //   - "zero" is safe (few false positives)
     'surveillance', 'adherence', 'preventive', 'treatment', 'clinical',
-    'national', 'diagnostic', 'supply', 'system', 'district', 'facility',
+    'national', 'diagnostic', 'district', 'facility',
     'coverage', 'baseline', 'outbreak', 'incidence', 'mortality',
     'morbidity', 'indicator', 'threshold', 'quarterly', 'monthly',
     'annually', 'regional', 'performance', 'programme', 'program',
+    'hotspots', 'hotspot', 'positivity', 'admissions',
+    'watchouts', 'leadership', 'testing', 'malaria',
+    'eradication', 'prevention', 'control', 'measures', 'resources',
+    'commodities', 'interventions', 'protocols', 'strategies',
+    'burden', 'capacity', 'children', 'pediatric', 'maternal',
+    'migration', 'percent', 'million', 'thousand',
     // 6 letter words
     'before', 'during', 'within', 'around', 'across', 'toward',
     'likely', 'rather', 'simply', 'nearly', 'showed', 'showed',
@@ -670,6 +982,135 @@ function fixWordSpacing(text: string): string {
     'gi',
   );
 
+  const SPLIT_WORDS = new Set([
+    'a', 'all', 'an', 'and', 'are', 'as', 'at', 'by', 'for', 'from', 'has',
+    'have', 'in', 'into', 'is', 'it', 'its', 'last', 'lowest', 'month',
+    'months', 'more', 'most', 'no', 'of', 'on', 'or', 'per', 'remained',
+    'respectively', 'significant', 'significantly', 'since', 'stable', 'test',
+    'tested', 'testing', 'tests', 'than', 'that', 'the', 'their', 'these',
+    'this', 'those', 'to', 'treated', 'under', 'while', 'with', 'without',
+    'year', 'years',
+    'action', 'actions', 'admission', 'admissions', 'analysis', 'busoga',
+    'cases', 'case', 'chart', 'critical', 'dashboard', 'death', 'deaths',
+    'district', 'districts', 'dose', 'dropped', 'english', 'executive',
+    'facilities', 'facility', 'fatality', 'highest', 'historical', 'hospital',
+    'infection', 'insight',
+    'insights', 'kampala', 'key', 'kigezi', 'lango', 'leadership', 'malaria',
+    'massive', 'mip', 'nile', 'north', 'period', 'periods', 'points', 'positivity', 'pregnancy',
+    'proportion', 'proportions', 'quality', 'rate', 'rates', 'recommendation',
+    'recommendations', 'region', 'regions', 'signal', 'signals', 'sp',
+    'summary', 'targeted', 'teso', 'treatment', 'under', 'urgent', 'warning', 'watchouts', 'west',
+    'performing', 'population', 'rapid', 'record', 'required', 'response',
+    'administered', 'treated', 'month',
+  ]);
+
+  const mergeSingleChars = (parts: string[]) => {
+    const merged: string[] = [];
+    let buffer = '';
+    parts.forEach(part => {
+      if (part.length === 1 && /[a-z]/i.test(part)) {
+        buffer += part;
+        return;
+      }
+      if (buffer) {
+        merged.push(buffer);
+        buffer = '';
+      }
+      merged.push(part);
+    });
+    if (buffer) merged.push(buffer);
+    return merged;
+  };
+
+  const splitJoinedAlphaToken = (token: string): string => {
+    if (token.length < 10 || !/^[A-Za-z]+$/.test(token)) return token;
+
+    const lower = token.toLowerCase();
+    const n = lower.length;
+    const scores = Array(n + 1).fill(-1e9);
+    const paths: Array<string[] | null> = Array(n + 1).fill(null);
+    scores[0] = 0;
+    paths[0] = [];
+
+    for (let i = 0; i < n; i += 1) {
+      if (!paths[i]) continue;
+      if (scores[i] - 4 > scores[i + 1]) {
+        scores[i + 1] = scores[i] - 4;
+        paths[i + 1] = [...(paths[i] || []), token.slice(i, i + 1)];
+      }
+      for (let j = i + 1; j <= Math.min(n, i + 18); j += 1) {
+        const piece = lower.slice(i, j);
+        if (!SPLIT_WORDS.has(piece)) continue;
+        const pieceScore = scores[i] + piece.length * piece.length;
+        if (pieceScore > scores[j]) {
+          scores[j] = pieceScore;
+          paths[j] = [...(paths[i] || []), token.slice(i, j)];
+        }
+      }
+    }
+
+    const parts = mergeSingleChars(paths[n] || [token]);
+    const recognized = parts.reduce(
+      (sum, part) => sum + (SPLIT_WORDS.has(part.toLowerCase()) ? part.length : 0),
+      0,
+    );
+    if (parts.length >= 2 && recognized / Math.max(1, token.length) >= 0.65) {
+      return parts.join(' ');
+    }
+    return token;
+  };
+
+  const splitJoinedTokensInLine = (line: string) =>
+    line.replace(/[A-Za-z][A-Za-z-]{8,}/g, token => {
+      if (token.includes('-')) {
+        return token
+          .split('-')
+          .map(part => splitJoinedAlphaToken(part))
+          .join('-');
+      }
+      return splitJoinedAlphaToken(token);
+    });
+
+  const repairFragmentedAlphaSequences = (line: string) => {
+    const tokens = line.match(/[A-Za-z]+|[^A-Za-z]+/g) || [];
+    const repaired: string[] = [];
+    let i = 0;
+    while (i < tokens.length) {
+      if (!/^[A-Za-z]+$/.test(tokens[i])) {
+        repaired.push(tokens[i]);
+        i += 1;
+        continue;
+      }
+
+      let j = i;
+      const parts: string[] = [];
+      let hadShortPiece = false;
+      while (j < tokens.length && /^[A-Za-z]+$/.test(tokens[j])) {
+        parts.push(tokens[j]);
+        hadShortPiece = hadShortPiece || tokens[j].length <= 2;
+        if (j + 1 < tokens.length && /^\s+$/.test(tokens[j + 1])) {
+          j += 2;
+          continue;
+        }
+        break;
+      }
+
+      if (parts.length >= 2 && hadShortPiece) {
+        const combined = parts.join('');
+        const repairedToken = splitJoinedAlphaToken(combined);
+        if (repairedToken !== combined) {
+          repaired.push(repairedToken);
+          i = j + 1;
+          continue;
+        }
+      }
+
+      repaired.push(tokens[i]);
+      i += 1;
+    }
+    return repaired.join('');
+  };
+
   return text
     .split('\n')
     .map(line => {
@@ -685,6 +1126,17 @@ function fixWordSpacing(text: string): string {
       }
 
       let fixed = line;
+
+      // Normalize malformed bullets and odd glyphs from weaker local models
+      fixed = fixed.replace(/¢/g, '- ');
+      fixed = fixed.replace(/\u2022/g, '- ');
+      fixed = fixed.replace(/(\d+(?:\.\d+)?)%([A-Za-z])/g, '$1% $2');
+      fixed = fixed.replace(/([A-Za-z])(-\d(?:\.\d+)?)/g, '$1 $2');
+      fixed = fixed.replace(
+        /(\d+(?:\.\d+)?)(per|million|billion|thousand|population|cases|deaths|admissions|tests|patients|districts|regions|facilities|months|years|weeks|days)/gi,
+        '$1 $2',
+      );
+      fixed = repairFragmentedAlphaSequences(fixed);
 
       // 1. Punctuation spacing: comma/semicolon followed by letter
       //    "value,but" → "value, but"
@@ -706,6 +1158,12 @@ function fixWordSpacing(text: string): string {
         /(?<!`)([a-z]{2,})([A-Z][a-z])(?!`)/g,
         '$1 $2',
       );
+      fixed = splitJoinedTokensInLine(fixed);
+
+      // 5b. Number joined to word: "early2026" → "early 2026", "5.0percent" → "5.0 percent"
+      //     Guard: don't split hex codes, version numbers like "v2", or ordinals like "1st"
+      fixed = fixed.replace(/([a-zA-Z]{2,})(\d{2,})/g, '$1 $2');
+      fixed = fixed.replace(/(\d+(?:\.\d+)?)(percent|million|billion|thousand|cases|deaths|admissions|tests|patients|districts|regions|facilities|months|years|weeks|days)/gi, '$1 $2');
 
       // 6. Concatenated common words: "treatedfor" → "treated for"
       //    Apply the boundary word list. Guard against false positives
@@ -767,8 +1225,23 @@ function fixWordSpacing(text: string): string {
           'apparently', 'evidently', 'sufficiently', 'consistently',
           'persistently', 'predominantly', 'significantly',
           'unfortunately', 'approximately', 'particularly',
+          // New additions for health domain words
+          'diseases', 'stealth', 'stealthy', 'wealth', 'wealthy',
+          'commonwealth', 'health', 'healthy', 'healthcare',
+          'cases', 'showcases', 'suitcases', 'staircases',
+          'resources', 'courses', 'forces', 'sources',
+          'services', 'devices', 'practices', 'offices',
         ];
         if (falsePositives.includes(combined)) return match;
+        // Pattern-based false positive detection: if the combined word is a
+        // reasonable length (<=16 chars) and ends in a common English suffix,
+        // it's likely a real word, not a merge.
+        // E.g., "demonstrates" = "demonst" + "rates" should NOT be split.
+        // But "geographicmigration" (20 chars) should be split.
+        if (
+          combined.length <= 16 &&
+          /(?:ates|tion|sion|ment|ness|ence|ance|ible|able|ious|eous|ture|ular|iver|ical|inal|onal|ural|rial|tial|cial|ntal|rnal|ther|ever|over|ward|wise|like|less|ship|hood|full)$/i.test(combined)
+        ) return match;
         return `${prefix} ${word}`;
       });
 
@@ -790,6 +1263,14 @@ function fixWordSpacing(text: string): string {
         return `${prefix} a `;
       });
 
+      // 7b. Specific merged section labels seen in LocalAI output
+      fixed = fixed.replace(/\b(Key)(points)\b/gi, '$1 $2');
+      fixed = fixed.replace(/\b(Leadership)(watchouts)\b/gi, '$1 $2');
+      fixed = fixed.replace(/\b(Executive)(Summary)\b/gi, '$1 $2');
+      fixed = fixed.replace(/\b(year-over-year)([A-Za-z])/gi, '$1 $2');
+      fixed = repairFragmentedAlphaSequences(fixed);
+      fixed = splitJoinedTokensInLine(fixed);
+
       // 8. Collapse double-spaces
       fixed = fixed.replace(/ {2,}/g, ' ');
 
@@ -798,9 +1279,125 @@ function fixWordSpacing(text: string): string {
     .join('\n');
 }
 
+/**
+ * Fix malformed markdown tables:
+ * - Convert empty separator rows (| | | | |) to proper (|---|---|---|---|)
+ * - Ensure header rows have a separator below them
+ * - Remove completely blank table rows
+ */
+function fixMarkdownTables(text: string): string {
+  const lines = text.split('\n');
+  const result: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Detect a pipe-delimited row
+    if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+      const cells = trimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+
+      // Skip completely empty rows (| | | | |) — these are malformed separators
+      if (cells.every(c => c === '')) {
+        // Replace with a proper separator row
+        const sepCells = cells.map(() => '---');
+        result.push(`| ${sepCells.join(' | ')} |`);
+        continue;
+      }
+
+      // Check if this looks like a header row (has content) and next row is NOT a separator
+      result.push(line);
+      if (
+        cells.some(c => c !== '') &&
+        i + 1 < lines.length
+      ) {
+        const nextTrimmed = lines[i + 1]?.trim() || '';
+        const isNextPipe = nextTrimmed.startsWith('|') && nextTrimmed.includes('|', 1);
+        if (isNextPipe) {
+          const nextCells = nextTrimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+          // If next row is empty (malformed sep) or already a proper sep, we'll handle it naturally
+          // But if next row is a data row (no separator between header and data), inject one
+          if (
+            i === 0 || !result[result.length - 2]?.trim().startsWith('|')
+          ) {
+            // This might be the first row of a table — check if next line needs a separator
+            const isNextSep = nextCells.every(c => /^[-:]+$/.test(c));
+            const isNextEmpty = nextCells.every(c => c === '');
+            if (!isNextSep && !isNextEmpty) {
+              // No separator between header and first data row — inject one
+              const sepCells = cells.map(() => '---');
+              result.push(`| ${sepCells.join(' | ')} |`);
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    result.push(line);
+  }
+
+  return result.join('\n');
+}
+
+/**
+ * Unified proofreading pipeline for ALL AI insight text.
+ * Applies in order: markdown structure fixes → unicode/word spacing cleanup →
+ * table fixes → alert tag processing.
+ * Called by RenderedMarkdown (inline display) and all export functions
+ * (PDF, DOCX, PPTX) to ensure consistent quality across all providers.
+ */
+/**
+ * Strip lines that contain leaked system prompt fragments.
+ * Models sometimes echo instruction text like "Do NOT exceed the rules"
+ * or "End with ## 6. Action Recommendations" — remove them.
+ */
+function stripPromptLeakage(text: string): string {
+  const leakPatterns = [
+    // Rule references and meta-instructions
+    /(?:Do NOT|NEVER|MUST|ALWAYS)\s+(?:exceed|echo|quote|reference|use)\s+(?:the\s+)?(?:rules?|instructions?|prompt|section names?|meta-text|formatting|strict)/i,
+    /(?:Strict Rules|FORMATTING RULES|PRESENTATION STYLE|CRITICAL OUTPUT RULE|OUTPUT RULE)/i,
+    /End with\s+##\s+\d+\.\s+/i,
+    // Stop markers leaked into output
+    /^STOP\s*(?:writing\s+immediately)?\.?\s*$/i,
+    // Instruction section headings leaked verbatim
+    /^(?:ANALYSIS APPROACH|CROSS-CHART INTELLIGENCE|INTELLIGENT ANALYSIS REQUIREMENTS|SLIDE DESIGN PRINCIPLES|EXECUTIVE PRESENTATION OUTPUT RULES|ABSOLUTE REQUIREMENT|MANDATORY RESPONSE STRUCTURE|HEALTH PROGRAM THRESHOLDS AND COLOR LEGENDS|CHART TYPE INTERPRETATION GUIDE|ANALYTICAL REASONING FRAMEWORK|DATA ANALYSIS DRAFT)\s*[:—]?\s*$/i,
+    // "You are Superset AI" identity text
+    /^You are Superset AI/i,
+    // Completion nagging leaked
+    /^(?:COMPLETION IS MANDATORY|NON-NEGOTIABLE|WRITE A FULL|RECOMMENDED FLOW)\s*[:—]/i,
+    // Truncation markers copied from compacted context/sample tables
+    /^\s*\.\.\.\s+and\s+\d+\s+more\s+rows?\s*$/i,
+    /^\s*and\s+\d+\s+more\s+rows?\s*$/i,
+    /^\s*\.\.\.\s*$/i,
+    /^\s*\[STUB\b.*$/i,
+    /^\s*Add\s+\d+\s*-\s*\d+\s+more\s+rows.*$/i,
+    /^\s*Bullet\s+\d+\s*-\s*\d+.*$/i,
+    /^\s*Write\s+a\s+\d+\s*-\s*\d+\s+word\s+paragraph.*$/i,
+  ];
+
+  return text
+    .split('\n')
+    .filter(line => !leakPatterns.some(p => p.test(line.trim())))
+    .join('\n');
+}
+
+function proofreadInsight(text: string): string {
+  const noLeaks = stripPromptLeakage(text);
+  const unescaped = noLeaks
+    .replace(/\\\*/g, '*')
+    .replace(/\\#/g, '#')
+    .replace(/\\_/g, '_')
+    .replace(/\\`/g, '`');
+  const structured = fixMarkdownStructure(unescaped);
+  const clean = sanitizeNonAscii(structured);
+  const tables = fixMarkdownTables(clean);
+  return tables;
+}
+
 function RenderedMarkdown({ text }: { text: string }) {
-  const clean = sanitizeNonAscii(text);
-  const processed = preprocessAlertTags(clean);
+  const proofread = proofreadInsight(text);
+  const processed = preprocessAlertTags(proofread);
   return <Markdown options={MARKDOWN_OPTIONS}>{processed}</Markdown>;
 }
 
@@ -818,6 +1415,23 @@ function getBrandInfo(): { name: string; text: string } {
   } catch {
     return { name: 'Superset', text: '' };
   }
+}
+
+/** Build a dynamic export title: "Brand Name - Dashboard/Chart Title" */
+function buildExportTitle(
+  brand: { name: string; text: string },
+  exportContext?: { mode?: string; context?: Record<string, unknown> },
+): string {
+  const brandName = brand.text || brand.name;
+  if (!exportContext?.context) return brandName;
+  const ctx = exportContext.context as any;
+  let targetTitle = '';
+  if (exportContext.mode === 'dashboard' && ctx.dashboard?.title) {
+    targetTitle = ctx.dashboard.title;
+  } else if (exportContext.mode === 'chart' && ctx.chart?.name) {
+    targetTitle = ctx.chart.name;
+  }
+  return targetTitle ? `${brandName} - ${targetTitle}` : brandName;
 }
 
 /** Hex color string "#RRGGBB" → [r, g, b] tuple for jsPDF. */
@@ -893,7 +1507,7 @@ function renderMarkdownToPdf(
   const H3_FONT = 10.5;
   const CODE_FONT = 8;
 
-  const clean = sanitizeNonAscii(text);
+  const clean = proofreadInsight(text);
   const lines = clean.split('\n');
   let inCodeBlock = false;
 
@@ -972,8 +1586,8 @@ function renderMarkdownToPdf(
     return y;
   }
 
-  for (const rawLine of lines) {
-    const trimmed = rawLine.trim();
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const trimmed = lines[lineIdx].trim();
 
     // Code block fences
     if (trimmed.startsWith('```')) {
@@ -1001,10 +1615,21 @@ function renderMarkdownToPdf(
       continue;
     }
 
-    // Alert tags — rendered as compact single-line callouts
+    // Alert tags — rendered as callout boxes with multi-line body support
     const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
     if (alertMatch) {
-      const [, tag, body] = alertMatch;
+      const [, tag, sameLine] = alertMatch;
+      // Collect continuation lines: everything until next alert tag, double blank, or end
+      const bodyParts: string[] = [];
+      if (sameLine.trim()) bodyParts.push(sameLine.trim());
+      while (lineIdx + 1 < lines.length) {
+        const nextTrimmed = lines[lineIdx + 1].trim();
+        // Stop at blank line, next alert tag, or heading
+        if (!nextTrimmed || /^\[(CRITICAL|WARNING|GOOD|INFO)\]/.test(nextTrimmed) || /^#{1,3} /.test(nextTrimmed)) break;
+        bodyParts.push(nextTrimmed);
+        lineIdx++;
+      }
+      const body = bodyParts.join(' ');
       const colors = ALERT_PDF_COLORS[tag] || ALERT_PDF_COLORS.INFO;
       const label = (ALERT_TAGS[tag]?.label || tag).toUpperCase();
 
@@ -1022,16 +1647,18 @@ function renderMarkdownToPdf(
       ensureSpace(blockHeight + 1);
 
       // Background + left accent (compact)
+      const blockTop = y;
       const [bgR, bgG, bgB] = hexToRgb(colors.bg);
       pdf.setFillColor(bgR, bgG, bgB);
-      pdf.roundedRect(margin, y - 1.5, contentWidth, blockHeight, 1, 1, 'F');
+      pdf.roundedRect(margin, blockTop, contentWidth, blockHeight, 1, 1, 'F');
       const [brR, brG, brB] = hexToRgb(colors.border);
       pdf.setFillColor(brR, brG, brB);
-      pdf.rect(margin, y - 1.5, 2, blockHeight, 'F');
+      pdf.rect(margin, blockTop, 2, blockHeight, 'F');
 
-      // Render bold label then body text inline
+      // Render bold label then body text inline — vertically centered
       const [txR, txG, txB] = hexToRgb(colors.text);
-      let alertY = y + 1;
+      const textBlockH = totalLines * lineH;
+      let alertY = blockTop + (blockHeight - textBlockH) / 2 + lineH * 0.75;
 
       // Draw bold label on first position
       pdf.setFont('helvetica', 'bold');
@@ -1132,41 +1759,93 @@ function renderMarkdownToPdf(
     // Table rows (pipe-delimited markdown tables)
     if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
       const cells = trimmed.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
-      // Skip separator rows (e.g., |---|---|)
-      if (cells.every(c => /^[-:]+$/.test(c))) continue;
-      const colCount = Math.max(cells.length, 1);
+      // Skip separator rows (e.g., |---|---| or |:---:|:---|)
+      if (cells.every(c => /^[-:]+$/.test(c))) {
+        (pdf as any).__tableSepSeen = true;
+        continue;
+      }
+      // Skip completely empty rows (e.g., | | | | |)
+      if (cells.every(c => c === '')) {
+        continue;
+      }
+
+      // Determine column count from this row OR from previously stored header
+      if (!(pdf as any).__tableStarted) {
+        (pdf as any).__tableStarted = true;
+        (pdf as any).__tableRowIdx = -1; // -1 = header row
+        (pdf as any).__tableSepSeen = false;
+        (pdf as any).__tableColCount = cells.length;
+      }
+      (pdf as any).__tableRowIdx = ((pdf as any).__tableRowIdx ?? -1) + 1;
+
+      // Header = row index 0 (first row), body rows come after separator
+      const isHeader = (pdf as any).__tableRowIdx === 0;
+      const rowIdx: number = Math.max(0, (pdf as any).__tableRowIdx - 1);
+      const colCount = Math.max((pdf as any).__tableColCount || cells.length, 1);
       const colW = contentWidth / colCount;
-      const rowH = 6;
+      const rowH = 7;
       ensureSpace(rowH + 2);
 
-      // Detect header row: first table row before any separator has been seen
-      // We track this with a local flag on the pdf object
-      const isHeader = !(pdf as any).__tableStarted;
+      // Reset ALL PDF state before drawing each table row to prevent
+      // contamination from prior alert callouts, code blocks, etc.
+      pdf.setDrawColor(210, 218, 228); // #D2DAE4 — visible border
+      pdf.setLineWidth(0.2);
+      pdf.setTextColor(31, 41, 55);    // dark gray text — always readable
+
       if (isHeader) {
-        (pdf as any).__tableStarted = true;
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(8.5);
-        pdf.setFillColor(230, 234, 240);
+        pdf.setFontSize(9);
       } else {
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(8.5);
-        pdf.setFillColor(255, 255, 255);
       }
-      pdf.setTextColor(31, 41, 55);
-      pdf.setDrawColor(200, 210, 220);
-      pdf.setLineWidth(0.2);
+
+      const textY = y + rowH * 0.6;
       for (let ci = 0; ci < colCount; ci++) {
         const cx = margin + ci * colW;
-        pdf.rect(cx, y - rowH * 0.7, colW, rowH, 'FD');
-        const cellText = (cells[ci] || '').substring(0, 50);
-        pdf.text(cellText, cx + 2, y - 0.5);
+        // Set fill color PER CELL to guarantee it's never black
+        if (isHeader) {
+          pdf.setFillColor(226, 232, 240); // #E2E8F0 — stronger header bg
+        } else if (rowIdx % 2 === 0) {
+          pdf.setFillColor(255, 255, 255); // white
+        } else {
+          pdf.setFillColor(248, 250, 252); // #F8FAFC — subtle zebra stripe
+        }
+        pdf.rect(cx, y, colW, rowH, 'FD');
+        // Re-assert text color and font after each rect() draw
+        pdf.setTextColor(31, 41, 55);
+        if (isHeader) {
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(9);
+        } else {
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8.5);
+        }
+        // Strip inline markdown (**bold**, *italic*) from table cells for clean PDF output
+        const rawCell = (cells[ci] || '').substring(0, 60);
+        const cellText = rawCell.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1');
+        if (cellText) {
+          // Truncate text to fit within column width (with padding)
+          const maxTextW = colW - 5;
+          let truncated = cellText;
+          while (truncated.length > 1 && pdf.getTextWidth(truncated) > maxTextW) {
+            truncated = truncated.substring(0, truncated.length - 1);
+          }
+          if (truncated.length < cellText.length && truncated.length > 2) {
+            truncated = truncated.substring(0, truncated.length - 1) + '..';
+          }
+          pdf.text(truncated, cx + 2.5, textY);
+        }
       }
-      y += rowH * 0.5;
+      y += rowH;
       continue;
     }
     // Reset table tracking when we leave a table block
     if ((pdf as any).__tableStarted) {
       (pdf as any).__tableStarted = false;
+      (pdf as any).__tableRowIdx = -1;
+      (pdf as any).__tableColCount = 0;
+      (pdf as any).__tableSepSeen = false;
       y += 2;
     }
 
@@ -1189,6 +1868,8 @@ type ExportImages = {
 async function exportAsPdf(
   messages: ChatMessage[],
   images?: ExportImages,
+  exportContext?: { mode?: string; context?: Record<string, unknown> },
+  aiInfo?: { provider?: string; model?: string },
 ) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -1198,7 +1879,7 @@ async function exportAsPdf(
   const contentWidth = pageWidth - margin * 2; // 170
   let y = margin;
   const brand = getBrandInfo();
-  const brandTitle = brand.text || brand.name;
+  const brandTitle = buildExportTitle(brand, exportContext);
 
   // ── Cover / Title area ──
   pdf.setFillColor(25, 118, 210);
@@ -1224,24 +1905,21 @@ async function exportAsPdf(
   pdf.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
   y += 10;
 
-  /** Add a chart image to PDF preserving aspect ratio, centered. */
+  /** Add a chart image to PDF preserving aspect ratio, centered — no border. */
   async function addChartImage(dataUrl: string, maxH: number) {
     try {
       const dim = await getImageDimensions(dataUrl);
       const fit = fitImage(dim.width, dim.height, contentWidth, maxH);
       const xOffset = margin + (contentWidth - fit.width) / 2;
       if (y + fit.height + 6 > pageHeight - 25) { pdf.addPage(); y = margin; }
-      pdf.setDrawColor(210, 218, 228);
-      pdf.setLineWidth(0.3);
-      pdf.roundedRect(xOffset - 1, y - 1, fit.width + 2, fit.height + 2, 1, 1, 'S');
       pdf.addImage(dataUrl, 'PNG', xOffset, y, fit.width, fit.height);
-      y += fit.height + 8;
+      y += fit.height + 6;
     } catch { /* skip */ }
   }
 
-  // ── Chart preview image (single chart mode) ──
+  // ── Chart preview image (single chart mode) — enlarged for full visibility ──
   if (images?.chartPreviewUrl) {
-    await addChartImage(images.chartPreviewUrl, 80);
+    await addChartImage(images.chartPreviewUrl, 180);
   }
 
   /** Match a ## heading to a dashboard chart. */
@@ -1268,8 +1946,8 @@ async function exportAsPdf(
         const headingMatch = section.match(/^## (.+)/m);
         const matched = matchChartForSection(headingMatch?.[1]?.trim());
         if (matched && images.dashboardChartImages![matched.chartId]) {
-          if (y > pageHeight - 60) { pdf.addPage(); y = margin; }
-          await addChartImage(images.dashboardChartImages![matched.chartId], 60);
+          if (y > pageHeight - 40) { pdf.addPage(); y = margin; }
+          await addChartImage(images.dashboardChartImages![matched.chartId], 140);
         }
         y = renderMarkdownToPdf(pdf, section, y, pageWidth, margin);
         y += 4;
@@ -1307,7 +1985,10 @@ async function exportAsPdf(
     pdf.setDrawColor(210, 218, 228);
     pdf.setLineWidth(0.15);
     pdf.line(margin, footerY - 3, pageWidth - margin, footerY - 3);
-    pdf.text('AI Insights', margin, footerY);
+    const footerLeft = aiInfo?.provider
+      ? `AI Insights — ${aiInfo.provider}${aiInfo.model ? ` / ${aiInfo.model}` : ''}`
+      : 'AI Insights';
+    pdf.text(footerLeft, margin, footerY);
     pdf.text(
       `Page ${i} of ${pageCount}`,
       pageWidth - margin - pdf.getTextWidth(`Page ${i} of ${pageCount}`),
@@ -1329,6 +2010,8 @@ async function exportAsPdf(
 async function exportAsDocx(
   messages: ChatMessage[],
   images?: ExportImages,
+  exportContext?: { mode?: string; context?: Record<string, unknown> },
+  aiInfo?: { provider?: string; model?: string },
 ) {
   const [
     { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ShadingType, ImageRun, TabStopType, TabStopPosition, Header: DocxHeader, Footer: DocxFooter, PageNumber, Table, TableRow, TableCell, WidthType },
@@ -1385,7 +2068,7 @@ async function exportAsDocx(
   /** Convert markdown text to docx Paragraph objects with professional spacing. */
   function markdownToDocx(text: string) {
     const paragraphs: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
-    const lines = sanitizeNonAscii(text).split('\n');
+    const lines = proofreadInsight(text).split('\n');
     let inCodeBlock = false;
 
     // Collect table rows to flush as a single Table object
@@ -1573,10 +2256,10 @@ async function exportAsDocx(
 
   // ── Build document content ──
   const brand = getBrandInfo();
-  const brandTitle = brand.text || brand.name;
+  const brandTitle = buildExportTitle(brand, exportContext);
   const children: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
 
-  // Title — use Superset brand, not "AI Insights"
+  // Title — use dynamic brand + dashboard/chart name
   children.push(new Paragraph({
     children: [new TextRun({ text: brandTitle, bold: true, size: 44, color: '1976D2', font: HEADING_FONT })],
     heading: HeadingLevel.TITLE,
@@ -1673,7 +2356,7 @@ async function exportAsDocx(
         default: new DocxFooter({
           children: [new Paragraph({
             children: [
-              new TextRun({ text: 'AI Insights', size: 16, color: '9CA3AF', font: BODY_FONT }),
+              new TextRun({ text: aiInfo?.provider ? `AI Insights \u2014 ${aiInfo.provider}${aiInfo.model ? ` / ${aiInfo.model}` : ''}` : 'AI Insights', size: 16, color: '9CA3AF', font: BODY_FONT }),
               new TextRun({ text: '\t', size: 16 }),
               new TextRun({ text: '\t', size: 16 }),
               new TextRun({ children: [PageNumber.CURRENT], size: 16, color: '9CA3AF', font: BODY_FONT }),
@@ -1707,6 +2390,8 @@ async function exportAsDocx(
 async function exportAsPptx(
   messages: ChatMessage[],
   images?: ExportImages,
+  exportContext?: { mode?: string; context?: Record<string, unknown> },
+  aiInfo?: { provider?: string; model?: string },
 ) {
   const PptxGenJS = (await import('pptxgenjs')).default;
 
@@ -1719,7 +2404,7 @@ async function exportAsPptx(
 
   // ── Design constants ──
   const brandInfo = getBrandInfo();
-  const brandTitle = brandInfo.text || brandInfo.name;
+  const brandTitle = buildExportTitle(brandInfo, exportContext);
   const BRAND = '1976D2';
   const BRAND_DARK = '0D47A1';
   const DARK = '1F2937';
@@ -1729,9 +2414,9 @@ async function exportAsPptx(
   const SLIDE_W = 13.33;
   const SLIDE_H = 7.5;
   const CONTENT_X = 0.7;
-  const CONTENT_Y = 1.05;
+  const CONTENT_Y = 1.15;
   const CONTENT_W = SLIDE_W - 1.4;
-  const CONTENT_H = SLIDE_H - 1.85;
+  const CONTENT_H = SLIDE_H - 1.95;
 
   // Alert colours for PPTX
   const PPTX_ALERT: Record<string, { label: string; color: string; bg: string }> = {
@@ -1748,20 +2433,20 @@ async function exportAsPptx(
       x: 0, y: 0, w: SLIDE_W, h: 0.08,
       fill: { color: BRAND },
     });
-    // Header background
+    // Header background (taller to fit 24pt title)
     slide.addShape('rect', {
-      x: 0, y: 0.08, w: SLIDE_W, h: 0.72,
+      x: 0, y: 0.08, w: SLIDE_W, h: 0.82,
       fill: { color: LIGHT_BG },
     });
     // Header divider line
     slide.addShape('line', {
-      x: 0, y: 0.8, w: SLIDE_W, h: 0,
+      x: 0, y: 0.9, w: SLIDE_W, h: 0,
       line: { color: 'D0D8E4', width: 0.5 },
     });
-    // Slide title in header — insight-led titles
+    // Slide title in header — insight-led titles (6×6 rule: visible from back of room)
     slide.addText(title, {
-      x: 0.6, y: 0.15, w: 11.5, h: 0.5,
-      fontSize: 18, bold: true, color: BRAND, fontFace: FONT,
+      x: 0.6, y: 0.12, w: 11.5, h: 0.6,
+      fontSize: 24, bold: true, color: BRAND, fontFace: FONT,
     });
     // Footer separator
     slide.addShape('line', {
@@ -1769,8 +2454,11 @@ async function exportAsPptx(
       line: { color: 'D0D8E4', width: 0.5 },
     });
     // Footer text
-    slide.addText('AI Insights', {
-      x: 0.6, y: SLIDE_H - 0.45, w: 4, h: 0.3,
+    const pptxFooter = aiInfo?.provider
+      ? `${brandTitle} — AI Insights — ${aiInfo.provider}${aiInfo.model ? ` / ${aiInfo.model}` : ''}`
+      : `${brandTitle} — AI Insights`;
+    slide.addText(pptxFooter, {
+      x: 0.6, y: SLIDE_H - 0.45, w: 8, h: 0.3,
       fontSize: 8, color: GRAY, fontFace: FONT,
     });
     if (slideNum) {
@@ -1798,13 +2486,6 @@ async function exportAsPptx(
       const hIn = fit.height / 96;
       const xOff = (SLIDE_W - wIn) / 2;
       const yOff = 1.0 + (maxH - hIn) / 2;
-      slide.addShape('rect', {
-        x: xOff - 0.05, y: yOff - 0.05, w: wIn + 0.1, h: hIn + 0.1,
-        fill: { color: 'FFFFFF' },
-        shadow: { type: 'outer', blur: 4, offset: 2, color: '00000020' },
-        line: { color: 'E0E4EB', width: 0.5 },
-        rectRadius: 0.05,
-      });
       slide.addImage({ data: dataUrl, x: xOff, y: yOff, w: wIn, h: hIn });
     } catch { /* skip */ }
   }
@@ -1840,12 +2521,13 @@ async function exportAsPptx(
     | { type: 'text'; parts: Array<{ text: string; options: Record<string, unknown> }> }
     | { type: 'table'; rows: string[][] };
 
-  function markdownToSlideBlocks(text: string): SlideBlock[] {
+  function markdownToSlideBlocks(text: string, skipFirstH2 = false): SlideBlock[] {
     const blocks: SlideBlock[] = [];
-    const lines = sanitizeNonAscii(text).split('\n');
+    const lines = proofreadInsight(text).split('\n');
     let currentParts: Array<{ text: string; options: Record<string, unknown> }> = [];
     let tableRows: string[][] = [];
     let inCodeBlock = false;
+    let skippedFirstH2 = false;
 
     function flushParts() {
       if (currentParts.length) {
@@ -1860,13 +2542,13 @@ async function exportAsPptx(
       }
     }
 
-    for (const line of lines) {
-      const trimmed = line.trim();
+    for (let li = 0; li < lines.length; li++) {
+      const trimmed = lines[li].trim();
 
       // Code blocks — render as monospace text
       if (trimmed.startsWith('```')) { inCodeBlock = !inCodeBlock; continue; }
       if (inCodeBlock) {
-        currentParts.push({ text: `${trimmed}\n`, options: { fontSize: 9, color: '374151', fontFace: 'Consolas' } });
+        currentParts.push({ text: `${trimmed}\n`, options: { fontSize: 11, color: '374151', fontFace: 'Consolas' } });
         continue;
       }
 
@@ -1881,68 +2563,82 @@ async function exportAsPptx(
       if (tableRows.length) { flushTable(); }
 
       if (!trimmed) {
-        currentParts.push({ text: '\n', options: { fontSize: 6 } });
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
         continue;
       }
 
-      // Alert callouts
+      // Alert callouts — with multi-line body support
       const alertMatch = trimmed.match(/^\[(CRITICAL|WARNING|GOOD|INFO)\]\s*(.*)/);
       if (alertMatch) {
-        const [, tag, body] = alertMatch;
+        const [, tag, sameLine] = alertMatch;
+        const bodyParts: string[] = [];
+        if (sameLine.trim()) bodyParts.push(sameLine.trim());
+        while (li + 1 < lines.length) {
+          const nextTrimmed = lines[li + 1].trim();
+          if (!nextTrimmed || /^\[(CRITICAL|WARNING|GOOD|INFO)\]/.test(nextTrimmed) || /^#{1,3} /.test(nextTrimmed)) break;
+          bodyParts.push(nextTrimmed);
+          li++;
+        }
+        const body = bodyParts.join(' ');
         const a = PPTX_ALERT[tag] || PPTX_ALERT.INFO;
-        currentParts.push({ text: '\n', options: { fontSize: 3 } });
-        currentParts.push({ text: ` ${a.label} `, options: { fontSize: 10, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
-        currentParts.push(...parseInlinePptx(`  ${body}\n`, 11, DARK));
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
+        currentParts.push({ text: ` ${a.label} `, options: { fontSize: 18, bold: true, color: 'FFFFFF', highlight: a.color, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(`  ${body}\n`, 20, DARK));
         continue;
       }
 
       // Headings
       const h1 = trimmed.match(/^# (.+)/);
       if (h1) {
-        currentParts.push({ text: '\n', options: { fontSize: 5 } });
-        currentParts.push({ text: `${h1[1]}\n`, options: { fontSize: 20, bold: true, color: BRAND, fontFace: FONT } });
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
+        currentParts.push({ text: `${h1[1]}\n`, options: { fontSize: 24, bold: true, color: BRAND, fontFace: FONT } });
         continue;
       }
       const h2 = trimmed.match(/^## (.+)/);
       if (h2) {
-        currentParts.push({ text: '\n', options: { fontSize: 4 } });
-        currentParts.push({ text: `${h2[1]}\n`, options: { fontSize: 16, bold: true, color: BRAND, fontFace: FONT } });
+        // Skip the first H2 — it's already rendered as the slide header by applyMaster
+        if (skipFirstH2 && !skippedFirstH2) {
+          skippedFirstH2 = true;
+          continue;
+        }
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
+        currentParts.push({ text: `${h2[1]}\n`, options: { fontSize: 28, bold: true, color: BRAND, fontFace: FONT } });
         continue;
       }
       const h3 = trimmed.match(/^### (.+)/);
       if (h3) {
-        currentParts.push({ text: '\n', options: { fontSize: 3 } });
-        currentParts.push({ text: `${h3[1]}\n`, options: { fontSize: 14, bold: true, color: DARK, fontFace: FONT } });
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
+        currentParts.push({ text: `${h3[1]}\n`, options: { fontSize: 24, bold: true, color: DARK, fontFace: FONT } });
         continue;
       }
 
-      // Bullet list — preserve bold/italic
+      // Bullet list — preserve bold/italic (6×6 rule: 20pt for readability)
       const bullet = trimmed.match(/^[-*]\s+(.+)/);
       if (bullet) {
-        currentParts.push({ text: '   \u2022  ', options: { fontSize: 11, color: DARK, fontFace: FONT } });
-        currentParts.push(...parseInlinePptx(bullet[1], 11, DARK));
-        currentParts.push({ text: '\n', options: { fontSize: 11 } });
+        currentParts.push({ text: '   \u2022  ', options: { fontSize: 20, color: DARK, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(bullet[1], 20, DARK));
+        currentParts.push({ text: '\n', options: { fontSize: 20 } });
         continue;
       }
 
       // Numbered list
       const num = trimmed.match(/^(\d+)[.)]\s+(.+)/);
       if (num) {
-        currentParts.push({ text: `   ${num[1]}.  `, options: { fontSize: 11, bold: true, color: DARK, fontFace: FONT } });
-        currentParts.push(...parseInlinePptx(num[2], 11, DARK));
-        currentParts.push({ text: '\n', options: { fontSize: 11 } });
+        currentParts.push({ text: `   ${num[1]}.  `, options: { fontSize: 20, bold: true, color: DARK, fontFace: FONT } });
+        currentParts.push(...parseInlinePptx(num[2], 20, DARK));
+        currentParts.push({ text: '\n', options: { fontSize: 20 } });
         continue;
       }
 
       // Horizontal rule
       if (/^---+$/.test(trimmed)) {
-        currentParts.push({ text: '\n', options: { fontSize: 5 } });
+        currentParts.push({ text: '\n', options: { fontSize: 8 } });
         continue;
       }
 
-      // Normal paragraph — preserve bold/italic
-      currentParts.push(...parseInlinePptx(trimmed, 11, DARK));
-      currentParts.push({ text: '\n', options: { fontSize: 11 } });
+      // Normal paragraph — preserve bold/italic (6×6 rule: 20pt)
+      currentParts.push(...parseInlinePptx(trimmed, 20, DARK));
+      currentParts.push({ text: '\n', options: { fontSize: 20 } });
     }
     flushParts();
     flushTable();
@@ -1952,7 +2648,8 @@ async function exportAsPptx(
   /** Render slide blocks onto slides, creating new slides as needed.
    *  Tables get their own slide. Text blocks are chunked to fit. */
   function renderBlocksToSlides(blocks: SlideBlock[], label: string) {
-    const TEXT_PARTS_PER_SLIDE = 22;
+    // 6×6 rule: max ~6 content items per slide for readability
+    const TEXT_PARTS_PER_SLIDE = 12;
 
     for (const block of blocks) {
       if (block.type === 'table') {
@@ -1964,9 +2661,9 @@ async function exportAsPptx(
         const colW = CONTENT_W / Math.max(colCount, 1);
         const tblRows = block.rows.map((cells, ri) =>
           Array.from({ length: colCount }, (_, ci) => ({
-            text: cells[ci] || '',
+            text: (cells[ci] || '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1'),
             options: {
-              fontSize: ri === 0 ? 10 : 9.5,
+              fontSize: ri === 0 ? 16 : 14,
               bold: ri === 0,
               color: DARK,
               fontFace: FONT,
@@ -2003,9 +2700,9 @@ async function exportAsPptx(
         applyMaster(slide, title, `${slideCount}`);
         slide.addText(chunk as any, {
           x: CONTENT_X, y: CONTENT_Y, w: CONTENT_W, h: CONTENT_H,
-          fontSize: 11, color: DARK, fontFace: FONT,
-          valign: 'top', lineSpacingMultiple: 1.35,
-          paraSpaceAfter: 4,
+          fontSize: 20, color: DARK, fontFace: FONT,
+          valign: 'top', lineSpacingMultiple: 1.3,
+          paraSpaceAfter: 6,
         });
       }
     }
@@ -2085,11 +2782,117 @@ async function exportAsPptx(
     );
   }
 
+  // ── Section divider slide — visual separator between major sections ──
+  function addSectionDivider(title: string, subtitle: string, accentColor: string) {
+    slideCount += 1;
+    const slide = pptx.addSlide();
+    // Full background
+    slide.addShape('rect', {
+      x: 0, y: 0, w: SLIDE_W, h: SLIDE_H,
+      fill: { color: 'FFFFFF' },
+    });
+    // Left accent strip
+    slide.addShape('rect', {
+      x: 0, y: 0, w: 0.15, h: SLIDE_H,
+      fill: { color: accentColor },
+    });
+    // Large decorative circle (top-right)
+    slide.addShape('ellipse', {
+      x: SLIDE_W - 3.5, y: -1.5, w: 5, h: 5,
+      fill: { color: accentColor, type: 'solid' },
+      line: { color: accentColor, width: 0 },
+    });
+    // Smaller accent circle (bottom-left)
+    slide.addShape('ellipse', {
+      x: -1, y: SLIDE_H - 2, w: 3, h: 3,
+      fill: { color: LIGHT_BG, type: 'solid' },
+      line: { color: 'E0E4EB', width: 1 },
+    });
+    // Section number / decorative bar
+    slide.addShape('rect', {
+      x: 1.2, y: 2.8, w: 2.5, h: 0.06,
+      fill: { color: accentColor },
+    });
+    // Section title
+    slide.addText(title, {
+      x: 1.2, y: 3.0, w: 9, h: 1.2,
+      fontSize: 36, bold: true, color: DARK, fontFace: FONT,
+    });
+    // Subtitle
+    slide.addText(subtitle, {
+      x: 1.2, y: 4.1, w: 8, h: 0.6,
+      fontSize: 20, color: GRAY, fontFace: FONT,
+    });
+    // Footer
+    const dividerFooter = aiInfo?.provider
+      ? `${brandTitle} — AI Insights — ${aiInfo.provider}${aiInfo.model ? ` / ${aiInfo.model}` : ''}`
+      : `${brandTitle} — AI Insights`;
+    slide.addText(dividerFooter, {
+      x: 0.6, y: SLIDE_H - 0.45, w: 8, h: 0.3,
+      fontSize: 8, color: GRAY, fontFace: FONT,
+    });
+  }
+
+  /** Add a visual KPI summary slide with colored stat boxes (dashboard overview). */
+  function addDashboardOverviewSlide(charts: { sliceName: string; chartId: number }[]) {
+    slideCount += 1;
+    const slide = pptx.addSlide();
+    applyMaster(slide, 'Dashboard Overview', `${slideCount}`);
+    const count = Math.min(charts.length, 8);
+    const cols = count <= 4 ? count : Math.ceil(count / 2);
+    const rows = count <= 4 ? 1 : 2;
+    const boxW = Math.min(2.8, (CONTENT_W - (cols - 1) * 0.3) / cols);
+    const boxH = 1.4;
+    const startX = CONTENT_X + (CONTENT_W - (cols * boxW + (cols - 1) * 0.3)) / 2;
+    const startY = CONTENT_Y + 0.5;
+    const chartColors = ['1976D2', 'E53935', '43A047', 'FB8C00', '8E24AA', '00ACC1', 'D81B60', '3949AB'];
+    for (let i = 0; i < count; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const cx = startX + col * (boxW + 0.3);
+      const cy = startY + row * (boxH + 0.4);
+      const color = chartColors[i % chartColors.length];
+      // Card background
+      slide.addShape('roundRect', {
+        x: cx, y: cy, w: boxW, h: boxH,
+        fill: { color: 'FFFFFF' },
+        shadow: { type: 'outer', blur: 3, offset: 1, color: '00000015' },
+        line: { color: 'E0E4EB', width: 0.5 },
+        rectRadius: 0.08,
+      });
+      // Color accent bar at top of card
+      slide.addShape('rect', {
+        x: cx, y: cy, w: boxW, h: 0.06,
+        fill: { color },
+      });
+      // Chart name
+      slide.addText(charts[i].sliceName, {
+        x: cx + 0.15, y: cy + 0.2, w: boxW - 0.3, h: 1.0,
+        fontSize: 14, color: DARK, fontFace: FONT,
+        valign: 'middle',
+        wrap: true,
+      });
+    }
+    // Subtitle text
+    slide.addText(`${charts.length} charts analyzed in this dashboard`, {
+      x: CONTENT_X, y: startY + rows * (boxH + 0.4) + 0.3, w: CONTENT_W, h: 0.4,
+      fontSize: 16, color: GRAY, fontFace: FONT, align: 'center',
+    });
+  }
+
   // ── Content slides — one key message per section ──
   const hasDashboardImages =
     images?.dashboardChartImages &&
     images?.dashboardCharts &&
     Object.keys(images.dashboardChartImages).length > 0;
+
+  // Dashboard mode: add overview slide with chart cards
+  if (images?.dashboardCharts && images.dashboardCharts.length > 0) {
+    addDashboardOverviewSlide(images.dashboardCharts);
+  }
+
+  // Track which major sections we've seen for divider slides
+  const sectionDividers: Record<string, boolean> = {};
 
   for (let idx = 0; idx < allAssistant.length; idx++) {
     const msg = allAssistant[idx];
@@ -2101,6 +2904,21 @@ async function exportAsPptx(
     for (const section of sections) {
       const headingMatch = section.match(/^## (.+)/m);
       const sectionTitle = headingMatch?.[1]?.trim();
+
+      // Insert visual section divider for major structure sections
+      if (sectionTitle) {
+        const titleLower = sectionTitle.toLowerCase();
+        if (titleLower.includes('executive summary') && !sectionDividers.exec) {
+          sectionDividers.exec = true;
+          addSectionDivider('Executive Summary', 'Key findings and strategic overview', BRAND);
+        } else if ((titleLower.includes('detailed analysis') || titleLower.includes('chart by chart')) && !sectionDividers.detail) {
+          sectionDividers.detail = true;
+          addSectionDivider('Detailed Analysis', 'Chart-by-chart breakdown with key insights', '43A047');
+        } else if ((titleLower.includes('recommendation') || titleLower.includes('action')) && !sectionDividers.action) {
+          sectionDividers.action = true;
+          addSectionDivider('Action Recommendations', 'Prioritized next steps based on the analysis', 'E53935');
+        }
+      }
 
       // Dashboard mode: insert chart image slide before matching section
       if (hasDashboardImages && sectionTitle) {
@@ -2116,7 +2934,8 @@ async function exportAsPptx(
       }
 
       // Convert section markdown to structured blocks (text + tables)
-      const blocks = markdownToSlideBlocks(section);
+      // skipFirstH2=true: the ## heading is already used as slide header by applyMaster
+      const blocks = markdownToSlideBlocks(section, !!sectionTitle);
       if (blocks.length > 0) {
         renderBlocksToSlides(
           blocks,
@@ -2153,6 +2972,8 @@ export default function AIInsightPanel({
 }: Props) {
   const { addDangerToast } = useToasts();
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const [capabilities, setCapabilities] = useState<AICapabilities | null>(null);
   const [providerId, setProviderId] = useState('');
@@ -2353,10 +3174,12 @@ export default function AIInsightPanel({
             question: actualQuestion,
             context,
             conversation: conversationHistory,
+            conversationId: convId,
             onChunk: (text: string) => {
-              setStreamingText(text);
+              if (mountedRef.current) setStreamingText(text);
             },
             onDone: (fullText: string) => {
+              if (!mountedRef.current) return;
               const assistantMsg: ChatMessage = {
                 id: nextMsgId(),
                 role: 'assistant',
@@ -2379,12 +3202,14 @@ export default function AIInsightPanel({
               }
             },
             onError: (error: string) => {
+              if (!mountedRef.current) return;
               addDangerToast(error);
               setLoading(false);
               setStreamingText('');
             },
           });
         } catch (error: any) {
+          if (!mountedRef.current) return;
           addDangerToast(error?.message || t('AI request failed'));
           setLoading(false);
           setStreamingText('');
@@ -2400,11 +3225,13 @@ export default function AIInsightPanel({
             question: actualQuestion,
             context,
             conversation: conversationHistory,
+            conversationId: convId,
             currentSql,
             databaseId,
             schema,
             execute: false,
           });
+          if (!mountedRef.current) return;
           setLastResult(response);
           if (response.sql) {
             setLastSql(response.sql);
@@ -2435,10 +3262,11 @@ export default function AIInsightPanel({
             }).catch(() => {});
           }
         } catch (error: any) {
+          if (!mountedRef.current) return;
           const clientError = await getClientErrorObject(error);
           addDangerToast(clientError.message || t('AI request failed'));
         } finally {
-          setLoading(false);
+          if (mountedRef.current) setLoading(false);
         }
       }
     },
@@ -3080,13 +3908,13 @@ export default function AIInsightPanel({
           {messages.filter(m => m.role === 'assistant').length > 0 && (
             <ExportBar>
               <span>{t('Export')}:</span>
-              <ExportButton onClick={() => void exportAsPdf(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
+              <ExportButton onClick={() => void exportAsPdf(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts }, { mode, context }, { provider: selectedProvider?.label || providerId, model })}>
                 PDF
               </ExportButton>
-              <ExportButton onClick={() => void exportAsDocx(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
+              <ExportButton onClick={() => void exportAsDocx(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts }, { mode, context }, { provider: selectedProvider?.label || providerId, model })}>
                 DOCX
               </ExportButton>
-              <ExportButton onClick={() => void exportAsPptx(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts })}>
+              <ExportButton onClick={() => void exportAsPptx(messages, { chartPreviewUrl, dashboardChartImages, dashboardCharts }, { mode, context }, { provider: selectedProvider?.label || providerId, model })}>
                 PPTX
               </ExportButton>
             </ExportBar>

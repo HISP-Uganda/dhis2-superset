@@ -2,13 +2,14 @@ import { t, ChartMetadata, ChartPlugin, Behavior } from '@superset-ui/core';
 import buildQuery from './plugin/buildQuery';
 import controlPanel from './plugin/controlPanel';
 import transformProps from './plugin/transformProps';
+import thumbnail from './images/thumbnail';
 
 const metadata = new ChartMetadata({
   name: t('Vital Maps'),
   description: t(
     'High-visibility thematic and geographic analysis maps for points, boundaries, heatmaps, bubbles, and public-health spatial reporting.',
   ),
-  thumbnail: '',
+  thumbnail,
   category: t('Map'),
   tags: [
     t('Map'),

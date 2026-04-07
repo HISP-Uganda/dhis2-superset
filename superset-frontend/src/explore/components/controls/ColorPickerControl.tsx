@@ -25,8 +25,8 @@ import {
 import ControlHeader from '../ControlHeader';
 
 export interface ColorPickerControlProps {
-  onChange?: (color: RGBColor) => void;
-  value?: RGBColor;
+  onChange?: (color: RGBColor | null) => void;
+  value?: RGBColor | null;
   name?: string;
   label?: string;
   description?: string;
@@ -71,17 +71,46 @@ export default function ColorPickerControl({
     }
   };
 
+  const handleClear = () => {
+    if (onChange) {
+      onChange(null);
+    }
+  };
+
   const hexValue = value ? rgbToHex(value) : undefined;
 
   return (
     <div>
       <ControlHeader {...headerProps} />
-      <ColorPicker
-        value={hexValue}
-        onChangeComplete={handleChange}
-        presets={[{ label: 'Theme colors', colors: presetColors }]}
-        showText
-      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <ColorPicker
+          value={hexValue}
+          onChangeComplete={handleChange}
+          onClear={handleClear}
+          allowClear
+          presets={[{ label: 'Theme colors', colors: presetColors }]}
+          showText
+        />
+        {value && (
+          <button
+            type="button"
+            onClick={handleClear}
+            title="Clear color"
+            style={{
+              background: 'none',
+              border: '1px solid #d9d9d9',
+              borderRadius: 4,
+              padding: '2px 8px',
+              cursor: 'pointer',
+              fontSize: 11,
+              color: '#999',
+              lineHeight: 1.4,
+            }}
+          >
+            ✕ Clear
+          </button>
+        )}
+      </div>
     </div>
   );
 }

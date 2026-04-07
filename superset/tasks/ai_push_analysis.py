@@ -24,6 +24,8 @@ def _generate_pdf_report(
     insight_text: str,
     charts: list[dict[str, Any]],
     include_charts: bool = True,
+    provider_id: str | None = None,
+    model_name: str | None = None,
 ) -> bytes:
     """Generate a professional PDF report from AI insight text.
 
@@ -54,7 +56,15 @@ def _generate_pdf_report(
             self.set_y(-15)
             self.set_font("Helvetica", "I", 8)
             self.set_text_color(128, 128, 128)
-            self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
+            ai_label = "AI Insights"
+            if provider_id:
+                ai_label += f" \u2014 {provider_id}"
+                if model_name:
+                    ai_label += f" / {model_name}"
+            page_text = f"Page {self.page_no()}/{{nb}}"
+            self.cell(0, 10, ai_label, align="L")
+            self.set_x(-30)
+            self.cell(0, 10, page_text, align="R")
 
     pdf = ReportPDF(orientation="P", unit="mm", format="A4")
     pdf.alias_nb_pages()
@@ -282,6 +292,8 @@ def _send_report_email(
     insight_text: str,
     pdf_bytes: bytes | None = None,
     schedule_name: str = "",
+    provider_id: str | None = None,
+    model_name: str | None = None,
 ) -> int:
     """Send the report via email to all configured recipients.
 
@@ -317,7 +329,7 @@ def _send_report_email(
     to_list = ",".join(email_targets)
 
     # Build HTML email body
-    html_body = _build_email_html(schedule_name, insight_text)
+    html_body = _build_email_html(schedule_name, insight_text, provider_id, model_name)
 
     # Attach PDF if available
     pdf_attachments: dict[str, bytes] | None = None
@@ -382,7 +394,12 @@ def _fix_word_spacing(text: str) -> str:
     return "\n".join(fixed_lines)
 
 
-def _build_email_html(schedule_name: str, insight_text: str) -> str:
+def _build_email_html(
+    schedule_name: str,
+    insight_text: str,
+    provider_id: str | None = None,
+    model_name: str | None = None,
+) -> str:
     """Build a professional HTML email body from the insight text."""
     now = datetime.utcnow().strftime("%B %d, %Y at %H:%M UTC")
 
@@ -519,7 +536,7 @@ def _build_email_html(schedule_name: str, insight_text: str) -> str:
   </div>
   <div style="background:#F9FAFB;padding:16px 24px;text-align:center;border-top:1px solid #E5E7EB;">
     <p style="color:#9CA3AF;font-size:11px;margin:0;">
-      AI Insights
+      AI Insights{f' &mdash; {provider_id}' if provider_id else ''}{f' / {model_name}' if model_name else ''}
     </p>
   </div>
 </div>
@@ -581,6 +598,8 @@ def execute_push_analysis_schedule(self: Any, schedule_id: int) -> None:
                     insight_text=insight_text,
                     charts=charts,
                     include_charts=schedule.include_charts,
+                    provider_id=report_data.get("provider_id"),
+                    model_name=report_data.get("model"),
                 )
                 logger.info(
                     "PDF report generated for schedule %s (%d bytes)",
@@ -604,6 +623,8 @@ def execute_push_analysis_schedule(self: Any, schedule_id: int) -> None:
                 insight_text=insight_text,
                 pdf_bytes=pdf_bytes,
                 schedule_name=schedule.name,
+                provider_id=report_data.get("provider_id"),
+                model_name=report_data.get("model"),
             )
 
         # Save result

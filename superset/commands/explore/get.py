@@ -126,8 +126,8 @@ class GetExploreCommand(BaseCommand, ABC):
                         ):
                             raise DatasetAccessDeniedError(
                                 message="Dataset is not eligible for explore context.",
-                                dataset_id=self._datasource_id,
-                                dataset_type=self._datasource_type,
+                                datasource_id=self._datasource_id,
+                                datasource_type=self._datasource_type,
                             )
                     except ValueError:
                         pass

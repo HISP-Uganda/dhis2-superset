@@ -140,17 +140,20 @@ class BaseProvider:
         extra_payload: dict[str, Any] | None = None,
     ) -> Generator[StreamChunk, None, None]:
         """Stream OpenAI-compatible chat completions via SSE."""
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+            **(extra_payload or {}),
+        }
+        # Only include max_tokens if positive (reasoning models use max_completion_tokens instead)
+        if max_tokens > 0 and "max_completion_tokens" not in (extra_payload or {}):
+            payload["max_tokens"] = max_tokens
         response = requests.post(
             url,
             headers=headers,
-            json={
-                "model": selected_model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stream": True,
-                **(extra_payload or {}),
-            },
+            json=payload,
             timeout=timeout,
             stream=True,
         )
@@ -158,6 +161,76 @@ class BaseProvider:
             response.raise_for_status()
         except requests.exceptions.HTTPError as ex:
             raise AIProviderError(f"HTTP {response.status_code} Error") from ex
+
+        # Repetition detection: stop early only when the model is clearly
+        # looping (same paragraph block repeated 3+ times).  Conservative
+        # thresholds to avoid cutting off legitimate analysis.
+        import re as _re
+
+        _full_text = ""
+        _last_check_len = 0
+
+        def _is_repeating(text: str) -> bool:
+            # Strategy 0: pipe-delimited raw IDs/titles repeated over and over.
+            pipe_tokens = [token.strip().lower() for token in text.split("|") if token.strip()]
+            if len(pipe_tokens) >= 8:
+                token_counts: dict[str, int] = {}
+                for token in pipe_tokens:
+                    token_counts[token] = token_counts.get(token, 0) + 1
+                    if token_counts[token] >= 5 and token_counts[token] / len(pipe_tokens) >= 0.45:
+                        return True
+
+            # Strategy 1: same ## heading appears 2+ times
+            headings = _re.findall(r"^#{1,3} .{3,}", text, _re.MULTILINE)
+            seen: dict[str, int] = {}
+            for h in headings:
+                key = h.strip().lower()
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] >= 2:
+                    return True
+
+            # Strategy 2: a paragraph opening (first 80 chars) repeats 2+ times
+            paragraphs = _re.split(r"\n\s*\n", text)
+            para_counts: dict[str, int] = {}
+            for p in paragraphs:
+                p = p.strip()
+                if len(p) < 60:
+                    continue
+                key = p[:80].lower()
+                para_counts[key] = para_counts.get(key, 0) + 1
+                if para_counts[key] >= 2:
+                    return True
+
+            # Strategy 3: any 80-char substring appears 2+ times in the text
+            if len(text) > 1500:
+                window = 80
+                tail = text[-window:]
+                count = text.count(tail)
+                if count >= 2:
+                    return True
+
+            # Strategy 4: content after "Action Recommendations" exceeds 800 chars
+            rec_match = _re.search(
+                r"## Action Recommendations", text, _re.IGNORECASE
+            )
+            if rec_match:
+                after_rec = text[rec_match.end():]
+                if len(after_rec) > 2000:
+                    return True
+
+            # Strategy 5: any non-trivial line (30+ chars) repeated 3+ times
+            lines = text.split("\n")
+            line_counts: dict[str, int] = {}
+            for ln in lines:
+                ln = ln.strip()
+                if len(ln) < 30:
+                    continue
+                key = ln[:100].lower()
+                line_counts[key] = line_counts.get(key, 0) + 1
+                if line_counts[key] >= 3:
+                    return True
+
+            return False
 
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
@@ -171,6 +244,21 @@ class BaseProvider:
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
                 if content:
+                    _full_text += content
+                    # Check periodically (every ~200 chars after 500 total)
+                    if (
+                        len(_full_text) > 500
+                        and len(_full_text) - _last_check_len >= 200
+                    ):
+                        _last_check_len = len(_full_text)
+                        if _is_repeating(_full_text):
+                            logger.warning(
+                                "Repetition detected after %d chars, stopping stream",
+                                len(_full_text),
+                            )
+                            yield StreamChunk(text="", done=True)
+                            response.close()
+                            return
                     yield StreamChunk(text=content)
             except (json.JSONDecodeError, IndexError, KeyError):
                 continue
@@ -189,16 +277,19 @@ class BaseProvider:
         extra_payload: dict[str, Any] | None = None,
     ) -> ProviderResponse:
         started_at = perf_counter()
+        payload: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "temperature": temperature,
+            **(extra_payload or {}),
+        }
+        # Only include max_tokens if positive (reasoning models use max_completion_tokens instead)
+        if max_tokens > 0 and "max_completion_tokens" not in (extra_payload or {}):
+            payload["max_tokens"] = max_tokens
         response = requests.post(
             url,
             headers=headers,
-            json={
-                "model": selected_model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                **(extra_payload or {}),
-            },
+            json=payload,
             timeout=timeout,
         )
         try:
@@ -235,7 +326,15 @@ class BaseProvider:
 
 
 class OpenAIProvider(BaseProvider):
+    """OpenAI API provider.
+
+    Supports both the Chat Completions API (https://platform.openai.com/docs/api-reference/chat)
+    and reasoning models (o-series) which use max_completion_tokens instead of max_tokens.
+    """
     provider_type = "openai"
+
+    # o-series reasoning models use max_completion_tokens, not max_tokens
+    _REASONING_MODELS = {"o1", "o1-mini", "o1-preview", "o3", "o3-mini", "o3-pro", "o4-mini"}
 
     def is_available(self) -> bool:
         return super().is_available()
@@ -261,6 +360,17 @@ class OpenAIProvider(BaseProvider):
             raise AIProviderError(f"Provider {self.provider_id} has no configured model")
         return selected_model
 
+    def _is_reasoning_model(self, model: str) -> bool:
+        """Check if model is an o-series reasoning model."""
+        return any(model.startswith(prefix) for prefix in self._REASONING_MODELS)
+
+    def _build_extra_payload(self, model: str, max_tokens: int) -> dict[str, Any]:
+        """Build model-specific extra payload parameters."""
+        if self._is_reasoning_model(model):
+            # Reasoning models use max_completion_tokens, don't accept max_tokens
+            return {"max_completion_tokens": max_tokens}
+        return {}
+
     def generate(
         self,
         *,
@@ -271,14 +381,19 @@ class OpenAIProvider(BaseProvider):
         temperature: float,
     ) -> ProviderResponse:
         selected_model = self._validate(model)
+        extra = self._build_extra_payload(selected_model, max_tokens)
+        # Reasoning models don't accept temperature or max_tokens params
+        effective_max = 0 if self._is_reasoning_model(selected_model) else max_tokens
+        effective_temp = 1.0 if self._is_reasoning_model(selected_model) else temperature
         return self._post_chat_completion(
             url=f"{self._openai_url()}/chat/completions",
             headers=self._openai_headers(),
             selected_model=selected_model,
             messages=messages,
             timeout=timeout,
-            max_tokens=max_tokens,
-            temperature=temperature,
+            max_tokens=effective_max if effective_max else max_tokens,
+            temperature=effective_temp,
+            extra_payload=extra,
         )
 
     def generate_stream(
@@ -291,14 +406,18 @@ class OpenAIProvider(BaseProvider):
         temperature: float,
     ) -> Generator[StreamChunk, None, None]:
         selected_model = self._validate(model)
+        extra = self._build_extra_payload(selected_model, max_tokens)
+        effective_max = 0 if self._is_reasoning_model(selected_model) else max_tokens
+        effective_temp = 1.0 if self._is_reasoning_model(selected_model) else temperature
         yield from self._post_chat_completion_stream(
             url=f"{self._openai_url()}/chat/completions",
             headers=self._openai_headers(),
             selected_model=selected_model,
             messages=messages,
             timeout=timeout,
-            max_tokens=max_tokens,
-            temperature=temperature,
+            max_tokens=effective_max if effective_max else max_tokens,
+            temperature=effective_temp,
+            extra_payload=extra,
         )
 
 
@@ -572,6 +691,7 @@ class AnthropicProvider(BaseProvider):
     def _anthropic_headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
+            # Latest stable Anthropic API version
             "anthropic-version": str(
                 self.config.get("api_version") or "2023-06-01"
             ).strip(),
@@ -845,6 +965,102 @@ class OllamaProvider(BaseProvider):
         yield StreamChunk(text="", done=True)
 
 
+class LocalAIProvider(BaseProvider):
+    """LocalAI provider — OpenAI-compatible API running on a local/internal host.
+
+    LocalAI (https://localai.io) exposes the standard ``/v1/chat/completions``
+    endpoint so we reuse the base-class helpers for both sync and streaming.
+    An optional health-check against ``/v1/models`` is performed when
+    ``is_available()`` is called.
+    """
+
+    provider_type = "localai"
+
+    def is_available(self) -> bool:
+        if not super().is_available() or not self.config.get("base_url"):
+            return False
+        # Quick health-check — try /readyz first (no auth required),
+        # fall back to /v1/models with auth headers if needed.
+        base_url = str(self.config["base_url"]).rstrip("/")
+        try:
+            resp = requests.get(f"{base_url}/readyz", timeout=3)
+            if resp.status_code == 200:
+                return True
+            # readyz may not exist; try /v1/models with auth
+            headers = self._localai_headers()
+            resp = requests.get(f"{base_url}/v1/models", headers=headers, timeout=3)
+            return resp.status_code == 200
+        except Exception:  # pylint: disable=broad-except
+            return False
+
+    def _localai_url(self) -> str:
+        return str(self.config["base_url"]).rstrip("/") + "/v1/chat/completions"
+
+    def _localai_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if secret := resolve_provider_secret(self.config):
+            headers["Authorization"] = f"Bearer {secret}"
+        return headers
+
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> ProviderResponse:
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        return self._post_chat_completion(
+            url=self._localai_url(),
+            headers=self._localai_headers(),
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            extra_payload={
+                "repeat_penalty": 1.4,
+            },
+        )
+
+    def generate_stream(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str | None,
+        timeout: int,
+        max_tokens: int,
+        temperature: float,
+    ) -> Generator[StreamChunk, None, None]:
+        selected_model = model or self.default_model
+        if not selected_model:
+            raise AIProviderError(f"Provider {self.provider_id} has no configured model")
+        yield from self._post_chat_completion_stream(
+            url=self._localai_url(),
+            headers=self._localai_headers(),
+            selected_model=selected_model,
+            messages=messages,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            extra_payload={
+                "repeat_penalty": 1.4,
+                "stop": [
+                    "\nThe data reveals",
+                    "\nIn conclusion",
+                    "\nIn summary",
+                    "\nOverall,",
+                    "\nTo summarize",
+                    "\n---\n",
+                ],
+            },
+        )
+
+
 class MockProvider(BaseProvider):
     provider_type = "mock"
 
@@ -917,6 +1133,7 @@ PROVIDER_TYPES: dict[str, type[BaseProvider]] = {
     "anthropic": AnthropicProvider,
     "deepseek": DeepSeekProvider,
     "gemini": GeminiProvider,
+    "localai": LocalAIProvider,
     "mock": MockProvider,
     "ollama": OllamaProvider,
     "openai": OpenAIProvider,
@@ -979,11 +1196,16 @@ class ProviderRegistry:
     ) -> ProviderResponse:
         provider = self._resolve_provider(provider_id)
         selected_model = model or self._default_model
+        max_tokens = self._max_tokens
+        if provider.provider_type == "localai":
+            max_tokens = max(max_tokens, 16384)
+        elif provider.is_local:
+            max_tokens = max(max_tokens, 8192)
         return provider.generate(
             messages=messages,
             model=selected_model,
             timeout=self._timeout,
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens,
             temperature=self._temperature,
         )
 
@@ -996,10 +1218,16 @@ class ProviderRegistry:
     ) -> Generator[StreamChunk, None, None]:
         provider = self._resolve_provider(provider_id)
         selected_model = model or self._default_model
+        # Local models: give LocalAI a larger generation budget for full insight reports.
+        max_tokens = self._max_tokens
+        if provider.provider_type == "localai":
+            max_tokens = max(max_tokens, 16384)
+        elif provider.is_local:
+            max_tokens = max(max_tokens, 8192)
         yield from provider.generate_stream(
             messages=messages,
             model=selected_model,
             timeout=self._timeout,
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens,
             temperature=self._temperature,
         )

@@ -5,6 +5,9 @@ import {
   DEFAULT_OPACITY, DEFAULT_BORDER_WIDTH, DEFAULT_BORDER_COLOR, DEFAULT_POINT_RADIUS,
   DEFAULT_POINT_RADIUS_MIN, DEFAULT_POINT_RADIUS_MAX, DEFAULT_LABEL_ZOOM,
   DEFAULT_CLASS_COUNT, DEFAULT_NO_DATA_COLOR,
+  DEFAULT_HEATMAP_RADIUS, DEFAULT_HEATMAP_INTENSITY,
+  DEFAULT_CLUSTER_RADIUS, DEFAULT_EXTRUSION_MAX_HEIGHT,
+  DEFAULT_ICON_SIZE, DEFAULT_ICON,
 } from '../constants/defaults';
 import { normalizeToFeatureCollection } from '../utils/geometry';
 import { computeBoundsFromFeatureCollection } from '../utils/bounds';
@@ -90,6 +93,35 @@ export default function transformProps(chartProps: ChartProps): VitalMapsTransfo
     }
   }
 
+  // Pre-compute metric totals for enhanced tooltips
+  let totalMetricSum = 0;
+  if (metricCol) {
+    let rank = 0;
+    const featureValues = geojson.features
+      .map((f, idx) => ({ idx, val: Number((f.properties ?? {})[metricCol]) }))
+      .filter(x => Number.isFinite(x.val));
+    totalMetricSum = featureValues.reduce((s, x) => s + x.val, 0);
+
+    // Sort descending for rank assignment
+    featureValues.sort((a, b) => b.val - a.val);
+    const rankMap = new Map<number, number>();
+    featureValues.forEach((x, i) => { rankMap.set(x.idx, i + 1); });
+
+    // Annotate features with rank and percentage
+    const total = featureValues.length;
+    geojson.features.forEach((f, idx) => {
+      if (!f.properties) f.properties = {};
+      const r = rankMap.get(idx);
+      if (r !== undefined) {
+        f.properties.__vm_rank = `${r} of ${total}`;
+        const val = Number(f.properties[metricCol]);
+        f.properties.__vm_pct = totalMetricSum > 0
+          ? `${(val / totalMetricSum * 100).toFixed(1)}%`
+          : '—';
+      }
+    });
+  }
+
   // Resolve basemap
   const basemapStyleUrl = fd.basemap_style_url;
   let basemap = BASEMAP_PRESETS_BY_ID[fd.basemap_id ?? DEFAULT_BASEMAP_ID] ?? BASEMAP_PRESETS_BY_ID[DEFAULT_BASEMAP_ID];
@@ -126,5 +158,22 @@ export default function transformProps(chartProps: ChartProps): VitalMapsTransfo
     showBasemapSwitcher: fd.show_basemap_switcher ?? false,
     showStatusBar: fd.show_status_bar ?? false,
     noDataColor: DEFAULT_NO_DATA_COLOR,
+    // Heatmap controls
+    heatmapRadius: fd.heatmap_radius ?? DEFAULT_HEATMAP_RADIUS,
+    heatmapIntensity: fd.heatmap_intensity ?? DEFAULT_HEATMAP_INTENSITY,
+    heatmapWeightEnabled: fd.heatmap_weight_enabled ?? true,
+    // Multi-layer overlay
+    showBoundaryOverlay: fd.show_boundary_overlay ?? false,
+    // Clustering
+    enableClustering: fd.enable_clustering ?? false,
+    clusterRadius: fd.cluster_radius ?? DEFAULT_CLUSTER_RADIUS,
+    // 3D Extrusion
+    extrusionMaxHeight: fd.extrusion_max_height ?? DEFAULT_EXTRUSION_MAX_HEIGHT,
+    // Marker/Icon
+    iconCol: fd.icon_col ?? '',
+    iconSize: fd.icon_size ?? DEFAULT_ICON_SIZE,
+    defaultIcon: fd.default_icon ?? DEFAULT_ICON,
+    // Enhanced tooltips
+    totalMetricSum,
   };
 }

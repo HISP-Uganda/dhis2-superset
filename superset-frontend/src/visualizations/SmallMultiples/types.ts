@@ -27,7 +27,8 @@ export type MiniChartType =
   | 'scatter'
   | 'heatmap'
   | 'big_number'
-  | 'gauge';
+  | 'gauge'
+  | 'mini_map';
 
 export type SortMode =
   | 'alphabetical'
@@ -41,47 +42,45 @@ export type ReferenceLineMode =
   | 'per-panel-mean'
   | 'per-panel-target';
 
-export type DHIS2SplitPreset =
-  | 'custom'
-  | 'by_national'
-  | 'by_region'
-  | 'by_district'
-  | 'by_subcounty'
-  | 'by_facility'
-  | 'by_period_monthly'
-  | 'by_period_quarterly'
-  | 'by_period_yearly';
+/** Dynamic preset keys: 'custom', 'by_level_N' (OU), 'by_period_*' */
+export type DHIS2SplitPreset = string;
 
 export interface SmallMultiplesFormData extends QueryFormData {
   groupby: string[];
-  x_axis: string;
+  xAxis: string;
   metrics: any[];
-  grid_columns: number;
-  mini_chart_type: MiniChartType;
-  sync_y_axis: boolean;
-  show_panel_title: boolean;
-  show_x_axis: boolean;
-  show_y_axis: boolean;
-  panel_padding: number;
-  line_width: number;
-  y_axis_format: string;
-  sort_panels?: SortMode;
-  top_n?: number;
-  show_reference_line?: boolean;
-  reference_value?: number | string;
-  reference_line_mode?: ReferenceLineMode;
-  reference_color?: string;
-  show_panel_subtitle?: boolean;
-  density_tier?: 'micro' | 'compact' | 'standard';
-  panel_border_radius?: number;
-  null_value_text?: string;
-  color_scheme?: string;
-  show_legend?: boolean;
-  legend_position?: 'top' | 'bottom';
-  sync_tooltips?: boolean;
-  responsive_columns?: boolean;
-  min_panel_width?: number;
-  dhis2_split_preset?: DHIS2SplitPreset;
+  gridColumns: number;
+  miniChartType: MiniChartType;
+  syncYAxis: boolean;
+  showPanelTitle: boolean;
+  showXAxis: boolean;
+  showYAxis: boolean;
+  panelPadding: number;
+  lineWidth: number;
+  yAxisFormat: string;
+  sortPanels?: SortMode;
+  topN?: number;
+  showReferenceLine?: boolean;
+  referenceValue?: number | string;
+  referenceLineMode?: ReferenceLineMode;
+  referenceColor?: string;
+  showPanelSubtitle?: boolean;
+  densityTier?: 'micro' | 'compact' | 'standard';
+  panelBorderRadius?: number;
+  nullValueText?: string;
+  colorScheme?: string;
+  linearColorScheme?: string;
+  showLegend?: boolean;
+  legendPosition?: 'top' | 'bottom';
+  syncTooltips?: boolean;
+  responsiveColumns?: boolean;
+  minPanelWidth?: number;
+  dhis2SplitPreset?: DHIS2SplitPreset;
+  resolvedSplitCol?: string;
+  /* Layout — explicit panel height (0 = auto) */
+  panelHeight?: number;
+  /* Map-specific — "level:columnName" e.g. "3:district_city" */
+  boundaryLevel?: string | number;
 }
 
 export interface PanelSeries {
@@ -93,11 +92,15 @@ export interface PanelSeries {
 export interface PanelData {
   title: string;
   xValues: string[];
+  /** Raw (unformatted) xValues for data matching (e.g. OU name lookup in mini_map) */
+  rawXValues?: string[];
   /** @deprecated Use series for multi-metric. Kept for simple single-metric path. */
   yValues: number[];
   series: PanelSeries[];
   latestValues: Record<string, number | null>;
   referenceValue: number | null;
+  /** GeoJSON FeatureCollection for mini_map panels */
+  geojson?: GeoJSON.FeatureCollection;
 }
 
 export interface SmallMultiplesChartProps {
@@ -132,4 +135,13 @@ export interface SmallMultiplesChartProps {
   minPanelWidth: number;
   metricLabels: string[];
   metricColors: string[];
+  schemeColors: string[];
+  linearColors: string[];
+  /* Layout — explicit panel height (0 = auto) */
+  fixedPanelHeight?: number;
+  /* Map-specific */
+  databaseId?: number;
+  boundaryLevel?: string | number;
+  chartId?: number;
+  dashboardId?: number;
 }

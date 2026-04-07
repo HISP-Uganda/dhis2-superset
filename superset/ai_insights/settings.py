@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import sqlalchemy as sa
@@ -17,6 +20,11 @@ from superset.extensions import encrypted_field_factory
 logger = logging.getLogger(__name__)
 
 AI_INSIGHTS_FEATURE_FLAG = "AI_INSIGHTS"
+LOCALAI_API_KEY_ENV_NAME = "LOCALAI_API_KEY"
+LOCALAI_API_KEY_ENV_VAR = "LOCALAI_API_KEY_ENV"
+LOCALAI_BASE_URL_ENV_VAR = "LOCALAI_BASE_URL"
+LOCALAI_EXTERNAL_BACKENDS_ENV_VAR = "LOCALAI_EXTERNAL_BACKENDS"
+LOCALAI_DEFAULT_EXTERNAL_BACKENDS = "llama-cpp"
 
 OPENAI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
     # Based on OpenAI's official Models and All models catalog as of 2026-03-29.
@@ -253,27 +261,46 @@ GEMINI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
 ]
 
 ANTHROPIC_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
-    # Based on Anthropic's official Claude model overview as of 2026-03-29.
-    # https://docs.anthropic.com/en/docs/about-claude/models/overview
+    # Based on Anthropic's official Claude model catalog.
+    # https://docs.anthropic.com/en/docs/about-claude/models
+    # https://platform.claude.com/docs/en/home
+    {
+        "id": "claude-opus-4-6",
+        "label": "Claude Opus 4.6",
+        "group": "Frontier",
+        "description": "Anthropic's most capable model. Best for complex analysis, multi-step reasoning, and executive insights.",
+        "is_latest": True,
+        "is_recommended": True,
+    },
+    {
+        "id": "claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6",
+        "group": "Balanced",
+        "description": "High-performance Claude with excellent reasoning and faster output. Great balance of quality and speed.",
+    },
     {
         "id": "claude-opus-4-1-20250805",
         "label": "Claude Opus 4.1",
         "group": "Frontier",
-        "description": "Anthropic's most capable Claude model for complex reasoning and coding.",
-        "is_latest": True,
+        "description": "Previous frontier Claude model for complex reasoning and coding.",
     },
     {
         "id": "claude-sonnet-4-20250514",
         "label": "Claude Sonnet 4",
         "group": "Balanced",
-        "description": "High-performance Claude model with strong reasoning and better latency for interactive insights.",
-        "is_recommended": True,
+        "description": "Strong Claude model with good reasoning for interactive insights.",
     },
     {
         "id": "claude-opus-4-20250514",
         "label": "Claude Opus 4",
         "group": "Frontier",
         "description": "Earlier Claude 4 frontier model for demanding analysis tasks.",
+    },
+    {
+        "id": "claude-haiku-4-5-20251001",
+        "label": "Claude Haiku 4.5",
+        "group": "Fast",
+        "description": "Fast, cost-efficient Claude model for lighter insight tasks and high-volume use.",
     },
     {
         "id": "claude-3-7-sonnet-20250219",
@@ -308,10 +335,128 @@ DEEPSEEK_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
     },
 ]
 
+LOCALAI_DEFAULT_MODEL_ID = "ai-insights-model-26.04"
+
+LOCALAI_SUPERSET_CAPABILITIES: list[str] = [
+    "Natural-language analytics chat",
+    "Superset MCP/API control",
+    "SQL generation and repair",
+    "Chart recommendation and chart-spec generation",
+    "Dashboard composition and layout planning",
+    "Vision-based chart and dashboard analysis",
+    "Structured JSON outputs",
+    "Semantic retrieval and metric glossary grounding",
+    "Narrative insight generation",
+    "Dashboard QA and critique",
+    "Scheduled insight reporting",
+    "CSV, image, PDF, DOCX, PPTX, and asset export orchestration",
+]
+
+LOCALAI_TEXT_MODEL_CATALOG: list[dict[str, Any]] = [
+    # Recommended models for Superset AI Insights on LocalAI.
+    # These match the gallery IDs from https://models.localai.io
+    # Users can override via LOCALAI_MODELS env var or AI Management UI.
+    {
+        "id": LOCALAI_DEFAULT_MODEL_ID,
+        "label": "AI Insights Model 26.04",
+        "group": "Custom",
+        "description": "Purpose-built model for Superset analytics copilot workflows. Optimized for professional chart and dashboard interpretation, SQL reasoning, structured outputs, reporting, and export-oriented narrative generation.",
+        "file_size": "4.6 GB",
+        "is_latest": True,
+        "is_recommended": True,
+        "is_repo_managed": True,
+        "capabilities": LOCALAI_SUPERSET_CAPABILITIES,
+        "base_model_gguf": "hermes-3-llama-3.1-8b-lorablated.Q4_K_M.gguf",
+        "base_model_url": "https://huggingface.co/mlabonne/Hermes-3-Llama-3.1-8B-lorablated-GGUF/resolve/main/hermes-3-llama-3.1-8b-lorablated.Q4_K_M.gguf",
+    },
+    {
+        "id": "hermes-3-llama-3.1-8b-lorablated",
+        "label": "Hermes 3 LLaMA 3.1 8B",
+        "group": "General",
+        "description": "Best general-purpose model for chart and dashboard narrative insights. 4.6 GB.",
+        "file_size": "4.6 GB",
+        "capabilities": [
+            "Narrative chart and dashboard summarization",
+            "General-purpose analytics chat",
+            "Executive-style insight writing",
+        ],
+    },
+    {
+        "id": "deepseek-r1-distill-qwen-7b",
+        "label": "DeepSeek R1 Distill Qwen 7B",
+        "group": "Reasoning",
+        "description": "Reasoning-optimised model for SQL generation and deep analytics. 4.7 GB.",
+        "file_size": "4.7 GB",
+        "capabilities": [
+            "SQL generation and repair",
+            "Multi-step reasoning",
+            "Complex dashboard decomposition",
+        ],
+    },
+    {
+        "id": "qwen3-8b",
+        "label": "Qwen 3 8B",
+        "group": "General",
+        "description": "Strong multilingual model with excellent structured output and table formatting.",
+        "capabilities": [
+            "Structured JSON outputs",
+            "Table and report formatting",
+            "Multilingual analytics assistance",
+        ],
+    },
+    {
+        "id": "meta-llama-3.1-8b-instruct",
+        "label": "LLaMA 3.1 8B Instruct",
+        "group": "General",
+        "description": "Meta LLaMA 3.1 8B — reliable general-purpose local model.",
+        "capabilities": [
+            "General analytics chat",
+            "Chart narrative generation",
+            "Dataset and metric explanation",
+        ],
+    },
+    {
+        "id": "gemma-3-4b-it",
+        "label": "Gemma 3 4B IT",
+        "group": "Compact",
+        "description": "Google Gemma 3 4B — small but capable model for lightweight tasks. 2.3 GB.",
+        "file_size": "2.3 GB",
+        "capabilities": [
+            "Lightweight local analysis",
+            "Fast classification and summaries",
+            "Compact deployment footprint",
+        ],
+    },
+    {
+        "id": "qwen3.5-4b",
+        "label": "Qwen 3.5 4B",
+        "group": "Compact",
+        "description": "Compact Qwen model for fast, cost-free local insights.",
+        "capabilities": [
+            "Fast local summaries",
+            "Structured output generation",
+            "Low-resource analytics support",
+        ],
+    },
+    {
+        "id": "deepseek-r1-distill-qwen-14b",
+        "label": "DeepSeek R1 Distill Qwen 14B",
+        "group": "Reasoning",
+        "description": "Larger reasoning model for complex multi-chart dashboard analysis. 8.7 GB.",
+        "file_size": "8.7 GB",
+        "capabilities": [
+            "Advanced reasoning",
+            "Cross-chart anomaly analysis",
+            "Long-form investigative insights",
+        ],
+    },
+]
+
 MODEL_CATALOGS: dict[str, list[dict[str, Any]]] = {
     "anthropic_text": ANTHROPIC_TEXT_MODEL_CATALOG,
     "deepseek_text": DEEPSEEK_TEXT_MODEL_CATALOG,
     "gemini_text": GEMINI_TEXT_MODEL_CATALOG,
+    "localai_text": LOCALAI_TEXT_MODEL_CATALOG,
     "openai_text": OPENAI_TEXT_MODEL_CATALOG,
     "mock": [
         {
@@ -368,10 +513,10 @@ PROVIDER_PRESETS: list[dict[str, Any]] = [
         "id": "anthropic",
         "provider_type": "anthropic",
         "label": "Anthropic Claude",
-        "description": "Official Anthropic Messages API for Claude models.",
+        "description": "Official Anthropic Messages API for Claude models (platform.claude.com).",
         "catalog_key": "anthropic_text",
         "default_base_url": "https://api.anthropic.com",
-        "default_model": "claude-sonnet-4-20250514",
+        "default_model": "claude-sonnet-4-6",
         "is_local": False,
         "supports_base_url": False,
         "supports_api_key": True,
@@ -387,6 +532,19 @@ PROVIDER_PRESETS: list[dict[str, Any]] = [
         "default_model": "deepseek-reasoner",
         "is_local": False,
         "supports_base_url": False,
+        "supports_api_key": True,
+        "supports_api_key_env": True,
+    },
+    {
+        "id": "localai",
+        "provider_type": "localai",
+        "label": "LocalAI",
+        "description": "OpenAI-compatible local inference server (localai.io) for self-hosted models.",
+        "catalog_key": "localai_text",
+        "default_base_url": "http://127.0.0.1:39671",
+        "default_model": LOCALAI_DEFAULT_MODEL_ID,
+        "is_local": True,
+        "supports_base_url": True,
         "supports_api_key": True,
         "supports_api_key_env": True,
     },
@@ -436,6 +594,7 @@ PROVIDER_TYPE_TO_CATALOG_KEY = {
     "anthropic": "anthropic_text",
     "deepseek": "deepseek_text",
     "gemini": "gemini_text",
+    "localai": "localai_text",
     "mock": "mock",
     "openai": "openai_text",
     "openai_compatible": "openai_text",
@@ -451,6 +610,51 @@ def _json_loads(value: str | None) -> dict[str, Any]:
 
 def _json_dumps(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _project_env_path() -> Path:
+    override = os.environ.get("SUPERSET_PROJECT_ENV_FILE")
+    if override:
+        return Path(override).expanduser()
+    return _repo_root() / ".env"
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'").strip('"')
+    return values
+
+
+def _write_env_file_updates(path: Path, updates: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    indexes: dict[str, int] = {}
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _ = stripped.split("=", 1)
+        indexes[key.strip()] = idx
+
+    for key, value in updates.items():
+        rendered = f"{key}={value}"
+        if key in indexes:
+            lines[indexes[key]] = rendered
+        else:
+            lines.append(rendered)
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _normalize_string_list(values: list[Any] | None) -> list[str]:
@@ -548,6 +752,12 @@ def _ensure_provider_defaults(
         provider.setdefault("is_local", False)
         provider["catalog_key"] = catalog_key
 
+    if provider_id == "localai":
+        provider.setdefault(
+            "api_key_env",
+            os.environ.get(LOCALAI_API_KEY_ENV_VAR, LOCALAI_API_KEY_ENV_NAME),
+        )
+
     provider["models"] = _normalize_string_list(provider.get("models"))
     default_model = str(provider.get("default_model") or "").strip()
     if default_model and default_model not in provider["models"]:
@@ -556,6 +766,105 @@ def _ensure_provider_defaults(
         provider["default_model"] = provider["models"][0]
     provider["enabled"] = bool(provider.get("enabled"))
     return provider
+
+
+def ensure_localai_environment(*, write_env_file: bool = True) -> dict[str, str]:
+    env_path = _project_env_path()
+    env_file_values = _read_env_file(env_path)
+    api_key_env = (
+        os.environ.get(LOCALAI_API_KEY_ENV_VAR)
+        or env_file_values.get(LOCALAI_API_KEY_ENV_VAR)
+        or LOCALAI_API_KEY_ENV_NAME
+    ).strip() or LOCALAI_API_KEY_ENV_NAME
+    api_key = (
+        os.environ.get(api_key_env)
+        or env_file_values.get(api_key_env)
+        or f"sk-localai-{secrets.token_urlsafe(32)}"
+    ).strip()
+    base_url = (
+        os.environ.get(LOCALAI_BASE_URL_ENV_VAR)
+        or env_file_values.get(LOCALAI_BASE_URL_ENV_VAR)
+        or "http://127.0.0.1:39671"
+    ).strip()
+    default_model = (
+        os.environ.get("LOCALAI_DEFAULT_MODEL")
+        or env_file_values.get("LOCALAI_DEFAULT_MODEL")
+        or LOCALAI_DEFAULT_MODEL_ID
+    ).strip()
+    model_ids = ",".join(_catalog_models("localai_text") or [LOCALAI_DEFAULT_MODEL_ID])
+    models = (
+        os.environ.get("LOCALAI_MODELS")
+        or env_file_values.get("LOCALAI_MODELS")
+        or model_ids
+    ).strip()
+    external_backends = (
+        os.environ.get(LOCALAI_EXTERNAL_BACKENDS_ENV_VAR)
+        or env_file_values.get(LOCALAI_EXTERNAL_BACKENDS_ENV_VAR)
+        or LOCALAI_DEFAULT_EXTERNAL_BACKENDS
+    ).strip()
+
+    os.environ[LOCALAI_API_KEY_ENV_VAR] = api_key_env
+    os.environ[api_key_env] = api_key
+    os.environ[LOCALAI_BASE_URL_ENV_VAR] = base_url
+    os.environ["LOCALAI_DEFAULT_MODEL"] = default_model
+    os.environ["LOCALAI_MODELS"] = models
+    os.environ[LOCALAI_EXTERNAL_BACKENDS_ENV_VAR] = external_backends
+
+    if write_env_file:
+        _write_env_file_updates(
+            env_path,
+            {
+                LOCALAI_API_KEY_ENV_VAR: api_key_env,
+                api_key_env: api_key,
+                LOCALAI_BASE_URL_ENV_VAR: base_url,
+                "LOCALAI_DEFAULT_MODEL": default_model,
+                "LOCALAI_MODELS": models,
+                LOCALAI_EXTERNAL_BACKENDS_ENV_VAR: external_backends,
+            },
+        )
+
+    return {
+        "api_key_env": api_key_env,
+        "api_key": api_key,
+        "base_url": base_url,
+        "default_model": default_model,
+        "models": models,
+        "external_backends": external_backends,
+        "env_path": str(env_path),
+    }
+
+
+def apply_localai_recommended_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = deepcopy(config or {})
+    providers = normalized.setdefault("providers", {})
+    localai_env = ensure_localai_environment(write_env_file=False)
+
+    raw_localai = providers.get("localai")
+    existing_localai = raw_localai if isinstance(raw_localai, dict) else None
+    localai = _ensure_provider_defaults("localai", existing_localai)
+
+    if existing_localai is None or "enabled" not in existing_localai:
+        localai["enabled"] = True
+
+    models = [model for model in localai.get("models") or [] if model != LOCALAI_DEFAULT_MODEL_ID]
+    localai["models"] = [LOCALAI_DEFAULT_MODEL_ID, *models]
+    localai["api_key_env"] = localai_env["api_key_env"]
+    localai["base_url"] = str(localai.get("base_url") or localai_env["base_url"]).strip()
+
+    if not str(localai.get("default_model") or "").strip():
+        localai["default_model"] = LOCALAI_DEFAULT_MODEL_ID
+
+    providers["localai"] = localai
+
+    if not str(normalized.get("default_provider") or "").strip():
+        normalized["default_provider"] = "localai"
+        normalized["default_model"] = LOCALAI_DEFAULT_MODEL_ID
+    elif normalized.get("default_provider") == "localai" and not str(
+        normalized.get("default_model") or ""
+    ).strip():
+        normalized["default_model"] = LOCALAI_DEFAULT_MODEL_ID
+
+    return normalized
 
 
 def _normalize_for_storage(

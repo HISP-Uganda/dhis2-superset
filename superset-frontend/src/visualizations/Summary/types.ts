@@ -26,7 +26,8 @@ export type Layout =
   | 'vertical'
   | 'split'
   | 'micro-card'
-  | 'compact-kpi';
+  | 'compact-kpi'
+  | 'summary-row';
 
 export type ValuePosition =
   | 'above'

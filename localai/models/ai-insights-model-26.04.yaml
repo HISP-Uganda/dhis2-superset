@@ -1,0 +1,36 @@
+name: ai-insights-model-26.04
+backend: llama-cpp
+parameters:
+  model: hermes-3-llama-3.1-8b-lorablated.Q4_K_M.gguf
+  # Apply LoRA adapter after fine-tuning (uncomment after training):
+  # lora_adapter: ai-insights-lora-26.04.gguf
+
+context_size: 32768
+threads: 8
+f16: true
+mmap: true
+gpu_layers: 99
+
+# No system_prompt here — Superset sends its own comprehensive system prompt
+# via the API messages. Duplicating it wastes context tokens and confuses the model.
+
+usage: |
+  Use the /v1/chat/completions endpoint with model: ai-insights-model-26.04
+
+# ChatML template — render only the API messages, no {{.Input}} to avoid
+# duplicating the system prompt that Superset already includes in messages.
+template:
+  chat: |
+    {{range .Messages}}<|im_start|>{{.RoleName}}
+    {{.Content}}<|im_end|>
+    {{end}}<|im_start|>assistant
+
+stopwords:
+  - "<|im_end|>"
+  - "<|im_start|>"
+
+# Inference defaults tuned for analytical precision
+temperature: 0.10
+top_p: 0.92
+top_k: 40
+repeat_penalty: 1.3

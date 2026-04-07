@@ -10,19 +10,19 @@ export const BASEMAP_PRESETS: BasemapStyleDefinition[] = [
     id: 'vital-light',
     label: 'Vital Light',
     style: 'https://tiles.openfreemap.org/styles/positron',
-    attribution: '© OpenFreeMap © OpenStreetMap contributors',
+    attribution: '\u00a9 OpenFreeMap \u00a9 OpenStreetMap contributors',
   },
   {
     id: 'vital-streets',
     label: 'Vital Streets',
     style: 'https://tiles.openfreemap.org/styles/liberty',
-    attribution: '© OpenFreeMap © OpenStreetMap contributors',
+    attribution: '\u00a9 OpenFreeMap \u00a9 OpenStreetMap contributors',
   },
   {
     id: 'vital-bright',
     label: 'Vital Bright',
     style: 'https://tiles.openfreemap.org/styles/bright',
-    attribution: '© OpenFreeMap © OpenStreetMap contributors',
+    attribution: '\u00a9 OpenFreeMap \u00a9 OpenStreetMap contributors',
   },
   {
     id: 'dark',
@@ -38,12 +38,12 @@ export const BASEMAP_PRESETS: BasemapStyleDefinition[] = [
             'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
           ],
           tileSize: 256,
-          attribution: '© CARTO © OpenStreetMap contributors',
+          attribution: '\u00a9 CARTO \u00a9 OpenStreetMap contributors',
         },
       },
       layers: [{ id: 'background', type: 'raster', source: 'carto-dark' }],
     },
-    attribution: '© CARTO © OpenStreetMap contributors',
+    attribution: '\u00a9 CARTO \u00a9 OpenStreetMap contributors',
   },
   {
     id: 'satellite',
@@ -58,12 +58,32 @@ export const BASEMAP_PRESETS: BasemapStyleDefinition[] = [
             'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
           ],
           tileSize: 256,
-          attribution: '© Esri, Maxar, Earthstar Geographics',
+          attribution: '\u00a9 Esri, Maxar, Earthstar Geographics',
         },
       },
       layers: [{ id: 'satellite-bg', type: 'raster', source: 'esri' }],
     },
-    attribution: '© Esri, Maxar',
+    attribution: '\u00a9 Esri, Maxar',
+  },
+  {
+    id: 'terrain',
+    label: 'Terrain',
+    style: {
+      version: 8,
+      name: 'Terrain',
+      sources: {
+        'stamen-terrain': {
+          type: 'raster',
+          tiles: [
+            'https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}.png',
+          ],
+          tileSize: 256,
+          attribution: '\u00a9 Stadia Maps \u00a9 Stamen Design \u00a9 OpenStreetMap',
+        },
+      },
+      layers: [{ id: 'terrain-bg', type: 'raster', source: 'stamen-terrain' }],
+    },
+    attribution: '\u00a9 Stadia Maps \u00a9 Stamen Design',
   },
 ];
 

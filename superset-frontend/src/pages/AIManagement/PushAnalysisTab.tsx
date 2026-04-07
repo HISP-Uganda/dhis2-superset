@@ -499,7 +499,9 @@ export default function PushAnalysisTab() {
   }, [resetForm, form]);
 
   const openEditForm = useCallback(
-    (schedule: Schedule) => {
+    async (schedule: Schedule) => {
+      // Pre-fetch dashboard and chart options BEFORE setting form values
+      // so Select components have options available when form fields are populated
       setEditingSchedule(schedule);
       setShowForm(true);
       setFormStep(0);
@@ -515,16 +517,38 @@ export default function PushAnalysisTab() {
         setSelectedCronPreset('__custom__');
         setCustomCron(schedule.crontab || '');
       }
-      form.setFieldsValue({
-        name: schedule.name,
-        schedule_type: schedule.schedule_type,
-        dashboard_id: schedule.dashboard_id,
-        chart_id: schedule.chart_id,
-        question: schedule.question,
-        report_format: schedule.report_format || 'pdf',
-        include_charts: schedule.include_charts ?? true,
-        subject_line: schedule.subject_line,
-        enabled: schedule.enabled,
+
+      // Eagerly load dashboards and charts for the selected dashboard
+      // so select options are populated before we set field values
+      try {
+        const [dashResp, chartResp] = await Promise.all([
+          SupersetClient.get({ endpoint: '/api/v1/ai/push-analysis/dashboards' }),
+          schedule.dashboard_id
+            ? SupersetClient.get({
+                endpoint: `/api/v1/ai/push-analysis/charts?dashboard_id=${schedule.dashboard_id}`,
+              })
+            : SupersetClient.get({ endpoint: '/api/v1/ai/push-analysis/charts' }),
+        ]);
+        setDashboards(dashResp.json.result || []);
+        setCharts(chartResp.json.result || []);
+      } catch {
+        // Fallback: trigger the useEffect-based fetch
+      }
+
+      // Set form values AFTER options are loaded so selects render correctly
+      // Use requestAnimationFrame to ensure React has rendered the option list
+      requestAnimationFrame(() => {
+        form.setFieldsValue({
+          name: schedule.name,
+          schedule_type: schedule.schedule_type,
+          dashboard_id: schedule.dashboard_id,
+          chart_id: schedule.chart_id,
+          question: schedule.question,
+          report_format: schedule.report_format || 'pdf',
+          include_charts: schedule.include_charts ?? true,
+          subject_line: schedule.subject_line,
+          enabled: schedule.enabled,
+        });
       });
     },
     [form],

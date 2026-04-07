@@ -1,7 +1,7 @@
 import type { QueryFormData } from '@superset-ui/core';
 import type { BasemapStyleDefinition } from '../constants/basemaps';
 
-export type LayerType = 'point' | 'bubble' | 'choropleth' | 'heatmap' | 'boundary';
+export type LayerType = 'point' | 'bubble' | 'choropleth' | 'heatmap' | 'boundary' | 'extrusion' | 'marker';
 export type ClassificationMethod = 'quantile' | 'equal_interval' | 'manual' | 'categorical';
 export type LegendPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
@@ -27,6 +27,9 @@ export interface TooltipPayload {
   metricValue?: string | number;
   category?: string;
   fields?: Array<{ label: string; value: unknown }>;
+  color?: string;
+  percentage?: string;
+  rank?: string;
 }
 
 export type BoundsResult = [[number, number], [number, number]] | null;
@@ -60,6 +63,21 @@ export interface VitalMapsFormData extends QueryFormData {
   show_basemap_switcher?: boolean;
   show_status_bar?: boolean;
   tooltip_cols?: string[];
+  // Heatmap controls
+  heatmap_radius?: number;
+  heatmap_intensity?: number;
+  heatmap_weight_enabled?: boolean;
+  // Multi-layer overlay
+  show_boundary_overlay?: boolean;
+  // Clustering
+  enable_clustering?: boolean;
+  cluster_radius?: number;
+  // 3D Extrusion
+  extrusion_max_height?: number;
+  // Marker/Icon
+  icon_col?: string;
+  icon_size?: number;
+  default_icon?: string;
 }
 
 export interface VitalMapsTransformedProps {
@@ -91,4 +109,21 @@ export interface VitalMapsTransformedProps {
   showBasemapSwitcher: boolean;
   showStatusBar: boolean;
   noDataColor: string;
+  // Heatmap controls
+  heatmapRadius: number;
+  heatmapIntensity: number;
+  heatmapWeightEnabled: boolean;
+  // Multi-layer overlay
+  showBoundaryOverlay: boolean;
+  // Clustering
+  enableClustering: boolean;
+  clusterRadius: number;
+  // 3D Extrusion
+  extrusionMaxHeight: number;
+  // Marker/Icon
+  iconCol: string;
+  iconSize: number;
+  defaultIcon: string;
+  // Enhanced tooltips pre-computed
+  totalMetricSum: number;
 }

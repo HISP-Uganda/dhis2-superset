@@ -1,0 +1,118 @@
+# =============================================================================
+# Fine-tuning Configuration for superset-ai-insights-model-26.04
+# =============================================================================
+# This config drives the entire pipeline: data prep, training, merge, export.
+# Override any value via environment variable: FT_<SECTION>_<KEY>=value
+
+# ── Model Selection Policy ──────────────────────────────────────────────────
+# small:    1-3B params, fast iteration, laptop-friendly (e.g. Qwen2.5-3B)
+# balanced: 7-8B params, best quality/speed tradeoff (default)
+# large:    13-14B params, highest quality, needs 24GB+ VRAM
+model:
+  policy: balanced
+  candidates:
+    small:
+      name: Qwen/Qwen2.5-3B-Instruct
+      gguf_quant: Q4_K_M
+      context_length: 8192
+      vram_gb: 4
+    balanced:
+      name: NousResearch/Hermes-3-Llama-3.1-8B
+      gguf_quant: Q4_K_M
+      context_length: 8192
+      vram_gb: 8
+    large:
+      name: NousResearch/Hermes-2-Llama-3.1-13B
+      gguf_quant: Q4_K_M
+      context_length: 8192
+      vram_gb: 16
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+paths:
+  training_data: localai/training/ai-insights-training-data.jsonl
+  output_dir: localai/finetune/output
+  cache_dir: ~/.cache/superset-finetune
+  # Base model weights are cached here to avoid re-downloading 4.7GB
+  model_cache: ~/.cache/huggingface/hub
+  benchmarks_dir: localai/finetune/benchmarks
+  localai_models_dir: ~/.local/share/localai/models
+
+# ── QLoRA Training Parameters ──────────────────────────────────────────────
+qlora:
+  # LoRA hyperparameters
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: none
+  task_type: CAUSAL_LM
+
+  # Quantization
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+  # Training
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  max_seq_length: 4096
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  logging_steps: 5
+  save_steps: 50
+  eval_steps: 50
+  eval_strategy: steps
+  save_total_limit: 3
+  seed: 42
+
+# ── GGUF Export ─────────────────────────────────────────────────────────────
+gguf:
+  # Quantization variants to produce
+  quantizations:
+    - Q4_K_M    # default deployment (4.6 GB for 8B model)
+    - Q8_0      # higher quality fallback (8.5 GB for 8B model)
+  # F16 is always produced as intermediate; only keep if explicitly needed
+  keep_f16: false
+
+# ── Evaluation ──────────────────────────────────────────────────────────────
+eval:
+  # Number of examples to hold out for evaluation
+  eval_split_ratio: 0.1
+  min_eval_examples: 5
+  # Benchmark categories
+  categories:
+    - chart_insight
+    - dashboard_summary
+    - sql_generation
+    - structured_json
+    - recommendation
+    - threshold_assessment
+    - narrative_report
+
+# ── Deployment ──────────────────────────────────────────────────────────────
+deploy:
+  model_name: ai-insights-model-26.04
+  localai_port: 39671
+  # After merge+quantize, deploy the GGUF and update the YAML config
+  auto_deploy: true
+  # Validation prompts to run after deployment
+  validation_prompts:
+    - "Return a 3-bullet operational summary of a monthly KPI dashboard."
+    - "Generate SQL to find districts with malaria TPR above 30%."
+    - "What chart type best shows quarterly immunization coverage trends?"

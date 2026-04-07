@@ -13,6 +13,8 @@ const LAYER_LABELS: Record<LayerType, string> = {
   choropleth: 'Choropleth',
   heatmap: 'Heatmap',
   boundary: 'Boundary',
+  extrusion: '3D Extrusion',
+  marker: 'Marker / Icon',
 };
 
 const LayerPanel: React.FC<Props> = ({ layerType, opacity, onOpacityChange }) => (

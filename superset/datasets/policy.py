@@ -83,25 +83,4 @@ class DatasetEligibilityPolicy:
             return True
         if not cls.is_eligible(role, context):
             return False
-        if (
-            context
-            in {
-                DatasetContext.CHART,
-                DatasetContext.DASHBOARD,
-                DatasetContext.EXPLORE,
-                DatasetContext.ANALYSIS,
-            }
-            and role == DatasetRole.METADATA
-        ):
-            raw_extra = getattr(dataset, "extra", None)
-            try:
-                extra = (
-                    json.loads(raw_extra)
-                    if isinstance(raw_extra, str)
-                    else dict(raw_extra or {})
-                )
-            except Exception:
-                extra = {}
-            if extra.get("dhis2_staged_local") is True:
-                return False
         return True

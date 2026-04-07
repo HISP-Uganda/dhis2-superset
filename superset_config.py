@@ -1,8 +1,15 @@
 # Superset specific config
 import os
 from datetime import timedelta
+from pathlib import Path
+
 from celery.schedules import crontab
 from cachelib import FileSystemCache
+from dotenv import load_dotenv
+
+_PROJECT_ENV_FILE = Path(__file__).resolve().with_name(".env")
+if _PROJECT_ENV_FILE.exists():
+    load_dotenv(_PROJECT_ENV_FILE, override=False)
 
 # ============================================================================
 # TIMEOUT CONFIGURATION FOR DHIS2
@@ -92,20 +99,89 @@ FEATURE_FLAGS = {
 
 _AI_INSIGHTS_PROVIDERS = {}
 
+# Anthropic Claude — https://platform.claude.com/docs/en/home
+if os.environ.get("ANTHROPIC_API_KEY"):
+    _AI_INSIGHTS_PROVIDERS["anthropic"] = {
+        "enabled": True,
+        "type": "anthropic",
+        "label": "Anthropic Claude",
+        "base_url": "https://api.anthropic.com",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "models": [
+            model.strip()
+            for model in os.environ.get(
+                "ANTHROPIC_MODELS",
+                "claude-opus-4-6,claude-sonnet-4-6,claude-haiku-4-5-20251001",
+            ).split(",")
+            if model.strip()
+        ],
+        "default_model": os.environ.get("ANTHROPIC_DEFAULT_MODEL", "claude-sonnet-4-6"),
+        "is_local": False,
+    }
+
+# OpenAI — https://platform.openai.com/docs/api-reference
 if os.environ.get("OPENAI_API_KEY"):
     _AI_INSIGHTS_PROVIDERS["openai"] = {
         "enabled": True,
-        "type": "openai_compatible",
+        "type": "openai",
         "label": "OpenAI",
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "api_key_env": "OPENAI_API_KEY",
         "models": [
             model.strip()
-            for model in os.environ.get("OPENAI_MODELS", "gpt-4.1-mini").split(",")
+            for model in os.environ.get(
+                "OPENAI_MODELS",
+                "gpt-4o,gpt-4o-mini,gpt-4.1,gpt-4.1-mini,o4-mini",
+            ).split(",")
             if model.strip()
         ],
-        "default_model": os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini"),
+        "default_model": os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-4o"),
         "is_local": False,
+    }
+
+# Google Gemini — https://ai.google.dev/gemini-api/docs
+if os.environ.get("GEMINI_API_KEY"):
+    _AI_INSIGHTS_PROVIDERS["gemini"] = {
+        "enabled": True,
+        "type": "gemini",
+        "label": "Google Gemini",
+        "base_url": "https://generativelanguage.googleapis.com",
+        "api_key_env": "GEMINI_API_KEY",
+        "models": [
+            model.strip()
+            for model in os.environ.get(
+                "GEMINI_MODELS",
+                "gemini-2.5-flash,gemini-2.5-pro,gemini-2.0-flash",
+            ).split(",")
+            if model.strip()
+        ],
+        "default_model": os.environ.get("GEMINI_DEFAULT_MODEL", "gemini-2.5-flash"),
+        "is_local": False,
+    }
+
+# LocalAI — https://localai.io (OpenAI-compatible local inference server)
+# Default port 39671 (rare high port to avoid conflicts)
+localai_base_url = os.environ.get("LOCALAI_BASE_URL", "http://127.0.0.1:39671").strip()
+localai_api_key_env = os.environ.get("LOCALAI_API_KEY_ENV", "LOCALAI_API_KEY").strip()
+if localai_base_url:
+    _AI_INSIGHTS_PROVIDERS["localai"] = {
+        "enabled": True,
+        "type": "localai",
+        "label": "LocalAI",
+        "base_url": localai_base_url,
+        "api_key_env": localai_api_key_env,
+        "models": [
+            model.strip()
+            for model in os.environ.get(
+                "LOCALAI_MODELS",
+                "ai-insights-model-26.04,hermes-3-llama-3.1-8b-lorablated,deepseek-r1-distill-qwen-7b,qwen3-8b",
+            ).split(",")
+            if model.strip()
+        ],
+        "default_model": os.environ.get(
+            "LOCALAI_DEFAULT_MODEL", "ai-insights-model-26.04"
+        ),
+        "is_local": True,
     }
 
 ollama_base_url = os.environ.get("OLLAMA_BASE_URL") or os.environ.get(
@@ -146,8 +222,8 @@ AI_INSIGHTS_CONFIG = {
     "max_dashboard_charts": 12,
     "max_follow_up_messages": 6,
     "max_generated_sql_rows": 200,
-    "request_timeout_seconds": 30,
-    "max_tokens": 1200,
+    "request_timeout_seconds": 300,
+    "max_tokens": 16384,
     "temperature": 0.1,
     "default_provider": next(iter(_AI_INSIGHTS_PROVIDERS), None),
     "default_model": None,

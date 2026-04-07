@@ -1264,11 +1264,11 @@ AI_INSIGHTS_CONFIG: dict[str, Any] = {
     "max_dashboard_charts": 12,
     "max_follow_up_messages": 6,
     "max_generated_sql_rows": 200,
-    "request_timeout_seconds": 30,
-    "max_tokens": 1200,
+    "request_timeout_seconds": 300,
+    "max_tokens": 16384,
     "temperature": 0.1,
-    "default_provider": None,
-    "default_model": None,
+    "default_provider": "localai",
+    "default_model": "ai-insights-model-26.04",
     "allowed_roles": [],
     "mode_roles": {
         "chart": [],
@@ -1276,26 +1276,15 @@ AI_INSIGHTS_CONFIG: dict[str, Any] = {
         "sql": [],
     },
     "providers": {
-        # Example:
-        # "openai": {
-        #     "enabled": True,
-        #     "type": "openai_compatible",
-        #     "label": "OpenAI",
-        #     "base_url": "https://api.openai.com/v1",
-        #     "api_key_env": "OPENAI_API_KEY",
-        #     "models": ["gpt-4.1-mini"],
-        #     "default_model": "gpt-4.1-mini",
-        #     "is_local": False,
-        # },
-        # "ollama": {
-        #     "enabled": True,
-        #     "type": "ollama",
-        #     "label": "Ollama",
-        #     "base_url": "http://127.0.0.1:11434",
-        #     "models": ["llama3.1:8b"],
-        #     "default_model": "llama3.1:8b",
-        #     "is_local": True,
-        # },
+        "localai": {
+            "enabled": True,
+            "type": "localai",
+            "label": "LocalAI",
+            "base_url": "http://127.0.0.1:39671",
+            "models": ["ai-insights-model-26.04"],
+            "default_model": "ai-insights-model-26.04",
+            "is_local": True,
+        },
     },
 }
 

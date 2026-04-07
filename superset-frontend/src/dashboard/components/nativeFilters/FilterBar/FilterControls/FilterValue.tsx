@@ -126,6 +126,8 @@ const FilterValue: FC<FilterControlProps> = ({
   const [ownState, setOwnState] = useState<JsonObject>({});
   const [inViewFirstTime, setInViewFirstTime] = useState(inView);
   const inputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const [target] = targets;
   const {
     datasetId,
@@ -255,6 +257,7 @@ const FilterValue: FC<FilterControlProps> = ({
         ownState: filterOwnState,
       })
         .then(({ response, json }) => {
+          if (!mountedRef.current) return;
           if (isFeatureEnabled(FeatureFlag.GlobalAsyncQueries)) {
             // deal with getChartDataRequest transforming the response data
             const result = 'result' in json ? json.result[0] : json;
@@ -264,11 +267,14 @@ const FilterValue: FC<FilterControlProps> = ({
             } else if (response.status === 202) {
               waitForAsyncData(result)
                 .then((asyncResult: ChartDataResponseResult[]) => {
+                  if (!mountedRef.current) return;
                   setState(asyncResult);
                   handleFilterLoadFinish();
                 })
                 .catch((error: Response) => {
+                  if (!mountedRef.current) return;
                   getClientErrorObject(error).then(clientErrorObject => {
+                    if (!mountedRef.current) return;
                     setError(clientErrorObject);
                     handleFilterLoadFinish();
                   });
@@ -285,7 +291,9 @@ const FilterValue: FC<FilterControlProps> = ({
           }
         })
         .catch((error: Response) => {
+          if (!mountedRef.current) return;
           getClientErrorObject(error).then(clientErrorObject => {
+            if (!mountedRef.current) return;
             setError(clientErrorObject);
             handleFilterLoadFinish();
           });

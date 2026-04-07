@@ -1,0 +1,17 @@
+columns substreams version: 1
+5 columns:
+2 substreams for column `region`:
+	region.size
+	region
+2 substreams for column `period`:
+	period.size
+	period
+2 substreams for column `c_105_ep01a_suspected_malaria_fever`:
+	c_105_ep01a_suspected_malaria_fever.null
+	c_105_ep01a_suspected_malaria_fever
+2 substreams for column `c_105_ep01c_malaria_confirmed_b_s_rdt`:
+	c_105_ep01c_malaria_confirmed_b_s_rdt.null
+	c_105_ep01c_malaria_confirmed_b_s_rdt
+2 substreams for column `c_108_ep01a1_malaria_total_cases`:
+	c_108_ep01a1_malaria_total_cases.null
+	c_108_ep01a1_malaria_total_cases
