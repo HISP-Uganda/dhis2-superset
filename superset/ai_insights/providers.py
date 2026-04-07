@@ -851,6 +851,10 @@ class AnthropicProvider(BaseProvider):
 class OllamaProvider(BaseProvider):
     provider_type = "ollama"
 
+    @property
+    def is_local(self) -> bool:
+        return True
+
     def is_available(self) -> bool:
         return super().is_available() and bool(self.config.get("base_url"))
 
@@ -975,6 +979,10 @@ class LocalAIProvider(BaseProvider):
     """
 
     provider_type = "localai"
+
+    @property
+    def is_local(self) -> bool:
+        return True
 
     def is_available(self) -> bool:
         if not super().is_available() or not self.config.get("base_url"):
