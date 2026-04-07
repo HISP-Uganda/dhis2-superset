@@ -114,6 +114,150 @@ def _fetch_distinct_periods(
         return []
 
 
+def _fetch_distinct_column_values(
+    engine: Any,
+    dataset: Any,
+    *,
+    column: str,
+    scoped_filters: list[dict[str, Any]] | None = None,
+    limit: int = 2000,
+) -> list[str]:
+    """Return distinct values for a serving-table column via the active engine."""
+    safe_column = str(column or "").strip()
+    if not safe_column:
+        return []
+
+    try:
+        available_columns = set(engine.get_serving_table_columns(dataset) or [])
+    except Exception:  # pylint: disable=broad-except
+        available_columns = set()
+    if available_columns and safe_column not in available_columns:
+        return []
+
+    safe_limit = max(1, min(int(limit or 2000), 2000))
+    normalized_filters = [
+        filter_item
+        for filter_item in list(scoped_filters or [])
+        if isinstance(filter_item, dict)
+        and str(filter_item.get("column") or "").strip()
+        and list(filter_item.get("values") or [])
+    ]
+
+    engine_name = engine.__class__.__name__.lower()
+    table_ref = engine.get_serving_sql_table_ref(dataset)
+
+    if "clickhouse" in engine_name and hasattr(engine, "_qry"):
+        where_parts = [f"length(trim(toString(ifNull(`{safe_column}`, '')))) > 0"]
+        for filter_item in normalized_filters:
+            scoped_column = str(filter_item["column"]).strip()
+            if available_columns and scoped_column not in available_columns:
+                continue
+            values = [
+                str(value).replace("\\", "\\\\").replace("'", "\\'")
+                for value in list(filter_item.get("values") or [])
+                if str(value).strip()
+            ]
+            if not values:
+                continue
+            value_sql = ", ".join(f"'{value}'" for value in values)
+            where_parts.append(f"`{scoped_column}` IN ({value_sql})")
+        sql = (
+            f"SELECT DISTINCT `{safe_column}` AS v FROM {table_ref} "
+            f"WHERE {' AND '.join(where_parts)} "
+            f"ORDER BY `{safe_column}` LIMIT {safe_limit}"
+        )
+        try:
+            result = engine._qry(sql)  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            return [str(row[0]) for row in result.result_rows if row and row[0] is not None]
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Failed to fetch distinct ClickHouse values from %s.%s",
+                table_ref,
+                safe_column,
+                exc_info=True,
+            )
+            return []
+
+    if hasattr(engine, "_connect_read_only"):
+        conn = None
+        try:
+            conn = engine._connect_read_only()  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            where_parts = [
+                f'LENGTH(TRIM(COALESCE(CAST("{safe_column}" AS VARCHAR), \'\'))) > 0'
+            ]
+            params: list[Any] = []
+            for filter_item in normalized_filters:
+                scoped_column = str(filter_item["column"]).strip()
+                if available_columns and scoped_column not in available_columns:
+                    continue
+                values = [str(value) for value in list(filter_item.get("values") or []) if str(value).strip()]
+                if not values:
+                    continue
+                placeholders = ", ".join("?" for _ in values)
+                where_parts.append(f'"{scoped_column}" IN ({placeholders})')
+                params.extend(values)
+            sql = (
+                f'SELECT DISTINCT "{safe_column}" AS v FROM {table_ref} '
+                f"WHERE {' AND '.join(where_parts)} "
+                f'ORDER BY "{safe_column}" LIMIT {safe_limit}'
+            )
+            rows = conn.execute(sql, params).fetchall()
+            return [str(row[0]) for row in rows if row and row[0] is not None]
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "Failed to fetch distinct local-engine values from %s.%s",
+                table_ref,
+                safe_column,
+                exc_info=True,
+            )
+            return []
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+    try:
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+        from superset import db  # pylint: disable=import-outside-toplevel
+
+        where_parts = [f'"{safe_column}" IS NOT NULL']
+        bind_params: dict[str, Any] = {}
+        for filter_idx, filter_item in enumerate(normalized_filters):
+            scoped_column = str(filter_item["column"]).strip()
+            if available_columns and scoped_column not in available_columns:
+                continue
+            values = [str(value) for value in list(filter_item.get("values") or []) if str(value).strip()]
+            if not values:
+                continue
+            placeholders = ", ".join(
+                f":sf_{filter_idx}_{value_idx}" for value_idx in range(len(values))
+            )
+            where_parts.append(f'"{scoped_column}" IN ({placeholders})')
+            for value_idx, value in enumerate(values):
+                bind_params[f"sf_{filter_idx}_{value_idx}"] = value
+        sql = (
+            f'SELECT DISTINCT "{safe_column}" AS v FROM {table_ref} '
+            f"WHERE {' AND '.join(where_parts)} "
+            f'ORDER BY "{safe_column}" LIMIT {safe_limit}'
+        )
+        with db.engine.connect() as conn:
+            DHIS2StagingEngine.apply_connection_optimizations(
+                conn, str(getattr(db.engine.dialect, "name", "") or "")
+            )
+            rows = conn.execute(text(sql), bind_params).fetchall()
+        return [str(row[0]) for row in rows if row and row[0] is not None]
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to fetch distinct SQLAlchemy values from %s.%s",
+            table_ref,
+            safe_column,
+            exc_info=True,
+        )
+        return []
+
+
 def _resolve_superset_dataset_id(dataset: Any) -> int | None:
     """Resolve the Superset SqlaTable id for a DHIS2 staged dataset.
 
@@ -1339,8 +1483,34 @@ class DHIS2StagedDatasetApi(BaseApi):
         filter_values: list[str] = [
             v.strip() for v in request.args.getlist("filter_value") if v.strip()
         ]
+        filters_param = request.args.get("filters")
         if filter_column and not _IDENT_RE.match(filter_column):
             return self.response_400(message="Invalid filter_column name")
+        scoped_filters: list[dict[str, Any]] = []
+        if filters_param:
+            try:
+                parsed_filters = json.loads(filters_param)
+            except Exception:  # pylint: disable=broad-except
+                return self.response_400(message="Invalid filters payload")
+            if not isinstance(parsed_filters, list):
+                return self.response_400(message="Invalid filters payload")
+            for item in parsed_filters:
+                if not isinstance(item, dict):
+                    continue
+                scoped_column = str(item.get("column") or "").strip()
+                scoped_values_raw = item.get("values") or []
+                if not scoped_column or not _IDENT_RE.match(scoped_column):
+                    return self.response_400(message="Invalid filters payload")
+                if not isinstance(scoped_values_raw, list):
+                    scoped_values_raw = [scoped_values_raw]
+                scoped_values = [
+                    str(value).strip() for value in scoped_values_raw if str(value).strip()
+                ]
+                if scoped_values:
+                    scoped_filters.append(
+                        {"column": scoped_column, "values": scoped_values}
+                    )
+
         has_cascade_filter = bool(filter_column and filter_values)
 
         dataset = svc.get_staged_dataset(pk)
@@ -1352,6 +1522,8 @@ class DHIS2StagedDatasetApi(BaseApi):
         cascade_suffix = ""
         if has_cascade_filter:
             cascade_suffix = f"|fc={filter_column}|fv={','.join(sorted(filter_values))}"
+        if scoped_filters:
+            cascade_suffix += "|filters=" + json.dumps(scoped_filters, sort_keys=True)
         ck = _cache_key("cv", pk, sync_ts, column=column + cascade_suffix)
         cache = _data_cache()
         if cache is not None:
@@ -1360,42 +1532,24 @@ class DHIS2StagedDatasetApi(BaseApi):
                 return self.response(200, result=cached)
 
         try:
-            from sqlalchemy import text  # pylint: disable=import-outside-toplevel
-            from superset import db  # pylint: disable=import-outside-toplevel
-
             engine = _get_engine(dataset.database_id)
 
-            if engine.serving_table_exists(dataset):
-                table_ref = engine.get_serving_sql_table_ref(dataset)
-            elif engine.table_exists(dataset):
-                table_ref = engine.get_superset_sql_table_ref(dataset)
-            else:
+            if not engine.serving_table_exists(dataset) and not engine.table_exists(dataset):
                 return self.response(200, result=[])
 
-            # Build WHERE clause
-            where_parts = [f'"{column}" IS NOT NULL']
-            bind_params: dict[str, Any] = {}
-
+            effective_filters = list(scoped_filters)
             if has_cascade_filter:
-                placeholders = ", ".join(
-                    f":fv_{i}" for i in range(len(filter_values))
+                effective_filters.append(
+                    {"column": filter_column, "values": filter_values}
                 )
-                where_parts.append(f'"{filter_column}" IN ({placeholders})')
-                for i, fv in enumerate(filter_values):
-                    bind_params[f"fv_{i}"] = fv
 
-            where_clause = " AND ".join(where_parts)
-            sql = (
-                f'SELECT DISTINCT "{column}" AS v FROM {table_ref} '
-                f"WHERE {where_clause} "
-                f'ORDER BY "{column}" LIMIT 2000'
+            values = _fetch_distinct_column_values(
+                engine,
+                dataset,
+                column=column,
+                scoped_filters=effective_filters,
+                limit=2000,
             )
-            with db.engine.connect() as conn:
-                DHIS2StagingEngine.apply_connection_optimizations(
-                    conn, str(getattr(db.engine.dialect, "name", "") or "")
-                )
-                rows = conn.execute(text(sql), bind_params).fetchall()
-                values = [str(row[0]) for row in rows if row[0] is not None]
         except Exception:  # pylint: disable=broad-except
             logger.exception(
                 "Failed to load column values for dataset id=%s column=%s", pk, column

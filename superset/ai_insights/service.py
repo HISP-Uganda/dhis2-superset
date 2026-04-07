@@ -182,6 +182,15 @@ _OUTPUT_NOISE_PATTERNS = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+_LEAKED_INSTRUCTION_BLOCK_PATTERNS = re.compile(
+    r"(?:"
+    r"\n?\s*---+\s*\n+\s*Write\s+a\s+concise\s+summary.*?(?=\n(?:##\s+|Executive Summary|Chart Summary|Key Takeaways|Leadership Watchouts|Why It Matters)\b|\Z)"
+    r"|\n?\s*Context:\s*\n(?:.*\n){0,40}?(?=\n(?:##\s+|Executive Summary|Chart Summary|Key Takeaways|Leadership Watchouts|Why It Matters)\b|\Z)"
+    r"|\n?\s*(?:Do not leave the report incomplete.*|Do not exceed.*|Do not use any unsupported claims.*|Focus on the most important takeaway.*|Generate a new insight\.)\s*"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _STUB_OUTPUT_PATTERNS = re.compile(
     r"(?:"
     r"\[STUB\b"
@@ -296,6 +305,217 @@ def _looks_placeholder_output(text: str) -> bool:
     return bool(_STUB_OUTPUT_PATTERNS.search(normalized)) or _looks_context_echo_output(
         normalized
     )
+
+
+def _context_has_meaningful_evidence(
+    context_payload: dict[str, Any] | None,
+    mode: str | None,
+) -> bool:
+    context_payload = context_payload or {}
+    if mode == AI_MODE_CHART:
+        qr = context_payload.get("query_result") or {}
+        rows = qr.get("sample_rows") or qr.get("data") or []
+        return not _is_trivial_data(rows)
+
+    charts = context_payload.get("charts") or []
+    for chart_entry in charts:
+        qr = chart_entry.get("query_result") or {}
+        rows = qr.get("sample_rows") or qr.get("data") or []
+        if rows and not _is_trivial_data(rows):
+            return True
+    return False
+
+
+def _count_meaningful_dashboard_charts(context_payload: dict[str, Any] | None) -> int:
+    charts = (context_payload or {}).get("charts") or []
+    count = 0
+    for chart_entry in charts:
+        qr = chart_entry.get("query_result") or {}
+        rows = qr.get("sample_rows") or qr.get("data") or []
+        if rows and not _is_trivial_data(rows):
+            count += 1
+    return count
+
+
+def _looks_false_insufficient_data_output(
+    text: str,
+    context_payload: dict[str, Any] | None,
+    mode: str | None,
+) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if not _context_has_meaningful_evidence(context_payload, mode):
+        return False
+    return any(
+        phrase in normalized
+        for phrase in (
+            "no charts contained enough data",
+            "no charts had sufficient data",
+            "insufficient data",
+            "not enough data for reliable analysis",
+            "not enough evidence for reliable analysis",
+            "the current charts are insufficient",
+            "please provide a dashboard with complete",
+            "please provide a dashboard with complete",
+            "restart the analysis when you have a complete",
+            "the charts lack sufficient data points",
+            "more recent, complete data is required",
+        )
+    )
+
+
+def _build_localai_report_plan(
+    insight_mode: str,
+    scope_label: str,
+) -> tuple[str, list[str]]:
+    """Return a concise mode-aware structure for LocalAI output."""
+    if scope_label == "dashboard":
+        plans: dict[str, tuple[str, list[str]]] = {
+            "summary": (
+                "Use exactly these sections:\n"
+                "## Executive Summary\n"
+                "- 1 paragraph, 110-170 words, synthesizing the dashboard's main message.\n"
+                "## Key Points\n"
+                "- 4 to 6 bullets with specific metrics, entities, or trends.\n"
+                "## Leadership Watchouts\n"
+                "- 2 to 4 bullets focused on operational or strategic concerns.",
+                [
+                    "## Executive Summary",
+                    "## Key Points",
+                    "## Leadership Watchouts",
+                ],
+            ),
+            "key_takeaways": (
+                "Use exactly these sections:\n"
+                "## Key Takeaways\n"
+                "- Return exactly 5 bullets. Each bullet must contain a named metric, entity, value, or comparison.\n"
+                "## Leadership Watchouts\n"
+                "- Return 2 concise bullets on the most important risks or checks.",
+                [
+                    "## Key Takeaways",
+                    "## Leadership Watchouts",
+                ],
+            ),
+            "executive_brief": (
+                "Use exactly these sections:\n"
+                "## Executive Brief\n"
+                "- 1 board-ready paragraph, 120-180 words.\n"
+                "## Priority Decisions\n"
+                "- 3 to 5 bullets.\n"
+                "## Immediate Actions\n"
+                "- 3 bullets with direct actions.",
+                [
+                    "## Executive Brief",
+                    "## Priority Decisions",
+                    "## Immediate Actions",
+                ],
+            ),
+            "deep_dive": (
+                "Use exactly these sections:\n"
+                "## Executive Summary\n"
+                "- 1 paragraph, 120-180 words.\n"
+                "## Performance Overview\n"
+                "- 1 paragraph or 4 to 6 bullets summarizing strengths, weaknesses, and direction.\n"
+                "## Cross-Chart Patterns\n"
+                "- 3 to 5 bullets grounded in multiple charts.\n"
+                "## Risks and Recommended Actions\n"
+                "- 3 to 5 bullets combining risk, evidence, and next step.\n"
+                "## Data Quality and Confidence Notes\n"
+                "- 1 to 3 bullets only if needed.",
+                [
+                    "## Executive Summary",
+                    "## Performance Overview",
+                    "## Cross-Chart Patterns",
+                    "## Risks and Recommended Actions",
+                ],
+            ),
+        }
+    else:
+        plans = {
+            "summary": (
+                "Use exactly these sections:\n"
+                "## Chart Summary\n"
+                "- 1 paragraph, 90-140 words, focused on the most important pattern.\n"
+                "## What Stands Out\n"
+                "- 3 to 5 bullets with specific evidence.\n"
+                "## Why It Matters\n"
+                "- 1 or 2 concise sentences.",
+                [
+                    "## Chart Summary",
+                    "## What Stands Out",
+                    "## Why It Matters",
+                ],
+            ),
+            "key_takeaways": (
+                "Use exactly these sections:\n"
+                "## Key Takeaways\n"
+                "- Return exactly 5 bullets. Each bullet must contain a named metric, entity, value, or comparison.\n"
+                "## Immediate Watchouts\n"
+                "- Return 2 concise bullets on the main operational implications.",
+                [
+                    "## Key Takeaways",
+                    "## Immediate Watchouts",
+                ],
+            ),
+            "deep_dive": (
+                "Use exactly these sections:\n"
+                "## Chart Summary\n"
+                "- 1 paragraph, 100-160 words.\n"
+                "## Metric Interpretation\n"
+                "- 3 to 5 bullets.\n"
+                "## Risks and Watchouts\n"
+                "- 2 to 4 bullets.\n"
+                "## Improvement Opportunities\n"
+                "- 2 to 4 bullets.\n"
+                "## Data Quality and Confidence Notes\n"
+                "- 1 to 3 bullets only if needed.",
+                [
+                    "## Chart Summary",
+                    "## Metric Interpretation",
+                    "## Risks and Watchouts",
+                    "## Improvement Opportunities",
+                ],
+            ),
+        }
+
+    default_plan = (
+        "Use exactly these sections:\n"
+        "## Executive Summary\n"
+        "- 1 concise paragraph.\n"
+        "## Key Points\n"
+        "- 4 to 6 bullets.\n"
+        "## Recommended Actions\n"
+        "- 2 to 4 bullets tied directly to the evidence.",
+        [
+            "## Executive Summary",
+            "## Key Points",
+            "## Recommended Actions",
+        ],
+    )
+    return plans.get(insight_mode, default_plan)
+
+
+def _looks_incomplete_localai_output(
+    text: str,
+    expected_headings: list[str],
+) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return True
+
+    lower = normalized.lower()
+    if expected_headings:
+        present = sum(1 for heading in expected_headings if heading.lower() in lower)
+        if present < len(expected_headings) and len(normalized) >= 180:
+            return True
+
+    tail = normalized[-120:]
+    if re.search(r"(?:\b(?:for|to|with|and|or|of|in|on|at)\s*$|[:(\[]\s*$)", tail, re.IGNORECASE):
+        return True
+    if len(normalized) >= 120 and not re.search(r"(?:[.!?]|\]|\)|`)\s*$", normalized):
+        return True
+    return False
 
 
 def _fix_generated_word_spacing(text: str) -> str:
@@ -730,14 +950,107 @@ def _fix_generated_word_spacing(text: str) -> str:
         fixed = _split_joined_tokens_in_line(fixed)
         fixed = re.sub(r" {2,}", " ", fixed)
         fixed_lines.append(fixed)
-    return "\n".join(fixed_lines)
+    cleaned_text = "\n".join(fixed_lines)
+
+    targeted_repairs: tuple[tuple[str, str], ...] = (
+        (r"\bmalari\s+a\b", "malaria"),
+        (r"\bho\s+sp\s+it\s+al\b", "hospital"),
+        (r"\bper\s+for\s+m\s+an\s+ce\b", "performance"),
+        (r"\bh\s+is\s+t\s+or\s+ical\b", "historical"),
+        (r"\bhistoricalrec\s+or\s+d\b", "historical record"),
+        (r"\bf\s+all\s+en\b", "fallen"),
+        (r"\br\s+is\s+in\s+g\b", "rising"),
+        (r"\bsoar\s+in\s+g\b", "soaring"),
+        (r"\bdecl\s+in\s+e\b", "decline"),
+        (r"\bin\s+cre\s+as\s+e\b", "increase"),
+        (r"\bd\s+at\s+a\b", "data"),
+        (r"\baction\s+able\b", "actionable"),
+        (r"\bgene\s+rate\b", "generate"),
+        (r"\bm\s+is\s+s\s+in\s+g\b", "missing"),
+        (r"\bsupp\s+or\s+t\b", "support"),
+        (r"\bcomp\s+are\s+d\b", "compared"),
+        (r"\bdecre\s+as\s+ed\b", "decreased"),
+        (r"\brema\s+in\s+s\b", "remains"),
+        (r"\bin\s+cidence\b", "incidence"),
+        (r"\bug\s+and\s+a\b", "Uganda"),
+        (r"\bla\s+test\b", "latest"),
+        (r"\bpri\s+or\b", "prior"),
+        (r"\bno\s+t\b", "not"),
+        (r"\ba\s+no\s+maly\b", "anomaly"),
+        (r"\bis\s+sue\b", "issue"),
+        (r"\bprep\s+are\b", "prepare"),
+        (r"\bhospital\s+iz\s+at\s+i\s+on\b", "hospitalization"),
+        (r"\bhospital\s+iz\s+at\s+i\s+on\s+s\b", "hospitalizations"),
+        (r"\bactiv\s+it\s+y\b", "activity"),
+        (r"\bc\s+are\b", "care"),
+        (r"\bs\s+it\s+u\s+at\s+i\s+on\b", "situation"),
+        (r"\bin\s+for\s+m\s+at\s+i\s+on\b", "information"),
+        (r"\bimp\s+or\s+t\s+an\s+t\b", "important"),
+        (r"\bfocus\s+in\s+g\b", "focusing"),
+        (r"\brecord\s+ed\b", "recorded"),
+        (r"\bpopulatio\s+n\s+s\b", "populations"),
+        (r"\bpopulatio\s+n\b", "population"),
+        (r"\bw\s+or\s+sen\s+in\s+g\b", "worsening"),
+        (r"\br\s+is\s+k\b", "risk"),
+        (r"\bn\s+at\s+i\s+on\s+al\b", "national"),
+        (r"\bdem\s+and\s+s\b", "demands"),
+        (r"\bc\s+on\s+cern\s+in\s+g\s*level\b", "concerning level"),
+        (r"\bwhole-of-society\b", "whole-of-society"),
+        (r"\btr\s+an\s+sm\s+is\s+si\s+on\b", "transmission"),
+        (r"\bra\s+in\s+yse\s+as\s+on\b", "rainy season"),
+        (r"\bnearlyhalf\b", "nearly half"),
+        (r"\bfallensharply\b", "fallen sharply"),
+    )
+    for pattern, replacement in targeted_repairs:
+        cleaned_text = re.sub(pattern, replacement, cleaned_text, flags=re.IGNORECASE)
+
+    cleaned_text = re.sub(r"(\d)\s+and\s+(\d)", r"\1 and \2", cleaned_text)
+    cleaned_text = re.sub(r"(\d)\s+respectively\b", r"\1 respectively", cleaned_text)
+    return cleaned_text
 
 
 def _proofread_generated_insight(text: str) -> str:
     """Apply backend cleanup so generated insight text is readable before render."""
     cleaned = _strip_prompt_leakage(text)
+    cleaned = re.sub(_LEAKED_INSTRUCTION_BLOCK_PATTERNS, "\n", cleaned)
     cleaned = cleaned.replace("\\*", "*").replace("\\#", "#").replace("\\_", "_").replace("\\`", "`")
-    cleaned = _fix_generated_word_spacing(cleaned)
+    heading_match = re.search(
+        r"(?im)^(?:##\s+)?(?:Executive Summary|Chart Summary|Executive Brief|Key Takeaways)\b",
+        cleaned,
+    )
+    if heading_match:
+        preamble = cleaned[:heading_match.start()]
+        if re.search(
+            r"(?im)(?:min=|max=|avg=|total=|change=|rows analysed|active filters|cross-chart evidence|^\s*map:\s*$)",
+            preamble,
+        ):
+            cleaned = cleaned[heading_match.start():]
+        elif re.search(r"(?im)^(?:Do not|Focus on|Generate|Return only)\b", preamble):
+            cleaned = cleaned[heading_match.start():]
+    for _ in range(2):
+        repaired = _fix_generated_word_spacing(cleaned)
+        if repaired == cleaned:
+            break
+        cleaned = repaired
+    cleaned = re.sub(_LEAKED_INSTRUCTION_BLOCK_PATTERNS, "\n", cleaned)
+    sentence_counts: dict[str, int] = {}
+    deduped_parts: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+", cleaned):
+        normalized = re.sub(r"\s+", " ", part).strip().lower()
+        if len(normalized) >= 40:
+            sentence_counts[normalized] = sentence_counts.get(normalized, 0) + 1
+            if sentence_counts[normalized] > 1:
+                continue
+        deduped_parts.append(part)
+    cleaned = " ".join(deduped_parts)
+    if "Leadership Watchouts" in cleaned and "Bottom Line" in cleaned:
+        lower_cleaned = cleaned.lower()
+        bottom_idx = lower_cleaned.find("bottom line")
+        if bottom_idx > 0:
+            tail = cleaned[bottom_idx:]
+            repeated_tail = re.search(r"(.{80,}?)\1{2,}", tail, re.DOTALL)
+            if repeated_tail:
+                cleaned = cleaned[:bottom_idx] + repeated_tail.group(1)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -1664,147 +1977,32 @@ _SYSTEM_PROMPT_CHART_GENERATE = (
 
 
 _SYSTEM_PROMPT_LOCAL_CHART = (
-    "You are an autonomous AI insights engine running inside LocalAI.\n\n"
-    "Your job is to read the provided chart dataset, detect trends, identify "
-    "notable patterns, and generate concise, accurate, readable insights for "
-    "decision-makers.\n\n"
-    "You must operate with high factual discipline, high linguistic integrity, "
-    "and zero tolerance for broken words.\n\n"
-    "# Primary mission\n\n"
-    "Given the chart data, generate:\n"
-    "1. An Executive Summary\n"
-    "2. Key Points\n"
-    "3. Leadership Watchouts\n"
-    "4. A short Bottom Line\n\n"
-    "Your output must be: fact-based, internally consistent, non-repetitive, "
-    "easy to read, and free from split or malformed words.\n\n"
-    "# Autonomous behavior\n\n"
-    "Work independently using the supplied data only.\n"
-    "Do not ask questions.\n"
-    "Do not explain your reasoning process.\n"
-    "Do not mention tokenization, prompt rules, or internal checks.\n"
-    "Silently analyze, verify, clean, and finalize the answer before returning it.\n\n"
-    "# Hard factual rules\n\n"
-    "* Use only information supported by the input data.\n"
-    "* Do not invent regions, values, trends, rankings, or causes.\n"
-    "* Do not state contradictory claims.\n"
-    "* If the data shows a highest region, do not also say no region has the highest rate.\n"
-    "* If the data is insufficient for a claim, say so briefly and move on.\n"
-    "* Distinguish clearly between: current level, trend over time, comparison to "
-    "national average, outliers, and uncertainty.\n\n"
-    "# Word-integrity rules (non-negotiable)\n\n"
-    "You must ensure that:\n"
-    "* no valid word is split into fragments,\n"
-    "* no country name, region name, or health term is broken,\n"
-    "* no multiple words are accidentally merged into a malformed string,\n"
-    "* no syllable-like fragments appear in the final output.\n\n"
-    "Forbidden examples: f all in g, Ug and a, n at i on al, la test, cr is is, "
-    "bothdown, urgentattention, Thisindicatesasevere\n\n"
-    "Required forms: falling, Uganda, national, latest, crisis, both down, "
-    "urgent attention, This indicates a severe\n\n"
-    "# Repetition control\n\n"
-    "* Do not repeat the same warning in multiple phrasings.\n"
-    "* Do not restate the same conclusion in every section.\n"
-    "* Each section must add value.\n"
-    "* Prefer one clear sentence over repeated variants.\n\n"
-    "# Consistency control\n\n"
-    "Before finalizing: check that rankings match the data, check that trends "
-    "match the data, check that regional statements do not conflict with national "
-    "statements, remove any contradiction immediately.\n\n"
-    "# Tone\n\n"
-    "Use professional public-health or management-report language: direct, clear, "
-    "calm, evidence-led, concise. Do not exaggerate.\n\n"
-    "# Output format\n\n"
-    "Return exactly this structure:\n\n"
-    "## Executive Summary\n"
-    "A short paragraph summarizing the most important patterns.\n\n"
-    "## Key Points\n"
-    "* 3 to 6 concise bullets, each with one clear insight\n"
-    "* add tags only when supported: [INFO], [WARNING], or [CRITICAL]\n\n"
-    "## Leadership Watchouts\n"
-    "* 2 to 4 concise bullets, only actionable or strategically important concerns\n"
-    "* avoid duplicating Key Points\n\n"
-    "## Bottom Line\n"
-    "A brief concluding paragraph with the single most important takeaway.\n\n"
-    "# Quality gate\n\n"
-    "Silently verify: no split words, no merged malformed words, no duplicate "
-    "statements, no contradictions, no unsupported claims, no broken formatting, "
-    "no broken place names, no repeated warnings.\n"
-    "Only return the fully corrected final insight report.\n"
+    "You are the LocalAI chart-insight writer.\n"
+    "Write a professional markdown report from the supplied evidence only.\n"
+    "Use clear English with correct word spacing. Never split words or merge words.\n"
+    "Follow the report plan in the user message exactly.\n"
+    "Use only supported facts. Do not invent causes, rankings, regions, values, or trends.\n"
+    "Do not repeat the same point in multiple sections.\n"
+    "Do not output raw prompt scaffolding such as Chart, Type, Columns, Metric, Highest, Lowest, or Sample data.\n"
+    "Do not output placeholders such as [STUB].\n"
+    "If evidence is limited, say so briefly and continue with only supported statements.\n"
+    "Use concise executive-report language: direct, calm, and evidence-led.\n"
+    "Return only the finished report.\n"
 )
 
 _SYSTEM_PROMPT_LOCAL_DASHBOARD = (
-    "You are an autonomous AI insights engine running inside LocalAI.\n\n"
-    "Your job is to read the provided dashboard analysis and generate a unified, "
-    "professional insight report for decision-makers.\n\n"
-    "CRITICAL: This is a DASHBOARD report. You MUST synthesize findings ACROSS "
-    "ALL charts into a cohesive narrative. Do NOT just list individual chart "
-    "observations. Identify cross-chart patterns, correlations, reinforcing "
-    "signals, and contradictions. The Executive Summary must cover the entire "
-    "dashboard, not just one chart.\n\n"
-    "You must operate with high factual discipline, high linguistic integrity, "
-    "and zero tolerance for broken words.\n\n"
-    "# Primary mission\n\n"
-    "Given the dashboard data, generate:\n"
-    "1. An Executive Summary\n"
-    "2. Key Points\n"
-    "3. Leadership Watchouts\n"
-    "4. A short Bottom Line\n\n"
-    "Your output must be: fact-based, internally consistent, non-repetitive, "
-    "easy to read, and free from split or malformed words.\n\n"
-    "# Autonomous behavior\n\n"
-    "Work independently using the supplied data only.\n"
-    "Do not ask questions.\n"
-    "Do not explain your reasoning process.\n"
-    "Do not mention tokenization, prompt rules, or internal checks.\n"
-    "Silently analyze, verify, clean, and finalize the answer before returning it.\n\n"
-    "# Hard factual rules\n\n"
-    "* Use only information supported by the input data.\n"
-    "* Do not invent regions, values, trends, rankings, or causes.\n"
-    "* Do not state contradictory claims.\n"
-    "* If the data shows a highest region, do not also say no region has the highest rate.\n"
-    "* If the data is insufficient for a claim, say so briefly and move on.\n"
-    "* Distinguish clearly between: current level, trend over time, comparison to "
-    "national average, outliers, and uncertainty.\n\n"
-    "# Word-integrity rules (non-negotiable)\n\n"
-    "You must ensure that:\n"
-    "* no valid word is split into fragments,\n"
-    "* no country name, region name, or health term is broken,\n"
-    "* no multiple words are accidentally merged into a malformed string,\n"
-    "* no syllable-like fragments appear in the final output.\n\n"
-    "Forbidden examples: f all in g, Ug and a, n at i on al, la test, cr is is, "
-    "bothdown, urgentattention, Thisindicatesasevere\n\n"
-    "Required forms: falling, Uganda, national, latest, crisis, both down, "
-    "urgent attention, This indicates a severe\n\n"
-    "# Repetition control\n\n"
-    "* Do not repeat the same warning in multiple phrasings.\n"
-    "* Do not restate the same conclusion in every section.\n"
-    "* Each section must add value.\n"
-    "* Prefer one clear sentence over repeated variants.\n\n"
-    "# Consistency control\n\n"
-    "Before finalizing: check that rankings match the data, check that trends "
-    "match the data, check that regional statements do not conflict with national "
-    "statements, remove any contradiction immediately.\n\n"
-    "# Tone\n\n"
-    "Use professional public-health or management-report language: direct, clear, "
-    "calm, evidence-led, concise. Do not exaggerate.\n\n"
-    "# Output format\n\n"
-    "Return exactly this structure:\n\n"
-    "## Executive Summary\n"
-    "A short paragraph summarizing the most important patterns.\n\n"
-    "## Key Points\n"
-    "* 3 to 6 concise bullets, each with one clear insight\n"
-    "* add tags only when supported: [INFO], [WARNING], or [CRITICAL]\n\n"
-    "## Leadership Watchouts\n"
-    "* 2 to 4 concise bullets, only actionable or strategically important concerns\n"
-    "* avoid duplicating Key Points\n\n"
-    "## Bottom Line\n"
-    "A brief concluding paragraph with the single most important takeaway.\n\n"
-    "# Quality gate\n\n"
-    "Silently verify: no split words, no merged malformed words, no duplicate "
-    "statements, no contradictions, no unsupported claims, no broken formatting, "
-    "no broken place names, no repeated warnings.\n"
-    "Only return the fully corrected final insight report.\n"
+    "You are the LocalAI dashboard-insight writer.\n"
+    "Write a professional markdown report from the supplied evidence only.\n"
+    "This is a dashboard report, so synthesize across charts instead of listing raw chart-by-chart metadata.\n"
+    "Use clear English with correct word spacing. Never split words or merge words.\n"
+    "Follow the report plan in the user message exactly.\n"
+    "Use only supported facts. Do not invent causes, rankings, regions, values, or trends.\n"
+    "Do not repeat the same point in multiple sections.\n"
+    "Do not output raw prompt scaffolding such as Chart, Type, Columns, Metric, Highest, Lowest, or Sample data.\n"
+    "Do not output placeholders such as [STUB].\n"
+    "If evidence is limited, say so briefly and continue with only supported statements.\n"
+    "Use concise executive-report language: direct, calm, and evidence-led.\n"
+    "Return only the finished report.\n"
 )
 
 
@@ -2183,6 +2381,7 @@ def _build_localai_evidence_digest(
 ) -> str:
     """Build a compact evidence digest for LocalAI without raw prompt scaffolding."""
     parts: list[str] = []
+    config = get_ai_insights_config()
 
     def _clean_name(value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "").replace("_", " ")).strip()
@@ -2203,7 +2402,7 @@ def _build_localai_evidence_digest(
         parts.append(f"- {chart_name}:")
         if row_count:
             parts.append(f"  - Rows analysed: {row_count}")
-        for line in analytics[:6]:
+        for line in analytics[:3]:
             compact = re.sub(r"\s+", " ", line).strip()
             compact = compact.replace("Metric '", "").replace("':", ":")
             parts.append(f"  - {compact}")
@@ -2226,9 +2425,15 @@ def _build_localai_evidence_digest(
         dashboard = context_payload.get("dashboard") or {}
         dash_name = dashboard.get("dashboard_title") or dashboard.get("name") or "Dashboard"
         parts.append(f"Dashboard: {_clean_name(dash_name)}")
+        total_charts = len(context_payload.get("charts") or [])
+        meaningful_charts = _count_meaningful_dashboard_charts(context_payload)
+        parts.append(
+            f"Dashboard coverage: {meaningful_charts} of {total_charts} charts contain analyzable quantitative evidence."
+        )
         parts.append("Cross-chart evidence:")
         included = 0
-        for chart_entry in (context_payload.get("charts") or [])[:8]:
+        chart_budget = int(config.get("max_dashboard_charts") or 12)
+        for chart_entry in (context_payload.get("charts") or [])[:chart_budget]:
             chart = chart_entry.get("chart") or {}
             chart_name = chart.get("name") or chart.get("slice_name") or f"Chart {included + 1}"
             qr = chart_entry.get("query_result") or {}
@@ -2246,10 +2451,20 @@ def _build_localai_evidence_digest(
                 included += 1
         if included == 0:
             parts.append("- No charts contained enough non-placeholder data for reliable analysis.")
+        else:
+            parts.append(
+                f"Cross-chart coverage note: include patterns from all {included} charts with usable evidence, not only the first few."
+            )
 
     filters = context_payload.get("applied_filters") or context_payload.get("filters")
-    if filters:
-        parts.append(f"Filters: {json.dumps(filters, default=str)[:220]}")
+    if isinstance(filters, dict):
+        active_filter_keys = [
+            str(key)
+            for key, value in filters.items()
+            if value not in (None, "", [], {}, ())
+        ][:6]
+        if active_filter_keys:
+            parts.append(f"Active filters: {', '.join(active_filter_keys)}")
 
     return "\n".join(parts).strip()
 
@@ -5333,18 +5548,62 @@ def _build_text_messages(
         else:
             system_prompt = _SYSTEM_PROMPT_CHART
 
+    if (
+        is_local_provider
+        and provider_type != "localai"
+        and mode in (AI_MODE_CHART, AI_MODE_DASHBOARD)
+    ):
+        context_payload = _truncate_context_for_local(
+            context_payload=context_payload,
+            system_prompt=system_prompt,
+            question=question,
+        )
+
     # ── Context and user message ──
-    if is_local_provider and mode in (AI_MODE_CHART, AI_MODE_DASHBOARD):
-        # Local 8B models cannot reliably generate from raw data — they loop,
-        # hallucinate, and produce garbled output.  Python builds the complete
-        # professional report from actual chart/dashboard data using the rich
-        # mode-aware renderers.  The report is streamed directly to the user
-        # as a __direct_report__ so it feels live (line-by-line streaming)
-        # while being 100% grounded in real data.
+    if provider_type == "localai" and mode in (AI_MODE_CHART, AI_MODE_DASHBOARD):
+        evidence_digest = _build_localai_evidence_digest(context_payload, mode)
+        scope_label = "dashboard" if mode == AI_MODE_DASHBOARD else "chart"
+        report_plan, _ = _build_localai_report_plan(insight_mode, scope_label)
+
+        user_content = f"Requested insight mode: {insight_mode}\n"
+        user_content += f"Scope: {scope_label}\n"
+        user_content += f"User question: {question}\n"
+        user_content += f"Mode instructions: {mode_spec}\n\n"
+        user_content += f"Required report plan:\n{report_plan}\n\n"
+        if user_focus:
+            user_content += (
+                "User-specific emphasis:\n"
+                f"- Prioritize this focus while staying grounded in the evidence: {user_focus}\n\n"
+            )
+
+        user_content += (
+            "Generate this insight dynamically from the evidence below.\n"
+            "Do not use template wording, boilerplate report language, or prewritten "
+            "Python-style summaries.\n"
+            "Keep the structure required by the system prompt, but make the content "
+            "specific to the user's requested mode and the current evidence.\n"
+            "Keep the report complete and evidence-led.\n"
+            "Do not copy the evidence block verbatim.\n"
+            "Do not output chart scaffolding such as Chart 9, Type, Columns, "
+            "Total rows, Metric, Highest, Lowest, or Sample data.\n"
+            "Do not echo raw IDs, slugs, or column codes.\n"
+            "Do not output placeholders like [STUB] or draft instructions.\n"
+            "Use only supported facts from the evidence. If evidence is insufficient, "
+            "say so briefly instead of inventing details.\n"
+            "For dashboard analysis, synthesize all dashboard contents that contain usable evidence.\n"
+            "Ensure the report is complete and not cut off.\n"
+            "Return only the finished markdown insight report.\n\n"
+        )
+        user_content += f"EVIDENCE SUMMARY:\n{evidence_digest}"
+    elif is_local_provider and mode in (AI_MODE_CHART, AI_MODE_DASHBOARD):
+        # Non-LocalAI local providers still use the deterministic Python report path.
         complete_report = _build_complete_report(context_payload, mode, question)
         logger.info(
-            "LOCAL __direct_report__: mode=%s insight_mode=%s report_len=%d",
-            mode, insight_mode, len(complete_report),
+            "LOCAL __direct_report__: provider=%s mode=%s insight_mode=%s report_len=%d",
+            provider_type,
+            mode,
+            insight_mode,
+            len(complete_report),
         )
         return [{"role": "__direct_report__", "content": complete_report}]
     elif is_local_provider:
@@ -5700,42 +5959,73 @@ class AIInsightService:
         mode: str | None = None,
         question: str | None = None,
     ):
-        """Generate a LocalAI response and retry once on obvious degeneration."""
-        response = self.registry.generate(
-            messages=messages,
-            provider_id=provider_id,
-            model=model,
+        """Generate a LocalAI response and retry with stricter guidance when needed."""
+        insight_mode = _detect_insight_mode(question or "")
+        scope_label = "dashboard" if mode == AI_MODE_DASHBOARD else "chart"
+        _, expected_headings = _build_localai_report_plan(insight_mode, scope_label)
+        dashboard_chart_count = (
+            _count_meaningful_dashboard_charts(context_payload)
+            if mode == AI_MODE_DASHBOARD
+            else 0
         )
-        if (
-            not _looks_repetitive_model_output(response.text)
-            and not _looks_placeholder_output(response.text)
-        ):
-            return response
 
-        logger.warning(
-            "LocalAI returned repetitive or placeholder output; retrying once with stricter guidance",
-        )
-        retry_messages = [
-            *messages,
-            {
-                "role": "user",
-                "content": (
-                    "Restart from scratch. Your previous answer copied raw evidence or "
-                    "returned placeholder scaffold text. "
-                    "Return only the final professional insight report. "
-                    "Do not copy chart context labels such as Chart, Type, Columns, "
-                    "Total rows, Metric, Highest, Lowest, or Sample data. "
-                    "Do not copy raw IDs or slugs. Do not use [STUB] or template notes. "
-                    "Use normal English words with correct spacing and markdown headings only."
-                ),
-            },
-        ]
-        retry_response = self.registry.generate(
-            messages=retry_messages,
-            provider_id=provider_id,
-            model=model,
-        )
-        return retry_response
+        def _is_invalid(text: str) -> bool:
+            return (
+                _looks_repetitive_model_output(text)
+                or _looks_placeholder_output(text)
+                or _looks_false_insufficient_data_output(
+                    text,
+                    context_payload,
+                    mode,
+                )
+                or _looks_incomplete_localai_output(text, expected_headings)
+            )
+
+        attempt_messages = messages
+        last_response = None
+        for attempt in range(3):
+            response = self.registry.generate(
+                messages=attempt_messages,
+                provider_id=provider_id,
+                model=model,
+            )
+            last_response = response
+            if not _is_invalid(response.text):
+                return response
+
+            logger.warning(
+                "LocalAI returned invalid output on attempt %d; retrying with stricter guidance",
+                attempt + 1,
+            )
+            guidance = (
+                "Restart from scratch. Return only the final professional insight report. "
+                "Do not copy chart context labels such as Chart, Type, Columns, Total rows, "
+                "Metric, Highest, Lowest, or Sample data. "
+                "Do not copy raw IDs or slugs. Do not use [STUB] or template notes. "
+                "Do not claim there is insufficient data when the evidence contains real chart "
+                "metrics, trends, rankings, or sample rows. "
+                "Use normal English words with correct spacing and markdown headings only. "
+                f"Include every required heading in the report plan: {', '.join(expected_headings)}. "
+                "Keep the report complete, concise, and fully finished."
+            )
+            if mode == AI_MODE_DASHBOARD and dashboard_chart_count > 0:
+                guidance += (
+                    f" This dashboard contains usable evidence in {dashboard_chart_count} charts. "
+                    "Synthesize the full dashboard, not only the first few charts."
+                )
+            if attempt == 1:
+                guidance += (
+                    " Use all supported dashboard or chart evidence that is present. "
+                    "If one conclusion cannot be confirmed, state that succinctly and continue "
+                    "with the supported findings instead of rejecting the whole analysis."
+                )
+            attempt_messages = [
+                *messages,
+                {"role": "user", "content": guidance},
+            ]
+
+        assert last_response is not None
+        return last_response
 
     def get_capabilities(self, mode: str) -> dict[str, Any]:
         if not user_can_access_ai_mode(mode):
@@ -6077,6 +6367,27 @@ class AIInsightService:
                     accumulated_text += chunk_text
                     yield StreamChunk(text=chunk_text)
                 yield StreamChunk(text="", done=True)
+            elif _provider_type == "localai":
+                logger.info(
+                    "stream_chart_insight: LocalAI final-response mode, msgs=%d",
+                    len(messages),
+                )
+                response = self._generate_localai_response(
+                    messages=messages,
+                    provider_id=provider_id,
+                    model=model,
+                    context_payload=context_payload,
+                    mode=AI_MODE_CHART,
+                    question=question,
+                )
+                final_text = _proofread_generated_insight(response.text)
+                accumulated_text = final_text
+                for paragraph in final_text.split("\n\n"):
+                    chunk_text = paragraph.strip()
+                    if not chunk_text:
+                        continue
+                    yield StreamChunk(text=chunk_text + "\n\n")
+                yield StreamChunk(text="", done=True)
             else:
                 logger.info(
                     "stream_chart_insight: streaming from model, "
@@ -6172,6 +6483,27 @@ class AIInsightService:
                     chunk_text = line + "\n"
                     accumulated_text += chunk_text
                     yield StreamChunk(text=chunk_text)
+                yield StreamChunk(text="", done=True)
+            elif _provider_type == "localai":
+                logger.info(
+                    "stream_dashboard_insight: LocalAI final-response mode, msgs=%d",
+                    len(messages),
+                )
+                response = self._generate_localai_response(
+                    messages=messages,
+                    provider_id=provider_id,
+                    model=model,
+                    context_payload=context_payload,
+                    mode=AI_MODE_DASHBOARD,
+                    question=question,
+                )
+                final_text = _proofread_generated_insight(response.text)
+                accumulated_text = final_text
+                for paragraph in final_text.split("\n\n"):
+                    chunk_text = paragraph.strip()
+                    if not chunk_text:
+                        continue
+                    yield StreamChunk(text=chunk_text + "\n\n")
                 yield StreamChunk(text="", done=True)
             else:
                 logger.info(

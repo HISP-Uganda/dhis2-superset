@@ -920,6 +920,24 @@ function fixMarkdownStructure(text: string): string {
  * URLs, numbers, and common abbreviations.
  */
 function fixWordSpacing(text: string): string {
+  const targetedRepairs: Array<[RegExp, string]> = [
+    [/\bmalari\s+a\b/gi, 'malaria'],
+    [/\bho\s+sp\s+it\s+al\b/gi, 'hospital'],
+    [/\bper\s+for\s+m\s+an\s+ce\b/gi, 'performance'],
+    [/\bh\s+is\s+t\s+or\s+ical\b/gi, 'historical'],
+    [/\bhistoricalrec\s+or\s+d\b/gi, 'historical record'],
+    [/\bf\s+all\s+en\b/gi, 'fallen'],
+    [/\br\s+is\s+in\s+g\b/gi, 'rising'],
+    [/\bsoar\s+in\s+g\b/gi, 'soaring'],
+    [/\bdecl\s+in\s+e\b/gi, 'decline'],
+    [/\bin\s+cre\s+as\s+e\b/gi, 'increase'],
+    [/\bd\s+at\s+a\b/gi, 'data'],
+    [/\baction\s+able\b/gi, 'actionable'],
+    [/\bgene\s+rate\b/gi, 'generate'],
+    [/\bm\s+is\s+s\s+in\s+g\b/gi, 'missing'],
+    [/\bsupp\s+or\s+t\b/gi, 'support'],
+  ];
+
   // Common English words that the AI joins onto a preceding word.
   // Only words 3+ chars to avoid false positives with short fragments.
   // Sorted longest-first so "through" matches before "the".
@@ -1111,7 +1129,12 @@ function fixWordSpacing(text: string): string {
     return repaired.join('');
   };
 
-  return text
+  let repairedText = text;
+  targetedRepairs.forEach(([pattern, replacement]) => {
+    repairedText = repairedText.replace(pattern, replacement);
+  });
+
+  return repairedText
     .split('\n')
     .map(line => {
       const trimmed = line.trim();
@@ -1391,7 +1414,9 @@ function proofreadInsight(text: string): string {
     .replace(/\\`/g, '`');
   const structured = fixMarkdownStructure(unescaped);
   const clean = sanitizeNonAscii(structured);
-  const tables = fixMarkdownTables(clean);
+  const spaced = fixWordSpacing(clean);
+  const respaced = spaced === clean ? spaced : fixWordSpacing(spaced);
+  const tables = fixMarkdownTables(respaced);
   return tables;
 }
 

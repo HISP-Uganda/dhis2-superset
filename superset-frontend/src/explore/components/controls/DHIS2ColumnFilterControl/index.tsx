@@ -75,6 +75,7 @@ interface Props {
   datasource?: {
     columns?: DatasourceColumn[];
     extra?: string | Record<string, unknown>;
+    sql?: string;
   };
   label?: string;
   description?: string;
@@ -111,7 +112,22 @@ function getStagedDatasetId(datasource: Props['datasource']): number | null {
     (extra as any)?.dhis2StagedDatasetId ??
     null;
   const id = Number(raw);
-  return Number.isFinite(id) && id > 0 ? id : null;
+  if (Number.isFinite(id) && id > 0) {
+    return id;
+  }
+
+  const sql = String(datasource?.sql || '').trim();
+  const sqlMatch = sql.match(
+    /select\s+\*\s+from\s+(?:[`"]?[a-z_][\w]*[`"]?\.)?[`"]?sv_(\d+)_[a-z0-9_]+[`"]?/i,
+  );
+  if (sqlMatch?.[1]) {
+    const parsed = Number(sqlMatch[1]);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 function isPeriodColumn(col: DatasourceColumn): boolean {
@@ -200,6 +216,7 @@ const EmptyHint = styled.div`
 
 interface FilterEntryProps {
   filter: DHIS2ColumnFilter;
+  siblingFilters: DHIS2ColumnFilter[];
   stagedDatasetId: number | null;
   /** When true, values are formatted using DHIS2 period labels. */
   isPeriod: boolean;
@@ -211,6 +228,7 @@ interface FilterEntryProps {
 
 const FilterEntry: React.FC<FilterEntryProps> = ({
   filter,
+  siblingFilters,
   stagedDatasetId,
   isPeriod,
   onValuesChange,
@@ -219,35 +237,60 @@ const FilterEntry: React.FC<FilterEntryProps> = ({
 }) => {
   const [rawOptions, setRawOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const fetchedRef = useRef(false);
+  const fetchKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!filter.column || !stagedDatasetId) return;
-    if (fetchedRef.current) return;
+    const scopedSiblingFilters = siblingFilters
+      .filter(
+        item =>
+          item.column &&
+          item.column !== filter.column &&
+          Array.isArray(item.values) &&
+          item.values.length > 0,
+      )
+      .map(item => ({
+        column: item.column,
+        values: item.values.map(v => String(v)),
+      }));
+    const fetchKey = JSON.stringify({
+      datasetId: stagedDatasetId,
+      column: filter.column,
+      filters: scopedSiblingFilters,
+    });
+    if (fetchKeyRef.current === fetchKey) return;
 
     const key = colCacheKey(stagedDatasetId, filter.column);
-    const cached = readCache(key);
+    const cacheKey =
+      scopedSiblingFilters.length > 0
+        ? `${key}_${encodeURIComponent(fetchKey)}`
+        : key;
+    const cached = readCache(cacheKey);
     if (cached) {
       setRawOptions(cached);
-      fetchedRef.current = true;
+      fetchKeyRef.current = fetchKey;
       return;
     }
 
-    fetchedRef.current = true;
+    fetchKeyRef.current = fetchKey;
     setLoading(true);
+    const query = new URLSearchParams({ column: filter.column });
+    if (scopedSiblingFilters.length > 0) {
+      query.set('filters', JSON.stringify(scopedSiblingFilters));
+    }
     SupersetClient.get({
-      endpoint: `/api/v1/dhis2/staged-datasets/${stagedDatasetId}/column-values?column=${encodeURIComponent(filter.column)}`,
+      endpoint: `/api/v1/dhis2/staged-datasets/${stagedDatasetId}/column-values?${query.toString()}`,
     })
       .then(resp => {
         const vals: string[] = resp.json?.result || [];
         setRawOptions(vals);
-        writeCache(key, vals);
+        writeCache(cacheKey, vals);
       })
       .catch(() => {
         // User can still type values if fetch fails
       })
       .finally(() => setLoading(false));
-  }, [filter.column, stagedDatasetId]);
+  }, [filter.column, siblingFilters, stagedDatasetId]);
 
   // Build Ant Design Select options — for period columns show human-readable
   // label alongside the raw code so users recognise both forms.
@@ -472,6 +515,7 @@ const DHIS2ColumnFilterControl: React.FC<Props> = ({
           // eslint-disable-next-line react/no-array-index-key
           key={`${filter.column}-${idx}`}
           filter={filter}
+          siblingFilters={safeValue}
           stagedDatasetId={stagedDatasetId}
           isPeriod={periodColumnSet.has(filter.column)}
           onValuesChange={values => handleValuesChange(idx, values)}

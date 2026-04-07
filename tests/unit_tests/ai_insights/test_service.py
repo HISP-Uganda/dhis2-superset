@@ -9,10 +9,14 @@ from superset.ai_insights.service import (
     AIInsightError,
     AIInsightService,
     _build_localai_evidence_digest,
+    _build_localai_report_plan,
     _build_text_messages,
+    _count_meaningful_dashboard_charts,
     _context_to_plain_text,
     _detect_insight_mode,
     _extract_user_focus,
+    _looks_false_insufficient_data_output,
+    _looks_incomplete_localai_output,
     _proofread_generated_insight,
     _looks_placeholder_output,
     _strip_prompt_leakage,
@@ -140,6 +144,60 @@ def test_build_text_messages_uses_dynamic_prompt_for_localai_chart() -> None:
     assert "Admissions Vs Death" in messages[-1]["content"]
 
 
+def test_build_text_messages_includes_mode_aware_localai_report_plan() -> None:
+    messages = _build_text_messages(
+        mode="dashboard",
+        question="Key takeaways focusing on testing trends",
+        context_payload={
+            "dashboard": {"name": "Malaria Dashboard"},
+            "charts": [
+                {
+                    "chart": {"name": "Testing trend"},
+                    "query_result": {
+                        "columns": ["period", "testing_rate"],
+                        "row_count": 3,
+                        "sample_rows": [
+                            {"period": "202601", "testing_rate": 124.2},
+                            {"period": "202602", "testing_rate": 120.1},
+                            {"period": "202603", "testing_rate": 118.4},
+                        ],
+                    },
+                }
+            ],
+        },
+        conversation=[],
+        is_local_provider=True,
+        provider_type="localai",
+    )
+
+    assert "Required report plan:" in messages[-1]["content"]
+    assert "## Key Takeaways" in messages[-1]["content"]
+    assert "## Leadership Watchouts" in messages[-1]["content"]
+
+
+def test_build_localai_report_plan_returns_expected_summary_sections() -> None:
+    plan, headings = _build_localai_report_plan("summary", "dashboard")
+
+    assert "## Executive Summary" in plan
+    assert "## Key Points" in plan
+    assert headings == [
+        "## Executive Summary",
+        "## Key Points",
+        "## Leadership Watchouts",
+    ]
+
+
+def test_incomplete_localai_output_detector_flags_missing_required_headings() -> None:
+    assert _looks_incomplete_localai_output(
+        "## Executive Summary\nA concise overview.\n\n## Key Points\n- Signal one\n- Signal two",
+        [
+            "## Executive Summary",
+            "## Key Points",
+            "## Leadership Watchouts",
+        ],
+    )
+
+
 def test_repetitive_model_output_detector_flags_pipe_delimited_slug_spam() -> None:
     text = (
         "admissionsvsdeathsovertime|Admissions Vs Death|Admissions vs Deaths by Region|"
@@ -256,6 +314,80 @@ def test_build_localai_evidence_digest_avoids_raw_sample_row_scaffolding() -> No
     assert "Row 1:" not in digest
 
 
+def test_build_localai_evidence_digest_counts_all_meaningful_dashboard_charts() -> None:
+    payload = {
+        "dashboard": {"name": "Executive Dashboard"},
+        "charts": [
+            {
+                "chart": {"name": "Chart A"},
+                "query_result": {
+                    "columns": ["period", "cases"],
+                    "row_count": 2,
+                    "sample_rows": [
+                        {"period": "202601", "cases": 20},
+                        {"period": "202602", "cases": 25},
+                    ],
+                },
+            },
+            {
+                "chart": {"name": "Chart B"},
+                "query_result": {
+                    "columns": ["region", "tests"],
+                    "row_count": 2,
+                    "sample_rows": [
+                        {"region": "North", "tests": 100},
+                        {"region": "East", "tests": 90},
+                    ],
+                },
+            },
+            {
+                "chart": {"name": "Chart C"},
+                "query_result": {
+                    "columns": ["region", "positivity"],
+                    "row_count": 2,
+                    "sample_rows": [
+                        {"region": "North", "positivity": 0.2},
+                        {"region": "East", "positivity": 0.1},
+                    ],
+                },
+            },
+        ],
+    }
+
+    digest = _build_localai_evidence_digest(payload, "dashboard")
+
+    assert _count_meaningful_dashboard_charts(payload) == 3
+    assert "Dashboard coverage: 3 of 3 charts" in digest
+    assert "Chart A" in digest
+    assert "Chart B" in digest
+    assert "Chart C" in digest
+
+
+def test_false_insufficient_output_detector_rejects_bad_dashboard_claims() -> None:
+    payload = {
+        "dashboard": {"name": "Executive Dashboard"},
+        "charts": [
+            {
+                "chart": {"name": "Chart A"},
+                "query_result": {
+                    "columns": ["period", "cases"],
+                    "row_count": 2,
+                    "sample_rows": [
+                        {"period": "202601", "cases": 20},
+                        {"period": "202602", "cases": 25},
+                    ],
+                },
+            },
+        ],
+    }
+
+    assert _looks_false_insufficient_data_output(
+        "No charts had sufficient data to generate actionable insights.",
+        payload,
+        "dashboard",
+    )
+
+
 def test_proofread_generated_insight_fixes_joined_words_and_bad_bullets() -> None:
     cleaned = _proofread_generated_insight(
         "Executive Summary:\nMalariacasesandpositivityratesfell.\n¢Leadershipwatchouts:Testingratesstable."
@@ -275,6 +407,26 @@ def test_proofread_generated_insight_splits_long_joined_sequences() -> None:
     assert "year-over-year declines in malaria cases" in cleaned.lower()
 
 
+def test_proofread_generated_insight_repairs_fragmented_localai_health_words() -> None:
+    cleaned = _proofread_generated_insight(
+        "Malari a testing has f all en in the h is t or icalrec or d. "
+        "Ho sp it al admissions are r is in g."
+    )
+
+    assert "malaria testing has fallen" in cleaned.lower()
+    assert "historical record" in cleaned.lower()
+    assert "hospital admissions are rising" in cleaned.lower()
+
+
+def test_proofread_generated_insight_repairs_split_operational_words() -> None:
+    cleaned = _proofread_generated_insight(
+        "The dashboard is m is s in g critical d at a to supp or t action able planning."
+    )
+
+    assert "missing critical data" in cleaned.lower()
+    assert "support actionable planning" in cleaned.lower()
+
+
 def test_proofread_generated_insight_removes_raw_context_scaffolding() -> None:
     cleaned = _proofread_generated_insight(
         "Chart 9: Map 03\nColumns: region, population\nRow 1: region=Unknown, population=1\n\nExecutive Summary:\nCoverage is too sparse for reliable analysis."
@@ -284,6 +436,34 @@ def test_proofread_generated_insight_removes_raw_context_scaffolding() -> None:
     assert "Columns:" not in cleaned
     assert "Row 1:" not in cleaned
     assert "Executive Summary:" in cleaned
+
+
+def test_proofread_generated_insight_removes_leaked_instruction_blocks() -> None:
+    cleaned = _proofread_generated_insight(
+        "Context:\n7 day moving average\n146 districts analysed\n\n"
+        "Chart Summary\nMalaria positivity remains high.\n\n"
+        "---\n\nWrite a concise summary of the key facts and trends in the evidence, "
+        "focusing on the most important and actionable information for the leadership. "
+        "Do not include the evidence or context. Do not exceed 150 words.\n\n"
+        "Malaria remains widespread."
+    )
+
+    assert "Context:" not in cleaned
+    assert "Write a concise summary" not in cleaned
+    assert "Do not exceed 150 words" not in cleaned
+    assert "Chart Summary" in cleaned
+
+
+def test_proofread_generated_insight_repairs_additional_split_words() -> None:
+    cleaned = _proofread_generated_insight(
+        "No data quality or completeness in for m at i on. "
+        "The national malaria tr an sm is si on risk is w or sen in g for vulnerable population s."
+    )
+
+    assert "information" in cleaned.lower()
+    assert "transmission" in cleaned.lower()
+    assert "worsening" in cleaned.lower()
+    assert "populations" in cleaned.lower()
 
 
 @with_config({"AI_INSIGHTS_CONFIG": make_ai_config(allow_sql_execution=True)})
