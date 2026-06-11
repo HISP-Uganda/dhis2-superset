@@ -165,7 +165,7 @@
     "global-box": "^1.0.3",
     "googleapis": "^154.1.0",
     "gridstack": "^12.4.2",
-    "immer": "^10.1.1",
+    "immer": "^11.1.8",
     "interweave": "^13.1.1",
     "jquery": "^3.7.1",
     "js-levenshtein": "^1.1.6",
